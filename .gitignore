@@ -6,9 +6,10 @@ __pycache__/
 venv/
 .venv/
 
-
+.cursor/
 *.db
 *.sqlite
-*.md
+*.txt
+
 # reference files
 /packages/data-core/core_references
