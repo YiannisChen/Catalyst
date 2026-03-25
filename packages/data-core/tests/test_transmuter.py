@@ -92,5 +92,68 @@ class TestCleanHtmlEdgeCases(unittest.TestCase):
         self.assertEqual(r1, r2)
 
 
+from data_core.transmuter import financial_json_to_markdown_table
+
+
+class TestFinancialJsonFlat(unittest.TestCase):
+    def test_flat_dict_has_table_separator(self):
+        data = {"revenue": 35082, "net_income": 12285, "eps": 4.93}
+        result = financial_json_to_markdown_table(data)
+        self.assertIn("|---|---|", result)
+
+    def test_flat_dict_contains_all_keys(self):
+        data = {"revenue": 35082, "net_income": 12285}
+        result = financial_json_to_markdown_table(data)
+        self.assertIn("revenue", result)
+        self.assertIn("net_income", result)
+
+    def test_flat_dict_contains_values(self):
+        data = {"revenue": 35082}
+        result = financial_json_to_markdown_table(data)
+        self.assertIn("35082", result)
+
+    def test_flat_dict_sorted_keys(self):
+        data = {"z_field": 3, "a_field": 1}
+        result = financial_json_to_markdown_table(data)
+        a_pos = result.index("a_field")
+        z_pos = result.index("z_field")
+        self.assertLess(a_pos, z_pos)
+
+
+class TestFinancialJsonNested(unittest.TestCase):
+    def test_nested_dict_has_separator(self):
+        data = {
+            "2024-Q1": {"revenue": 26044, "net_income": 14881},
+            "2024-Q2": {"revenue": 30040, "net_income": 16599},
+        }
+        result = financial_json_to_markdown_table(data)
+        self.assertIn("|---|", result)
+
+    def test_nested_dict_contains_row_keys(self):
+        data = {
+            "2024-Q1": {"revenue": 26044},
+            "2024-Q2": {"revenue": 30040},
+        }
+        result = financial_json_to_markdown_table(data)
+        self.assertIn("2024-Q1", result)
+        self.assertIn("2024-Q2", result)
+
+    def test_nested_dict_contains_values(self):
+        data = {"2024-Q1": {"revenue": 26044}}
+        result = financial_json_to_markdown_table(data)
+        self.assertIn("26044", result)
+
+
+class TestFinancialJsonEdgeCases(unittest.TestCase):
+    def test_empty_dict_returns_empty(self):
+        self.assertEqual(financial_json_to_markdown_table({}), "")
+
+    def test_determinism(self):
+        data = {"z": 3, "a": 1, "m": 2}
+        r1 = financial_json_to_markdown_table(data)
+        r2 = financial_json_to_markdown_table(data)
+        self.assertEqual(r1, r2)
+
+
 if __name__ == "__main__":
     unittest.main()

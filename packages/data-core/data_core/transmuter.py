@@ -48,3 +48,30 @@ def clean_html_to_markdown(raw_html: str, base_url: str = "") -> str:
             counter += 1
 
     return clean_text + "\n\n## References\n\n" + "\n".join(ref_lines)
+
+
+def financial_json_to_markdown_table(data: dict) -> str:
+    """Convert financial JSON (flat or nested) to a deterministic Markdown table."""
+    if not data:
+        return ""
+
+    first_val = next(iter(data.values()))
+
+    if isinstance(first_val, dict):
+        all_cols = sorted(
+            {k for v in data.values() if isinstance(v, dict) for k in v}
+        )
+        rows = sorted(data.keys())
+        header = "| Metric | " + " | ".join(str(c) for c in all_cols) + " |"
+        sep = "|---|" + "|".join("---" for _ in all_cols) + "|"
+        body = []
+        for row_key in rows:
+            row_data = data[row_key] if isinstance(data[row_key], dict) else {}
+            cells = [str(row_data.get(col, "")) for col in all_cols]
+            body.append(f"| {row_key} | " + " | ".join(cells) + " |")
+        return "\n".join([header, sep] + body)
+
+    header = "| Field | Value |"
+    sep = "|---|---|"
+    body = [f"| {k} | {v} |" for k, v in sorted(data.items())]
+    return "\n".join([header, sep] + body)
