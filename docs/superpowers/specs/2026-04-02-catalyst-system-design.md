@@ -3,7 +3,7 @@
 **Author:** Yiannis Chen
 **Date:** 2026-04-02
 **Status:** Approved
-**Version:** 1.0
+**Version:** 1.1
 
 ---
 
@@ -359,8 +359,19 @@ PRAGMA foreign_keys=ON;
 | Type | When | How | Cost |
 |---|---|---|---|
 | **PK dedup** | At insert | `asset_id = SHA256(ticker\|date\|source\|version)` — ON CONFLICT UPDATE | Zero |
-| **Title dedup** | At clean stage | Normalize title → SHA256, skip if hash exists in same (ticker, date) | Zero |
+| **Cross-source dedup** | At clean stage | Title + time window fingerprint (see below) | Zero |
 | **Semantic dedup** | At index build | Group by (ticker, date) → batch embed with bge-m3 → cosine similarity matrix → flag pairs >0.92 | Heavy — only at build time |
+
+**Cross-source dedup (Silver layer):** Wire services (Reuters, AP) publish the same event across Polygon, Finnhub, and GDELT with slightly altered titles. Title-only hashing misses these. The fingerprint combines two signals:
+
+```python
+def compute_dedup_fingerprint(title: str, published_utc: str) -> str:
+    title_norm = re.sub(r'[^\w\s]', '', title).lower().strip()
+    pub_window = round_to_window(published_utc, hours=2)  # ±2hr bucket
+    return hashlib.sha256(f"{title_norm}|{pub_window}".encode()).hexdigest()[:16]
+```
+
+If fingerprint collides within the same (ticker, date) group, the later article is flagged `is_duplicate=1`. The semantic dedup at Gold layer (cosine >0.92) catches remaining paraphrases that this misses. Two layers cover 95%+ of duplicates without needing heavier approaches like SimHash (deferred to post-thesis).
 
 ### 3.6 Data Ingestion Phases
 
@@ -420,10 +431,38 @@ class AttributionState(TypedDict):
     summary_md: str                # final Markdown report with citations
     grounding_rate: float | None
 
-    # Metadata
-    token_count: int
+    # Cost tracking (per-node granularity for experiments)
+    cost_breakdown: list[dict]     # [{node, input_tokens, output_tokens, model_id, cost_usd}]
+    total_cost_usd: float
+    total_tokens: int
     model_id: str
 ```
+
+**CostTracker:** Each LLM node appends a `NodeCost` entry to `cost_breakdown` after receiving the response. Cost is computed from a model pricing table:
+
+```python
+MODEL_PRICING = {  # per 1M tokens
+    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
+    "gpt-4o":                    {"input": 2.5, "output": 10.0},
+    "claude-haiku-4-5-20251001": {"input": 0.8, "output": 4.0},
+}
+
+def track_cost(state: dict, node: str, response) -> None:
+    pricing = MODEL_PRICING[state["model_id"]]
+    cost = (response.usage.input_tokens * pricing["input"]
+          + response.usage.output_tokens * pricing["output"]) / 1_000_000
+    state["cost_breakdown"].append({
+        "node": node,
+        "input_tokens": response.usage.input_tokens,
+        "output_tokens": response.usage.output_tokens,
+        "model_id": state["model_id"],
+        "cost_usd": cost,
+    })
+    state["total_cost_usd"] += cost
+    state["total_tokens"] += response.usage.total_tokens
+```
+
+This data is persisted in the `attributions` table and drives the cost columns in eval experiment comparison reports.
 
 ### 4.3 The Three Nodes
 
@@ -445,17 +484,30 @@ Filter: keep chunks with relevance > 0.5
 
 The Critic's job is ONLY to grade evidence — it has no pressure to produce a narrative, so it doesn't cherry-pick evidence to support a predetermined story.
 
+Each node wraps LLM calls with retry logic (max 3 attempts, exponential backoff on rate limit / timeout errors). If all retries fail, the node returns an error state that routes to the insufficient evidence handler. This is simpler and more debuggable than full LangGraph checkpointing, which is deferred to post-midterm for the production daily cron.
+
+**Insufficient Evidence Gate (hard fallback — no LLM call):**
+
+If the Critic filters ALL chunks below the 0.5 relevance threshold, the graph must NOT call the Judge. This prevents the most dangerous failure mode: a Judge that produces plausible-sounding but entirely fabricated attribution because it had no real evidence to work with.
+
+The `insufficient_handler` node returns a canned `AttributionResult`:
+- `causes: [{text: "Insufficient evidence in available data sources", category: "unknown", confidence: 1.0}]`
+- `summary_md: "No evidence meeting the relevance threshold (>0.5) was found for {ticker} on {trade_date}. This may indicate the price move was driven by factors outside our data coverage (private information, market microstructure, or sources we do not ingest)."`
+- `grounding_rate: None`
+- `total_cost_usd`: only Miner + Critic cost (Judge was skipped)
+
+This is implemented as a conditional edge in the graph (see Section 4.4).
+
 **Judge (1 LLM call — synthesis):**
 
-Input: graded evidence from Critic
+Input: graded evidence from Critic (only chunks with relevance > 0.5)
 Output: `{causes: [{text, category, confidence, evidence_ids, direction}], summary_md, self_grounding_check}`
 
 Rules enforced in prompt:
 - Confidence scores must sum to <= 1.0
 - Every claim must cite an evidence chunk as `[chunk_id]`
-- "Unknown/insufficient evidence" is a valid cause
 - Maximum 5 causes
-- Do NOT fabricate — if evidence is insufficient, say so
+- Do NOT fabricate — if evidence is weak, assign low confidence rather than inventing causes
 
 ### 4.4 Graph Construction
 
@@ -463,22 +515,33 @@ Rules enforced in prompt:
 def build_attribution_graph(use_critic: bool = True) -> CompiledGraph:
     graph = StateGraph(AttributionState)
     graph.add_node("miner", miner)
-    if use_critic:
-        graph.add_node("critic", critic)
     graph.add_node("judge", judge)
+    graph.add_node("insufficient_handler", insufficient_handler)
 
     graph.set_entry_point("miner")
+
     if use_critic:
+        graph.add_node("critic", critic)
         graph.add_edge("miner", "critic")
-        graph.add_edge("critic", "judge")
+        # Hard gate: if no evidence passes Critic, skip Judge entirely
+        graph.add_conditional_edges("critic", route_after_critic, {
+            "judge": "judge",
+            "insufficient": "insufficient_handler",
+        })
     else:
         graph.add_edge("miner", "judge")
-    graph.add_edge("judge", END)
 
+    graph.add_edge("judge", END)
+    graph.add_edge("insufficient_handler", END)
     return graph.compile()
+
+def route_after_critic(state: AttributionState) -> str:
+    if not state["graded_evidence"]:
+        return "insufficient"
+    return "judge"
 ```
 
-`use_critic=True` → Miner-Critic-Judge (default)
+`use_critic=True` → Miner-Critic-Judge with insufficient evidence fallback (default)
 `use_critic=False` → Miner-Judge baseline (for experiment E2)
 
 ### 4.5 Token Budget
