@@ -1,6 +1,6 @@
 import unittest
 
-from data_core.transmuter import clean_html_to_markdown
+from catalyst_data.transmuter import clean_html_to_markdown
 
 
 SAMPLE_HTML = """<html>
@@ -92,7 +92,7 @@ class TestCleanHtmlEdgeCases(unittest.TestCase):
         self.assertEqual(r1, r2)
 
 
-from data_core.transmuter import financial_json_to_markdown_table
+from catalyst_data.transmuter import financial_json_to_markdown_table
 
 
 class TestFinancialJsonFlat(unittest.TestCase):

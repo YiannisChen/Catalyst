@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pydantic import ValidationError
 
-from data_core.models import CatalystDataRequest, DataAsset
+from catalyst_data.models import CatalystDataRequest, DataAsset
 
 
 class TestCatalystDataRequestValid(unittest.TestCase):

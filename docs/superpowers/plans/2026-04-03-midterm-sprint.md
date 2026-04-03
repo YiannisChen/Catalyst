@@ -21,38 +21,18 @@
 - Delete (tracked): `packages/data-core/SCHEMA_DESIGN.md`
 - Delete (tracked): `README.md` (root — already deleted on disk)
 - Delete (untracked): `packages/data-core/core_references/` (entire folder — lives in ~/Desktop/references/)
-- Delete (untracked): `CLAUDE.md` (empty)
 - Add (untracked): `docs/API_Documentation/*.md` (7 files)
 - Add (untracked): `docs/catalyst_whitepaper.md`
 - Add (untracked): `docs/philosophy_of_teacher_mac.md`
 - Add (untracked): `docs/reference_projects.md`
 
-- [ ] **Step 1: Remove tracked dead files**
+- [x] **Step 1: Remove tracked dead files** (DONE — commit `e3cd0d0`)
 
-```bash
-git rm -r packages/data-core/catalyst_data/
-git rm packages/data-core/SCHEMA_DESIGN.md
-git rm README.md
-```
+- [x] **Step 2: Delete untracked junk from disk** (DONE)
 
-- [ ] **Step 2: Delete untracked junk from disk**
+- [x] **Step 3: Add untracked docs to git** (DONE — commit `dee10f2`)
 
-```bash
-rm -rf packages/data-core/core_references/
-rm -f CLAUDE.md
-```
-
-- [ ] **Step 3: Add untracked docs to git**
-
-```bash
-git add docs/API_Documentation/ docs/catalyst_whitepaper.md docs/philosophy_of_teacher_mac.md docs/reference_projects.md
-```
-
-- [ ] **Step 4: Commit cleanup**
-
-```bash
-git commit -m "chore: remove dead scaffolding and track project docs"
-```
+- [x] **Step 4: Commit cleanup** (DONE — commit after repo cleanup session)
 
 ### Task 0.2: Rename data_core → catalyst_data and restructure
 
@@ -111,21 +91,27 @@ Files to update:
 - `packages/data-core/catalyst_data/storage/sqlite.py`: `from data_core.models import DataAsset` → `from catalyst_data.models import DataAsset`
 - All test files in `packages/data-core/tests/`: update `from data_core.` → `from catalyst_data.`
 
-- [ ] **Step 5: Delete files that won't be used in v2**
+- [ ] **Step 5: Fix source_mapping.py broken import**
 
-These files from the old messy development are superseded by the new pipeline/ structure we'll build in Phase 1:
-- `packages/data-core/catalyst_data/orchestrator.py` (if it exists after rename)
-- `packages/data-core/catalyst_data/pipeline.py` (if it exists — old monolithic pipeline)
-- `packages/data-core/catalyst_data/artifacts.py` (if it exists)
-- `packages/data-core/catalyst_data/logger.py` (if it exists)
+The existing `source_mapping.py` imports from `data_core.types` which doesn't exist. Fix the import and simplify:
 
-Check which exist and only delete those that do:
-```bash
-ls packages/data-core/catalyst_data/*.py
-# Delete any of: orchestrator.py, pipeline.py, artifacts.py, logger.py, types.py
+```python
+# packages/data-core/catalyst_data/source_mapping.py
+from __future__ import annotations
+
+
+def map_logical_source(source: str) -> list[str]:
+    """Map a logical source name to physical API endpoints."""
+    if source == "fmp_fundamentals":
+        return ["income_statement", "balance_sheet", "cash_flow"]
+    if source == "polygon_news":
+        return ["news"]
+    if source == "polygon_ohlcv":
+        return ["ohlcv"]
+    if source == "fred_macro":
+        return ["DFF", "DGS10", "VIXCLS", "UNRATE", "CPIAUCSL"]
+    return [source]
 ```
-
-Also remove tests that reference deleted files.
 
 - [ ] **Step 6: Run existing tests to verify nothing broke**
 
@@ -1335,9 +1321,9 @@ git log --oneline -10
 
 ## File Summary
 
-| Phase | New files | Modified files |
-|---|---|---|
-| Phase 0 | `pyproject.toml` | All existing `.py` (import rename) |
-| Phase 1 | `config.py`, `rate_limiter.py`, `connectors/polygon.py`, `connectors/fred.py`, `pipeline/{stages,ingest,clean,transform,align}.py`, `dedup/hard.py`, `storage/sqlite.py`, `orchestrator.py`, `scripts/smoke_test.py` | `connectors/fmp.py`, `connectors/yfinance_fallback.py`, all tests |
-| Phase 2 | `catalyst_eval/` entire package (schema, 5 metrics, harness, reports), `golden_set/v1.jsonl` | None |
-| Phase 3 | `catalyst/agents/` entire package (state, cost_tracker, 3 nodes, graph, prompts), `catalyst/adapters/`, `scripts/run_experiments.py`, `storage/lancedb.py`, `scripts/build_index.py` | None |
+| Phase | Status | New files | Modified files |
+|---|---|---|---|
+| Phase 0 | Task 0.1 DONE, 0.2-0.3 pending | `pyproject.toml` | All existing `.py` (import rename) |
+| Phase 1 | Not started | `config.py`, `rate_limiter.py`, `connectors/polygon.py`, `connectors/fred.py`, `pipeline/{stages,ingest,clean,transform,align}.py`, `dedup/hard.py`, `storage/sqlite.py`, `orchestrator.py`, `source_mapping.py`, `scripts/smoke_test.py` | `connectors/fmp.py`, `connectors/yfinance_fallback.py`, all tests |
+| Phase 2 | Not started | `catalyst_eval/` entire package (schema, 5 metrics, harness, reports), `golden_set/v1.jsonl` | None |
+| Phase 3 | Not started | `catalyst/agents/` entire package (state, cost_tracker, 3 nodes, graph, prompts), `catalyst/adapters/`, `scripts/run_experiments.py`, `storage/lancedb.py`, `scripts/build_index.py` | None |

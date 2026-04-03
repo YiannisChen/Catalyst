@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, TYPE_CHECKING
 
-from data_core.connector_types import FetchResult
+from catalyst_data.connectors.base import FetchResult
+
+if TYPE_CHECKING:
+    from catalyst_data.rate_limiter import TokenBucketLimiter
 
 YF_STATEMENT_MAP = {
     "income_statement": "income_stmt",
@@ -24,7 +27,9 @@ def _fetch_yf_sync(ticker: str, attr_name: str) -> dict | None:
     return df.to_dict()
 
 
-def create_yfinance_fetcher() -> Callable[[str, str, str], Awaitable[FetchResult]]:
+def create_yfinance_fetcher(
+    limiter: TokenBucketLimiter | None = None,
+) -> Callable[[str, str, str], Awaitable[FetchResult]]:
     """Return an async fetch function wrapping synchronous yfinance calls."""
 
     async def fetch(ticker: str, endpoint: str, date: str) -> FetchResult:
@@ -38,7 +43,11 @@ def create_yfinance_fetcher() -> Callable[[str, str, str], Awaitable[FetchResult
 
         start = time.monotonic()
         try:
-            data = await asyncio.to_thread(_fetch_yf_sync, ticker, attr_name)
+            if limiter is None:
+                data = await asyncio.to_thread(_fetch_yf_sync, ticker, attr_name)
+            else:
+                async with limiter.acquire():
+                    data = await asyncio.to_thread(_fetch_yf_sync, ticker, attr_name)
             latency = (time.monotonic() - start) * 1000
             if data is None:
                 return FetchResult(

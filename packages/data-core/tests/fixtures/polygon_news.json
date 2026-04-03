@@ -1,0 +1,30 @@
+{
+  "results": [
+    {
+      "id": "news_001",
+      "publisher": {"name": "Reuters", "homepage_url": "https://reuters.com"},
+      "title": "Apple Reports Record Q1 Revenue",
+      "author": "John Doe",
+      "published_utc": "2026-01-15T10:30:00Z",
+      "article_url": "https://reuters.com/apple-q1",
+      "tickers": ["AAPL"],
+      "description": "Apple reported quarterly revenue of $124.3B, beating analyst estimates.",
+      "keywords": ["apple", "earnings", "revenue"]
+    },
+    {
+      "id": "news_002",
+      "publisher": {"name": "Bloomberg", "homepage_url": "https://bloomberg.com"},
+      "title": "Tech Stocks Rally on Apple Earnings",
+      "author": "Jane Smith",
+      "published_utc": "2026-01-15T12:00:00Z",
+      "article_url": "https://bloomberg.com/tech-rally",
+      "tickers": ["AAPL", "MSFT"],
+      "description": "Technology stocks rose after Apple reported better-than-expected results.",
+      "keywords": ["tech", "rally", "earnings"]
+    }
+  ],
+  "status": "OK",
+  "request_id": "test456",
+  "count": 2,
+  "next_url": null
+}

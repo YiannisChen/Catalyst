@@ -1,6 +1,6 @@
 import unittest
 
-from data_core.connector_types import FetchResult
+from catalyst_data.connectors.base import FetchResult
 
 
 class TestFetchResult(unittest.TestCase):

@@ -1,6 +1,6 @@
 import unittest
 
-from data_core.retry import (
+from catalyst_data.retry import (
     ErrorClass,
     classify_error,
     compute_backoff,

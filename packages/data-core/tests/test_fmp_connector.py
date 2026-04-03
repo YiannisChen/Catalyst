@@ -1,8 +1,8 @@
 import asyncio
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
-from data_core.connectors.fmp import create_fmp_fetcher, FMP_BASE_URL, ENDPOINT_PATH_MAP
+from catalyst_data.connectors.fmp import create_fmp_fetcher, FMP_BASE_URL, ENDPOINT_PATH_MAP
 
 
 class TestFmpFetcher(unittest.IsolatedAsyncioTestCase):
@@ -16,7 +16,6 @@ class TestFmpFetcher(unittest.IsolatedAsyncioTestCase):
 
         fetch = create_fmp_fetcher(
             api_key="test-key",
-            semaphore=asyncio.Semaphore(5),
             client=mock_client,
         )
         result = await fetch("NVDA", "income_statement", "2025-01-01")
@@ -33,7 +32,6 @@ class TestFmpFetcher(unittest.IsolatedAsyncioTestCase):
 
         fetch = create_fmp_fetcher(
             api_key="bad-key",
-            semaphore=asyncio.Semaphore(5),
             client=mock_client,
         )
         result = await fetch("NVDA", "income_statement", "2025-01-01")
@@ -48,7 +46,6 @@ class TestFmpFetcher(unittest.IsolatedAsyncioTestCase):
 
         fetch = create_fmp_fetcher(
             api_key="test-key",
-            semaphore=asyncio.Semaphore(5),
             client=mock_client,
         )
         result = await fetch("NVDA", "income_statement", "2025-01-01")
@@ -60,32 +57,49 @@ class TestFmpFetcher(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ENDPOINT_PATH_MAP["balance_sheet"], "balance-sheet-statement")
         self.assertEqual(ENDPOINT_PATH_MAP["cash_flow"], "cash-flow-statement")
 
-    async def test_semaphore_limits_concurrency(self):
-        sem = asyncio.Semaphore(1)
-        concurrent_count = 0
-        max_concurrent = 0
-
-        async def counting_get(*args, **kwargs):
-            nonlocal concurrent_count, max_concurrent
-            concurrent_count += 1
-            max_concurrent = max(max_concurrent, concurrent_count)
-            await asyncio.sleep(0.05)
-            concurrent_count -= 1
-            mock_resp = MagicMock()
-            mock_resp.status_code = 200
-            mock_resp.json.return_value = {}
-            return mock_resp
+    async def test_limiter_acquire_called_before_request(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [{"revenue": 100}]
 
         mock_client = AsyncMock()
-        mock_client.get = counting_get
+        mock_client.get = AsyncMock(return_value=mock_resp)
 
-        fetch = create_fmp_fetcher(api_key="k", semaphore=sem, client=mock_client)
-        await asyncio.gather(
-            fetch("A", "income_statement", "2025-01-01"),
-            fetch("B", "income_statement", "2025-01-01"),
-            fetch("C", "income_statement", "2025-01-01"),
+        class DummyLimiter:
+            def __init__(self):
+                self.entered = 0
+
+            def acquire(self):
+                return self
+
+            async def __aenter__(self):
+                self.entered += 1
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        mock_limiter = DummyLimiter()
+
+        fetch = create_fmp_fetcher(
+            api_key="test-key",
+            limiter=mock_limiter,
+            client=mock_client,
         )
-        self.assertEqual(max_concurrent, 1)
+        result = await fetch("NVDA", "income_statement", "2025-01-01")
+        self.assertEqual(result.status, 200)
+        self.assertEqual(mock_limiter.entered, 1)
+
+    async def test_no_limiter_still_works(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = [{"revenue": 100}]
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        fetch = create_fmp_fetcher(api_key="test-key", client=mock_client)
+        result = await fetch("NVDA", "income_statement", "2025-01-01")
+        self.assertEqual(result.status, 200)
 
 
 if __name__ == "__main__":
