@@ -10,6 +10,8 @@ def map_logical_source(source: str) -> list[str]:
     """
     if source == "fmp_fundamentals":
         return ["income_statement", "balance_sheet", "cash_flow"]
+    if source == "yfinance_fundamentals":
+        return ["income_statement", "balance_sheet", "cash_flow"]
     if source == "polygon_news":
         return ["news"]
     if source == "polygon_ohlcv":
