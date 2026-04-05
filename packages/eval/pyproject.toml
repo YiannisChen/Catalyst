@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "catalyst-eval"
+version = "0.1.0"
+description = "Financial AI agent evaluation framework with domain-specific attribution metrics"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Yiannis Chen" }]
+
+dependencies = [
+    "pydantic>=2.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+ragas = ["ragas>=0.1", "langchain-core>=0.2"]
+dev = ["pytest>=8.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["catalyst_eval"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
