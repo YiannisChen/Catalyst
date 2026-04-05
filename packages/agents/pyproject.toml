@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "catalyst-agents"
+version = "0.1.0"
+description = "Miner-Critic-Judge attribution workflow for Catalyst"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "Yiannis Chen" }]
+
+dependencies = [
+    "langgraph>=0.2",
+    "langchain-anthropic>=0.3",
+    "langchain-openai>=0.3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["catalyst_agents"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
