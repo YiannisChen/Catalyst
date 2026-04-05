@@ -14,9 +14,12 @@ def _transform_news(articles: list[dict], ticker: str) -> str:
 
     for idx, article in enumerate(articles, start=1):
         title = article.get("title", "Untitled")
+        publisher = article.get("publisher")
+        publisher_name = publisher.get("name") if isinstance(publisher, dict) else ""
         source = (
             article.get("source")
-            or article.get("publisher", {}).get("name")
+            or publisher_name
+            or (publisher if isinstance(publisher, str) else "")
             or "Unknown"
         )
         published = article.get("published_utc", "")

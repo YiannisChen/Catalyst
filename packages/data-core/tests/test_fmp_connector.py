@@ -21,6 +21,13 @@ class TestFmpFetcher(unittest.IsolatedAsyncioTestCase):
         result = await fetch("NVDA", "income_statement", "2025-01-01")
         self.assertEqual(result.status, 200)
         self.assertEqual(result.data, [{"revenue": 35082000000}])
+        mock_client.get.assert_called_once()
+        call_args, call_kw = mock_client.get.call_args
+        self.assertIn("/stable/income-statement", call_args[0])
+        self.assertEqual(
+            call_kw["params"],
+            {"symbol": "NVDA", "apikey": "test-key", "period": "annual"},
+        )
 
     async def test_401_returns_error(self):
         mock_resp = MagicMock()
@@ -38,6 +45,24 @@ class TestFmpFetcher(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.status, 401)
         self.assertIsNotNone(result.error)
 
+    async def test_429_preserves_response_text(self):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 429
+        mock_resp.text = "rate limited"
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        fetch = create_fmp_fetcher(
+            api_key="test-key",
+            client=mock_client,
+        )
+        result = await fetch("NVDA", "income_statement", "2025-01-01")
+        self.assertEqual(result.status, 429)
+        self.assertEqual(result.source_label, "fmp:income_statement")
+        self.assertIn("429", result.error)
+        self.assertIn("rate limited", result.error)
+
     async def test_timeout_returns_error_with_zero_status(self):
         import httpx
 
@@ -51,6 +76,20 @@ class TestFmpFetcher(unittest.IsolatedAsyncioTestCase):
         result = await fetch("NVDA", "income_statement", "2025-01-01")
         self.assertEqual(result.status, 0)
         self.assertIn("timeout", result.error.lower())
+
+    async def test_unknown_endpoint_returns_error_without_request(self):
+        mock_client = AsyncMock()
+
+        fetch = create_fmp_fetcher(
+            api_key="test-key",
+            client=mock_client,
+        )
+        result = await fetch("NVDA", "unsupported_endpoint", "2025-01-01")
+
+        self.assertEqual(result.status, 0)
+        self.assertEqual(result.source_label, "fmp:unsupported_endpoint")
+        self.assertIn("unknown", result.error.lower())
+        mock_client.get.assert_not_called()
 
     async def test_endpoint_path_mapping(self):
         self.assertEqual(ENDPOINT_PATH_MAP["income_statement"], "income-statement")

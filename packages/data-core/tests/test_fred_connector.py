@@ -59,3 +59,18 @@ async def test_fred_error_returns_status():
 
     assert result.status == 400
     assert result.error is not None
+
+
+@pytest.mark.asyncio
+async def test_fred_timeout_returns_structured_error():
+    import httpx
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(side_effect=httpx.ReadTimeout("timeout"))
+
+    fetcher = create_fred_fetcher(api_key="test_key", client=mock_client)
+    result = await fetcher("", "DFF", "2026-01-15")
+
+    assert result.status == 0
+    assert result.source_label == "fred:DFF"
+    assert "timeout" in result.error.lower()

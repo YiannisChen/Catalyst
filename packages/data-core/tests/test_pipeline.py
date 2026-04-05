@@ -97,6 +97,21 @@ def test_transform_polygon_news_uses_live_field_names():
     assert "https://example.com/article" in result.data
 
 
+def test_transform_news_tolerates_string_publisher_shape():
+    articles = [
+        {
+            "published_utc": "2026-01-15T10:00:00Z",
+            "publisher": "Reuters",
+            "description": "Shape drifted but content should still render.",
+        }
+    ]
+    result = run_transform(articles, source_type="polygon_news", ticker="AAPL")
+    assert result.ok
+    assert "Untitled" in result.data
+    assert "Reuters" in result.data
+    assert "Shape drifted but content should still render." in result.data
+
+
 def test_transform_financial_to_markdown_table():
     data = {"income_statement": {"revenue": 100, "net_income": 50}}
     result = run_transform(data, source_type="fmp_fundamentals", ticker="AAPL")

@@ -10,7 +10,8 @@ from catalyst_data.connectors.base import FetchResult
 if TYPE_CHECKING:
     from catalyst_data.rate_limiter import TokenBucketLimiter
 
-FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
+# FMP deprecated path-style v3 for many plans; Playground uses /stable/ with ?symbol=.
+FMP_BASE_URL = "https://financialmodelingprep.com/stable"
 
 ENDPOINT_PATH_MAP = {
     "income_statement": "income-statement",
@@ -27,9 +28,15 @@ def create_fmp_fetcher(
     """Return an async fetch function bound to the given api_key/limiter/client."""
 
     async def fetch(ticker: str, endpoint: str, date: str) -> FetchResult:
-        path = ENDPOINT_PATH_MAP.get(endpoint, endpoint)
-        url = f"{FMP_BASE_URL}/{path}/{ticker}"
-        params = {"apikey": api_key, "period": "annual"}
+        path = ENDPOINT_PATH_MAP.get(endpoint)
+        if path is None:
+            return FetchResult(
+                status=0,
+                error=f"Unknown FMP endpoint: {endpoint}",
+                source_label=f"fmp:{endpoint}",
+            )
+        url = f"{FMP_BASE_URL}/{path}"
+        params = {"symbol": ticker, "apikey": api_key, "period": "annual"}
 
         start = time.monotonic()
         own_client = client is None
@@ -48,9 +55,13 @@ def create_fmp_fetcher(
                     latency_ms=latency,
                     source_label=f"fmp:{endpoint}",
                 )
+            error_text = resp.text.strip() if getattr(resp, "text", None) else ""
+            error_message = f"FMP {resp.status_code}"
+            if error_text:
+                error_message = f"{error_message}: {error_text}"
             return FetchResult(
                 status=resp.status_code,
-                error=f"FMP {resp.status_code}",
+                error=error_message,
                 latency_ms=latency,
                 source_label=f"fmp:{endpoint}",
             )

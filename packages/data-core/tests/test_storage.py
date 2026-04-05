@@ -1,5 +1,6 @@
 import sqlite3
 from catalyst_data.storage.sqlite import (
+    compute_asset_id,
     init_db,
     upsert_raw_asset,
     upsert_clean_asset,
@@ -8,6 +9,15 @@ from catalyst_data.storage.sqlite import (
     upsert_ohlcv,
     get_ohlcv,
 )
+
+
+def test_compute_asset_id_is_deterministic():
+    first = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
+    second = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
+    third = compute_asset_id("AAPL", "2026-01-16", "polygon_news")
+
+    assert first == second
+    assert first != third
 
 
 def test_init_db_creates_all_tables():

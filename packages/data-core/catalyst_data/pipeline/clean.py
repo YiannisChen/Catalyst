@@ -22,15 +22,26 @@ def _compute_dedup_fingerprint(title: str, published_utc: str) -> str:
 
 def _clean_news(raw_data: dict) -> list[dict]:
     """Deduplicate news articles by title + 2-hour window."""
-    articles: list[dict] = (
+    if isinstance(raw_data, dict) and len(raw_data) == 1:
+        only_value = next(iter(raw_data.values()))
+        if isinstance(only_value, dict):
+            raw_data = only_value
+
+    articles: Any = (
         raw_data.get("articles")
         or raw_data.get("results")
         or (raw_data if isinstance(raw_data, list) else [])
     )
+    if isinstance(articles, dict):
+        articles = [articles]
+    elif not isinstance(articles, list):
+        articles = []
 
     seen: set[str] = set()
     deduped: list[dict] = []
     for article in articles:
+        if not isinstance(article, dict):
+            continue
         title = article.get("title", "")
         published = article.get("published_utc", "")
         if not title or not published:

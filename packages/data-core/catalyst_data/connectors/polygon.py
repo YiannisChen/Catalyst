@@ -89,9 +89,13 @@ def create_polygon_fetcher(
                     latency_ms=latency,
                     source_label=f"polygon:{endpoint}",
                 )
+            error_text = resp.text.strip() if getattr(resp, "text", None) else ""
+            error_message = f"Polygon {resp.status_code}"
+            if error_text:
+                error_message = f"{error_message}: {error_text}"
             return FetchResult(
                 status=resp.status_code,
-                error=f"Polygon {resp.status_code}",
+                error=error_message,
                 latency_ms=latency,
                 source_label=f"polygon:{endpoint}",
             )

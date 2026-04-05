@@ -65,6 +65,24 @@ async def test_polygon_error_returns_status():
 
 
 @pytest.mark.asyncio
+async def test_polygon_server_error_preserves_response_text():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 503
+    mock_resp.text = "upstream unavailable"
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    fetcher = create_polygon_fetcher(api_key="test_key", client=mock_client)
+    result = await fetcher("AAPL", "news", "2026-01-15")
+
+    assert result.status == 503
+    assert result.source_label == "polygon:news"
+    assert "503" in result.error
+    assert "upstream unavailable" in result.error
+
+
+@pytest.mark.asyncio
 async def test_polygon_timeout_returns_error():
     import httpx
 
@@ -76,3 +94,16 @@ async def test_polygon_timeout_returns_error():
 
     assert result.status == 0
     assert "timeout" in result.error.lower()
+
+
+@pytest.mark.asyncio
+async def test_polygon_unknown_endpoint_returns_error_without_request():
+    mock_client = AsyncMock()
+
+    fetcher = create_polygon_fetcher(api_key="test_key", client=mock_client)
+    result = await fetcher("AAPL", "unsupported_endpoint", "2026-01-15")
+
+    assert result.status == 0
+    assert result.source_label == "polygon:unsupported_endpoint"
+    assert "unknown polygon endpoint" in result.error.lower()
+    mock_client.get.assert_not_called()

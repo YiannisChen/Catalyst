@@ -61,3 +61,35 @@ async def test_rate_limiter_daily_budget_resets_on_new_day():
     limiter._budget_day = limiter._budget_day - timedelta(days=1)
     async with limiter.acquire():
         pass
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_releases_slot_after_exception():
+    policy = RatePolicy(min_interval_sec=0.0, max_concurrent=1, daily_budget=None)
+    limiter = TokenBucketLimiter(policy)
+
+    with pytest.raises(RuntimeError):
+        async with limiter.acquire():
+            raise RuntimeError("boom")
+
+    async with limiter.acquire():
+        pass
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_honors_general_concurrency_cap():
+    policy = RatePolicy(min_interval_sec=0.0, max_concurrent=2, daily_budget=None)
+    limiter = TokenBucketLimiter(policy)
+    in_flight = 0
+    max_in_flight = 0
+
+    async def task():
+        nonlocal in_flight, max_in_flight
+        async with limiter.acquire():
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            await asyncio.sleep(0.01)
+            in_flight -= 1
+
+    await asyncio.gather(*(task() for _ in range(5)))
+    assert max_in_flight == 2

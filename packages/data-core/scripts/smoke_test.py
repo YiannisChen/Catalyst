@@ -68,6 +68,31 @@ def get_available_sources() -> list[str]:
     return sources
 
 
+def resolve_sources(
+    requested_sources: str | None, available_sources: list[str]
+) -> list[str]:
+    """Resolve a comma-separated source selection against available sources."""
+    if not requested_sources:
+        return available_sources
+
+    requested = [source.strip() for source in requested_sources.split(",") if source.strip()]
+    known_sources = {
+        "polygon_news",
+        "polygon_ohlcv",
+        "fmp_fundamentals",
+        "fred_macro",
+        "yfinance_fundamentals",
+    }
+    for source in requested:
+        if source not in known_sources:
+            raise ValueError(f"Unknown logical source: {source}")
+        if source not in available_sources:
+            raise ValueError(
+                f"Requested source is not available in this environment: {source}"
+            )
+    return requested
+
+
 def get_recent_trading_days(days: int) -> list[str]:
     """Return the last *days* weekdays (approximate trading days), oldest first."""
     result: list[str] = []
@@ -192,7 +217,8 @@ async def run(args: argparse.Namespace) -> None:
     conn = sqlite3.connect(str(db_path))
     init_db(conn)
 
-    sources = get_available_sources()
+    available_sources = get_available_sources()
+    sources = resolve_sources(args.sources, available_sources)
     dates = get_recent_trading_days(args.days)
 
     print(f"Smoke test: {args.ticker} | {len(dates)} days | sources: {sources}")
@@ -251,6 +277,10 @@ def main() -> None:
     )
     parser.add_argument("--ticker", default="AAPL", help="Stock ticker (default: AAPL)")
     parser.add_argument("--days", type=int, default=3, help="Number of trading days (default: 3)")
+    parser.add_argument(
+        "--sources",
+        help="Comma-separated logical sources to run (default: all available sources)",
+    )
     parser.add_argument(
         "--artifacts",
         action="store_true",

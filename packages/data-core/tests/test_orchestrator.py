@@ -8,7 +8,7 @@ import pytest
 
 from catalyst_data.connectors.base import FetchResult
 from catalyst_data.orchestrator import process_request
-from catalyst_data.storage.sqlite import init_db
+from catalyst_data.storage.sqlite import compute_asset_id, get_clean_asset, init_db
 
 
 async def mock_fetch(ticker: str, endpoint: str, date: str) -> FetchResult:
@@ -180,4 +180,243 @@ async def test_process_request_partial_failure():
     assert news_result["ok"] is False
     assert fmp_result["ok"] is True
 
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_process_request_reports_failed_endpoints_on_partial_success():
+    async def partial_fetch(
+        ticker: str, endpoint: str, date: str
+    ) -> FetchResult:
+        if endpoint == "cash_flow":
+            return FetchResult(
+                status=503,
+                error="FMP 503: upstream unavailable",
+                latency_ms=1.0,
+                source_label="fmp:cash_flow",
+            )
+        return FetchResult(
+            status=200,
+            data=[{"value": endpoint}],
+            latency_ms=1.0,
+            source_label=f"fmp:{endpoint}",
+        )
+
+    conn = sqlite3.connect(":memory:")
+    init_db(conn)
+    results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["fmp_fundamentals"],
+        conn=conn,
+        fetch_fn=partial_fetch,
+    )
+
+    assert len(results) == 1
+    summary = results[0]
+    assert summary["ok"] is True
+    assert summary["failed_endpoints"] == {
+        "cash_flow": {
+            "status": 503,
+            "error": "FMP 503: upstream unavailable",
+            "source_label": "fmp:cash_flow",
+        }
+    }
+    assert summary["endpoint_statuses"]["income_statement"] == 200
+    assert summary["endpoint_statuses"]["cash_flow"] == 503
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_process_request_reports_fetch_exceptions_per_source():
+    async def exploding_fetch(
+        ticker: str, endpoint: str, date: str
+    ) -> FetchResult:
+        raise RuntimeError(f"boom for {endpoint}")
+
+    conn = sqlite3.connect(":memory:")
+    init_db(conn)
+    results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["polygon_news"],
+        conn=conn,
+        fetch_fn=exploding_fetch,
+    )
+
+    assert len(results) == 1
+    summary = results[0]
+    assert summary["ok"] is False
+    assert summary["error"] == "ingest: No endpoint returned data"
+    assert summary["failed_endpoints"] == {
+        "news": {
+            "status": 0,
+            "error": "boom for news",
+            "source_label": "news",
+        }
+    }
+    assert summary["endpoint_statuses"] == {"news": 0}
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_process_request_handles_malformed_news_results_dict():
+    async def malformed_news_fetch(
+        ticker: str, endpoint: str, date: str
+    ) -> FetchResult:
+        return FetchResult(
+            status=200,
+            data={
+                "results": {
+                    "published_utc": "2026-01-15T10:00:00Z",
+                    "description": "Shape drifted to a single object",
+                    "article_url": "https://example.com/drift",
+                }
+            },
+            latency_ms=1.0,
+            source_label="polygon:news",
+        )
+
+    conn = sqlite3.connect(":memory:")
+    init_db(conn)
+    results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["polygon_news"],
+        conn=conn,
+        fetch_fn=malformed_news_fetch,
+    )
+
+    assert len(results) == 1
+    summary = results[0]
+    assert summary["ok"] is True
+    asset_id = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
+    clean_asset = get_clean_asset(conn, asset_id)
+    assert clean_asset is not None
+    assert "Untitled" in clean_asset["content_md"]
+    assert "Shape drifted to a single object" in clean_asset["content_md"]
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_process_request_handles_string_publisher_shape():
+    async def malformed_news_fetch(
+        ticker: str, endpoint: str, date: str
+    ) -> FetchResult:
+        return FetchResult(
+            status=200,
+            data={
+                "results": [
+                    {
+                        "published_utc": "2026-01-15T10:00:00Z",
+                        "publisher": "Reuters",
+                        "description": "Publisher drifted to a string",
+                    }
+                ]
+            },
+            latency_ms=1.0,
+            source_label="polygon:news",
+        )
+
+    conn = sqlite3.connect(":memory:")
+    init_db(conn)
+    results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["polygon_news"],
+        conn=conn,
+        fetch_fn=malformed_news_fetch,
+    )
+
+    assert len(results) == 1
+    summary = results[0]
+    assert summary["ok"] is True
+    asset_id = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
+    clean_asset = get_clean_asset(conn, asset_id)
+    assert clean_asset is not None
+    assert "Untitled" in clean_asset["content_md"]
+    assert "Reuters" in clean_asset["content_md"]
+    assert "Publisher drifted to a string" in clean_asset["content_md"]
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_process_request_rerun_keeps_single_bronze_and_silver_row():
+    conn = sqlite3.connect(":memory:")
+    init_db(conn)
+
+    first_results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["polygon_news"],
+        conn=conn,
+        fetch_fn=mock_fetch,
+    )
+    second_results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["polygon_news"],
+        conn=conn,
+        fetch_fn=mock_fetch,
+    )
+
+    asset_id = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
+    assert first_results[0]["asset_id"] == asset_id
+    assert second_results[0]["asset_id"] == asset_id
+    raw_count = conn.execute(
+        "SELECT COUNT(*) FROM raw_assets WHERE asset_id = ?", (asset_id,)
+    ).fetchone()[0]
+    clean_count = conn.execute(
+        "SELECT COUNT(*) FROM clean_assets WHERE asset_id = ?", (asset_id,)
+    ).fetchone()[0]
+    assert raw_count == 1
+    assert clean_count == 1
+    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_process_request_partial_failure_rerun_does_not_corrupt_prior_success():
+    async def failing_news_fetch(
+        ticker: str, endpoint: str, date: str
+    ) -> FetchResult:
+        return FetchResult(
+            status=503,
+            error="Polygon 503: upstream unavailable",
+            latency_ms=1.0,
+            source_label="polygon:news",
+        )
+
+    conn = sqlite3.connect(":memory:")
+    init_db(conn)
+
+    success_results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["polygon_news"],
+        conn=conn,
+        fetch_fn=mock_fetch,
+    )
+    failure_results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["polygon_news"],
+        conn=conn,
+        fetch_fn=failing_news_fetch,
+    )
+
+    asset_id = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
+    raw_count = conn.execute(
+        "SELECT COUNT(*) FROM raw_assets WHERE asset_id = ?", (asset_id,)
+    ).fetchone()[0]
+    clean_count = conn.execute(
+        "SELECT COUNT(*) FROM clean_assets WHERE asset_id = ?", (asset_id,)
+    ).fetchone()[0]
+    clean_asset = get_clean_asset(conn, asset_id)
+
+    assert success_results[0]["ok"] is True
+    assert failure_results[0]["ok"] is False
+    assert raw_count == 1
+    assert clean_count == 1
+    assert clean_asset is not None
+    assert "Test Article" in clean_asset["content_md"]
     conn.close()

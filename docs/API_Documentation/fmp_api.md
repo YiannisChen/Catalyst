@@ -17,16 +17,16 @@ Every request needs your API key:
 
 ## Base URLs (two styles)
 
-FMP is moving toward a **`/stable/`** query style; many integrations still use **`/api/v3/`** path style.
+FMP’s **supported** style for new keys is **`/stable/`** (query param `symbol=`). Legacy **`/api/v3/<path>/<SYMBOL>`** may return **403** for accounts that are not “legacy” subscribers (FMP has been restricting v3; Playground uses stable).
 
 | Style | Pattern | Example (income statement) |
 |--------|---------|----------------------------|
 | **Stable** | `https://financialmodelingprep.com/stable/<endpoint>?symbol=AAPL&apikey=…` | `/stable/income-statement?symbol=AAPL` |
 | **v3** (legacy) | `https://financialmodelingprep.com/api/v3/<endpoint>/<SYMBOL>?apikey=…` | `/api/v3/income-statement/AAPL` |
 
-**This repo today:** `packages/data-core/data_core/connectors/fmp.py` uses **`api/v3`** with paths like `income-statement`, `balance-sheet-statement`, `cash-flow-statement` and `period=annual`.
+**This repo today:** `packages/data-core/catalyst_data/connectors/fmp.py` calls **`/stable/`** with `income-statement`, `balance-sheet-statement`, `cash-flow-statement` and `period=annual` (plus `symbol` and `apikey` as query params).
 
-Before bulk refactors, confirm in [official docs](https://site.financialmodelingprep.com/developer/docs) whether your plan exposes the same data on both bases.
+If you still need v3 for a grandfathered integration, confirm entitlement in the [dashboard](https://site.financialmodelingprep.com/developer/docs/dashboard); otherwise expect 403 on v3 and use stable only.
 
 ---
 

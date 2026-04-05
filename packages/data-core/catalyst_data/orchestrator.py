@@ -67,6 +67,8 @@ async def _process_source(
         "ok": False,
         "asset_id": None,
         "error": None,
+        "endpoint_statuses": {},
+        "failed_endpoints": {},
         "stage_latencies": {},
     }
 
@@ -75,6 +77,18 @@ async def _process_source(
 
     # 2. Fetch each endpoint
     fetch_results = await _fetch_endpoints(ticker, date, endpoints, fetch_fn)
+    summary["endpoint_statuses"] = {
+        ep: result.status for ep, result in fetch_results.items()
+    }
+    summary["failed_endpoints"] = {
+        ep: {
+            "status": result.status,
+            "error": result.error,
+            "source_label": result.source_label or ep,
+        }
+        for ep, result in fetch_results.items()
+        if result.status != 200 or result.error
+    }
 
     # 3. Run ingest validation
     endpoint_data: dict[str, Any] = {}
