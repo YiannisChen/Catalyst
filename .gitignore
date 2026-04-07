@@ -11,5 +11,9 @@ venv/
 *.sqlite
 *.txt
 
+# generated local data artifacts
+/data/e2e_strict/
+/data/lancedb_gold/
+
 # reference files
 /packages/data-core/core_references

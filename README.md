@@ -4,6 +4,8 @@
 
 Catalyst retrieves multi-source financial evidence (SEC filings, news, macro indicators, OHLCV prices), filters and grades it through a Miner-Critic-Judge agent pipeline, and produces structured attribution reports with confidence scores and source citations.
 
+**Midterm status note (April 2026):** the current frozen midterm scope is a package-level, script-driven prototype centered on `packages/data-core`, `packages/eval`, and `packages/agents`. This repo does **not** currently claim full API, frontend, or MCP completion for the midterm version.
+
 ## Architecture
 
 ```
@@ -58,10 +60,11 @@ git config core.hooksPath .githooks
 ## Documentation
 
 - [System Design Spec](docs/superpowers/specs/2026-04-02-catalyst-system-design.md)
+- [Midterm Freeze Boundary](docs/superpowers/specs/2026-04-07-catalyst-midterm-freeze-boundary.md)
 - [Architecture Decision Records](docs/ADR/)
 - [API Provider Documentation](docs/API_Documentation/)
 - [Project Whitepaper](docs/catalyst_whitepaper.md)
 
 ## Status
 
-Under active development — midterm milestone targeting April 10, 2026.
+Under active development. The April 10, 2026 midterm freeze is limited to the package-level attribution prototype and canonical demo path documented in the freeze addendum, not the full end-state platform.

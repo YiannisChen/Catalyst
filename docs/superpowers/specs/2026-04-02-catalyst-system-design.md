@@ -4,6 +4,7 @@
 **Date:** 2026-04-02
 **Status:** Approved
 **Version:** 1.1
+**Midterm Freeze Addendum:** [2026-04-07 Catalyst Midterm Freeze Boundary](2026-04-07-catalyst-midterm-freeze-boundary.md)
 
 ---
 
@@ -45,6 +46,10 @@ It ingests multi-source financial data, processes it into agent-friendly Markdow
 | Frontend | May 5 | React dashboards (geo map, candlestick + events, NLP query) |
 | MCP + polish | May 12 | MCP server, integration, documentation |
 | **Thesis** | **May 20** | **Full system submitted** |
+
+### 1.4 Midterm Freeze Note
+
+This document remains the target architecture for the full Catalyst system. For the April 10, 2026 midterm, the frozen scope is intentionally narrower: a package-level, script-driven prototype centered on `packages/data-core`, `packages/eval`, and `packages/agents`, without claiming API, frontend, or MCP completion. The exact midterm boundary, accepted limitations, and demo requirements are defined in the [2026-04-07 Catalyst Midterm Freeze Boundary](2026-04-07-catalyst-midterm-freeze-boundary.md) addendum.
 
 ---
 
@@ -120,8 +125,9 @@ Catalyst/
 │   │   │       ├── markdown.py        thesis-ready comparison tables
 │   │   │       └── json_export.py
 │   │   ├── golden_set/
-│   │   │   ├── v1.jsonl               15 verified events
-│   │   │   └── README.md              annotation guidelines
+│   │   │   ├── v1.jsonl               5 initial skeleton events (Jan-Feb 2025)
+│   │   │   ├── v1_2.jsonl             50 AR-weighted skeletons, 20 refined (target)
+│   │   │   └── README.md              annotation guidelines + weight calibration method
 │   │   └── tests/
 │   │
 │   └── mcp/                           → pip install catalyst-mcp (POST-MIDTERM)
@@ -172,7 +178,7 @@ Catalyst/
 | **SEC EDGAR** | 10-K, 10-Q, 8-K filings | 10 req/sec | P2 |
 | **GDELT** | Global event articles | ~1 req/5.5s (unofficial) | P2 |
 
-For midterm: Polygon + FMP + yfinance + FRED are must-haves. Others are nice-to-haves.
+For the canonical midterm demo, Polygon + FMP are the must-haves. `yfinance` and `FRED` remain useful, implemented extensions but are non-blocking for the frozen midterm boundary. Others are nice-to-haves.
 
 ### 3.2 Rate Limiting
 
@@ -445,6 +451,7 @@ MODEL_PRICING = {  # per 1M tokens
     "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
     "gpt-4o":                    {"input": 2.5, "output": 10.0},
     "claude-haiku-4-5-20251001": {"input": 0.8, "output": 4.0},
+    "gemini-2.5-flash":          {"input": 0.15, "output": 0.60},
 }
 
 def track_cost(state: dict, node: str, response) -> None:
@@ -554,7 +561,7 @@ def route_after_critic(state: AttributionState) -> str:
 | **MCJ total** | **~7,500** | **~$0.030** |
 | **Baseline total** | **~5,000** | **~$0.020** |
 
-15 golden set evals: ~$0.45 per run. Affordable.
+50 golden set evals: ~$1.50 per run (MCJ) or ~$1.00 (baseline). Affordable.
 
 ### 4.6 Two Interaction Modes
 
@@ -581,7 +588,8 @@ class CatalystConfig(BaseSettings):
     # LLM (required for agent)
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
-    LLM_PROVIDER: str = "anthropic"
+    GEMINI_API_KEY: str = ""
+    LLM_PROVIDER: str = "anthropic"      # "anthropic" | "openai" | "gemini"
     LLM_MODEL: str = "claude-sonnet-4-20250514"
 
     # Data providers (optional — degrade gracefully)
@@ -720,7 +728,7 @@ The eval report serves triple duty: thesis Chapter 4, interview demo, package do
 
 ### 5.7 Known Limitations (must be documented)
 
-1. Golden set is 15 events — F1 has ~±0.07 variance per sample
+1. Golden set is 50 events (20 refined) — F1 variance is reduced but still notable at this scale
 2. Grounding rate uses LLM-as-judge — circular evaluation risk. Mitigate: use stronger model as judge, spot-check 10% manually
 3. Attribution is fundamentally subjective — two analysts may disagree
 4. Agent can only attribute what the data contains — data gaps = attribution gaps
