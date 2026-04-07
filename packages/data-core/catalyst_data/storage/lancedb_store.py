@@ -15,9 +15,12 @@ Design decisions (per ADR-003 / Section 6 spec):
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants (Section 6 spec)
@@ -25,7 +28,9 @@ from typing import Any
 
 RRF_K: int = 60
 DEFAULT_TOP_K: int = 20
+DEFAULT_RERANK_TOP_K: int = 8
 EMBEDDING_MODEL: str = "BAAI/bge-m3"
+RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
 
 # LanceDB table name for the Gold layer
 _TABLE_NAME = "chunks"
@@ -83,6 +88,90 @@ def reciprocal_rank_fusion(
 
     merged.sort(key=lambda x: x["rrf_score"], reverse=True)
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Reranker: cross-encoder for relevance scoring (ADR-002 Step 3)
+# ---------------------------------------------------------------------------
+
+
+def load_reranker(model_name: str = RERANKER_MODEL) -> Any | None:
+    """Load a cross-encoder reranker model.
+
+    Tries sentence_transformers.CrossEncoder first. Returns None with a
+    warning if the model cannot be loaded (missing deps, CPU/memory issues).
+
+    Args:
+        model_name: HuggingFace model ID for the cross-encoder.
+
+    Returns:
+        A CrossEncoder instance, or None if loading fails.
+    """
+    try:
+        from sentence_transformers import CrossEncoder
+    except ImportError:
+        logger.warning(
+            "sentence-transformers not installed; reranker unavailable. "
+            "Install with: pip install sentence-transformers"
+        )
+        return None
+
+    try:
+        reranker = CrossEncoder(model_name)
+        return reranker
+    except Exception as exc:
+        logger.warning("Failed to load reranker %s: %s", model_name, exc)
+        return None
+
+
+def _apply_reranker(
+    chunks: list[dict[str, Any]],
+    query: str,
+    reranker: Any,
+    top_k: int = DEFAULT_RERANK_TOP_K,
+) -> list[dict[str, Any]]:
+    """Score chunks with a cross-encoder, attach rerank_score, return top_k.
+
+    Supports two reranker interfaces:
+      - CrossEncoder with .predict(pairs) -> list[float]
+      - FlagReranker with .compute_score(pairs) -> list[float] | float
+
+    Args:
+        chunks:   RRF-fused retrieval results to rerank.
+        query:    The search query.
+        reranker: Cross-encoder model instance.
+        top_k:    Maximum number of chunks to return.
+
+    Returns:
+        Top-k chunks sorted by rerank_score descending.
+    """
+    if not chunks:
+        return []
+
+    pairs = [(query, chunk["content_md"]) for chunk in chunks]
+
+    # Support both CrossEncoder.predict() and FlagReranker.compute_score()
+    if hasattr(reranker, "predict"):
+        scores = reranker.predict(pairs)
+    elif hasattr(reranker, "compute_score"):
+        scores = reranker.compute_score(pairs)
+    else:
+        logger.warning("Reranker has no predict() or compute_score() method; skipping")
+        return chunks[:top_k]
+
+    # Normalise scalar → single-element list
+    if isinstance(scores, (int, float)):
+        scores = [scores]
+
+    # Convert numpy arrays to plain list for uniform iteration
+    if hasattr(scores, "tolist"):
+        scores = scores.tolist()
+
+    for chunk, score in zip(chunks, scores):
+        chunk["rerank_score"] = float(score)
+
+    chunks.sort(key=lambda c: c.get("rerank_score", 0.0), reverse=True)
+    return chunks[:top_k]
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +288,10 @@ def hybrid_search(
     embedding_fn: Any = None,
 ) -> list[dict[str, Any]]:
     """BM25 + vector search in parallel, merged with RRF.
+
+    Reranking is NOT applied here — per ADR-002, cross-encoder reranking
+    is the Miner node's responsibility (Section 4.3). This function only
+    handles retrieval and RRF fusion.
 
     Spec reference: Section 6.1 — hybrid retrieval paths.
 

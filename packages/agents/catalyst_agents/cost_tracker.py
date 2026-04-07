@@ -13,6 +13,7 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
     "gpt-4o":                    {"input": 2.5, "output": 10.0},
     "claude-haiku-4-5-20251001": {"input": 0.8, "output": 4.0},
+    "gemini-2.5-flash":          {"input": 0.15, "output": 0.60},
 }
 
 

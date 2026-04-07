@@ -1,13 +1,19 @@
-"""Tests for LanceDB Gold layer — RRF logic and hybrid search helpers.
+"""Tests for LanceDB Gold layer — RRF logic, reranker, and hybrid search helpers.
 
-These tests target pure functions only (reciprocal_rank_fusion) so they run
-without lancedb or FlagEmbedding installed.
+These tests target pure functions only (reciprocal_rank_fusion, _apply_reranker,
+load_reranker) so they run without lancedb or FlagEmbedding installed.
 """
 
 from __future__ import annotations
 
 import pytest
-from catalyst_data.storage.lancedb_store import reciprocal_rank_fusion, RRF_K
+from catalyst_data.storage.lancedb_store import (
+    reciprocal_rank_fusion,
+    _apply_reranker,
+    load_reranker,
+    RRF_K,
+    DEFAULT_RERANK_TOP_K,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -92,3 +98,114 @@ def test_rrf_metadata_from_first_seen_list():
     dup_entry = next(r for r in merged if r["asset_id"] == "dup")
     assert dup_entry["ticker"] == "AAPL"
     assert dup_entry["source_type"] == "news"
+
+
+# ---------------------------------------------------------------------------
+# _apply_reranker
+# ---------------------------------------------------------------------------
+
+_SAMPLE_CHUNKS = [
+    {"asset_id": f"c{i}", "content_md": f"Content about topic {i}", "rrf_score": 0.01}
+    for i in range(1, 11)
+]
+
+
+class _MockPredictReranker:
+    """Simulates CrossEncoder.predict() — returns list of floats."""
+
+    def predict(self, pairs):
+        # Reverse order: last chunk gets highest score
+        return [float(len(pairs) - i) for i in range(len(pairs))]
+
+
+class _MockComputeScoreReranker:
+    """Simulates FlagReranker.compute_score() — returns list of floats."""
+
+    def compute_score(self, pairs):
+        return [float(i) for i in range(len(pairs))]
+
+
+class _MockScalarReranker:
+    """Returns a scalar score (single-pair edge case)."""
+
+    def predict(self, pairs):
+        assert len(pairs) == 1
+        return 0.75
+
+
+def test_apply_reranker_with_predict():
+    """_apply_reranker works with CrossEncoder-style .predict()."""
+    chunks = [dict(c) for c in _SAMPLE_CHUNKS[:5]]
+    result = _apply_reranker(chunks, "test query", _MockPredictReranker(), top_k=3)
+
+    assert len(result) == 3
+    assert all("rerank_score" in c for c in result)
+    # Scores are descending
+    scores = [c["rerank_score"] for c in result]
+    assert scores == sorted(scores, reverse=True)
+
+
+def test_apply_reranker_with_compute_score():
+    """_apply_reranker works with FlagReranker-style .compute_score()."""
+    chunks = [dict(c) for c in _SAMPLE_CHUNKS[:5]]
+    result = _apply_reranker(chunks, "test query", _MockComputeScoreReranker(), top_k=3)
+
+    assert len(result) == 3
+    # compute_score returns [0, 1, 2, 3, 4] — highest is c5
+    assert result[0]["asset_id"] == "c5"
+
+
+def test_apply_reranker_scalar_score():
+    """Single-pair reranking where reranker returns a scalar."""
+    chunks = [dict(_SAMPLE_CHUNKS[0])]
+    result = _apply_reranker(chunks, "test query", _MockScalarReranker(), top_k=1)
+
+    assert len(result) == 1
+    assert result[0]["rerank_score"] == pytest.approx(0.75)
+
+
+def test_apply_reranker_empty_chunks():
+    """Empty chunk list returns empty without calling reranker."""
+    result = _apply_reranker([], "test query", _MockPredictReranker(), top_k=5)
+    assert result == []
+
+
+def test_apply_reranker_top_k_limits_output():
+    """Output length is capped at top_k."""
+    chunks = [dict(c) for c in _SAMPLE_CHUNKS]
+    result = _apply_reranker(chunks, "query", _MockPredictReranker(), top_k=3)
+    assert len(result) == 3
+
+
+def test_apply_reranker_preserves_metadata():
+    """Reranking preserves all original chunk fields."""
+    chunks = [{"asset_id": "x", "content_md": "hello", "ticker": "NVDA", "rrf_score": 0.01}]
+
+    class SimpleReranker:
+        def predict(self, pairs):
+            return [0.9]
+
+    result = _apply_reranker(chunks, "q", SimpleReranker(), top_k=1)
+    assert result[0]["ticker"] == "NVDA"
+    assert result[0]["asset_id"] == "x"
+    assert result[0]["rerank_score"] == pytest.approx(0.9)
+
+
+# ---------------------------------------------------------------------------
+# load_reranker
+# ---------------------------------------------------------------------------
+
+
+def test_load_reranker_returns_none_when_import_fails(monkeypatch):
+    """load_reranker returns None gracefully when sentence_transformers is missing."""
+    import builtins
+    real_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if "sentence_transformers" in name:
+            raise ImportError("mocked")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", mock_import)
+    result = load_reranker("some-model")
+    assert result is None

@@ -58,40 +58,6 @@ def _build_query(state: AttributionState) -> str:
     return f"Why did {state['ticker']} move on {state['trade_date']}?"
 
 
-def _apply_reranker(
-    chunks: list[dict],
-    query: str,
-    reranker: Any,
-    top_k: int,
-) -> list[dict]:
-    """Score chunks with a cross-encoder, attach rerank_score, and return top_k.
-
-    Handles the edge case where some reranker implementations return a bare
-    scalar instead of a list when given a single pair.
-
-    Args:
-        chunks:   Retrieval results to rerank.
-        query:    The search query (first element of each pair).
-        reranker: Object with .compute_score(pairs) -> list[float] | float.
-        top_k:    Maximum number of chunks to return.
-
-    Returns:
-        Top-k chunks sorted by rerank_score descending, with rerank_score set.
-    """
-    pairs = [(query, chunk["content_md"]) for chunk in chunks]
-    scores = reranker.compute_score(pairs)
-
-    # Normalise scalar → single-element list
-    if isinstance(scores, (int, float)):
-        scores = [scores]
-
-    for chunk, score in zip(chunks, scores):
-        chunk["rerank_score"] = score
-
-    chunks.sort(key=lambda c: c.get("rerank_score", 0.0), reverse=True)
-    return chunks[:top_k]
-
-
 # ---------------------------------------------------------------------------
 # Public node
 # ---------------------------------------------------------------------------
@@ -124,13 +90,14 @@ def miner(
           - reranked_chunks:  top-8 results after cross-encoder reranking
                               (or top-8 by RRF score when no reranker).
     """
-    from catalyst_data.storage.lancedb_store import hybrid_search  # deferred import for testability
+    # deferred imports for testability
+    from catalyst_data.storage.lancedb_store import hybrid_search, _apply_reranker
 
     query = _build_query(state)
     date_range = _compute_date_range(state["trade_date"])
 
-    # Step 1: Hybrid retrieval → top-20
-    retrieved: list[dict] = hybrid_search(
+    # Step 1: Hybrid retrieval → top-20 (RRF)
+    all_retrieved: list[dict] = hybrid_search(
         table=table,
         query=query,
         ticker=state["ticker"],
@@ -140,17 +107,17 @@ def miner(
     )
 
     # Step 2: Rerank with cross-encoder → top-8 (graceful fallback if no reranker)
-    if reranker and retrieved:
+    if reranker and all_retrieved:
         reranked = _apply_reranker(
-            chunks=retrieved,
+            chunks=list(all_retrieved),  # copy to avoid mutating retrieved_chunks
             query=query,
             reranker=reranker,
             top_k=TOP_K_RERANKED,
         )
     else:
-        reranked = retrieved[:TOP_K_RERANKED]
+        reranked = all_retrieved[:TOP_K_RERANKED]
 
     return {
-        "retrieved_chunks": retrieved,
+        "retrieved_chunks": all_retrieved,
         "reranked_chunks": reranked,
     }

@@ -1,0 +1,51 @@
+idx	ticker	date	return_pct	ar_pct	ar_tier	gemini_primary_hypothesis	verification_note
+1	TSLA	2025-01-02	-6.08	-6.14	>=0.7	earnings	Q4 deliveries / margin narrative — spot-check Tesla IR same week
+2	TSLA	2025-03-10	-15.43	-7.99	>=0.7	sector	CA sales / brand — confounded with broad tech; good stress test
+3	TSLA	2025-03-24	11.93	7.11	>=0.7	macro	Tariff-softening / relief — verify headline date vs move
+4	TSLA	2025-04-03	-5.47	9.43	>=0.7	earnings	CONFOUND: same day as tariff shock — split weights macro vs deliveries in gold
+5	TSLA	2025-06-05	-14.26	-13.82	>=0.7	geopolitical	EU sales + Musk/DC — verify contemporaneous articles
+6	TSLA	2025-07-24	-8.2	-8.02	>=0.7	earnings	Q2 margin reaction — align to earnings calendar
+7	TSLA	2025-08-22	6.22	3.13	0.5-0.6	macro	Jackson Hole / rates — low idiosyncrasy expected
+8	TSLA	2025-09-12	7.36	7.55	>=0.7	technical	Musk buy + product — map to catalyst technical vs sector per README
+9	NVDA	2025-01-27	-16.97	-14.22	>=0.7	sector	DeepSeek — overlaps v1 g001; keep as regression anchor
+10	NVDA	2025-04-03	-7.81	6.42	>=0.7	geopolitical	Tariff day — high |AR|; check vs pure beta story
+11	NVDA	2025-04-09	18.72	-3.12	0.5-0.6	macro	Tariff pause rally — systemic by design
+12	NVDA	2025-10-14	-4.4	-4.17	0.5-0.6	sector	AI capex skepticism — weaker single headline; verify sources
+13	NVDA	2025-10-28	4.98	4.63	0.5-0.6	sector	GTC / Nokia — verify PR date
+14	AMD	2025-03-24	6.96	3.97	0.5-0.6	sector	CPU pricing narrative — industry vs firm
+15	AMD	2025-04-03	-8.9	0.04	macro>=0.5	geopolitical	Pure tariff beta — good macro bucket
+16	AMD	2025-06-16	8.81	6.89	>=0.7	sector	Advancing AI / M&A — strong idiosyncratic
+17	AMD	2025-07-15	6.41	6.8	>=0.7	regulatory	Export license / H20 proxy — confirm news timing
+18	AMD	2025-08-06	-6.42	-8.32	>=0.7	regulatory	Export tax narrative — cross-check policy reporting
+19	AMD	2025-10-06	23.71	23.15	>=0.7	sector	OpenAI 6GW — flagship case; use company PR
+20	AMD	2025-11-12	9.0	8.56	>=0.7	earnings	Analyst day guidance — not quarterly EPS; still earnings-adjacent
+21	UNH	2025-01-16	-6.04	-5.92	>=0.7	earnings	Q4 MLR — align to earnings release
+22	UNH	2025-02-21	-7.17	-6.93	>=0.7	regulatory	DOJ probe — verify reporting vs rumor
+23	UNH	2025-04-17	-22.38	-22.65	>=0.7	earnings	CMS / guidance cut — flagship UNH day
+24	UNH	2025-05-13	-17.79	-17.43	>=0.7	earnings	Outlook suspension + CEO step-down
+25	UNH	2025-07-29	-7.46	-6.8	>=0.7	earnings	Q2 sell-the-news — nuance heavy
+26	UNH	2025-08-15	11.98	12.66	>=0.7	technical	Buffett 13F — README technical = price action; consider regulatory or sector
+27	GOOGL	2025-02-05	-7.29	-8.1	>=0.7	earnings	Q4 miss / AI search fear
+28	GOOGL	2025-05-07	-7.26	-7.57	>=0.7	regulatory	Ad settlement + India antitrust
+29	GOOGL	2025-09-03	9.14	8.26	>=0.7	regulatory	Chrome divestiture relief — court ruling date critical
+30	GOOGL	2025-11-24	6.31	3.82	0.5-0.6	sector	Gemini launch narrative — verify product name/version/date
+31	MSFT	2025-01-30	-6.18	-6.84	>=0.7	earnings	Post-earnings reversal story — verify session vs overnight
+32	MSFT	2025-04-09	10.13	2.03	0.5-0.6	macro	Tariff pause beta
+33	META	2025-04-03	-8.96	-2.14	0.5-0.6	geopolitical	Tariff shock
+34	META	2025-07-31	11.25	11.93	>=0.7	earnings	Q2 AI ads beat
+35	META	2025-10-30	-11.33	-9.75	>=0.7	earnings	Tax charge + capex guide — multi-cause gold
+36	META	2025-11-25	3.78	2.94	0.5-0.6	sector	Scale AI / superintelligence labs
+37	META	2025-12-04	3.43	3.73	0.5-0.6	sector	Metaverse spend cut pivot
+38	AMZN	2025-04-03	-8.98	-2.08	0.5-0.6	geopolitical	Tariff shock
+39	AMZN	2025-04-09	11.98	-1.27	macro>=0.5	macro	Tariff pause rally
+40	AMZN	2025-08-01	-8.27	-6.0	>=0.7	earnings	AWS growth lag — verify Q2 call date
+41	AMZN	2025-10-31	9.58	9.24	>=0.7	earnings	Q3 AWS re-acceleration
+42	AAPL	2025-04-03	-9.25	-4.53	0.5-0.6	geopolitical	Tariff / China supply chain
+43	AAPL	2025-04-07	-3.67	-3.36	0.5-0.6	geopolitical	Follow-through tariff fear
+44	AAPL	2025-04-09	15.33	2.53	0.5-0.6	macro	Tariff pause relief
+45	AAPL	2025-10-20	3.94	2.38	0.5-0.6	technical	$4T milestone — thin fundamental; flag for careful weighting
+46	JPM	2025-02-20	-4.46	-4.3	0.5-0.6	macro	Walmart / consumer recession proxy
+47	JPM	2025-03-10	-4.15	-1.74	macro>=0.5	sector	Private credit / AI loan markdown story — verify JPM-specific source
+48	JPM	2025-04-09	8.06	-4.42	0.5-0.6	macro	Tariff pause beta
+49	JPM	2025-09-05	-3.11	-2.83	0.5-0.6	sector	Dimon private credit warning
+50	JPM	2025-12-09	-4.66	-4.6	0.5-0.6	earnings	2026 expense guide — conference not 10-Q; still valid catalyst

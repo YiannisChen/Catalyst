@@ -15,8 +15,6 @@ class CauseCategory(str, Enum):
 class Cause(BaseModel):
     text: str = Field(..., description="Description of the cause")
     category: CauseCategory
-    weight: float = Field(..., ge=0.0, le=1.0, description="Contribution weight, must sum to ~1.0")
-    temporal_anchor: str = Field(..., description="When cause became known: pre-market, intraday, after-hours")
     evidence_ids: list[str] = Field(default_factory=list)
 
 
