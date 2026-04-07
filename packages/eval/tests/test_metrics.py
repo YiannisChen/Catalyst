@@ -28,15 +28,11 @@ GOLDEN = GoldenEvent(
         Cause(
             text="China export ban on H20 chips",
             category=CauseCategory.GEOPOLITICAL,
-            weight=0.6,
-            temporal_anchor="pre-market",
             evidence_ids=[],
         ),
         Cause(
             text="Sector selloff",
             category=CauseCategory.SECTOR,
-            weight=0.3,
-            temporal_anchor="intraday",
             evidence_ids=[],
         ),
     ],

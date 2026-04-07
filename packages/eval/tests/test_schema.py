@@ -7,17 +7,16 @@ def test_golden_event_validates():
         id="test_001", ticker="AAPL", trade_date="2026-01-15",
         price_move_pct=-4.2,
         causes=[Cause(text="Earnings miss", category=CauseCategory.EARNINGS,
-                       weight=0.7, temporal_anchor="after-hours", evidence_ids=["a1"])]
+                       evidence_ids=["a1"])]
     )
     assert event.ticker == "AAPL"
-    assert event.causes[0].weight == 0.7
+    assert event.causes[0].category == CauseCategory.EARNINGS
 
 
-def test_golden_event_rejects_invalid_weight():
+def test_golden_event_rejects_invalid_category():
     import pytest
     with pytest.raises(Exception):
-        Cause(text="Bad", category=CauseCategory.EARNINGS,
-              weight=1.5, temporal_anchor="intraday", evidence_ids=[])
+        Cause(text="Bad", category="unknown", evidence_ids=[])
 
 
 def test_attribution_result_validates():

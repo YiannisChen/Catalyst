@@ -78,8 +78,6 @@ GOLDEN_SET = [
             Cause(
                 text="China export ban",
                 category=CauseCategory.GEOPOLITICAL,
-                weight=0.7,
-                temporal_anchor="pre-market",
                 evidence_ids=[],
             )
         ],

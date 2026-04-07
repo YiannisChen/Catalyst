@@ -62,6 +62,5 @@ A valid golden set must cover:
 
 ## Files
 
-- `v1_2.jsonl` — Current golden set output file (g001 finalized; append g002-g050)
-- `v1_2_gemini_selected50.tsv` — 50 selected candidate events with AR tiers and hypotheses
-- `annotation_template.md` — Gemini annotation instructions aligned to `v1_2.jsonl`
+- `v1_2.jsonl` — Current midterm golden set file (`g001` through `g050`)
+- `annotation_template.md` — Historical annotation prompt and validation notes retained for provenance of `v1_2.jsonl`
