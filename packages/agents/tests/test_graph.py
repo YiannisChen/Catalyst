@@ -104,6 +104,11 @@ class MockLLM:
         return MockResponse(self._responses[idx])
 
 
+class FailingLLM:
+    def invoke(self, prompt: str) -> MockResponse:
+        raise RuntimeError("llm unavailable")
+
+
 def mock_hybrid_search(table, query, ticker=None, date_range=None, top_k=20, embedding_fn=None):
     return MOCK_CHUNKS * min(top_k, 8)
 
@@ -147,6 +152,19 @@ def test_mcj_graph_full_pipeline(monkeypatch):
     assert result["grounding_rate"] >= 0.0
 
 
+def test_mcj_graph_accumulates_total_costs(monkeypatch):
+    import catalyst_data.storage.lancedb_store as lancedb_mod
+
+    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+
+    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    result = graph.invoke(_base_state())
+
+    assert len(result["cost_breakdown"]) == 2
+    assert result["total_cost_usd"] > 0
+    assert result["total_tokens"] > 0
+
+
 def test_baseline_graph_skips_critic(monkeypatch):
     """With use_critic=False, critic node is bypassed and no critic cost is recorded."""
     import catalyst_data.storage.lancedb_store as lancedb_mod
@@ -162,6 +180,22 @@ def test_baseline_graph_skips_critic(monkeypatch):
     # Critic was skipped, so no critic cost entry
     critic_costs = [c for c in result["cost_breakdown"] if c["node"] == "critic"]
     assert len(critic_costs) == 0
+
+
+def test_baseline_graph_passes_usable_evidence_to_judge(monkeypatch):
+    """Baseline Miner->Judge must still expose evidence IDs for grounding and citations."""
+    import catalyst_data.storage.lancedb_store as lancedb_mod
+
+    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+
+    llm = MockLLM()
+    llm._responses = [JUDGE_RESPONSE]  # Judge only in baseline mode
+    graph = build_attribution_graph(use_critic=False, llm=llm)
+
+    result = graph.invoke(_base_state())
+
+    assert result["causes"][0]["evidence_ids"] == ["c1"]
+    assert result["grounding_rate"] == 1.0
 
 
 def test_mcj_insufficient_evidence_path(monkeypatch):
@@ -190,6 +224,32 @@ def test_mcj_insufficient_evidence_path(monkeypatch):
 
     assert result["causes"][0]["category"] == "unknown"
     assert "Insufficient evidence" in result["causes"][0]["text"]
+    assert result["grounding_rate"] is None
+
+
+def test_mcj_graph_critic_failure_falls_back_instead_of_crashing(monkeypatch):
+    import catalyst_data.storage.lancedb_store as lancedb_mod
+
+    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", lambda _: None)
+
+    graph = build_attribution_graph(use_critic=True, llm=FailingLLM())
+    result = graph.invoke(_base_state())
+
+    assert result["causes"][0]["category"] == "unknown"
+    assert result["grounding_rate"] is None
+
+
+def test_baseline_graph_judge_failure_falls_back_instead_of_crashing(monkeypatch):
+    import catalyst_data.storage.lancedb_store as lancedb_mod
+
+    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.judge.time.sleep", lambda _: None)
+
+    graph = build_attribution_graph(use_critic=False, llm=FailingLLM())
+    result = graph.invoke(_base_state())
+
+    assert result["causes"][0]["category"] == "unknown"
     assert result["grounding_rate"] is None
 
 

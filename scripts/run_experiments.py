@@ -5,9 +5,7 @@ Usage:
     python scripts/run_experiments.py --golden-set packages/eval/golden_set/v1.jsonl --output data/eval_reports/
 
 Experiments:
-    E1: Raw vs Markdown (tests whether markdown conversion helps attribution)
     E2: Single Agent vs MCJ (tests whether Critic improves quality)
-    E3: Hybrid vs Vector-Only (tests whether BM25 improves retrieval)
 
 Spec reference: Section 5.5 — Evaluation Experiments.
 """
@@ -79,6 +77,22 @@ def run_e2_experiment(
     Returns:
         ComparisonReport with MCJ vs Baseline scores.
     """
+    missing = []
+    if table is None:
+        missing.append("a populated LanceDB table")
+    if embedding_fn is None:
+        missing.append("embedding_fn")
+    if reranker is None:
+        missing.append("reranker")
+
+    if missing:
+        raise ValueError(
+            "E2 requires a populated LanceDB table, embedding_fn, and reranker. "
+            f"Missing: {', '.join(missing)}. "
+            "Current script only supports e2 and expects live retrieval dependencies to be "
+            "provided by the caller before running experiments."
+        )
+
     mcj_graph = build_attribution_graph(
         use_critic=True,
         table=table,
@@ -136,7 +150,7 @@ def main() -> None:
         print("This script scaffolds the experiment infrastructure.")
         print(f"Reports will be saved to {output_dir}/")
         print()
-        print("Available experiments:")
+        print("Currently supported experiments:")
         print("  --experiment e2   MCJ vs Baseline (Critic ablation)")
         return
 
@@ -155,7 +169,10 @@ def main() -> None:
             ) from exc
 
         llm = ChatAnthropic(model="claude-sonnet-4-20250514", temperature=0)
-        report = run_e2_experiment(golden_set=golden_set, llm=llm)
+        try:
+            report = run_e2_experiment(golden_set=golden_set, llm=llm)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
 
         md_path = output_dir / "e2_mcj_vs_baseline.md"
         md_path.write_text(report.to_markdown())

@@ -40,6 +40,27 @@ def route_after_critic(state: dict) -> str:
     return "judge"
 
 
+def _baseline_graded_evidence(reranked_chunks: list[dict]) -> list[dict]:
+    """Project Miner output into Judge-readable evidence when Critic is disabled."""
+    return [
+        {
+            "chunk_id": chunk.get("asset_id", ""),
+            "relevance": chunk.get("rerank_score", chunk.get("rrf_score", 1.0)),
+            "category": "unknown",
+            "temporal_match": True,
+            "reasoning": "Critic disabled; forwarding Miner evidence directly to Judge.",
+        }
+        for chunk in reranked_chunks
+    ]
+
+
+def baseline_prepare_evidence(state: dict) -> dict:
+    """Prepare Judge-readable evidence when Critic is disabled."""
+    return {
+        "graded_evidence": _baseline_graded_evidence(state.get("reranked_chunks", [])),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Graph builder
 # ---------------------------------------------------------------------------
@@ -86,6 +107,7 @@ def build_attribution_graph(
         graph.add_node("miner", bound_miner)
         graph.add_node("judge", bound_judge)
         graph.add_node("insufficient_handler", insufficient_handler)
+        graph.add_node("baseline_prepare_evidence", baseline_prepare_evidence)
 
         graph.set_entry_point("miner")
 
@@ -101,7 +123,8 @@ def build_attribution_graph(
                 },
             )
         else:
-            graph.add_edge("miner", "judge")
+            graph.add_edge("miner", "baseline_prepare_evidence")
+            graph.add_edge("baseline_prepare_evidence", "judge")
 
         graph.add_edge("judge", END)
         graph.add_edge("insufficient_handler", END)
@@ -166,6 +189,8 @@ class _SequentialRunner:
             if route == "insufficient":
                 state.update(self._insufficient(state))
                 return state
+        else:
+            state.update(baseline_prepare_evidence(state))
 
         # Judge — synthesis
         state.update(self._judge(state))

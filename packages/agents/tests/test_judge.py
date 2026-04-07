@@ -43,6 +43,29 @@ class MockLLM:
         return MockResponse(self._content)
 
 
+class FlakyLLM:
+    def __init__(self, failures, success_content=None):
+        self.failures = failures
+        self.success_content = success_content or JUDGE_RESPONSE
+        self.calls = 0
+
+    def invoke(self, prompt):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise RuntimeError("transient judge failure")
+        return MockResponse(self.success_content)
+
+
+class BadJsonLLM:
+    def __init__(self, content="not-json"):
+        self.content = content
+        self.calls = 0
+
+    def invoke(self, prompt):
+        self.calls += 1
+        return MockResponse(self.content)
+
+
 # ---------------------------------------------------------------------------
 # Test data
 # ---------------------------------------------------------------------------
@@ -368,3 +391,49 @@ def test_judge_cause_fields_preserved():
     assert "confidence" in cause
     assert "evidence_ids" in cause
     assert "direction" in cause
+
+
+def test_judge_retries_invoke_exception_then_succeeds(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("catalyst_agents.nodes.judge.time.sleep", sleeps.append)
+
+    state = _fresh_state()
+    llm = FlakyLLM(failures=2)
+
+    result = judge(state, llm=llm)
+
+    assert llm.calls == 3
+    assert len(result["causes"]) == 2
+    assert sleeps == [0.1, 0.2]
+
+
+def test_judge_three_failures_return_fallback(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("catalyst_agents.nodes.judge.time.sleep", sleeps.append)
+
+    state = _fresh_state()
+    llm = FlakyLLM(failures=3)
+
+    result = judge(state, llm=llm)
+
+    assert result["causes"][0]["category"] == "unknown"
+    assert "Insufficient evidence" in result["causes"][0]["text"]
+    assert result["grounding_rate"] is None
+    assert llm.calls == 3
+    assert sleeps == [0.1, 0.2]
+
+
+def test_judge_bad_json_returns_fallback(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("catalyst_agents.nodes.judge.time.sleep", sleeps.append)
+
+    state = _fresh_state()
+    llm = BadJsonLLM()
+
+    result = judge(state, llm=llm)
+
+    assert result["causes"][0]["category"] == "unknown"
+    assert "Insufficient evidence" in result["causes"][0]["text"]
+    assert result["grounding_rate"] is None
+    assert llm.calls == 3
+    assert sleeps == [0.1, 0.2]

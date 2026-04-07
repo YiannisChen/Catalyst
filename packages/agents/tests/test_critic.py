@@ -5,6 +5,7 @@ Spec reference: Section 4.3 — Critic Node.
 from __future__ import annotations
 
 import json
+import pytest
 
 from catalyst_agents.nodes.critic import (
     critic,
@@ -38,6 +39,29 @@ class MockLLM:
 
     def invoke(self, prompt):
         return MockResponse(self._content)
+
+
+class FlakyLLM:
+    def __init__(self, failures, success_content=None):
+        self.failures = failures
+        self.success_content = success_content or GOOD_LLM_RESPONSE
+        self.calls = 0
+
+    def invoke(self, prompt):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise RuntimeError("transient critic failure")
+        return MockResponse(self.success_content)
+
+
+class BadJsonLLM:
+    def __init__(self, content="not-json"):
+        self.content = content
+        self.calls = 0
+
+    def invoke(self, prompt):
+        self.calls += 1
+        return MockResponse(self.content)
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +275,50 @@ def test_critic_threshold_boundary_included():
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     result = critic(state, llm=MockLLM(just_above_response))
     assert len(result["graded_evidence"]) == 1
+
+
+def test_critic_retries_invoke_exception_then_succeeds(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", sleeps.append)
+
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    llm = FlakyLLM(failures=2)
+
+    result = critic(state, llm=llm)
+
+    assert llm.calls == 3
+    assert len(result["graded_evidence"]) == 1
+    assert sleeps == [0.1, 0.2]
+
+
+def test_critic_three_failures_return_empty_evidence(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", sleeps.append)
+
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    llm = FlakyLLM(failures=3)
+
+    result = critic(state, llm=llm)
+
+    assert result["graded_evidence"] == []
+    assert "failed after 3 attempts" in result["critic_reasoning"].lower()
+    assert llm.calls == 3
+    assert sleeps == [0.1, 0.2]
+
+
+def test_critic_bad_json_returns_empty_evidence_after_retries(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", sleeps.append)
+
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    llm = BadJsonLLM()
+
+    result = critic(state, llm=llm)
+
+    assert result["graded_evidence"] == []
+    assert "failed after 3 attempts" in result["critic_reasoning"].lower()
+    assert llm.calls == 3
+    assert sleeps == [0.1, 0.2]
 
 
 # ---------------------------------------------------------------------------
