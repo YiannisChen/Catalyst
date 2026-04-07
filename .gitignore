@@ -14,6 +14,7 @@ venv/
 # generated local data artifacts
 /data/e2e_strict/
 /data/lancedb_gold/
+/docs/plans/
 
 # reference files
 /packages/data-core/core_references
