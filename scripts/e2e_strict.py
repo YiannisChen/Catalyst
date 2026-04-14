@@ -9,7 +9,7 @@ Flow:
   3. Build real LanceDB Gold index from freshly-stored Silver data
   4. Real hybrid search (BM25 + vector → RRF) via project retrieval path
   5. MCJ pipeline (Miner → Critic → Judge) with Gemini 2.5 Flash (live API)
-  6. Eval scoring against golden set v1
+  6. Eval scoring against golden set v1_2
 
 Usage:
     python scripts/e2e_strict.py
@@ -44,7 +44,7 @@ TRADE_DATE = "2026-04-03"
 NLP_INPUT = f"Analyze {TICKER}'s price move attribution on {TRADE_DATE}."
 SOURCES = ["polygon_news", "polygon_ohlcv", "fmp_fundamentals"]
 GEMINI_MODEL = "gemini-2.5-flash"
-GOLDEN_SET_PATH = PROJECT_ROOT / "packages" / "eval" / "golden_set" / "v1.jsonl"
+GOLDEN_SET_PATH = PROJECT_ROOT / "packages" / "eval" / "golden_set" / "v1_2.jsonl"
 
 # Fresh paths — separate from dev data to prove this run produced the data
 E2E_DATA_DIR = PROJECT_ROOT / "data" / "e2e_strict"
@@ -291,6 +291,7 @@ def run_mcj_pipeline(table, embedding_fn, llm):
         "reranked_chunks": [],
         "graded_evidence": [],
         "critic_reasoning": "",
+        "error_type": None,
         "causes": [],
         "summary_md": "",
         "grounding_rate": None,
@@ -308,7 +309,7 @@ def run_mcj_pipeline(table, embedding_fn, llm):
 # STAGE 6: Eval scoring
 # ===================================================================
 def run_eval(result, reranked):
-    from catalyst_eval.schema.result import AttributionResult, PredictedCause
+    from catalyst_eval.schema.result import AttributionResult, PredictedCause, RetrievedEvidence
     from catalyst_eval.metrics import (
         AttributionF1, CategoryAccuracy, GroundingRate,
         TemporalPrecision, ConfidenceCalibration,
@@ -332,7 +333,15 @@ def run_eval(result, reranked):
             for c in causes
         ],
         summary=result.get("summary_md", ""),
-        retrieved_chunks=[c.get("content_md", "") for c in reranked],
+        retrieved_evidence=[
+            RetrievedEvidence(
+                asset_id=c.get("asset_id", ""),
+                content_md=c.get("content_md", ""),
+                source_type=c.get("source_type", ""),
+                rrf_score=c.get("rrf_score", 0.0),
+            )
+            for c in reranked
+        ],
         cost_breakdown=breakdown,
         total_cost_usd=result.get("total_cost_usd", 0.0),
         total_tokens=result.get("total_tokens", 0),
@@ -345,7 +354,7 @@ def run_eval(result, reranked):
                 line = line.strip()
                 if line:
                     ge = GoldenEvent(**json.loads(line))
-                    if ge.ticker == TICKER:
+                    if ge.ticker == TICKER and ge.trade_date == TRADE_DATE:
                         golden = ge
                         break
 
@@ -550,10 +559,10 @@ async def main():
     log("## 5. Evaluation Scores")
     attr_result, golden, metrics = run_eval(result, reranked)
     if golden is None:
-        log(f"- **SKIP:** No golden event for {TICKER}.")
+        log(f"- **SKIP:** No golden event matched for ticker={TICKER}, trade_date={TRADE_DATE} in v1_2.jsonl.")
+        log(f"- **Reason:** Eval scoring requires an exact (ticker, trade_date) match in the golden set. No matching entry was found, so all metrics are skipped.")
     else:
         log(f"- Golden event: `{golden.id}` {golden.ticker} {golden.trade_date} ({golden.price_move_pct:+.2f}%)")
-        log(f"- **Note:** golden trade_date={golden.trade_date} vs predicted={TRADE_DATE} (date mismatch expected)")
         log()
         log("| Metric | Score |")
         log("|--------|-------|")
@@ -571,7 +580,8 @@ async def main():
         log(f"| {ingest_fail} source(s) failed ingest | Medium | See pipeline results above |")
     log("| No cross-encoder reranker | Medium | bge-reranker-v2 not used; RRF ordering only |")
     log("| Embedding model: all-MiniLM-L6-v2 | Low | 384d instead of bge-m3 1024d; CPU-practical; production uses bge-m3 on GPU |")
-    log("| Golden set date mismatch | Medium | v1.jsonl golden=2025-01-27, data=2026-04-03 |")
+    if golden is None:
+        log(f"| No golden match for ({TICKER}, {TRADE_DATE}) | Medium | Eval metrics skipped; add matching entry to v1_2.jsonl |")
     if not graded:
         log("| All evidence filtered by Critic | High | Insufficient evidence path triggered |")
     gr = result.get("grounding_rate")
@@ -621,7 +631,7 @@ async def main():
         log("- Real LanceDB Gold index built from freshly-ingested Silver data")
         log("- Real hybrid search (BM25 + vector → RRF fusion)")
         log(f"- Real LLM inference ({GEMINI_MODEL} via Google GenAI API)")
-        log("- Real eval scoring against golden set v1")
+        log("- Real eval scoring against golden set v1_2")
     else:
         log("### **NOT YET VALIDATED**")
         log()
@@ -630,13 +640,35 @@ async def main():
             if not ok:
                 log(f"- **{stage}** did not pass")
 
-    # ---- Save report ----
+    # ---- Save acceptance report ----
     report_dir = PROJECT_ROOT / "data" / "eval_reports"
     report_dir.mkdir(parents=True, exist_ok=True)
     report_path = report_dir / "e2e_strict_acceptance_report.md"
     report_text = "\n".join(_report)
     report_path.write_text(report_text)
-    print(f"\nReport saved to {report_path}")
+    print(f"\nAcceptance report saved to {report_path}")
+
+    # ---- Save demo report ----
+    from demo_report import RunMetadata, write_demo_report
+
+    meta = RunMetadata(
+        ticker=TICKER,
+        trade_date=TRADE_DATE,
+        query=NLP_INPUT,
+        model=GEMINI_MODEL,
+        embedding_model="all-MiniLM-L6-v2",
+        is_fresh_run=True,
+        wall_seconds=wall_total / 1000,
+        data_pipeline_ms=pipeline_ms,
+        gold_index_ms=gold_ms,
+        mcj_pipeline_ms=mcj_ms,
+    )
+
+    demo_path = report_dir / "midterm_demo_report.md"
+    trace_path = report_dir / "midterm_demo_trace.json"
+    write_demo_report(meta, chunks, result, demo_path, trace_path)
+    print(f"Demo report saved to {demo_path}")
+    print(f"Demo trace saved to {trace_path}")
 
     conn.close()
 

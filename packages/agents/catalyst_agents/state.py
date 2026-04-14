@@ -29,6 +29,11 @@ class AttributionState(TypedDict):
     critic_reasoning: str          # chain-of-thought logged to LangSmith
 
     # ------------------------------------------------------------------
+    # Error classification (system_error vs insufficient_evidence)
+    # ------------------------------------------------------------------
+    error_type: str | None             # "system_error" | None
+
+    # ------------------------------------------------------------------
     # Judge output
     # ------------------------------------------------------------------
     causes: list[dict]             # [{text, category, confidence, evidence_ids, direction}]

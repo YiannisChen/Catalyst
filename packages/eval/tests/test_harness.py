@@ -11,7 +11,7 @@ from catalyst_eval.harness.experiment import compare, ComparisonReport
 from catalyst_eval.metrics.attribution_f1 import AttributionF1
 from catalyst_eval.metrics.category_accuracy import CategoryAccuracy
 from catalyst_eval.schema.golden_event import GoldenEvent, Cause, CauseCategory
-from catalyst_eval.schema.result import AttributionResult, PredictedCause
+from catalyst_eval.schema.result import AttributionResult, PredictedCause, RetrievedEvidence
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ def mock_good_agent(ticker: str, date: str) -> AttributionResult:
             )
         ],
         summary="Test",
-        retrieved_chunks=["c1"],
+        retrieved_evidence=[RetrievedEvidence(asset_id="c1", content_md="chunk")],
         cost_breakdown=[
             {
                 "node": "judge",
@@ -61,7 +61,7 @@ def mock_bad_agent(ticker: str, date: str) -> AttributionResult:
             )
         ],
         summary="Test",
-        retrieved_chunks=[],
+        retrieved_evidence=[],
         cost_breakdown=[],
         total_cost_usd=0.01,
         total_tokens=2000,

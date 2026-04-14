@@ -10,10 +10,12 @@ import pytest
 from catalyst_agents.nodes.critic import (
     critic,
     insufficient_handler,
+    system_error_handler,
     _format_chunks,
     _parse_critic_response,
     RELEVANCE_THRESHOLD,
 )
+from catalyst_agents.graph import route_after_critic
 
 
 # ---------------------------------------------------------------------------
@@ -321,6 +323,34 @@ def test_critic_bad_json_returns_empty_evidence_after_retries(monkeypatch):
     assert sleeps == [0.1, 0.2]
 
 
+def test_critic_schema_invalid_json_returns_empty_evidence_after_retries(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", sleeps.append)
+
+    invalid_schema_response = json.dumps({
+        "graded_chunks": [
+            {
+                "chunk_id": "c1",
+                "relevance": 1.2,  # invalid: must be in [0, 1]
+                "category": "not-a-real-category",
+                "temporal_match": True,
+                "reasoning": "invalid schema fields",
+            }
+        ],
+        "reasoning": "This payload is valid JSON but invalid schema",
+    })
+
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    llm = BadJsonLLM(content=invalid_schema_response)
+
+    result = critic(state, llm=llm)
+
+    assert result["graded_evidence"] == []
+    assert "failed after 3 attempts" in result["critic_reasoning"].lower()
+    assert llm.calls == 3
+    assert sleeps == [0.1, 0.2]
+
+
 # ---------------------------------------------------------------------------
 # Insufficient evidence handler tests
 # ---------------------------------------------------------------------------
@@ -375,3 +405,80 @@ def test_insufficient_handler_no_llm_call():
     insufficient_handler(state)
     assert state["total_cost_usd"] == 0.0
     assert state["cost_breakdown"] == []
+
+
+# ---------------------------------------------------------------------------
+# System error handler tests (BUG-005)
+# ---------------------------------------------------------------------------
+
+def test_system_error_handler_returns_empty_causes():
+    """System error must produce zero causes — not a fake 'unknown' cause."""
+    state = {**BASE_STATE, "error_type": "system_error", "critic_reasoning": "LLM timeout"}
+    result = system_error_handler(state)
+    assert result["causes"] == []
+
+
+def test_system_error_handler_summary_says_system_error():
+    state = {**BASE_STATE, "error_type": "system_error", "critic_reasoning": "LLM timeout"}
+    result = system_error_handler(state)
+    assert "System error" in result["summary_md"]
+
+
+def test_system_error_handler_grounding_rate_none():
+    state = {**BASE_STATE, "error_type": "system_error", "critic_reasoning": "LLM timeout"}
+    result = system_error_handler(state)
+    assert result["grounding_rate"] is None
+
+
+def test_system_error_handler_includes_reasoning():
+    state = {**BASE_STATE, "error_type": "system_error", "critic_reasoning": "Bad JSON after 3 retries"}
+    result = system_error_handler(state)
+    assert "Bad JSON after 3 retries" in result["summary_md"]
+
+
+# ---------------------------------------------------------------------------
+# Routing logic tests (BUG-005: error vs insufficient)
+# ---------------------------------------------------------------------------
+
+def test_route_system_error_takes_priority():
+    """system_error route must be chosen even if graded_evidence is also empty."""
+    state = {"graded_evidence": [], "error_type": "system_error"}
+    assert route_after_critic(state) == "system_error"
+
+
+def test_route_insufficient_when_no_error():
+    """Empty evidence without error_type routes to insufficient."""
+    state = {"graded_evidence": [], "error_type": None}
+    assert route_after_critic(state) == "insufficient"
+
+
+def test_route_insufficient_when_error_type_absent():
+    """Missing error_type key also routes to insufficient (backward compat)."""
+    state = {"graded_evidence": []}
+    assert route_after_critic(state) == "insufficient"
+
+
+def test_route_judge_when_evidence_present():
+    state = {"graded_evidence": [{"chunk_id": "c1"}], "error_type": None}
+    assert route_after_critic(state) == "judge"
+
+
+def test_critic_failure_sets_error_type(monkeypatch):
+    """LLM connection failure must set error_type='system_error' in the returned state."""
+    sleeps = []
+    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", sleeps.append)
+
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    llm = FlakyLLM(failures=3)
+
+    result = critic(state, llm=llm)
+
+    assert result["error_type"] == "system_error"
+    assert result["graded_evidence"] == []
+
+
+def test_critic_success_does_not_set_error_type():
+    """A successful critic call must not set error_type."""
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    result = critic(state, llm=MockLLM(GOOD_LLM_RESPONSE))
+    assert "error_type" not in result

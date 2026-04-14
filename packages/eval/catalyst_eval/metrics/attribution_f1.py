@@ -15,7 +15,7 @@ from catalyst_eval.schema.golden_event import GoldenEvent
 from catalyst_eval.schema.result import AttributionResult
 
 
-_MATCH_THRESHOLD = 0.2
+_MATCH_THRESHOLD = 0.26
 
 
 def _jaccard(text_a: str, text_b: str) -> float:

@@ -1,5 +1,5 @@
 from catalyst_eval.schema.golden_event import GoldenEvent, Cause, CauseCategory
-from catalyst_eval.schema.result import AttributionResult, PredictedCause
+from catalyst_eval.schema.result import AttributionResult, PredictedCause, RetrievedEvidence
 
 
 def test_golden_event_validates():
@@ -25,7 +25,7 @@ def test_attribution_result_validates():
         causes=[PredictedCause(text="Earnings miss", category="earnings",
                                 confidence=0.8, evidence_ids=["c1"], direction="negative")],
         summary="AAPL dropped due to earnings miss [c1].",
-        retrieved_chunks=["chunk1"],
+        retrieved_evidence=[RetrievedEvidence(asset_id="chunk1", content_md="text")],
         cost_breakdown=[], total_cost_usd=0.03, total_tokens=7500
     )
     assert result.causes[0].confidence == 0.8
@@ -37,4 +37,4 @@ def test_attribution_result_defaults():
         causes=[], summary="No info.",
     )
     assert result.total_cost_usd == 0.0
-    assert result.retrieved_chunks == []
+    assert result.retrieved_evidence == []

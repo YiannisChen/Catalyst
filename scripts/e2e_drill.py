@@ -33,7 +33,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "packages" / "eval"))
 TICKER = "NVDA"
 TRADE_DATE = "2026-04-03"
 DB_PATH = PROJECT_ROOT / "data" / "dev_assets.db"
-GOLDEN_SET_PATH = PROJECT_ROOT / "packages" / "eval" / "golden_set" / "v1.jsonl"
+GOLDEN_SET_PATH = PROJECT_ROOT / "packages" / "eval" / "golden_set" / "v1_2.jsonl"
 MODEL_ID = "gpt-4o"
 
 
@@ -252,6 +252,7 @@ def run_e2e():
         "reranked_chunks": [],
         "graded_evidence": [],
         "critic_reasoning": "",
+        "error_type": None,
         "causes": [],
         "summary_md": "",
         "grounding_rate": None,
@@ -314,7 +315,7 @@ def run_e2e():
 
     # --- Step 6: Eval scoring ---
     log("## 3. Evaluation Scoring")
-    from catalyst_eval.schema.result import AttributionResult, PredictedCause
+    from catalyst_eval.schema.result import AttributionResult, PredictedCause, RetrievedEvidence
     from catalyst_eval.metrics import (
         AttributionF1, CategoryAccuracy, GroundingRate,
         TemporalPrecision, ConfidenceCalibration,
@@ -336,41 +337,37 @@ def run_e2e():
             for c in causes
         ],
         summary=result.get("summary_md", ""),
-        retrieved_chunks=[c.get("content_md", "") for c in reranked],
+        retrieved_evidence=[
+            RetrievedEvidence(
+                asset_id=c.get("asset_id", ""),
+                content_md=c.get("content_md", ""),
+                source_type=c.get("source_type", ""),
+                rrf_score=c.get("rrf_score", 0.0),
+            )
+            for c in reranked
+        ],
         cost_breakdown=breakdown,
         total_cost_usd=result.get("total_cost_usd", 0.0),
         total_tokens=result.get("total_tokens", 0),
     )
 
-    # Load golden set — find matching event or use first one as proxy
-    golden_events = []
+    # Load golden set — exact (ticker, trade_date) match
+    golden = None
     if GOLDEN_SET_PATH.exists():
         with open(GOLDEN_SET_PATH) as f:
             for line in f:
                 line = line.strip()
                 if line:
-                    golden_events.append(GoldenEvent(**json.loads(line)))
-
-    # Find a golden event for NVDA, or use the closest proxy
-    golden = None
-    for ge in golden_events:
-        if ge.ticker == TICKER:
-            golden = ge
-            break
+                    ge = GoldenEvent(**json.loads(line))
+                    if ge.ticker == TICKER and ge.trade_date == TRADE_DATE:
+                        golden = ge
+                        break
 
     if golden is None:
-        log(f"- No golden event for {TICKER} in v1.jsonl. Using NVDA g001 as proxy if available.")
-        # Use first NVDA event even if date doesn't match
-        for ge in golden_events:
-            if ge.ticker == "NVDA":
-                golden = ge
-                break
-
-    if golden is None:
-        log("- **SKIP:** No golden event available for scoring.")
+        log(f"- **SKIP:** No golden event matched for ticker={TICKER}, trade_date={TRADE_DATE} in v1_2.jsonl.")
+        log(f"- **Reason:** Eval scoring requires an exact (ticker, trade_date) match. No matching entry found.")
     else:
         log(f"- Golden event: `{golden.id}` {golden.ticker} {golden.trade_date} ({golden.price_move_pct:+.2f}%)")
-        log(f"- Note: trade dates may differ (golden={golden.trade_date}, predicted={TRADE_DATE})")
         log()
 
         metrics = [
@@ -395,7 +392,8 @@ def run_e2e():
     log("|------|----------|-------|")
     log("| LanceDB bypassed (in-memory search) | High | Real hybrid BM25+vector not tested |")
     log("| No reranker (bge-reranker-v2) | Medium | Chunks returned in insertion order, not relevance |")
-    log("| Golden set date mismatch | Medium | v1.jsonl events are Jan 2025, data is Apr 2026 |")
+    if golden is None:
+        log(f"| No golden match for ({TICKER}, {TRADE_DATE}) | Medium | Eval metrics skipped; add matching entry to v1_2.jsonl |")
     if not graded:
         log("| All evidence filtered by Critic | High | Insufficient evidence path triggered |")
     if result.get("grounding_rate") is not None and result["grounding_rate"] < 0.5:

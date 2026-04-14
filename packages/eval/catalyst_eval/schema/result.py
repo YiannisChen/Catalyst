@@ -10,13 +10,25 @@ class PredictedCause(BaseModel):
     direction: str = Field(default="negative", description="positive, negative, or neutral")
 
 
+class RetrievedEvidence(BaseModel):
+    """A single piece of evidence retrieved by the Miner and available to the Judge.
+
+    Carries both the asset_id (for grounding checks against evidence_ids)
+    and the content (for faithfulness / qualitative inspection).
+    """
+    asset_id: str
+    content_md: str = ""
+    source_type: str = ""
+    rrf_score: float = 0.0
+
+
 class AttributionResult(BaseModel):
     """Contract: any agent must return this to be evaluated."""
     ticker: str
     trade_date: str
     causes: list[PredictedCause]
     summary: str
-    retrieved_chunks: list[str] = Field(default_factory=list)
+    retrieved_evidence: list[RetrievedEvidence] = Field(default_factory=list)
     cost_breakdown: list[dict] = Field(default_factory=list)
     total_cost_usd: float = 0.0
     total_tokens: int = 0

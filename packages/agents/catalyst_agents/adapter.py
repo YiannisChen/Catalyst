@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Callable
 
-from catalyst_eval.schema.result import AttributionResult, PredictedCause
+from catalyst_eval.schema.result import AttributionResult, PredictedCause, RetrievedEvidence
 
 
 def make_catalyst_predict(
@@ -66,8 +66,13 @@ def make_catalyst_predict(
                 for c in result.get("causes", [])
             ],
             summary=result.get("summary_md", ""),
-            retrieved_chunks=[
-                c.get("content_md", "")
+            retrieved_evidence=[
+                RetrievedEvidence(
+                    asset_id=c.get("asset_id", ""),
+                    content_md=c.get("content_md", ""),
+                    source_type=c.get("source_type", ""),
+                    rrf_score=c.get("rrf_score", 0.0),
+                )
                 for c in result.get("reranked_chunks", [])
             ],
             cost_breakdown=result.get("cost_breakdown", []),

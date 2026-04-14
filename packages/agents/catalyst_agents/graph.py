@@ -15,7 +15,7 @@ from typing import Any
 
 from catalyst_agents.state import AttributionState
 from catalyst_agents.nodes.miner import miner
-from catalyst_agents.nodes.critic import critic, insufficient_handler
+from catalyst_agents.nodes.critic import critic, insufficient_handler, system_error_handler
 from catalyst_agents.nodes.judge import judge
 
 
@@ -24,17 +24,22 @@ from catalyst_agents.nodes.judge import judge
 # ---------------------------------------------------------------------------
 
 def route_after_critic(state: dict) -> str:
-    """Conditional edge: route to judge if evidence exists, else insufficient.
+    """Conditional edge: route to judge, insufficient, or system_error.
 
-    Evaluates graded_evidence from the Critic node. An empty list or absent
-    key triggers the insufficient_handler path.
+    Checks error_type first — a system_error (LLM failure, bad JSON after
+    retries) is distinct from legitimately empty evidence. This prevents
+    BUG-005: conflating infrastructure failures with data gaps.
 
     Args:
         state: Current graph state dict.
 
     Returns:
-        "judge" when graded_evidence is non-empty, "insufficient" otherwise.
+        "system_error" when error_type is set,
+        "insufficient" when graded_evidence is empty,
+        "judge" otherwise.
     """
+    if state.get("error_type") == "system_error":
+        return "system_error"
     if not state.get("graded_evidence"):
         return "insufficient"
     return "judge"
@@ -107,6 +112,7 @@ def build_attribution_graph(
         graph.add_node("miner", bound_miner)
         graph.add_node("judge", bound_judge)
         graph.add_node("insufficient_handler", insufficient_handler)
+        graph.add_node("system_error_handler", system_error_handler)
         graph.add_node("baseline_prepare_evidence", baseline_prepare_evidence)
 
         graph.set_entry_point("miner")
@@ -120,6 +126,7 @@ def build_attribution_graph(
                 {
                     "judge": "judge",
                     "insufficient": "insufficient_handler",
+                    "system_error": "system_error_handler",
                 },
             )
         else:
@@ -128,6 +135,7 @@ def build_attribution_graph(
 
         graph.add_edge("judge", END)
         graph.add_edge("insufficient_handler", END)
+        graph.add_edge("system_error_handler", END)
         return graph.compile()
 
     except ImportError:
@@ -137,6 +145,7 @@ def build_attribution_graph(
             bound_critic=bound_critic,
             bound_judge=bound_judge,
             insufficient_handler=insufficient_handler,
+            system_error_handler=system_error_handler,
             use_critic=use_critic,
         )
 
@@ -160,12 +169,14 @@ class _SequentialRunner:
         bound_critic,
         bound_judge,
         insufficient_handler,
+        system_error_handler,
         use_critic: bool,
     ) -> None:
         self._miner = bound_miner
         self._critic = bound_critic
         self._judge = bound_judge
         self._insufficient = insufficient_handler
+        self._system_error = system_error_handler
         self._use_critic = use_critic
 
     def invoke(self, state: dict) -> dict:
@@ -186,6 +197,9 @@ class _SequentialRunner:
 
             # Conditional routing after Critic
             route = route_after_critic(state)
+            if route == "system_error":
+                state.update(self._system_error(state))
+                return state
             if route == "insufficient":
                 state.update(self._insufficient(state))
                 return state

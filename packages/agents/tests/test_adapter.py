@@ -140,8 +140,8 @@ def test_adapter_tracks_cost(monkeypatch):
     assert len(result.cost_breakdown) == 2  # critic + judge
 
 
-def test_adapter_includes_retrieved_chunks(monkeypatch):
-    """Adapter must expose reranked chunk content as list[str] for grounding checks."""
+def test_adapter_includes_retrieved_evidence(monkeypatch):
+    """Adapter must expose reranked chunks as RetrievedEvidence with asset_id and content_md."""
     import catalyst_data.storage.lancedb_store as lancedb_mod
     monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
 
@@ -149,8 +149,10 @@ def test_adapter_includes_retrieved_chunks(monkeypatch):
     predict = make_catalyst_predict(graph)
     result = predict("AAPL", "2026-01-15")
 
-    assert len(result.retrieved_chunks) > 0
-    assert isinstance(result.retrieved_chunks[0], str)  # content_md strings
+    assert len(result.retrieved_evidence) > 0
+    ev = result.retrieved_evidence[0]
+    assert ev.asset_id == "c1"
+    assert ev.content_md == "China chip ban expanded"
 
 
 def test_adapter_works_with_eval_harness(monkeypatch):

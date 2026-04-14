@@ -227,7 +227,8 @@ def test_mcj_insufficient_evidence_path(monkeypatch):
     assert result["grounding_rate"] is None
 
 
-def test_mcj_graph_critic_failure_falls_back_instead_of_crashing(monkeypatch):
+def test_mcj_graph_critic_failure_routes_to_system_error(monkeypatch):
+    """LLM failure must route to system_error_handler, not insufficient_handler (BUG-005)."""
     import catalyst_data.storage.lancedb_store as lancedb_mod
 
     monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
@@ -236,7 +237,8 @@ def test_mcj_graph_critic_failure_falls_back_instead_of_crashing(monkeypatch):
     graph = build_attribution_graph(use_critic=True, llm=FailingLLM())
     result = graph.invoke(_base_state())
 
-    assert result["causes"][0]["category"] == "unknown"
+    assert result["causes"] == []
+    assert "System error" in result["summary_md"]
     assert result["grounding_rate"] is None
 
 

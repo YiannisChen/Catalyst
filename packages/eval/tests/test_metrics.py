@@ -7,7 +7,7 @@ from __future__ import annotations
 import pytest
 
 from catalyst_eval.schema.golden_event import Cause, CauseCategory, GoldenEvent
-from catalyst_eval.schema.result import AttributionResult, PredictedCause
+from catalyst_eval.schema.result import AttributionResult, PredictedCause, RetrievedEvidence
 from catalyst_eval.metrics.attribution_f1 import AttributionF1
 from catalyst_eval.metrics.category_accuracy import CategoryAccuracy
 from catalyst_eval.metrics.grounding_rate import GroundingRate
@@ -43,14 +43,14 @@ PREDICTED_GOOD = AttributionResult(
     trade_date="2026-01-15",
     causes=[
         PredictedCause(
-            text="China chip export restrictions expanded",
+            text="China export ban on chips expanded",
             category="geopolitical",
             confidence=0.7,
             evidence_ids=["c1"],
             direction="negative",
         ),
         PredictedCause(
-            text="Broad semiconductor selloff",
+            text="Sector selloff in semiconductors",
             category="sector",
             confidence=0.2,
             evidence_ids=["c2"],
@@ -58,7 +58,10 @@ PREDICTED_GOOD = AttributionResult(
         ),
     ],
     summary="...",
-    retrieved_chunks=["c1", "c2"],
+    retrieved_evidence=[
+        RetrievedEvidence(asset_id="c1", content_md="China chip ban news"),
+        RetrievedEvidence(asset_id="c2", content_md="Semiconductor selloff report"),
+    ],
     cost_breakdown=[],
     total_cost_usd=0.03,
     total_tokens=7500,
@@ -77,7 +80,9 @@ PREDICTED_BAD = AttributionResult(
         ),
     ],
     summary="...",
-    retrieved_chunks=["c1"],
+    retrieved_evidence=[
+        RetrievedEvidence(asset_id="c1", content_md="Some chunk content"),
+    ],
     cost_breakdown=[],
     total_cost_usd=0.02,
     total_tokens=5000,
@@ -234,7 +239,7 @@ class TestGroundingRate:
         assert self.metric.name == "grounding_rate"
 
     def test_grounded_prediction(self):
-        # PREDICTED_GOOD has evidence_ids ["c1", "c2"] and retrieved_chunks ["c1", "c2"]
+        # PREDICTED_GOOD has evidence_ids ["c1", "c2"] and retrieved_evidence with asset_ids "c1", "c2"
         score = self.metric.compute(PREDICTED_GOOD, GOLDEN)
         assert score > 0.5, f"Expected > 0.5, got {score}"
 
@@ -252,7 +257,7 @@ class TestGroundingRate:
                 ),
             ],
             summary="",
-            retrieved_chunks=["c1"],
+            retrieved_evidence=[RetrievedEvidence(asset_id="c1", content_md="chunk")],
         )
         score = self.metric.compute(no_evidence_pred, GOLDEN)
         assert score == 0.0
@@ -289,10 +294,30 @@ class TestGroundingRate:
                 ),
             ],
             summary="",
-            retrieved_chunks=["c1"],
+            retrieved_evidence=[RetrievedEvidence(asset_id="c1", content_md="chunk")],
         )
         score = self.metric.compute(partial_pred, GOLDEN)
         assert score == pytest.approx(0.5)
+
+    def test_evidence_id_mismatch_returns_zero(self):
+        """When evidence_ids don't match any retrieved asset_id, grounding is 0."""
+        mismatch_pred = AttributionResult(
+            ticker="AAPL",
+            trade_date="2026-01-15",
+            causes=[
+                PredictedCause(
+                    text="Some cause",
+                    category="geopolitical",
+                    confidence=0.8,
+                    evidence_ids=["nonexistent_id"],
+                    direction="negative",
+                ),
+            ],
+            summary="",
+            retrieved_evidence=[RetrievedEvidence(asset_id="c1", content_md="chunk")],
+        )
+        score = self.metric.compute(mismatch_pred, GOLDEN)
+        assert score == 0.0
 
     def test_score_bounds(self):
         score = self.metric.compute(PREDICTED_GOOD, GOLDEN)

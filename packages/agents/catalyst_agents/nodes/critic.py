@@ -9,7 +9,9 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
 
 from catalyst_agents.state import AttributionState
 from catalyst_agents.cost_tracker import track_cost
@@ -22,6 +24,19 @@ RELEVANCE_THRESHOLD = 0.5
 MAX_RETRIES = 3
 BASE_BACKOFF_SECONDS = 0.1
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "critic.md"
+
+
+class GradedChunk(BaseModel):
+    chunk_id: str = Field(min_length=1)
+    relevance: float = Field(ge=0.0, le=1.0)
+    category: Literal["earnings", "macro", "geopolitical", "sector", "technical", "regulatory"]
+    temporal_match: bool
+    reasoning: str = Field(min_length=1)
+
+
+class CriticResponse(BaseModel):
+    graded_chunks: list[GradedChunk]
+    reasoning: str = Field(min_length=1)
 
 
 # ---------------------------------------------------------------------------
@@ -64,10 +79,11 @@ def _parse_critic_response(text: str) -> dict:
         text: Raw LLM output, optionally wrapped in ```json ... ``` or ``` ... ```.
 
     Returns:
-        Parsed dict from the JSON payload.
+        Schema-validated dict from the JSON payload.
 
     Raises:
         json.JSONDecodeError: If the content after fence stripping is not valid JSON.
+        pydantic.ValidationError: If parsed JSON does not match CriticResponse schema.
     """
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -75,7 +91,9 @@ def _parse_critic_response(text: str) -> dict:
         # Drop the opening fence line and any trailing closing fence
         inner_lines = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
         cleaned = "\n".join(inner_lines)
-    return json.loads(cleaned)
+    parsed = json.loads(cleaned)
+    validated = CriticResponse.model_validate(parsed)
+    return validated.model_dump()
 
 
 # ---------------------------------------------------------------------------
@@ -140,9 +158,38 @@ def critic(state: AttributionState, *, llm: Any = None) -> dict:
     return {
         "graded_evidence": [],
         "critic_reasoning": f"Critic failed after {MAX_RETRIES} attempts: {last_error}",
+        "error_type": "system_error",
         "cost_breakdown": state.get("cost_breakdown", []),
         "total_cost_usd": state.get("total_cost_usd", 0.0),
         "total_tokens": state.get("total_tokens", 0),
+    }
+
+
+def system_error_handler(state: AttributionState) -> dict:
+    """Fallback node when the Critic encountered a system-level failure.
+
+    Unlike insufficient_handler (which indicates the data simply lacked
+    relevant evidence), this node signals that the pipeline could not
+    complete due to an infrastructure issue (LLM timeout, bad JSON, etc.).
+
+    Args:
+        state: Current attribution state.
+
+    Returns:
+        Partial state dict with error-specific cause and summary.
+    """
+    ticker = state["ticker"]
+    trade_date = state["trade_date"]
+    reasoning = state.get("critic_reasoning", "Unknown error")
+
+    return {
+        "causes": [],
+        "summary_md": (
+            f"**System error** during attribution for {ticker} on {trade_date}. "
+            f"The Critic node failed to produce a valid response: {reasoning}. "
+            f"This is an infrastructure issue, not an evidence gap."
+        ),
+        "grounding_rate": None,
     }
 
 
