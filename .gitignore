@@ -14,7 +14,15 @@ venv/
 # generated local data artifacts
 /data/e2e_strict/
 /data/lancedb_gold/
+/data/case_studies/
+/data/eval_reports/*_case_study_report.md
+/data/eval_reports/*_case_study_trace.json
 /docs/plans/
+/DemoUI/
+
+# local script outputs
+/packages/data-core/scripts/debug_output/
+/packages/data-core/scripts/smoke_test_assets.db
 
 # reference files
 /packages/data-core/core_references
