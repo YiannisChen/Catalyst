@@ -216,6 +216,7 @@ async def run(args: argparse.Namespace) -> None:
     db_path = data_dir / "dev_assets.db"
     conn = sqlite3.connect(str(db_path))
     init_db(conn)
+    conn.close()
 
     available_sources = get_available_sources()
     sources = resolve_sources(args.sources, available_sources)
@@ -238,7 +239,7 @@ async def run(args: argparse.Namespace) -> None:
                 ticker=args.ticker,
                 date=date,
                 sources=sources,
-                conn=conn,
+                db_path=db_path,
                 fetch_fn=fetch_fn,
             )
             elapsed = (time.monotonic() - t0) * 1000
@@ -256,8 +257,10 @@ async def run(args: argparse.Namespace) -> None:
         await client.aclose()
 
     # Summary counts from the database
-    raw_count = conn.execute("SELECT COUNT(*) FROM raw_assets").fetchone()[0]
-    clean_count = conn.execute("SELECT COUNT(*) FROM clean_assets").fetchone()[0]
+    count_conn = sqlite3.connect(str(db_path))
+    raw_count = count_conn.execute("SELECT COUNT(*) FROM raw_assets").fetchone()[0]
+    clean_count = count_conn.execute("SELECT COUNT(*) FROM clean_assets").fetchone()[0]
+    count_conn.close()
 
     print(f"\n{'=' * 60}")
     print(f"Results:  {total_ok} OK / {total_fail} FAIL")
@@ -267,8 +270,6 @@ async def run(args: argparse.Namespace) -> None:
     if args.artifacts:
         artifact_dir = _PACKAGE_ROOT.parent.parent / "data" / "smoke_artifacts"
         _write_artifacts(artifact_dir, results_by_date)
-
-    conn.close()
 
 
 def main() -> None:

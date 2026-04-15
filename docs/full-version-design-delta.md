@@ -1,8 +1,8 @@
 # Catalyst Full-Version Design Delta
 
 **Author:** Yiannis Chen
-**Date:** 2026-04-13
-**Status:** Draft — pending review
+**Date:** 2026-04-15
+**Status:** Draft — baseline refreshed
 **Base document:** [System Design Spec v1.1](superpowers/specs/2026-04-02-catalyst-system-design.md)
 
 > This document enumerates every point where the full-version system design must diverge from the v1.1 spec. Each delta references the original spec section, states what must change, and provides the design rationale.
@@ -11,41 +11,33 @@
 
 ## 1. Orchestrator Concurrency Model (Spec §3, Orchestrator)
 
-### Current spec assumption
+### Current baseline
 
-The orchestrator is `async def process_request(...)` with `TokenBucketLimiter` providing per-provider async semaphore + interval enforcement.
-
-### What must change
-
-The current implementation processes sources **sequentially** in a `for` loop despite being `async`. Two options:
-
-**Option A (recommended): Full async with `asyncio.gather`.**
+The midterm baseline already runs sources concurrently via `asyncio.gather(...)` inside `process_request(...)`. The real signature is:
 
 ```
-process_request(ticker, date, sources, conn, fetch_fn)
-    └── asyncio.gather(
-            _process_source("polygon_news", ...),
-            _process_source("polygon_ohlcv", ...),
-            _process_source("fmp_fundamentals", ...),
-        )
+process_request(ticker, date, sources, db_path, fetch_fn, limiter=None, *, conn=None)
 ```
 
-Each source runs concurrently; per-provider rate limiting is already handled by `TokenBucketLimiter.acquire()` inside each connector. The semaphore and interval logic gate individual HTTP calls, not source-level orchestration. This is the design the spec intended.
+`conn` is deprecated and ignored. SQLite writes are still synchronous at the storage layer, but they are offloaded with `asyncio.to_thread(...)`, and each worker opens its own connection from `db_path`. This avoids shared-connection thread hazards without introducing `aiosqlite`.
 
-**Option B: Sync + ThreadPoolExecutor.** If the project judges that full async is unjustified complexity for a single-user research tool, drop `async` entirely. Use `concurrent.futures.ThreadPoolExecutor` for IO-parallel fetches and plain `sqlite3` for storage. This is simpler, honest, and still concurrent.
+### Full-version delta
 
-### What this fixes
+The main architectural question is no longer "sequential vs concurrent" because concurrency is already implemented. The remaining full-version decision is whether to keep the current async-orchestrator + thread-offloaded SQLite model or move to a fully async storage layer.
 
-- Sources that hit different providers (Polygon, FMP) run concurrently instead of sequentially.
-- Eliminates the architectural contradiction of async functions wrapping sync SQLite calls.
+**Option A:** Keep the current model.
 
-### Storage layer implication
+```
+process_request(...)
+    └── asyncio.gather(...)
+            └── asyncio.to_thread(_store_bronze_and_silver, db_path=...)
+```
 
-If Option A is chosen, `sqlite3.Connection` must be replaced with `aiosqlite` (async wrapper). All `upsert_raw_asset`, `upsert_clean_asset`, and `init_db` become `async def`. Schema DDL and SQL statements remain identical. Reference implementation: crawl4ai `async_database.py`.
+This is acceptable for the current single-user research baseline and keeps the storage code simple.
 
-If Option B is chosen, the codebase stays sync. No `aiosqlite` needed.
+**Option B:** Move storage to `aiosqlite` later if end-to-end async semantics become important.
 
-**Decision required before implementation.** Either choice is defensible; the current hybrid is not.
+This would be a future simplification or throughput improvement, not a prerequisite to make the baseline honest or correct.
 
 ---
 
@@ -181,46 +173,41 @@ The user/eval harness can distinguish:
 
 ## 4. Connector Architecture (Spec §3.1, Provider Strategy)
 
-### Current spec assumption
+### Current baseline
 
-Each connector is a standalone module implementing `SourceConnector` protocol. The spec lists 7 providers.
+The current baseline does **not** use a `SourceConnector` protocol or abstract base class. Connectors are simple factory functions that return `async def fetch(ticker, endpoint, date) -> FetchResult` closures. Shared transport output is standardized via `FetchResult`.
 
-### What must change
+Retry wiring is partially landed:
 
-**4a. Base connector class with shared behavior.**
+- `catalyst_data.retry.with_retry(...)` is already wrapped around Polygon and FMP fetchers.
+- Both Polygon and FMP propagate structured `retry_after_seconds` from HTTP `Retry-After`.
+- FRED still uses the simpler direct fetch path and is not yet wrapped by `with_retry(...)`.
 
-The current `SourceConnector` Protocol in `base.py` is not implemented by any connector. Replace with an abstract base that encapsulates:
+This means the repo is past the "retry exists only on paper" stage, but it is not yet fully unified across all connectors.
+
+### Full-version delta
+
+If the full version grows the connector set again, it may be worth introducing a shared connector abstraction. That should be framed as a cleanup/consistency improvement, not as resolving an undecided baseline architecture.
+
+Possible future scope:
 
 - HTTP client lifecycle (injected `httpx.AsyncClient`)
 - Rate limiter integration (`TokenBucketLimiter.acquire()` context manager)
-- Retry with exponential backoff: handle 429 (parse Retry-After), 5xx, timeout
+- Retry with exponential backoff for every provider, including consistent 429 / 5xx / timeout handling
 - Latency measurement
 - Structured error classification (feeds into §3 error taxonomy)
 
-Each concrete connector only defines:
-- `_build_url(ticker, endpoint, date) -> tuple[str, dict]`
-- `_parse_response(json_data) -> dict`
-- `ENDPOINT_MAP: dict[str, str]`
+Concrete baseline note: the immediate delta is **not** "remove `SourceConnector`" because that protocol is already absent from `base.py`. The real remaining delta is finishing retry/error-handling unification without breaking the working closure-based API.
 
-This reduces a new connector to ~30 lines of domain-specific code.
-
-**4b. Retry integration.**
-
-The existing `retry.py` module is not wired into any connector. Integrate it at the base class level:
+One reasonable target policy remains:
 
 ```
 Retry policy per error class:
-    429 → exponential backoff, respect Retry-After header, max 5 attempts
+    429 → exponential backoff, respect Retry-After header
     5xx → exponential backoff, max 3 attempts
     Timeout → immediate retry once, then exponential, max 3 attempts
     4xx (non-429) → no retry, return error
 ```
-
-Reference: PokieTicker `polygon/client.py` for Polygon-specific retry patterns.
-
-**4c. Dead code cleanup.**
-
-Remove `SourceConnector` Protocol from `base.py` if the base class replaces it. Or keep the Protocol and have the base class satisfy it — but not both unused.
 
 ---
 
@@ -408,23 +395,17 @@ No LangSmith integration. No structured logging. No trace persistence.
 
 ## 10. SequentialRunner Elimination (Spec §4.4, Graph Construction)
 
-### Current spec assumption
+### Current baseline
 
 The spec only describes `StateGraph` construction. No fallback runner is mentioned.
 
 ### What actually happened
 
-`graph.py` falls back to `_SequentialRunner` when `langgraph` is not installed. This means tests may run a different code path than production.
+This delta has already been resolved in the current midterm baseline. `graph.py` now requires `langgraph` and raises an explicit `ImportError` if the dependency is missing. There is no `_SequentialRunner` fallback in the current branch.
 
-### What must change
+### Full-version delta
 
-Two options:
-
-**Option A (recommended): Make `langgraph` a required dependency.** Remove `_SequentialRunner`. If langgraph is not installed, `build_attribution_graph` raises `ImportError` with a clear message. Tests always test the real graph.
-
-**Option B: Test both paths.** Keep `_SequentialRunner` but add explicit integration tests for both the real StateGraph and the SequentialRunner, asserting output equivalence on the same inputs.
-
-Option A is simpler and eliminates an entire class of "works in test, fails in prod" bugs.
+No further architectural delta is required here unless the project later decides to re-introduce a non-LangGraph execution mode on purpose. As of the current baseline, this should be treated as closed, not pending.
 
 ---
 
@@ -469,14 +450,14 @@ Acceptance criterion: in a fresh virtualenv, `pip install ./packages/data-core &
 
 | # | Spec Section | Delta | Priority |
 |---|---|---|---|
-| 1 | §3 Orchestrator | Sequential → concurrent; resolve async/sync contradiction | P0 |
+| 1 | §3 Orchestrator | Baseline already concurrent; only future storage-model cleanup remains | P0 |
 | 2 | §4.3 Miner + §6.4 RAG | Single-pass → tiered retrieval (3 layers) | P1 |
 | 3 | §4.3 Insufficient Gate | Single fallback → error classification (system vs. data) | P1 |
-| 4 | §3.1 Connectors | Copy-paste → base class with retry | P1 |
+| 4 | §3.1 Connectors | Finish retry/error-handling unification across connectors | P1 |
 | 5 | §5.2 Schema | Fix `retrieved_chunks` type for GroundingRate | P0 |
 | 6 | §5.3 Metrics | Jaccard 0.2 → embedding cosine with calibrated threshold | P0 |
 | 7 | §3.5 Dedup | Remove duplicate implementation, wire `dedup/hard.py` | P0 |
 | 8 | §5.5 Experiments | Add direct-LLM baseline, run full golden set | P1 |
 | 9 | §8.1 LangSmith | Add trace persistence + optional LangSmith | P2 |
-| 10 | §4.4 Graph | Remove `_SequentialRunner` or test both paths | P1 |
+| 10 | §4.4 Graph | Closed in current baseline; no active delta | P2 |
 | 11 | §1.2 Packages | Tier dependencies, add CLI, add independence test | P2 |
