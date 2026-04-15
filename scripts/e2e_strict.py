@@ -147,7 +147,7 @@ async def run_data_pipeline() -> tuple[list[dict], sqlite3.Connection]:
             ticker=TICKER,
             date=TRADE_DATE,
             sources=SOURCES,
-            conn=conn,
+            db_path=str(E2E_DB_PATH),
             fetch_fn=fetch,
         )
     finally:

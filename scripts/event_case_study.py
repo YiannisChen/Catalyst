@@ -176,7 +176,7 @@ async def build_corpus(
                         ticker=ticker,
                         date=date,
                         sources=[source],
-                        conn=conn,
+                        db_path=str(DB_PATH),
                         fetch_fn=fetch,
                     )
                     for s in summaries:

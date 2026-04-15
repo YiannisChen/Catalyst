@@ -2,13 +2,32 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import tempfile
+import time
+from pathlib import Path
 
 import pytest
 
 from catalyst_data.connectors.base import FetchResult
 from catalyst_data.orchestrator import process_request
 from catalyst_data.storage.sqlite import compute_asset_id, get_clean_asset, init_db
+
+
+@pytest.fixture
+def db_path(tmp_path):
+    """Create a temp SQLite DB with schema initialized."""
+    p = tmp_path / "test.db"
+    conn = sqlite3.connect(str(p))
+    init_db(conn)
+    conn.close()
+    return str(p)
+
+
+def _read_conn(db_path: str) -> sqlite3.Connection:
+    """Open a read-only connection for assertions."""
+    return sqlite3.connect(db_path)
 
 
 async def mock_fetch(ticker: str, endpoint: str, date: str) -> FetchResult:
@@ -46,33 +65,28 @@ async def mock_fetch(ticker: str, endpoint: str, date: str) -> FetchResult:
 
 
 @pytest.mark.asyncio
-async def test_process_request_stores_bronze_and_silver():
-    conn = sqlite3.connect(":memory:")
-    init_db(conn)
+async def test_process_request_stores_bronze_and_silver(db_path):
     results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["polygon_news"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=mock_fetch,
     )
     assert len(results) >= 1
     assert results[0]["ok"] is True
     assert results[0]["asset_id"] is not None
 
-    # Check Bronze
+    conn = _read_conn(db_path)
     raw = conn.execute("SELECT * FROM raw_assets").fetchall()
     assert len(raw) >= 1
-
-    # Check Silver
     clean = conn.execute("SELECT * FROM clean_assets").fetchall()
     assert len(clean) >= 1
-
     conn.close()
 
 
 @pytest.mark.asyncio
-async def test_process_request_handles_failed_fetch():
+async def test_process_request_handles_failed_fetch(db_path):
     async def failing_fetch(
         ticker: str, endpoint: str, date: str
     ) -> FetchResult:
@@ -80,69 +94,57 @@ async def test_process_request_handles_failed_fetch():
             status=500, error="Server error", latency_ms=10.0, source_label="test"
         )
 
-    conn = sqlite3.connect(":memory:")
-    init_db(conn)
     results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["polygon_news"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=failing_fetch,
     )
-    # Should return results with error info, not crash
     assert isinstance(results, list)
     assert len(results) == 1
     assert results[0]["ok"] is False
     assert results[0]["error"] is not None
 
-    conn.close()
-
 
 @pytest.mark.asyncio
-async def test_process_request_multiple_sources():
-    conn = sqlite3.connect(":memory:")
-    init_db(conn)
+async def test_process_request_multiple_sources(db_path):
     results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["polygon_news", "fmp_fundamentals"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=mock_fetch,
     )
     assert len(results) >= 2
 
-    # Both should succeed
     for r in results:
         assert r["ok"] is True
 
-    # Should have Bronze and Silver for both
+    conn = _read_conn(db_path)
     raw_count = conn.execute("SELECT COUNT(*) FROM raw_assets").fetchone()[0]
     clean_count = conn.execute("SELECT COUNT(*) FROM clean_assets").fetchone()[0]
     assert raw_count >= 2
     assert clean_count >= 2
-
     conn.close()
 
 
 @pytest.mark.asyncio
-async def test_process_request_yfinance_fundamentals_source_maps_correctly():
-    conn = sqlite3.connect(":memory:")
-    init_db(conn)
+async def test_process_request_yfinance_fundamentals_source_maps_correctly(db_path):
     results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["yfinance_fundamentals"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=mock_fetch,
     )
     assert len(results) == 1
     assert results[0]["ok"] is True
     assert results[0]["asset_id"] is not None
-    conn.close()
 
 
 @pytest.mark.asyncio
-async def test_process_request_partial_failure():
+async def test_process_request_partial_failure(db_path):
     """One source fails, the other succeeds -- both results are returned."""
 
     call_count = 0
@@ -163,13 +165,11 @@ async def test_process_request_partial_failure():
             source_label=f"fmp:{endpoint}",
         )
 
-    conn = sqlite3.connect(":memory:")
-    init_db(conn)
     results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["polygon_news", "fmp_fundamentals"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=partial_fetch,
     )
     assert len(results) == 2
@@ -180,11 +180,9 @@ async def test_process_request_partial_failure():
     assert news_result["ok"] is False
     assert fmp_result["ok"] is True
 
-    conn.close()
-
 
 @pytest.mark.asyncio
-async def test_process_request_reports_failed_endpoints_on_partial_success():
+async def test_process_request_reports_failed_endpoints_on_partial_success(db_path):
     async def partial_fetch(
         ticker: str, endpoint: str, date: str
     ) -> FetchResult:
@@ -202,13 +200,11 @@ async def test_process_request_reports_failed_endpoints_on_partial_success():
             source_label=f"fmp:{endpoint}",
         )
 
-    conn = sqlite3.connect(":memory:")
-    init_db(conn)
     results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["fmp_fundamentals"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=partial_fetch,
     )
 
@@ -224,23 +220,20 @@ async def test_process_request_reports_failed_endpoints_on_partial_success():
     }
     assert summary["endpoint_statuses"]["income_statement"] == 200
     assert summary["endpoint_statuses"]["cash_flow"] == 503
-    conn.close()
 
 
 @pytest.mark.asyncio
-async def test_process_request_reports_fetch_exceptions_per_source():
+async def test_process_request_reports_fetch_exceptions_per_source(db_path):
     async def exploding_fetch(
         ticker: str, endpoint: str, date: str
     ) -> FetchResult:
         raise RuntimeError(f"boom for {endpoint}")
 
-    conn = sqlite3.connect(":memory:")
-    init_db(conn)
     results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["polygon_news"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=exploding_fetch,
     )
 
@@ -256,11 +249,10 @@ async def test_process_request_reports_fetch_exceptions_per_source():
         }
     }
     assert summary["endpoint_statuses"] == {"news": 0}
-    conn.close()
 
 
 @pytest.mark.asyncio
-async def test_process_request_handles_malformed_news_results_dict():
+async def test_process_request_handles_malformed_news_results_dict(db_path):
     async def malformed_news_fetch(
         ticker: str, endpoint: str, date: str
     ) -> FetchResult:
@@ -277,13 +269,11 @@ async def test_process_request_handles_malformed_news_results_dict():
             source_label="polygon:news",
         )
 
-    conn = sqlite3.connect(":memory:")
-    init_db(conn)
     results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["polygon_news"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=malformed_news_fetch,
     )
 
@@ -291,15 +281,16 @@ async def test_process_request_handles_malformed_news_results_dict():
     summary = results[0]
     assert summary["ok"] is True
     asset_id = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
+    conn = _read_conn(db_path)
     clean_asset = get_clean_asset(conn, asset_id)
+    conn.close()
     assert clean_asset is not None
     assert "Untitled" in clean_asset["content_md"]
     assert "Shape drifted to a single object" in clean_asset["content_md"]
-    conn.close()
 
 
 @pytest.mark.asyncio
-async def test_process_request_handles_string_publisher_shape():
+async def test_process_request_handles_string_publisher_shape(db_path):
     async def malformed_news_fetch(
         ticker: str, endpoint: str, date: str
     ) -> FetchResult:
@@ -318,13 +309,11 @@ async def test_process_request_handles_string_publisher_shape():
             source_label="polygon:news",
         )
 
-    conn = sqlite3.connect(":memory:")
-    init_db(conn)
     results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["polygon_news"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=malformed_news_fetch,
     )
 
@@ -332,50 +321,49 @@ async def test_process_request_handles_string_publisher_shape():
     summary = results[0]
     assert summary["ok"] is True
     asset_id = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
+    conn = _read_conn(db_path)
     clean_asset = get_clean_asset(conn, asset_id)
+    conn.close()
     assert clean_asset is not None
     assert "Untitled" in clean_asset["content_md"]
     assert "Reuters" in clean_asset["content_md"]
     assert "Publisher drifted to a string" in clean_asset["content_md"]
-    conn.close()
 
 
 @pytest.mark.asyncio
-async def test_process_request_rerun_keeps_single_bronze_and_silver_row():
-    conn = sqlite3.connect(":memory:")
-    init_db(conn)
-
+async def test_process_request_rerun_keeps_single_bronze_and_silver_row(db_path):
     first_results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["polygon_news"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=mock_fetch,
     )
     second_results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["polygon_news"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=mock_fetch,
     )
 
     asset_id = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
     assert first_results[0]["asset_id"] == asset_id
     assert second_results[0]["asset_id"] == asset_id
+    conn = _read_conn(db_path)
     raw_count = conn.execute(
         "SELECT COUNT(*) FROM raw_assets WHERE asset_id = ?", (asset_id,)
     ).fetchone()[0]
     clean_count = conn.execute(
         "SELECT COUNT(*) FROM clean_assets WHERE asset_id = ?", (asset_id,)
     ).fetchone()[0]
+    conn.close()
     assert raw_count == 1
     assert clean_count == 1
-    conn.close()
 
 
 @pytest.mark.asyncio
-async def test_process_request_partial_failure_rerun_does_not_corrupt_prior_success():
+async def test_process_request_partial_failure_rerun_does_not_corrupt_prior_success(db_path):
     async def failing_news_fetch(
         ticker: str, endpoint: str, date: str
     ) -> FetchResult:
@@ -386,25 +374,23 @@ async def test_process_request_partial_failure_rerun_does_not_corrupt_prior_succ
             source_label="polygon:news",
         )
 
-    conn = sqlite3.connect(":memory:")
-    init_db(conn)
-
     success_results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["polygon_news"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=mock_fetch,
     )
     failure_results = await process_request(
         ticker="AAPL",
         date="2026-01-15",
         sources=["polygon_news"],
-        conn=conn,
+        db_path=db_path,
         fetch_fn=failing_news_fetch,
     )
 
     asset_id = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
+    conn = _read_conn(db_path)
     raw_count = conn.execute(
         "SELECT COUNT(*) FROM raw_assets WHERE asset_id = ?", (asset_id,)
     ).fetchone()[0]
@@ -412,6 +398,7 @@ async def test_process_request_partial_failure_rerun_does_not_corrupt_prior_succ
         "SELECT COUNT(*) FROM clean_assets WHERE asset_id = ?", (asset_id,)
     ).fetchone()[0]
     clean_asset = get_clean_asset(conn, asset_id)
+    conn.close()
 
     assert success_results[0]["ok"] is True
     assert failure_results[0]["ok"] is False
@@ -419,4 +406,37 @@ async def test_process_request_partial_failure_rerun_does_not_corrupt_prior_succ
     assert clean_count == 1
     assert clean_asset is not None
     assert "Test Article" in clean_asset["content_md"]
-    conn.close()
+
+
+@pytest.mark.asyncio
+async def test_process_request_sources_run_concurrently(db_path):
+    """Verify sources execute concurrently, not sequentially (BUG-003)."""
+
+    async def slow_fetch(ticker: str, endpoint: str, date: str) -> FetchResult:
+        await asyncio.sleep(0.1)  # simulate 100ms network latency
+        if endpoint == "news":
+            return FetchResult(
+                status=200,
+                data={"results": [{"title": "A", "published_utc": "2026-01-15T10:00:00Z",
+                                   "description": "d", "article_url": "http://x"}]},
+                latency_ms=100, source_label=f"polygon:{endpoint}",
+            )
+        return FetchResult(
+            status=200, data=[{"revenue": 1}],
+            latency_ms=100, source_label=f"fmp:{endpoint}",
+        )
+
+    t0 = time.monotonic()
+    results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["polygon_news", "fmp_fundamentals"],
+        db_path=db_path,
+        fetch_fn=slow_fetch,
+    )
+    elapsed = time.monotonic() - t0
+
+    assert all(r["ok"] for r in results)
+    # Sequential would take >=0.5s (5 endpoints × 0.1s).
+    # Concurrent sources should complete well under that.
+    assert elapsed < 0.45, f"Took {elapsed:.2f}s — sources may still be sequential"

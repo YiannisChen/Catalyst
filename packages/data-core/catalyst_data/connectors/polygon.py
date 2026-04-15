@@ -15,8 +15,20 @@ from typing import Callable, Awaitable
 import httpx
 
 from catalyst_data.connectors.base import FetchResult
+from catalyst_data.retry import with_retry
 
 POLYGON_BASE_URL = "https://api.polygon.io"
+
+
+def _parse_retry_after(resp: httpx.Response) -> float | None:
+    """Extract Retry-After header value as seconds, or None if absent/unparseable."""
+    raw = resp.headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return None
 
 
 def _build_ohlcv_url(ticker: str, date: str) -> tuple[str, dict[str, str]]:
@@ -93,11 +105,14 @@ def create_polygon_fetcher(
             error_message = f"Polygon {resp.status_code}"
             if error_text:
                 error_message = f"{error_message}: {error_text}"
+
+            retry_after = _parse_retry_after(resp)
             return FetchResult(
                 status=resp.status_code,
                 error=error_message,
                 latency_ms=latency,
                 source_label=f"polygon:{endpoint}",
+                retry_after_seconds=retry_after,
             )
         except (httpx.TimeoutException, httpx.ReadTimeout) as exc:
             latency = (time.monotonic() - start) * 1000
@@ -119,4 +134,4 @@ def create_polygon_fetcher(
             if own_client:
                 await c.aclose()
 
-    return fetch
+    return with_retry(fetch)

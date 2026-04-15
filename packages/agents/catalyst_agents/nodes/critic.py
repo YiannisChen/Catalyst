@@ -7,7 +7,6 @@ Spec reference: Section 4.3 — Critic Node.
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -15,14 +14,13 @@ from pydantic import BaseModel, Field
 
 from catalyst_agents.state import AttributionState
 from catalyst_agents.cost_tracker import track_cost
+from catalyst_agents.backoff import invoke_with_retries, MAX_RETRIES
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
 RELEVANCE_THRESHOLD = 0.5
-MAX_RETRIES = 3
-BASE_BACKOFF_SECONDS = 0.1
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "critic.md"
 
 
@@ -132,37 +130,32 @@ def critic(state: AttributionState, *, llm: Any = None) -> dict:
         chunks_formatted=_format_chunks(chunks),
     )
 
-    last_error: Exception | None = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = llm.invoke(prompt)
-            track_cost(state, "critic", response)
-            parsed = _parse_critic_response(response.content)
-            graded = parsed.get("graded_chunks", [])
+    try:
+        response, parsed = invoke_with_retries(
+            llm, prompt, parse_fn=_parse_critic_response, node_name="Critic",
+        )
+        track_cost(state, "critic", response)
+        graded = parsed.get("graded_chunks", [])
 
-            # Strict greater-than filter per spec Section 4.3
-            filtered = [g for g in graded if g.get("relevance", 0) > RELEVANCE_THRESHOLD]
+        # Strict greater-than filter per spec Section 4.3
+        filtered = [g for g in graded if g.get("relevance", 0) > RELEVANCE_THRESHOLD]
 
-            return {
-                "graded_evidence": filtered,
-                "critic_reasoning": parsed.get("reasoning", ""),
-                "cost_breakdown": state.get("cost_breakdown", []),
-                "total_cost_usd": state.get("total_cost_usd", 0.0),
-                "total_tokens": state.get("total_tokens", 0),
-            }
-        except Exception as exc:  # pragma: no cover - exercised by tests via fallback behavior
-            last_error = exc
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(BASE_BACKOFF_SECONDS * (2 ** attempt))
-
-    return {
-        "graded_evidence": [],
-        "critic_reasoning": f"Critic failed after {MAX_RETRIES} attempts: {last_error}",
-        "error_type": "system_error",
-        "cost_breakdown": state.get("cost_breakdown", []),
-        "total_cost_usd": state.get("total_cost_usd", 0.0),
-        "total_tokens": state.get("total_tokens", 0),
-    }
+        return {
+            "graded_evidence": filtered,
+            "critic_reasoning": parsed.get("reasoning", ""),
+            "cost_breakdown": state.get("cost_breakdown", []),
+            "total_cost_usd": state.get("total_cost_usd", 0.0),
+            "total_tokens": state.get("total_tokens", 0),
+        }
+    except RuntimeError as exc:
+        return {
+            "graded_evidence": [],
+            "critic_reasoning": str(exc),
+            "error_type": "system_error",
+            "cost_breakdown": state.get("cost_breakdown", []),
+            "total_cost_usd": state.get("total_cost_usd", 0.0),
+            "total_tokens": state.get("total_tokens", 0),
+        }
 
 
 def system_error_handler(state: AttributionState) -> dict:

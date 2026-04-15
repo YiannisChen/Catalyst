@@ -49,33 +49,47 @@ class TestFmpFetcher(unittest.IsolatedAsyncioTestCase):
         mock_resp = MagicMock()
         mock_resp.status_code = 429
         mock_resp.text = "rate limited"
+        mock_resp.headers = {}
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_resp)
 
-        fetch = create_fmp_fetcher(
-            api_key="test-key",
-            client=mock_client,
-        )
-        result = await fetch("NVDA", "income_statement", "2025-01-01")
-        self.assertEqual(result.status, 429)
-        self.assertEqual(result.source_label, "fmp:income_statement")
-        self.assertIn("429", result.error)
-        self.assertIn("rate limited", result.error)
+        # Patch sleep to avoid real delays during retry exhaustion
+        import catalyst_data.retry as retry_mod
+        orig_sleep = retry_mod.asyncio.sleep
+        retry_mod.asyncio.sleep = AsyncMock()
+        try:
+            fetch = create_fmp_fetcher(
+                api_key="test-key",
+                client=mock_client,
+            )
+            result = await fetch("NVDA", "income_statement", "2025-01-01")
+            self.assertEqual(result.status, 429)
+            self.assertEqual(result.source_label, "fmp:income_statement")
+            self.assertIn("429", result.error)
+            self.assertIn("rate limited", result.error)
+        finally:
+            retry_mod.asyncio.sleep = orig_sleep
 
     async def test_timeout_returns_error_with_zero_status(self):
         import httpx
+        import catalyst_data.retry as retry_mod
 
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(side_effect=httpx.ReadTimeout("timeout"))
 
-        fetch = create_fmp_fetcher(
-            api_key="test-key",
-            client=mock_client,
-        )
-        result = await fetch("NVDA", "income_statement", "2025-01-01")
-        self.assertEqual(result.status, 0)
-        self.assertIn("timeout", result.error.lower())
+        orig_sleep = retry_mod.asyncio.sleep
+        retry_mod.asyncio.sleep = AsyncMock()
+        try:
+            fetch = create_fmp_fetcher(
+                api_key="test-key",
+                client=mock_client,
+            )
+            result = await fetch("NVDA", "income_statement", "2025-01-01")
+            self.assertEqual(result.status, 0)
+            self.assertIn("timeout", result.error.lower())
+        finally:
+            retry_mod.asyncio.sleep = orig_sleep
 
     async def test_unknown_endpoint_returns_error_without_request(self):
         mock_client = AsyncMock()
@@ -139,6 +153,47 @@ class TestFmpFetcher(unittest.IsolatedAsyncioTestCase):
         fetch = create_fmp_fetcher(api_key="test-key", client=mock_client)
         result = await fetch("NVDA", "income_statement", "2025-01-01")
         self.assertEqual(result.status, 200)
+
+
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_fmp_429_retry_after_header_extracted(monkeypatch):
+    """FMP connector must read Retry-After header and propagate to retry logic."""
+    sleeps: list[float] = []
+
+    async def spy_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr("catalyst_data.retry.asyncio.sleep", spy_sleep)
+
+    call_count = 0
+
+    async def fake_get(url, params=None):
+        nonlocal call_count
+        call_count += 1
+        resp = MagicMock()
+        if call_count == 1:
+            resp.status_code = 429
+            resp.text = "rate limited"
+            resp.headers = {"retry-after": "20"}
+        else:
+            resp.status_code = 200
+            resp.json.return_value = [{"revenue": 100}]
+            resp.headers = {}
+        return resp
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(side_effect=fake_get)
+
+    fetch = create_fmp_fetcher(api_key="test-key", client=mock_client)
+    result = await fetch("NVDA", "income_statement", "2025-01-01")
+
+    assert result.status == 200
+    assert call_count == 2
+    # Must have slept 20s (from header), not 2s (exponential)
+    assert sleeps == [20.0]
 
 
 if __name__ == "__main__":

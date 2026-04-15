@@ -281,7 +281,7 @@ def test_critic_threshold_boundary_included():
 
 def test_critic_retries_invoke_exception_then_succeeds(monkeypatch):
     sleeps = []
-    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", sleeps.append)
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)
 
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     llm = FlakyLLM(failures=2)
@@ -295,7 +295,7 @@ def test_critic_retries_invoke_exception_then_succeeds(monkeypatch):
 
 def test_critic_three_failures_return_empty_evidence(monkeypatch):
     sleeps = []
-    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", sleeps.append)
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)
 
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     llm = FlakyLLM(failures=3)
@@ -310,7 +310,7 @@ def test_critic_three_failures_return_empty_evidence(monkeypatch):
 
 def test_critic_bad_json_returns_empty_evidence_after_retries(monkeypatch):
     sleeps = []
-    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", sleeps.append)
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)
 
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     llm = BadJsonLLM()
@@ -325,7 +325,7 @@ def test_critic_bad_json_returns_empty_evidence_after_retries(monkeypatch):
 
 def test_critic_schema_invalid_json_returns_empty_evidence_after_retries(monkeypatch):
     sleeps = []
-    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", sleeps.append)
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)
 
     invalid_schema_response = json.dumps({
         "graded_chunks": [
@@ -466,7 +466,7 @@ def test_route_judge_when_evidence_present():
 def test_critic_failure_sets_error_type(monkeypatch):
     """LLM connection failure must set error_type='system_error' in the returned state."""
     sleeps = []
-    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", sleeps.append)
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)
 
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     llm = FlakyLLM(failures=3)

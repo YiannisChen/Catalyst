@@ -3,8 +3,9 @@
 Provides build_attribution_graph() which wires Miner → Critic → Judge
 with conditional routing on evidence quality.
 
-If langgraph is installed, uses real StateGraph.
-If not, provides a lightweight sequential runner for testing.
+langgraph is a required dependency — there is no fallback runner.  If it
+is missing, build_attribution_graph raises ImportError immediately so the
+failure is explicit (BUG-009).
 
 Spec reference: Section 4.4 — Graph Construction.
 """
@@ -83,9 +84,9 @@ def build_attribution_graph(
     Dependencies are bound via functools.partial so nodes receive their
     injected deps when invoked by the graph runner.
 
-    Attempts to use langgraph.graph.StateGraph when available. Falls back
-    to a lightweight _SequentialRunner for environments where langgraph is
-    not installed (e.g., CI, tests).
+    Uses the real ``langgraph.graph.StateGraph``.  ``langgraph`` is a required
+    dependency (see ``pyproject.toml``); if it is missing the import fails
+    loudly at call time — no silent fallback (BUG-009).
 
     Args:
         use_critic:   When True, inserts the Critic node and conditional routing
@@ -97,115 +98,41 @@ def build_attribution_graph(
         llm:          LLM client passed to Critic and Judge nodes.
 
     Returns:
-        An object with .invoke(state: dict) -> dict. Either a compiled
-        langgraph StateGraph or a _SequentialRunner instance.
+        A compiled langgraph StateGraph with ``.invoke(state: dict) -> dict``.
     """
+    from langgraph.graph import StateGraph, END
+
     # Bind dependencies to nodes via partial application
     bound_miner = partial(miner, table=table, embedding_fn=embedding_fn, reranker=reranker)
     bound_critic = partial(critic, llm=llm)
     bound_judge = partial(judge, llm=llm)
 
-    try:
-        from langgraph.graph import StateGraph, END  # type: ignore[import]
+    graph = StateGraph(AttributionState)
+    graph.add_node("miner", bound_miner)
+    graph.add_node("judge", bound_judge)
+    graph.add_node("insufficient_handler", insufficient_handler)
+    graph.add_node("system_error_handler", system_error_handler)
+    graph.add_node("baseline_prepare_evidence", baseline_prepare_evidence)
 
-        graph = StateGraph(AttributionState)
-        graph.add_node("miner", bound_miner)
-        graph.add_node("judge", bound_judge)
-        graph.add_node("insufficient_handler", insufficient_handler)
-        graph.add_node("system_error_handler", system_error_handler)
-        graph.add_node("baseline_prepare_evidence", baseline_prepare_evidence)
+    graph.set_entry_point("miner")
 
-        graph.set_entry_point("miner")
-
-        if use_critic:
-            graph.add_node("critic", bound_critic)
-            graph.add_edge("miner", "critic")
-            graph.add_conditional_edges(
-                "critic",
-                route_after_critic,
-                {
-                    "judge": "judge",
-                    "insufficient": "insufficient_handler",
-                    "system_error": "system_error_handler",
-                },
-            )
-        else:
-            graph.add_edge("miner", "baseline_prepare_evidence")
-            graph.add_edge("baseline_prepare_evidence", "judge")
-
-        graph.add_edge("judge", END)
-        graph.add_edge("insufficient_handler", END)
-        graph.add_edge("system_error_handler", END)
-        return graph.compile()
-
-    except ImportError:
-        # Fallback: lightweight sequential runner when langgraph is not installed
-        return _SequentialRunner(
-            bound_miner=bound_miner,
-            bound_critic=bound_critic,
-            bound_judge=bound_judge,
-            insufficient_handler=insufficient_handler,
-            system_error_handler=system_error_handler,
-            use_critic=use_critic,
+    if use_critic:
+        graph.add_node("critic", bound_critic)
+        graph.add_edge("miner", "critic")
+        graph.add_conditional_edges(
+            "critic",
+            route_after_critic,
+            {
+                "judge": "judge",
+                "insufficient": "insufficient_handler",
+                "system_error": "system_error_handler",
+            },
         )
+    else:
+        graph.add_edge("miner", "baseline_prepare_evidence")
+        graph.add_edge("baseline_prepare_evidence", "judge")
 
-
-# ---------------------------------------------------------------------------
-# Fallback runner
-# ---------------------------------------------------------------------------
-
-class _SequentialRunner:
-    """Minimal graph runner for environments where langgraph is not installed.
-
-    Executes nodes in the same topological order as the real StateGraph would,
-    including the conditional routing decision after the Critic node.
-    State is mutated in-place after each node via dict.update().
-    """
-
-    def __init__(
-        self,
-        *,
-        bound_miner,
-        bound_critic,
-        bound_judge,
-        insufficient_handler,
-        system_error_handler,
-        use_critic: bool,
-    ) -> None:
-        self._miner = bound_miner
-        self._critic = bound_critic
-        self._judge = bound_judge
-        self._insufficient = insufficient_handler
-        self._system_error = system_error_handler
-        self._use_critic = use_critic
-
-    def invoke(self, state: dict) -> dict:
-        """Run the pipeline sequentially and return the final state.
-
-        Args:
-            state: Starting AttributionState dict. Modified in-place.
-
-        Returns:
-            The state dict after all nodes have executed.
-        """
-        # Miner — deterministic retrieval
-        state.update(self._miner(state))
-
-        if self._use_critic:
-            # Critic — evidence grading
-            state.update(self._critic(state))
-
-            # Conditional routing after Critic
-            route = route_after_critic(state)
-            if route == "system_error":
-                state.update(self._system_error(state))
-                return state
-            if route == "insufficient":
-                state.update(self._insufficient(state))
-                return state
-        else:
-            state.update(baseline_prepare_evidence(state))
-
-        # Judge — synthesis
-        state.update(self._judge(state))
-        return state
+    graph.add_edge("judge", END)
+    graph.add_edge("insufficient_handler", END)
+    graph.add_edge("system_error_handler", END)
+    return graph.compile()

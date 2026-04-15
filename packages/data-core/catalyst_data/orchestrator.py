@@ -3,13 +3,22 @@
 External callers invoke ``process_request`` with a ticker, date, and list of
 logical source names.  The orchestrator fans out to physical endpoints, runs the
 full Bronze-to-Silver pipeline, and persists results to SQLite.
+
+Concurrency model (BUG-003 / BUG-004):
+  Sources are processed concurrently via ``asyncio.gather``.  SQLite writes are
+  offloaded to a thread pool via ``asyncio.to_thread`` so they never block the
+  event loop.  Each thread-bound worker opens its own ``sqlite3.Connection`` from
+  ``db_path`` to avoid cross-thread connection sharing (sqlite3 is not thread-safe
+  when sharing a single connection object).
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
+from pathlib import Path
 from typing import Any, Callable, Awaitable
 
 from catalyst_data.connectors.base import FetchResult
@@ -19,6 +28,7 @@ from catalyst_data.pipeline.transform import run_transform
 from catalyst_data.source_mapping import map_logical_source
 from catalyst_data.storage.sqlite import (
     compute_asset_id,
+    init_db,
     upsert_clean_asset,
     upsert_raw_asset,
 )
@@ -50,11 +60,59 @@ async def _fetch_endpoints(
     return results
 
 
+def _store_bronze_and_silver(
+    db_path: str | Path,
+    *,
+    asset_id: str,
+    ticker: str,
+    source: str,
+    date: str,
+    raw_bytes: bytes,
+    http_status: int | None,
+    endpoints: list[str],
+    content_md: str,
+) -> str | None:
+    """Synchronous helper that writes Bronze + Silver in one thread-safe call.
+
+    Opens its own ``sqlite3.Connection`` so it can be safely invoked via
+    ``asyncio.to_thread`` without sharing a connection across threads.
+
+    Returns None on success or an error string on failure.
+    """
+    conn = sqlite3.connect(str(db_path))
+    init_db(conn)
+    try:
+        upsert_raw_asset(
+            conn,
+            asset_id=asset_id,
+            ticker=ticker,
+            source_type=source,
+            reference_date=date,
+            content_raw=raw_bytes,
+            http_status=http_status,
+            metadata={"endpoints": endpoints},
+        )
+        upsert_clean_asset(
+            conn,
+            asset_id=asset_id,
+            ticker=ticker,
+            source_type=source,
+            reference_date=date,
+            content_md=content_md,
+        )
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Storage failed for %s: %s", asset_id, exc)
+        return str(exc)
+    finally:
+        conn.close()
+
+
 async def _process_source(
     ticker: str,
     date: str,
     source: str,
-    conn: sqlite3.Connection,
+    db_path: str | Path,
     fetch_fn: FetchFn,
 ) -> dict[str, Any]:
     """Run the full pipeline for a single logical source.
@@ -106,32 +164,13 @@ async def _process_source(
 
     validated_data = ingest_result.data
 
-    # 4. Store Bronze (raw_assets)
+    # 4. Prepare data for storage
     asset_id = compute_asset_id(ticker, date, source)
     raw_bytes = json.dumps(validated_data, default=str).encode("utf-8")
 
-    # Use the first successful HTTP status for metadata
     first_status = next(
         (r.status for r in fetch_results.values() if r.status == 200), None
     )
-
-    try:
-        upsert_raw_asset(
-            conn,
-            asset_id=asset_id,
-            ticker=ticker,
-            source_type=source,
-            reference_date=date,
-            content_raw=raw_bytes,
-            http_status=first_status,
-            metadata={"endpoints": endpoints},
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to store Bronze asset %s: %s", asset_id, exc)
-        summary["error"] = f"bronze_storage: {exc}"
-        return summary
-
-    summary["asset_id"] = asset_id
 
     # 5. Clean
     clean_result = run_clean(validated_data, source)
@@ -153,19 +192,22 @@ async def _process_source(
 
     content_md = transform_result.data
 
-    # 7. Store Silver (clean_assets)
-    try:
-        upsert_clean_asset(
-            conn,
-            asset_id=asset_id,
-            ticker=ticker,
-            source_type=source,
-            reference_date=date,
-            content_md=content_md,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to store Silver asset %s: %s", asset_id, exc)
-        summary["error"] = f"silver_storage: {exc}"
+    # 7. Store Bronze + Silver (offloaded to thread pool to avoid blocking loop)
+    summary["asset_id"] = asset_id
+    storage_err = await asyncio.to_thread(
+        _store_bronze_and_silver,
+        db_path,
+        asset_id=asset_id,
+        ticker=ticker,
+        source=source,
+        date=date,
+        raw_bytes=raw_bytes,
+        http_status=first_status,
+        endpoints=endpoints,
+        content_md=content_md,
+    )
+    if storage_err:
+        summary["error"] = f"storage: {storage_err}"
         return summary
 
     summary["ok"] = True
@@ -176,9 +218,11 @@ async def process_request(
     ticker: str,
     date: str,
     sources: list[str],
-    conn: sqlite3.Connection,
+    db_path: str | Path,
     fetch_fn: FetchFn,
     limiter: Any | None = None,
+    *,
+    conn: sqlite3.Connection | None = None,
 ) -> list[dict]:
     """Orchestrate the full data pipeline for one ticker/date across sources.
 
@@ -190,12 +234,17 @@ async def process_request(
         Reference date in ``YYYY-MM-DD`` format.
     sources : list[str]
         Logical source names, e.g. ``["polygon_news", "fmp_fundamentals"]``.
-    conn : sqlite3.Connection
-        Open database connection with schema initialised.
+    db_path : str | Path
+        Path to the SQLite database file (or ``":memory:"``).  Each source
+        opens its own connection from this path so writes never block the
+        event loop and concurrent sources don't share a connection object.
     fetch_fn : async callable
         ``async def fetch(ticker, endpoint, date) -> FetchResult``.
     limiter : optional
         Reserved for future rate-limiter integration.
+    conn : sqlite3.Connection | None
+        **Deprecated.** Ignored — kept for backward compatibility only.  Pass
+        ``db_path`` instead.
 
     Returns
     -------
@@ -203,22 +252,21 @@ async def process_request(
         One summary dict per source with keys: source, ok, asset_id, error,
         stage_latencies.
     """
-    results: list[dict] = []
 
-    for source in sources:
+    async def _safe_process(source: str) -> dict:
         try:
-            summary = await _process_source(
-                ticker, date, source, conn, fetch_fn,
+            return await _process_source(
+                ticker, date, source, db_path, fetch_fn,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Unhandled error processing source %s: %s", source, exc)
-            summary = {
+            return {
                 "source": source,
                 "ok": False,
                 "asset_id": None,
                 "error": f"unhandled: {exc}",
                 "stage_latencies": {},
             }
-        results.append(summary)
 
-    return results
+    results = await asyncio.gather(*[_safe_process(s) for s in sources])
+    return list(results)

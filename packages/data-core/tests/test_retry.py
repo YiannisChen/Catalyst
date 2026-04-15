@@ -1,10 +1,14 @@
 import unittest
 
+import pytest
+
+from catalyst_data.connectors.base import FetchResult
 from catalyst_data.retry import (
     ErrorClass,
     classify_error,
     compute_backoff,
     should_retry,
+    with_retry,
     MAX_RETRIES,
 )
 
@@ -60,6 +64,9 @@ class TestComputeBackoff(unittest.TestCase):
         with self.assertRaises(ValueError):
             compute_backoff(0)
 
+    def test_retry_after_overrides_exponential(self):
+        self.assertAlmostEqual(compute_backoff(1, retry_after=10.0), 10.0)
+
 
 class TestShouldRetry(unittest.TestCase):
     def test_below_max_true(self):
@@ -71,6 +78,177 @@ class TestShouldRetry(unittest.TestCase):
 
     def test_above_max_false(self):
         self.assertFalse(should_retry(MAX_RETRIES + 5))
+
+
+# ---------------------------------------------------------------------------
+# with_retry integration tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_with_retry_429_then_success(monkeypatch):
+    """First call returns 429, second returns 200 — retry succeeds."""
+    async def noop_sleep(_): pass
+    monkeypatch.setattr("catalyst_data.retry.asyncio.sleep", noop_sleep)
+
+    call_count = 0
+
+    async def flaky_fetch(ticker, endpoint, date):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return FetchResult(status=429, error="Rate limited", source_label="test")
+        return FetchResult(status=200, data={"ok": True}, source_label="test")
+
+    wrapped = with_retry(flaky_fetch)
+    result = await wrapped("AAPL", "news", "2026-01-15")
+    assert result.status == 200
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_with_retry_5xx_then_success(monkeypatch):
+    """First call returns 503, second returns 200."""
+    async def noop_sleep(_): pass
+    monkeypatch.setattr("catalyst_data.retry.asyncio.sleep", noop_sleep)
+
+    call_count = 0
+
+    async def flaky_fetch(ticker, endpoint, date):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return FetchResult(status=503, error="Service unavailable", source_label="test")
+        return FetchResult(status=200, data={"ok": True}, source_label="test")
+
+    wrapped = with_retry(flaky_fetch)
+    result = await wrapped("AAPL", "news", "2026-01-15")
+    assert result.status == 200
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_with_retry_exhausted_returns_last_error(monkeypatch):
+    """All 3 attempts fail — returns last result with exhaustion message."""
+    async def noop_sleep(_): pass
+    monkeypatch.setattr("catalyst_data.retry.asyncio.sleep", noop_sleep)
+
+    call_count = 0
+
+    async def always_fail(ticker, endpoint, date):
+        nonlocal call_count
+        call_count += 1
+        return FetchResult(status=500, error="Server error", source_label="test")
+
+    wrapped = with_retry(always_fail)
+    result = await wrapped("AAPL", "news", "2026-01-15")
+    assert result.status == 500
+    assert "exhausted" in result.error.lower()
+    assert call_count == MAX_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_with_retry_non_retryable_returns_immediately(monkeypatch):
+    """404 is not retryable — should return after first call."""
+    async def noop_sleep(_): pass
+    monkeypatch.setattr("catalyst_data.retry.asyncio.sleep", noop_sleep)
+
+    call_count = 0
+
+    async def not_found(ticker, endpoint, date):
+        nonlocal call_count
+        call_count += 1
+        return FetchResult(status=404, error="Not found", source_label="test")
+
+    wrapped = with_retry(not_found)
+    result = await wrapped("AAPL", "news", "2026-01-15")
+    assert result.status == 404
+    assert call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_with_retry_429_structured_retry_after_used(monkeypatch):
+    """429 with retry_after_seconds field should sleep that value, not exponential."""
+    async def noop_sleep(_): pass
+    sleeps: list[float] = []
+
+    async def spy_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr("catalyst_data.retry.asyncio.sleep", spy_sleep)
+
+    call_count = 0
+
+    async def rate_limited_then_ok(ticker, endpoint, date):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return FetchResult(
+                status=429, error="Rate limited",
+                source_label="test", retry_after_seconds=30.0,
+            )
+        return FetchResult(status=200, data={"ok": True}, source_label="test")
+
+    wrapped = with_retry(rate_limited_then_ok)
+    result = await wrapped("AAPL", "news", "2026-01-15")
+    assert result.status == 200
+    assert call_count == 2
+    # Should have used the structured 30s, not the exponential 2s
+    assert sleeps == [30.0]
+
+
+@pytest.mark.asyncio
+async def test_with_retry_429_no_header_uses_exponential(monkeypatch):
+    """429 without retry_after_seconds should use exponential backoff."""
+    sleeps: list[float] = []
+
+    async def spy_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr("catalyst_data.retry.asyncio.sleep", spy_sleep)
+
+    call_count = 0
+
+    async def rate_limited_then_ok(ticker, endpoint, date):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return FetchResult(
+                status=429, error="Rate limited",
+                source_label="test",
+                # retry_after_seconds is None (default)
+            )
+        return FetchResult(status=200, data={"ok": True}, source_label="test")
+
+    wrapped = with_retry(rate_limited_then_ok)
+    result = await wrapped("AAPL", "news", "2026-01-15")
+    assert result.status == 200
+    # Exponential backoff attempt=1: 2.0
+    assert sleeps == [2.0]
+
+
+@pytest.mark.asyncio
+async def test_with_retry_5xx_uses_exponential(monkeypatch):
+    """5xx should always use exponential backoff (no retry-after)."""
+    sleeps: list[float] = []
+
+    async def spy_sleep(s):
+        sleeps.append(s)
+
+    monkeypatch.setattr("catalyst_data.retry.asyncio.sleep", spy_sleep)
+
+    call_count = 0
+
+    async def server_error_then_ok(ticker, endpoint, date):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return FetchResult(status=503, error="Service unavailable", source_label="test")
+        return FetchResult(status=200, data={"ok": True}, source_label="test")
+
+    wrapped = with_retry(server_error_then_ok)
+    result = await wrapped("AAPL", "news", "2026-01-15")
+    assert result.status == 200
+    assert sleeps == [2.0]
 
 
 if __name__ == "__main__":

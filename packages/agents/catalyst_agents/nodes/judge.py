@@ -7,13 +7,13 @@ Spec reference: Section 4.3 — Judge Node.
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from typing import Any
 
 from catalyst_agents.state import AttributionState
 from catalyst_agents.cost_tracker import track_cost
 from catalyst_agents.nodes.critic import insufficient_handler
+from catalyst_agents.backoff import invoke_with_retries, MAX_RETRIES
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -21,8 +21,6 @@ from catalyst_agents.nodes.critic import insufficient_handler
 
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "judge.md"
 MAX_CAUSES = 5
-MAX_RETRIES = 3
-BASE_BACKOFF_SECONDS = 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -148,37 +146,29 @@ def judge(state: AttributionState, *, llm: Any = None) -> dict:
         evidence_formatted=_format_evidence(graded, reranked),
     )
 
-    last_error: Exception | None = None
-    for attempt in range(MAX_RETRIES):
-        try:
-            response = llm.invoke(prompt)
-            track_cost(state, "judge", response)
+    try:
+        response, parsed = invoke_with_retries(
+            llm, prompt, parse_fn=_parse_judge_response, node_name="Judge",
+        )
+        track_cost(state, "judge", response)
+        causes = parsed.get("causes", [])[:MAX_CAUSES]
 
-            parsed = _parse_judge_response(response.content)
-            causes = parsed.get("causes", [])[:MAX_CAUSES]
+        # Compute grounding rate from our side (independent of LLM's self-check)
+        available_ids = {ev.get("chunk_id", "") for ev in graded}
+        grounding = _compute_grounding_rate(causes, available_ids)
 
-            # Compute grounding rate from our side (independent of LLM's self-check)
-            available_ids = {ev.get("chunk_id", "") for ev in graded}
-            grounding = _compute_grounding_rate(causes, available_ids)
-
-            return {
-                "causes": causes,
-                "summary_md": parsed.get("summary_md", ""),
-                "grounding_rate": grounding,
-                "cost_breakdown": state.get("cost_breakdown", []),
-                "total_cost_usd": state.get("total_cost_usd", 0.0),
-                "total_tokens": state.get("total_tokens", 0),
-            }
-        except Exception as exc:  # pragma: no cover - exercised by tests via fallback behavior
-            last_error = exc
-            if attempt < MAX_RETRIES - 1:
-                time.sleep(BASE_BACKOFF_SECONDS * (2 ** attempt))
-
-    fallback = insufficient_handler(state)
-    fallback["summary_md"] = (
-        f"{fallback['summary_md']} Judge failed after {MAX_RETRIES} attempts: {last_error}"
-    )
-    fallback["cost_breakdown"] = state.get("cost_breakdown", [])
-    fallback["total_cost_usd"] = state.get("total_cost_usd", 0.0)
-    fallback["total_tokens"] = state.get("total_tokens", 0)
-    return fallback
+        return {
+            "causes": causes,
+            "summary_md": parsed.get("summary_md", ""),
+            "grounding_rate": grounding,
+            "cost_breakdown": state.get("cost_breakdown", []),
+            "total_cost_usd": state.get("total_cost_usd", 0.0),
+            "total_tokens": state.get("total_tokens", 0),
+        }
+    except RuntimeError as exc:
+        fallback = insufficient_handler(state)
+        fallback["summary_md"] = f"{fallback['summary_md']} {exc}"
+        fallback["cost_breakdown"] = state.get("cost_breakdown", [])
+        fallback["total_cost_usd"] = state.get("total_cost_usd", 0.0)
+        fallback["total_tokens"] = state.get("total_tokens", 0)
+        return fallback

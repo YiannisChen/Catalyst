@@ -395,7 +395,7 @@ def test_judge_cause_fields_preserved():
 
 def test_judge_retries_invoke_exception_then_succeeds(monkeypatch):
     sleeps = []
-    monkeypatch.setattr("catalyst_agents.nodes.judge.time.sleep", sleeps.append)
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)
 
     state = _fresh_state()
     llm = FlakyLLM(failures=2)
@@ -409,7 +409,7 @@ def test_judge_retries_invoke_exception_then_succeeds(monkeypatch):
 
 def test_judge_three_failures_return_fallback(monkeypatch):
     sleeps = []
-    monkeypatch.setattr("catalyst_agents.nodes.judge.time.sleep", sleeps.append)
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)
 
     state = _fresh_state()
     llm = FlakyLLM(failures=3)
@@ -425,7 +425,7 @@ def test_judge_three_failures_return_fallback(monkeypatch):
 
 def test_judge_bad_json_returns_fallback(monkeypatch):
     sleeps = []
-    monkeypatch.setattr("catalyst_agents.nodes.judge.time.sleep", sleeps.append)
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)
 
     state = _fresh_state()
     llm = BadJsonLLM()

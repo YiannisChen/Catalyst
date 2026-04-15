@@ -6,12 +6,24 @@ from typing import Callable, Awaitable, TYPE_CHECKING
 import httpx
 
 from catalyst_data.connectors.base import FetchResult
+from catalyst_data.retry import with_retry
 
 if TYPE_CHECKING:
     from catalyst_data.rate_limiter import TokenBucketLimiter
 
 # FMP deprecated path-style v3 for many plans; Playground uses /stable/ with ?symbol=.
 FMP_BASE_URL = "https://financialmodelingprep.com/stable"
+
+
+def _parse_retry_after(resp: httpx.Response) -> float | None:
+    """Extract Retry-After header value as seconds, or None if absent/unparseable."""
+    raw = resp.headers.get("retry-after")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        return None
 
 ENDPOINT_PATH_MAP = {
     "income_statement": "income-statement",
@@ -59,11 +71,14 @@ def create_fmp_fetcher(
             error_message = f"FMP {resp.status_code}"
             if error_text:
                 error_message = f"{error_message}: {error_text}"
+
+            retry_after = _parse_retry_after(resp)
             return FetchResult(
                 status=resp.status_code,
                 error=error_message,
                 latency_ms=latency,
                 source_label=f"fmp:{endpoint}",
+                retry_after_seconds=retry_after,
             )
         except (httpx.TimeoutException, httpx.ReadTimeout) as e:
             latency = (time.monotonic() - start) * 1000
@@ -85,4 +100,4 @@ def create_fmp_fetcher(
             if own_client:
                 await c.aclose()
 
-    return fetch
+    return with_retry(fetch)

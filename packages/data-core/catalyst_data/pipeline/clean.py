@@ -1,27 +1,18 @@
 from __future__ import annotations
 
-import hashlib
-import re
 import time
-from datetime import datetime
 from typing import Any
 
+from catalyst_data.dedup.hard import deduplicate_articles
 from catalyst_data.pipeline.stages import StageResult
 
 
-def _compute_dedup_fingerprint(title: str, published_utc: str) -> str:
-    """Fingerprint an article by normalised title and 2-hour time window."""
-    title_norm = re.sub(r"[^\w\s]", "", title).lower().strip()
-    dt = datetime.fromisoformat(published_utc.replace("Z", "+00:00"))
-    window = dt.replace(
-        hour=(dt.hour // 2) * 2, minute=0, second=0, microsecond=0
-    )
-    raw = f"{title_norm}|{window.isoformat()}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
-
-
 def _clean_news(raw_data: dict) -> list[dict]:
-    """Deduplicate news articles by title + 2-hour window."""
+    """Normalize and deduplicate news articles.
+
+    Dedup uses the single authoritative implementation in ``dedup.hard``
+    (title fingerprint + 2-hour time window).
+    """
     if isinstance(raw_data, dict) and len(raw_data) == 1:
         only_value = next(iter(raw_data.values()))
         if isinstance(only_value, dict):
@@ -37,22 +28,10 @@ def _clean_news(raw_data: dict) -> list[dict]:
     elif not isinstance(articles, list):
         articles = []
 
-    seen: set[str] = set()
-    deduped: list[dict] = []
-    for article in articles:
-        if not isinstance(article, dict):
-            continue
-        title = article.get("title", "")
-        published = article.get("published_utc", "")
-        if not title or not published:
-            deduped.append(article)
-            continue
-        fp = _compute_dedup_fingerprint(title, published)
-        if fp not in seen:
-            seen.add(fp)
-            deduped.append(article)
+    # Filter non-dict entries before dedup
+    articles = [a for a in articles if isinstance(a, dict)]
 
-    return deduped
+    return deduplicate_articles(articles)
 
 
 def _clean_fundamentals(raw_data: dict) -> dict[str, Any]:

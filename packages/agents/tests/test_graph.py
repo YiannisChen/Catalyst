@@ -232,7 +232,7 @@ def test_mcj_graph_critic_failure_routes_to_system_error(monkeypatch):
     import catalyst_data.storage.lancedb_store as lancedb_mod
 
     monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
-    monkeypatch.setattr("catalyst_agents.nodes.critic.time.sleep", lambda _: None)
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", lambda _: None)
 
     graph = build_attribution_graph(use_critic=True, llm=FailingLLM())
     result = graph.invoke(_base_state())
@@ -246,7 +246,7 @@ def test_baseline_graph_judge_failure_falls_back_instead_of_crashing(monkeypatch
     import catalyst_data.storage.lancedb_store as lancedb_mod
 
     monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
-    monkeypatch.setattr("catalyst_agents.nodes.judge.time.sleep", lambda _: None)
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", lambda _: None)
 
     graph = build_attribution_graph(use_critic=False, llm=FailingLLM())
     result = graph.invoke(_base_state())
