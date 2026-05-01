@@ -1,0 +1,41 @@
+{
+  "generated_at": "2026-04-26T15:47:48",
+  "tickers": [
+    "AMZN"
+  ],
+  "dates": [
+    "2026-04-23",
+    "2026-04-24"
+  ],
+  "sources": [
+    "polygon_ohlcv"
+  ],
+  "min_news_chars": 200,
+  "summaries": [
+    {
+      "source": "polygon_ohlcv",
+      "provider": "polygon",
+      "runs_total": 2,
+      "run_ok_rate": 0.0,
+      "endpoint_ok_rate": 0.0,
+      "avg_endpoint_latency_ms": 6004.422624595463,
+      "ingest_ok_rate": 0.0,
+      "clean_ok_rate": 0.0,
+      "transform_ok_rate": 0.0,
+      "avg_payload_bytes": 0.0,
+      "avg_markdown_chars": 0.0,
+      "is_news_source": false,
+      "articles_total": null,
+      "articles_with_body_rate": null,
+      "rag_eligible_rate": null,
+      "median_article_chars": null,
+      "mean_article_chars": null,
+      "p90_article_chars": null,
+      "short_text_threshold": null,
+      "missing_title_rate": null,
+      "missing_published_rate": null,
+      "missing_url_rate": null,
+      "recommendation": "fallback_only_unstable"
+    }
+  ]
+}
