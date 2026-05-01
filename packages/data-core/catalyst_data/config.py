@@ -9,6 +9,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _DEFAULT_DB_PATH = Path("data") / "catalyst_dev.db"
 
 
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    return int(raw) if raw is not None else default
+
+
 @dataclass
 class RatePolicy:
     min_interval_sec: float  # minimum time between requests
@@ -22,6 +27,13 @@ def db_path() -> Path:
         "CATALYST_DB_PATH"
     ) else _DEFAULT_DB_PATH
     return configured if configured.is_absolute() else _REPO_ROOT / configured
+
+
+RAG_MIN_CHAR_COUNT = _int_env("CATALYST_RAG_MIN_CHAR_COUNT", 200)
+TARGET_LANGUAGE = os.environ.get("CATALYST_TARGET_LANGUAGE", "en")
+TEMPLATE_SPAM_DUPLICATE_THRESHOLD = _int_env(
+    "CATALYST_TEMPLATE_SPAM_DUPLICATE_THRESHOLD", 5
+)
 
 
 RATE_POLICIES = {
