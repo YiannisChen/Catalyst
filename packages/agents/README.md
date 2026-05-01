@@ -1,6 +1,13 @@
 # catalyst-agents
 
 Miner-Critic-Judge attribution workflow for Catalyst.
+# catalyst-agents
+
+The agent control plane for Catalyst — an **evidence-bounded** explanation system.
+This package implements the policy-driven graph (Parser -> RetrievalPolicy -> Miner ->
+Critic -> DecisionRouter -> Validator -> Finalizer) that enforces evidence validity,
+explicit refusal states (SUFFICIENT / PARTIAL / INSUFFICIENT / SYSTEM_ERROR),
+single-trace replayability, and failure-taxonomy governance over one-shot LLM answers.
 
 ## Local Dev Setup
 
