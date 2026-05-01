@@ -1,3 +1,5 @@
+> Supporting reference; canonical source: `docs/superpowers/specs/2026-04-27-catalyst-fullversion-strategy.md` (strategy), `docs/full-version-execution-spec.md` (technical), `docs/current_situation.md` (status).
+
 # Reference Projects Analysis
 
 > Context-loading guide for Claude Code sessions. Maps 13 open-source projects in `~/Desktop/references/` to Catalyst's three pillars: **data-core**, **agent engine**, and **eval suite**.

@@ -1,3 +1,5 @@
+> Supporting reference; canonical source: `docs/superpowers/specs/2026-04-27-catalyst-fullversion-strategy.md` (strategy), `docs/full-version-execution-spec.md` (technical), `docs/current_situation.md` (status).
+
 # Finnhub REST API — Catalyst Data-Core
 
 > **Scope:** REST v1 reference and free-tier mapping. Authoritative detail: [Finnhub API docs](https://finnhub.io/docs/api), [Pricing](https://finnhub.io/pricing). **Convention:** [README](./README.md).

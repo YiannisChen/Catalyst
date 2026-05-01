@@ -1,3 +1,5 @@
+> Supporting reference; canonical source: `docs/superpowers/specs/2026-04-27-catalyst-fullversion-strategy.md` (strategy), `docs/full-version-execution-spec.md` (technical), `docs/current_situation.md` (status).
+
 # GDELT API — Catalyst Data-Core
 
 > **Scope:** Project reference for **DOC 2.0**, **GEO 2.0**, and **Context 2.0**, distilled from GDELT blog posts. Official project: [GDELT Project](https://www.gdeltproject.org/).

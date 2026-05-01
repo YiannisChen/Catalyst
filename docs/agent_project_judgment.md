@@ -1,3 +1,5 @@
+> Supporting reference; canonical source: `docs/superpowers/specs/2026-04-27-catalyst-fullversion-strategy.md` (strategy), `docs/full-version-execution-spec.md` (technical), `docs/current_situation.md` (status).
+
 # Is Your Agent Project a Toy? (Rubric + Catalyst Self-Check)
 
 **Source:** Paraphrased engineering hiring heuristics (original notes: informal discussion summarized as a self-audit checklist).  

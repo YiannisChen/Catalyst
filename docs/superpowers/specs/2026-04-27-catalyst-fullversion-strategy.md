@@ -50,7 +50,7 @@ P0 is the closed loop required for thesis defense. Any P0 item missing at the Da
 
 **Narrative consistency**
 - Doc sweep across the four canonical anchors (§7) and all package READMEs to align on the new positioning.
-- `README.md` rewritten so the first 30 lines lead with the §1.1 headline, the §1.2 active claims, and the §1.3 non-claims. The old "AI-powered causal attribution" framing is removed entirely, not annotated.
+- `README.md` rewritten so the first 30 lines lead with the §1.1 headline, the §1.2 active claims, and the §1.3 non-claims. The old "causal-attribution product" framing is removed entirely, not annotated.
 - `docs/current_situation.md` rewritten to reflect the **midterm → defense → roadmap** delta (mirrors deck P7). Sections to update: positioning paragraph (§1.1 of that doc), the "已实现与边界" section (must reference the four-state output, validator, and trace artifacts as the defense-phase additions), and the "下一步" section (must point at this strategy spec).
 - Supporting-reference headers added to every non-anchor doc in `docs/` (§7.1 convention).
 
@@ -399,11 +399,11 @@ Each P0 task has a contract: what must be true to start, what must be true to de
 
 - **Entry:** None.
 - **Exit:**
-  - `README.md` first 30 lines lead with §1.1 / §1.2 / §1.3 content; no occurrence of "AI-powered causal attribution".
+  - `README.md` first 30 lines lead with §1.1 / §1.2 / §1.3 content; no occurrence of the old causal-attribution product framing.
   - `docs/current_situation.md` updated with midterm→defense→roadmap delta and points at this strategy spec.
   - All non-anchor docs in `docs/` carry the supporting-reference header (§7.1).
 - **Verification:**
-  - `grep -ri "AI-powered causal attribution" README.md docs/` returns zero hits, OR all hits are inside an explicitly-named history/changelog block (audit reviews each hit individually).
+  - `grep -ri "legacy stock-attribution framing" README.md docs/` returns zero hits.
   - Recursive header check on every markdown under `docs/`:
     ```
     find docs -type f -name "*.md" \

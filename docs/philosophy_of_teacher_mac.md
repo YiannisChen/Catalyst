@@ -1,3 +1,5 @@
+> Supporting reference; canonical source: `docs/superpowers/specs/2026-04-27-catalyst-fullversion-strategy.md` (strategy), `docs/full-version-execution-spec.md` (technical), `docs/current_situation.md` (status).
+
 # Philosophy of Teacher Mac
 
 > Core mandate: elevate software projects from "toys" to "enterprise-grade engineering." Never build things just to build them — engineer systems that solve concrete business problems with rigorous, quantifiable proof.
