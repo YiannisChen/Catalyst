@@ -85,6 +85,13 @@ class AssetQualityEvaluation:
 
 
 @dataclass(frozen=True)
+class QualityAssessment:
+    is_rag_eligible: bool
+    quality_reason: str | None
+    quality_score: float
+
+
+@dataclass(frozen=True)
 class MigrationReport:
     db_path: Path
     clean_assets_count: int
@@ -173,17 +180,22 @@ def build_title_counts(records: list[CleanAssetRecord]) -> dict[str, int]:
     return counts
 
 
-def evaluate_asset_quality(
-    record: CleanAssetRecord,
-    title_counts: dict[str, int],
-) -> AssetQualityEvaluation:
-    title = extract_title(record.content_md)
-    source, published = extract_source_and_published(record.content_md)
-    body = extract_body_markdown(record.content_md)
-    char_count = len(body)
-    detected_language = detect_language(body)
+def assess_quality_fields(
+    *,
+    title: str | None,
+    source: str | None,
+    published_utc: str | None,
+    body_md: str,
+    title_counts: dict[str, int] | None = None,
+) -> QualityAssessment:
+    char_count = len(body_md)
+    detected_language = detect_language(body_md)
     normalized_title = normalize_title(title)
-    duplicate_count = title_counts.get(normalized_title, 0) if normalized_title else 0
+    duplicate_count = (
+        title_counts.get(normalized_title, 0)
+        if normalized_title and title_counts is not None
+        else 0
+    )
     is_template_or_spam = (
         normalized_title is not None
         and duplicate_count >= TEMPLATE_SPAM_DUPLICATE_THRESHOLD
@@ -192,7 +204,7 @@ def evaluate_asset_quality(
     checks = {
         "min_char_count": char_count >= RAG_MIN_CHAR_COUNT,
         "title": bool(title),
-        "published": bool(published),
+        "published": bool(published_utc),
         "source": bool(source),
         "language": detected_language == TARGET_LANGUAGE,
         "template_spam": not is_template_or_spam,
@@ -212,11 +224,32 @@ def evaluate_asset_quality(
         quality_reason = None
 
     quality_score = round(sum(checks.values()) / len(checks), 3)
-    return AssetQualityEvaluation(
-        asset_id=record.asset_id,
+    return QualityAssessment(
         is_rag_eligible=quality_reason is None,
         quality_reason=quality_reason,
         quality_score=quality_score,
+    )
+
+
+def evaluate_asset_quality(
+    record: CleanAssetRecord,
+    title_counts: dict[str, int],
+) -> AssetQualityEvaluation:
+    title = extract_title(record.content_md)
+    source, published = extract_source_and_published(record.content_md)
+    body = extract_body_markdown(record.content_md)
+    assessment = assess_quality_fields(
+        title=title,
+        source=source,
+        published_utc=published,
+        body_md=body,
+        title_counts=title_counts,
+    )
+    return AssetQualityEvaluation(
+        asset_id=record.asset_id,
+        is_rag_eligible=assessment.is_rag_eligible,
+        quality_reason=assessment.quality_reason,
+        quality_score=assessment.quality_score,
         evaluated_at=_now_iso(),
     )
 

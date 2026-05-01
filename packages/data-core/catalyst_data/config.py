@@ -14,6 +14,19 @@ def _int_env(name: str, default: int) -> int:
     return int(raw) if raw is not None else default
 
 
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    return float(raw) if raw is not None else default
+
+
+def _csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    values = tuple(part.strip() for part in raw.split(",") if part.strip())
+    return values or default
+
+
 @dataclass
 class RatePolicy:
     min_interval_sec: float  # minimum time between requests
@@ -33,6 +46,14 @@ RAG_MIN_CHAR_COUNT = _int_env("CATALYST_RAG_MIN_CHAR_COUNT", 200)
 TARGET_LANGUAGE = os.environ.get("CATALYST_TARGET_LANGUAGE", "en")
 TEMPLATE_SPAM_DUPLICATE_THRESHOLD = _int_env(
     "CATALYST_TEMPLATE_SPAM_DUPLICATE_THRESHOLD", 5
+)
+FALLBACK_PRICE_MOVE_THRESHOLD = _float_env(
+    "CATALYST_FALLBACK_PRICE_MOVE_THRESHOLD", 0.03
+)
+FALLBACK_RETRY_THRESHOLD = _int_env("CATALYST_FALLBACK_RETRY_THRESHOLD", 3)
+CROSS_SOURCE_PRIORITY = _csv_env(
+    "CATALYST_CROSS_SOURCE_PRIORITY",
+    ("polygon_news", "fmp_news", "finnhub_company_news", "gdelt_news"),
 )
 
 
