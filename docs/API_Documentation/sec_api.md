@@ -1,3 +1,5 @@
+> Supporting reference; canonical source: `docs/superpowers/specs/2026-04-27-catalyst-fullversion-strategy.md` (strategy), `docs/full-version-execution-spec.md` (technical), `docs/current_situation.md` (status).
+
 # SEC EDGAR Data APIs — Catalyst Data-Core
 
 > **Scope:** `data.sec.gov` JSON APIs, fair-access rules, bulk ZIPs. Primary sources: [EDGAR APIs](https://www.sec.gov/edgar/sec-api-documentation), [Developer Resources](https://www.sec.gov/developer). SEC page stamp reviewed: March 10, 2025. **Convention:** [README](./README.md).

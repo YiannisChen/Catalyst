@@ -1,10 +1,15 @@
 # Catalyst
 
-> **Why did this stock move?** — AI-powered causal attribution for US equity price movements.
+> **From prompt-driven attribution demo to evidence-bounded agent system.**
+>
+> Catalyst manages uncertainty under evidence constraints, demonstrated on financial event explanation as a high-noise, low-ground-truth testbed.
 
-Catalyst retrieves multi-source financial evidence (SEC filings, news, macro indicators, OHLCV prices), filters and grades it through a Miner-Critic-Judge agent pipeline, and produces structured attribution reports with confidence scores and source citations.
+Catalyst is an agent engineering showcase focused on evidence validity, refusal quality, replayability, and failure governance. It does not optimize for one-shot answer fluency and does not claim to prove true economic causality.
 
-**Midterm status note (April 2026):** the current frozen midterm scope is a package-level, script-driven prototype centered on `packages/data-core`, `packages/eval`, and `packages/agents`. This repo does **not** currently claim full API, frontend, or MCP completion for the midterm version.
+**Current scope (Defense P0):**
+- Evidence-bounded outputs with validator-enforced evidence references.
+- Explicit output states: `SUFFICIENT / PARTIAL / INSUFFICIENT / SYSTEM_ERROR`.
+- Traceable runs with reproducible eval artifacts and baseline comparison.
 
 ## Architecture
 

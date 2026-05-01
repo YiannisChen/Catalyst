@@ -1,3 +1,5 @@
+> Supporting reference; canonical source: `docs/superpowers/specs/2026-04-27-catalyst-fullversion-strategy.md` (strategy), `docs/full-version-execution-spec.md` (technical), `docs/current_situation.md` (status).
+
 # Polygon.io / Massive API — Catalyst Data-Core
 
 > **Scope:** REST / WebSocket / Flat Files overview. Branding is shifting to **Massive** (`api.massive.com`); billing may still read **Polygon.io**. Confirm **host and paths** in the [dashboard](https://polygon.io/dashboard). **Convention:** [README](./README.md).
