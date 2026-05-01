@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
+from pathlib import Path
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_DEFAULT_DB_PATH = Path("data") / "catalyst_dev.db"
 
 
 @dataclass
@@ -8,6 +14,14 @@ class RatePolicy:
     min_interval_sec: float  # minimum time between requests
     max_concurrent: int  # asyncio.Semaphore limit
     daily_budget: int | None  # None = unlimited
+
+
+def db_path() -> Path:
+    """Resolve the active Catalyst SQLite database path."""
+    configured = Path(os.environ["CATALYST_DB_PATH"]).expanduser() if os.environ.get(
+        "CATALYST_DB_PATH"
+    ) else _DEFAULT_DB_PATH
+    return configured if configured.is_absolute() else _REPO_ROOT / configured
 
 
 RATE_POLICIES = {
