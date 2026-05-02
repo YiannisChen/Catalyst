@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
+import re
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Awaitable, TYPE_CHECKING
 
@@ -10,7 +13,89 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-MAX_RETRIES = 3
+
+@dataclass(frozen=True)
+class RetryRule:
+    base_seconds: float
+    max_seconds: float
+    max_retries: int
+    jitter: bool = False
+    min_delay_seconds: float = 0.0
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    rate_limit: RetryRule
+    server_error: RetryRule
+    timeout: RetryRule
+
+
+RETRY_POLICIES = {
+    "polygon": RetryPolicy(
+        rate_limit=RetryRule(
+            base_seconds=60.0,
+            max_seconds=300.0,
+            max_retries=3,
+            jitter=True,
+            min_delay_seconds=60.0,
+        ),
+        server_error=RetryRule(
+            base_seconds=5.0,
+            max_seconds=60.0,
+            max_retries=5,
+            jitter=False,
+        ),
+        timeout=RetryRule(
+            base_seconds=0.0,
+            max_seconds=0.0,
+            max_retries=1,
+            jitter=False,
+        ),
+    ),
+    "fmp": RetryPolicy(
+        rate_limit=RetryRule(
+            base_seconds=60.0,
+            max_seconds=300.0,
+            max_retries=3,
+            jitter=True,
+            min_delay_seconds=60.0,
+        ),
+        server_error=RetryRule(
+            base_seconds=5.0,
+            max_seconds=20.0,
+            max_retries=3,
+            jitter=False,
+        ),
+        timeout=RetryRule(
+            base_seconds=5.0,
+            max_seconds=20.0,
+            max_retries=3,
+            jitter=False,
+        ),
+    ),
+    "fred": RetryPolicy(
+        rate_limit=RetryRule(
+            base_seconds=10.0,
+            max_seconds=30.0,
+            max_retries=3,
+            jitter=False,
+        ),
+        server_error=RetryRule(
+            base_seconds=10.0,
+            max_seconds=40.0,
+            max_retries=3,
+            jitter=False,
+        ),
+        timeout=RetryRule(
+            base_seconds=10.0,
+            max_seconds=40.0,
+            max_retries=3,
+            jitter=False,
+        ),
+    ),
+}
+
+MAX_RETRIES = RETRY_POLICIES["polygon"].rate_limit.max_retries
 BACKOFF_BASE_SECONDS = 2.0
 
 
@@ -49,12 +134,57 @@ def should_retry(attempt: int) -> bool:
     return attempt < MAX_RETRIES
 
 
+def get_retry_policy(provider: str) -> RetryPolicy:
+    try:
+        return RETRY_POLICIES[provider]
+    except KeyError as exc:
+        raise ValueError(f"Unknown provider: {provider}") from exc
+
+
+def _retry_rule_for_result(
+    provider: str,
+    result: "FetchResult",
+) -> RetryRule | None:
+    policy = get_retry_policy(provider)
+    is_timeout = result.status == 0 and result.error and "timeout" in result.error.lower()
+    if result.status == 429:
+        return policy.rate_limit
+    if result.status in (500, 502, 503, 504):
+        return policy.server_error
+    if is_timeout:
+        return policy.timeout
+    return None
+
+
+def _compute_rule_delay(
+    rule: RetryRule,
+    attempt: int,
+    *,
+    retry_after: float | None = None,
+) -> float:
+    if attempt < 1:
+        raise ValueError("attempt must be >= 1")
+
+    if retry_after is not None and retry_after > 0:
+        delay = max(retry_after, rule.min_delay_seconds)
+    elif rule.base_seconds == 0.0:
+        delay = 0.0
+    else:
+        delay = rule.base_seconds * (2 ** (attempt - 1))
+        if rule.jitter:
+            delay += random.uniform(0.0, 1.0)
+        delay = max(delay, rule.min_delay_seconds)
+    return min(delay, rule.max_seconds)
+
+
 # ---------------------------------------------------------------------------
 # Public async wrapper — wires retry logic into any fetch function
 # ---------------------------------------------------------------------------
 
 def with_retry(
     fetch_fn: Callable[..., Awaitable["FetchResult"]],
+    *,
+    provider: str | None = None,
 ) -> Callable[..., Awaitable["FetchResult"]]:
     """Wrap an async fetch function with automatic retry on retryable errors.
 
@@ -73,7 +203,52 @@ def with_retry(
 
     async def wrapper(*args, **kwargs) -> FetchResult:
         last_result: FetchResult | None = None
-        for attempt in range(1, MAX_RETRIES + 1):
+        if provider is None:
+            for attempt in range(1, MAX_RETRIES + 1):
+                result = await fetch_fn(*args, **kwargs)
+                last_result = result
+
+                if result.status == 200:
+                    return result
+
+                is_timeout = result.status == 0 and result.error and "timeout" in result.error.lower()
+                err_class = classify_error(result.status, is_timeout=is_timeout)
+
+                if err_class != ErrorClass.RETRYABLE:
+                    return result
+
+                if attempt >= MAX_RETRIES:
+                    break
+
+                retry_after: float | None = None
+                if result.status == 429:
+                    retry_after = getattr(result, "retry_after_seconds", None)
+                    if retry_after is None and result.error:
+                        m = re.search(r"Retry-After:\s*(\d+)", result.error)
+                        if m:
+                            retry_after = float(m.group(1))
+
+                delay = compute_backoff(attempt, retry_after=retry_after)
+                logger.info(
+                    "Retry %d/%d for %s (status=%s, backoff=%.1fs)",
+                    attempt, MAX_RETRIES, result.source_label, result.status, delay,
+                )
+                await asyncio.sleep(delay)
+
+            assert last_result is not None
+            last_result.error = (
+                f"{last_result.error or ''} [exhausted {MAX_RETRIES} retries]".strip()
+            )
+            return last_result
+
+        policy = get_retry_policy(provider)
+        max_attempts = max(
+            policy.rate_limit.max_retries,
+            policy.server_error.max_retries,
+            policy.timeout.max_retries,
+        )
+
+        for attempt in range(1, max_attempts + 1):
             result = await fetch_fn(*args, **kwargs)
             last_result = result
 
@@ -87,7 +262,8 @@ def with_retry(
             if err_class != ErrorClass.RETRYABLE:
                 return result  # non-retryable — give up
 
-            if attempt >= MAX_RETRIES:
+            rule = _retry_rule_for_result(provider, result)
+            if rule is None or attempt >= rule.max_retries:
                 break  # exhausted
 
             # Use structured retry_after_seconds from connector (real HTTP header).
@@ -96,22 +272,21 @@ def with_retry(
             if result.status == 429:
                 retry_after = getattr(result, "retry_after_seconds", None)
                 if retry_after is None and result.error:
-                    import re
                     m = re.search(r"Retry-After:\s*(\d+)", result.error)
                     if m:
                         retry_after = float(m.group(1))
 
-            delay = compute_backoff(attempt, retry_after=retry_after)
+            delay = _compute_rule_delay(rule, attempt, retry_after=retry_after)
             logger.info(
-                "Retry %d/%d for %s (status=%s, backoff=%.1fs)",
-                attempt, MAX_RETRIES, result.source_label, result.status, delay,
+                "Retry %d/%d for %s provider=%s (status=%s, backoff=%.1fs)",
+                attempt, rule.max_retries, result.source_label, provider, result.status, delay,
             )
             await asyncio.sleep(delay)
 
         # All retries exhausted
         assert last_result is not None
         last_result.error = (
-            f"{last_result.error or ''} [exhausted {MAX_RETRIES} retries]".strip()
+            f"{last_result.error or ''} [exhausted retries for {provider}]".strip()
         )
         return last_result
 
