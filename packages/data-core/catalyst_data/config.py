@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import os
 from pathlib import Path
 
@@ -55,6 +56,27 @@ CROSS_SOURCE_PRIORITY = _csv_env(
     "CATALYST_CROSS_SOURCE_PRIORITY",
     ("polygon_news", "fmp_news", "finnhub_company_news", "gdelt_news"),
 )
+
+_PROVIDER_KEY_ENV = {
+    "polygon": "POLYGON_API_KEY",
+    "polygon_backup": "POLYGON_API_KEY_BACKUP",
+    "fmp": "FMP_API_KEY",
+    "fred": "FRED_API_KEY",
+}
+
+
+def provider_api_key(provider: str) -> str | None:
+    env_var = _PROVIDER_KEY_ENV.get(provider)
+    if env_var is None:
+        raise ValueError(f"Unknown provider for API key lookup: {provider}")
+    return os.environ.get(env_var)
+
+
+def api_key_id(provider: str) -> str | None:
+    key = provider_api_key(provider)
+    if not key:
+        return None
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
 
 RATE_POLICIES = {

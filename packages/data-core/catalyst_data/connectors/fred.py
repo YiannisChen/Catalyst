@@ -18,6 +18,7 @@ from typing import Callable, Awaitable
 import httpx
 
 from catalyst_data.connectors.base import FetchResult
+from catalyst_data.retry import with_retry
 
 FRED_BASE_URL = "https://api.stlouisfed.org/fred/series/observations"
 
@@ -99,4 +100,4 @@ def create_fred_fetcher(
             if own_client:
                 await c.aclose()
 
-    return fetch
+    return with_retry(fetch, provider="fred")

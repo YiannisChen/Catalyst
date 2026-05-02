@@ -134,4 +134,4 @@ def create_polygon_fetcher(
             if own_client:
                 await c.aclose()
 
-    return with_retry(fetch)
+    return with_retry(fetch, provider="polygon")
