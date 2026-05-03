@@ -10,6 +10,7 @@ import json
 from unittest.mock import patch, MagicMock
 
 from catalyst_agents.graph import build_attribution_graph, route_after_critic
+from catalyst_agents.state import OutputStatus
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +151,7 @@ def test_mcj_graph_full_pipeline(monkeypatch):
     assert result["summary_md"] != ""
     assert result["grounding_rate"] is not None
     assert result["grounding_rate"] >= 0.0
+    assert result["output_status"] in {OutputStatus.SUFFICIENT, OutputStatus.PARTIAL}
 
 
 def test_mcj_graph_accumulates_total_costs(monkeypatch):

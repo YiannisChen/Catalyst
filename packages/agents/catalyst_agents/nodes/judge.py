@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from catalyst_agents.state import AttributionState
+from catalyst_agents.state import AttributionState, Phase
 from catalyst_agents.cost_tracker import track_cost
 from catalyst_agents.nodes.critic import insufficient_handler
 from catalyst_agents.backoff import invoke_with_retries, MAX_RETRIES
@@ -164,6 +164,7 @@ def judge(state: AttributionState, *, llm: Any = None) -> dict:
             "cost_breakdown": state.get("cost_breakdown", []),
             "total_cost_usd": state.get("total_cost_usd", 0.0),
             "total_tokens": state.get("total_tokens", 0),
+            "phase": Phase.JUDGE,
         }
     except RuntimeError as exc:
         fallback = insufficient_handler(state)
@@ -171,4 +172,5 @@ def judge(state: AttributionState, *, llm: Any = None) -> dict:
         fallback["cost_breakdown"] = state.get("cost_breakdown", [])
         fallback["total_cost_usd"] = state.get("total_cost_usd", 0.0)
         fallback["total_tokens"] = state.get("total_tokens", 0)
+        fallback["phase"] = Phase.JUDGE
         return fallback
