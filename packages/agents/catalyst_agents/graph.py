@@ -21,16 +21,25 @@ from catalyst_agents.nodes.decision_router import decision_router, route_after_d
 from catalyst_agents.nodes.judge import judge
 from catalyst_agents.nodes.validator import validator
 from catalyst_agents.nodes.finalizer import finalizer
+from catalyst_agents.retrieval.policy import Layer
 
 
 # ---------------------------------------------------------------------------
-# Placeholder expansion node
+# Expansion transition
 # ---------------------------------------------------------------------------
 
-def expand_macro_stub(state: dict) -> dict:
-    """Temporary placeholder until T-10 wires macro expansion back into retrieval."""
+def expand_macro_transition(state: dict) -> dict:
+    """Switch the retrieval path to Layer 2 and loop back through Miner."""
+    metadata = state.get("retrieval_metadata")
+    if metadata is not None and hasattr(metadata, "expansion_reasons"):
+        reasons = getattr(metadata, "expansion_reasons")
+        if "critic_expand_macro" not in reasons:
+            reasons.append("critic_expand_macro")
     return {
         "router_reason": state.get("router_reason", "critic_expand_macro"),
+        "current_layer": Layer.MACRO,
+        "expansions_used": int(state.get("expansions_used", 0) or 0) + 1,
+        "retrieval_metadata": metadata,
     }
 
 
@@ -100,7 +109,7 @@ def build_attribution_graph(
     graph = StateGraph(AttributionState)
     graph.add_node("miner", bound_miner)
     graph.add_node("decision_router", bound_router)
-    graph.add_node("expand_macro", expand_macro_stub)
+    graph.add_node("expand_macro", expand_macro_transition)
     graph.add_node("judge", bound_judge)
     graph.add_node("validator", bound_validator)
     graph.add_node("finalizer", finalizer)
@@ -129,7 +138,7 @@ def build_attribution_graph(
         graph.add_edge("baseline_prepare_evidence", "judge")
 
     graph.add_edge("judge", "validator")
-    graph.add_edge("expand_macro", "insufficient_handler")
+    graph.add_edge("expand_macro", "miner")
     graph.add_edge("validator", "finalizer")
     graph.add_edge("insufficient_handler", "finalizer")
     graph.add_edge("system_error_handler", "finalizer")
