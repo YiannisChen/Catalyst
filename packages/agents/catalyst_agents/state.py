@@ -77,6 +77,8 @@ class AttributionState(TypedDict):
     router_reason: str | None
     expansions_used: int
     max_expansions: int
+    current_layer: str | None
+    retrieval_metadata: object | None
 
     # ------------------------------------------------------------------
     # Cost tracking (per-node granularity for experiments)

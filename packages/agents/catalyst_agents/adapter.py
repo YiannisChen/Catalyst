@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Callable
 
 from catalyst_eval.schema.result import AttributionResult, PredictedCause, RetrievedEvidence
+from catalyst_agents.retrieval.policy import Layer
 
 
 def make_catalyst_predict(
@@ -53,6 +54,8 @@ def make_catalyst_predict(
             "router_reason": None,
             "expansions_used": 0,
             "max_expansions": 2,
+            "current_layer": Layer.DIRECT,
+            "retrieval_metadata": None,
             "cost_breakdown": [],
             "total_cost_usd": 0.0,
             "total_tokens": 0,

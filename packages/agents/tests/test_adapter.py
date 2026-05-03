@@ -91,14 +91,17 @@ def mock_hybrid_search(table, query, ticker=None, date_range=None, top_k=20, emb
     return MOCK_CHUNKS * min(top_k, 8)
 
 
+def mock_retrieve(query, layer, metadata, *, rerank=None):
+    return MOCK_CHUNKS[: metadata.top_k]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 def test_adapter_returns_attribution_result(monkeypatch):
     """make_catalyst_predict must return an AttributionResult for a valid ticker/date."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
     predict = make_catalyst_predict(graph)
@@ -111,8 +114,7 @@ def test_adapter_returns_attribution_result(monkeypatch):
 
 def test_adapter_maps_causes_correctly(monkeypatch):
     """Adapter must translate graph causes dicts into PredictedCause instances."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
     predict = make_catalyst_predict(graph)
@@ -128,8 +130,7 @@ def test_adapter_maps_causes_correctly(monkeypatch):
 
 def test_adapter_tracks_cost(monkeypatch):
     """Adapter must propagate cost tracking fields from graph state."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
     predict = make_catalyst_predict(graph)
@@ -142,8 +143,7 @@ def test_adapter_tracks_cost(monkeypatch):
 
 def test_adapter_includes_retrieved_evidence(monkeypatch):
     """Adapter must expose reranked chunks as RetrievedEvidence with asset_id and content_md."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
     predict = make_catalyst_predict(graph)
@@ -157,8 +157,7 @@ def test_adapter_includes_retrieved_evidence(monkeypatch):
 
 def test_adapter_works_with_eval_harness(monkeypatch):
     """predict_fn produced by make_catalyst_predict must be compatible with evaluate()."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     from catalyst_eval.harness.runner import evaluate
     from catalyst_eval.metrics.attribution_f1 import AttributionF1

@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any
 
+from catalyst_agents.retrieval.policy import Layer, RetrievalMetadata, retrieve
 from catalyst_agents.state import AttributionState
 
 # ---------------------------------------------------------------------------
@@ -58,6 +59,54 @@ def _build_query(state: AttributionState) -> str:
     return f"Why did {state['ticker']} move on {state['trade_date']}?"
 
 
+def _resolve_layer(state: AttributionState) -> Layer:
+    raw = state.get("current_layer")
+    if raw is None:
+        return Layer.DIRECT
+    return raw if isinstance(raw, Layer) else Layer(raw)
+
+
+def _build_retrieval_metadata(
+    state: AttributionState,
+    *,
+    table: Any,
+    embedding_fn: Any,
+    date_range: tuple[str, str],
+) -> RetrievalMetadata:
+    existing = state.get("retrieval_metadata")
+    if isinstance(existing, RetrievalMetadata):
+        existing.ticker = state["ticker"]
+        existing.trade_date = state["trade_date"]
+        existing.date_range = date_range
+        existing.table = table
+        existing.embedding_fn = embedding_fn
+        existing.top_k = TOP_K_RETRIEVAL
+        return existing
+
+    return RetrievalMetadata(
+        ticker=state["ticker"],
+        trade_date=state["trade_date"],
+        date_range=date_range,
+        table=table,
+        embedding_fn=embedding_fn,
+        top_k=TOP_K_RETRIEVAL,
+    )
+
+
+def _merge_unique_chunks(*chunk_groups: list[dict]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for group in chunk_groups:
+        for chunk in group:
+            asset_id = chunk.get("asset_id")
+            if asset_id and asset_id in seen:
+                continue
+            if asset_id:
+                seen.add(asset_id)
+            merged.append(chunk)
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Public node
 # ---------------------------------------------------------------------------
@@ -90,21 +139,26 @@ def miner(
           - reranked_chunks:  top-8 results after cross-encoder reranking
                               (or top-8 by RRF score when no reranker).
     """
-    # deferred imports for testability
-    from catalyst_data.storage.lancedb_store import hybrid_search, _apply_reranker
+    from catalyst_data.storage.lancedb_store import _apply_reranker
 
     query = _build_query(state)
     date_range = _compute_date_range(state["trade_date"])
-
-    # Step 1: Hybrid retrieval → top-20 (RRF)
-    all_retrieved: list[dict] = hybrid_search(
+    layer = _resolve_layer(state)
+    metadata = _build_retrieval_metadata(
+        state,
         table=table,
-        query=query,
-        ticker=state["ticker"],
-        date_range=date_range,
-        top_k=TOP_K_RETRIEVAL,
         embedding_fn=embedding_fn,
+        date_range=date_range,
     )
+
+    retrieved_for_layer: list[dict] = retrieve(
+        query,
+        layer,
+        metadata,
+        rerank=None,
+    )
+    previous_chunks = state.get("retrieved_chunks", []) if layer == Layer.MACRO else []
+    all_retrieved = _merge_unique_chunks(previous_chunks, retrieved_for_layer)
 
     # Step 2: Rerank with cross-encoder → top-8 (graceful fallback if no reranker)
     if reranker and all_retrieved:
@@ -120,4 +174,6 @@ def miner(
     return {
         "retrieved_chunks": all_retrieved,
         "reranked_chunks": reranked,
+        "retrieval_metadata": metadata,
+        "current_layer": layer,
     }
