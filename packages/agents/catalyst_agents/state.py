@@ -73,6 +73,10 @@ class AttributionState(TypedDict):
     validation_error: str | None
     validator_attempts: int
     phase: Phase | None
+    router_edge: str | None
+    router_reason: str | None
+    expansions_used: int
+    max_expansions: int
 
     # ------------------------------------------------------------------
     # Cost tracking (per-node granularity for experiments)

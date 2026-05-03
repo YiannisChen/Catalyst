@@ -15,8 +15,8 @@ from catalyst_agents.nodes.critic import (
     _parse_critic_response,
     RELEVANCE_THRESHOLD,
 )
+from catalyst_agents.nodes.decision_router import decision_router
 from catalyst_agents.state import CriticDecision
-from catalyst_agents.graph import route_after_critic
 
 
 # ---------------------------------------------------------------------------
@@ -443,25 +443,60 @@ def test_system_error_handler_includes_reasoning():
 
 def test_route_system_error_takes_priority():
     """system_error route must be chosen even if graded_evidence is also empty."""
-    state = {"graded_evidence": [], "error_type": "system_error"}
-    assert route_after_critic(state) == "system_error"
+    state = {
+        "graded_evidence": [],
+        "critic_decision": CriticDecision(
+            sufficiency="insufficient",
+            next_action="refuse",
+            magnitude_coverage=0.0,
+            reasoning="No evidence.",
+        ),
+        "error_type": "system_error",
+    }
+    assert decision_router(state)["router_edge"] == "system_error"
 
 
 def test_route_insufficient_when_no_error():
-    """Empty evidence without error_type routes to insufficient."""
-    state = {"graded_evidence": [], "error_type": None}
-    assert route_after_critic(state) == "insufficient"
+    """Critic refusal without error routes to insufficient."""
+    state = {
+        "graded_evidence": [],
+        "critic_decision": CriticDecision(
+            sufficiency="insufficient",
+            next_action="refuse",
+            magnitude_coverage=0.1,
+            reasoning="No evidence.",
+        ),
+        "error_type": None,
+    }
+    assert decision_router(state)["router_edge"] == "insufficient"
 
 
 def test_route_insufficient_when_error_type_absent():
-    """Missing error_type key also routes to insufficient (backward compat)."""
-    state = {"graded_evidence": []}
-    assert route_after_critic(state) == "insufficient"
+    """Missing error_type key still routes refusal to insufficient."""
+    state = {
+        "graded_evidence": [],
+        "critic_decision": CriticDecision(
+            sufficiency="insufficient",
+            next_action="refuse",
+            magnitude_coverage=0.1,
+            reasoning="No evidence.",
+        ),
+    }
+    assert decision_router(state)["router_edge"] == "insufficient"
 
 
 def test_route_judge_when_evidence_present():
-    state = {"graded_evidence": [{"chunk_id": "c1"}], "error_type": None}
-    assert route_after_critic(state) == "judge"
+    state = {
+        "graded_evidence": [{"chunk_id": "c1"}],
+        "critic_decision": CriticDecision(
+            sufficiency="partial",
+            next_action="proceed",
+            magnitude_coverage=0.7,
+            reasoning="Judge should synthesize.",
+        ),
+        "error_type": None,
+    }
+    assert decision_router(state)["router_edge"] == "judge"
 
 
 def test_critic_failure_sets_error_type(monkeypatch):

@@ -9,31 +9,12 @@ from __future__ import annotations
 import json
 from unittest.mock import patch, MagicMock
 
-from catalyst_agents.graph import build_attribution_graph, route_after_critic
+from catalyst_agents.graph import build_attribution_graph
 from catalyst_agents.state import OutputStatus
 
 
 # ---------------------------------------------------------------------------
-# Route function unit tests
-# ---------------------------------------------------------------------------
-
-def test_route_after_critic_with_evidence():
-    state = {"graded_evidence": [{"chunk_id": "c1", "relevance": 0.8}]}
-    assert route_after_critic(state) == "judge"
-
-
-def test_route_after_critic_without_evidence():
-    state = {"graded_evidence": []}
-    assert route_after_critic(state) == "insufficient"
-
-
-def test_route_after_critic_missing_key():
-    state = {}
-    assert route_after_critic(state) == "insufficient"
-
-
-# ---------------------------------------------------------------------------
-# Mock infrastructure
+# Integration fixture data
 # ---------------------------------------------------------------------------
 
 MOCK_CHUNKS = [
