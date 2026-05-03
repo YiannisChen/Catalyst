@@ -15,6 +15,7 @@ from catalyst_agents.nodes.critic import (
     _parse_critic_response,
     RELEVANCE_THRESHOLD,
 )
+from catalyst_agents.state import CriticDecision
 from catalyst_agents.graph import route_after_critic
 
 
@@ -482,3 +483,14 @@ def test_critic_success_does_not_set_error_type():
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     result = critic(state, llm=MockLLM(GOOD_LLM_RESPONSE))
     assert "error_type" not in result
+
+
+def test_critic_emits_critic_decision_contract():
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+
+    result = critic(state, llm=MockLLM(GOOD_LLM_RESPONSE))
+
+    assert isinstance(result["critic_decision"], CriticDecision)
+    assert result["critic_decision"].sufficiency in {"sufficient", "partial", "insufficient"}
+    assert result["critic_decision"].next_action in {"proceed", "expand_macro", "expand_related", "refuse"}
+    assert 0.0 <= result["critic_decision"].magnitude_coverage <= 1.0

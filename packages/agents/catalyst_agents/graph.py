@@ -18,6 +18,8 @@ from catalyst_agents.state import AttributionState
 from catalyst_agents.nodes.miner import miner
 from catalyst_agents.nodes.critic import critic, insufficient_handler, system_error_handler
 from catalyst_agents.nodes.judge import judge
+from catalyst_agents.nodes.validator import validator
+from catalyst_agents.nodes.finalizer import finalizer
 
 
 # ---------------------------------------------------------------------------
@@ -106,10 +108,13 @@ def build_attribution_graph(
     bound_miner = partial(miner, table=table, embedding_fn=embedding_fn, reranker=reranker)
     bound_critic = partial(critic, llm=llm)
     bound_judge = partial(judge, llm=llm)
+    bound_validator = partial(validator, llm=llm)
 
     graph = StateGraph(AttributionState)
     graph.add_node("miner", bound_miner)
     graph.add_node("judge", bound_judge)
+    graph.add_node("validator", bound_validator)
+    graph.add_node("finalizer", finalizer)
     graph.add_node("insufficient_handler", insufficient_handler)
     graph.add_node("system_error_handler", system_error_handler)
     graph.add_node("baseline_prepare_evidence", baseline_prepare_evidence)
@@ -132,7 +137,9 @@ def build_attribution_graph(
         graph.add_edge("miner", "baseline_prepare_evidence")
         graph.add_edge("baseline_prepare_evidence", "judge")
 
-    graph.add_edge("judge", END)
-    graph.add_edge("insufficient_handler", END)
-    graph.add_edge("system_error_handler", END)
+    graph.add_edge("judge", "validator")
+    graph.add_edge("validator", "finalizer")
+    graph.add_edge("insufficient_handler", "finalizer")
+    graph.add_edge("system_error_handler", "finalizer")
+    graph.add_edge("finalizer", END)
     return graph.compile()

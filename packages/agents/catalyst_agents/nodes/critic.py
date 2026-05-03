@@ -12,7 +12,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-from catalyst_agents.state import AttributionState
+from catalyst_agents.state import AttributionState, CriticDecision, OutputStatus, Phase
 from catalyst_agents.cost_tracker import track_cost
 from catalyst_agents.backoff import invoke_with_retries, MAX_RETRIES
 
@@ -21,6 +21,9 @@ from catalyst_agents.backoff import invoke_with_retries, MAX_RETRIES
 # ---------------------------------------------------------------------------
 
 RELEVANCE_THRESHOLD = 0.5
+K_SUFFICIENT = 4
+K_PARTIAL = 2
+M_THRESHOLD = 0.6
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "critic.md"
 
 
@@ -94,6 +97,40 @@ def _parse_critic_response(text: str) -> dict:
     return validated.model_dump()
 
 
+def _compute_magnitude_coverage(filtered: list[dict]) -> float:
+    if not filtered:
+        return 0.0
+
+    avg_relevance = sum(chunk.get("relevance", 0.0) for chunk in filtered) / len(filtered)
+    count_factor = min(1.0, len(filtered) / K_PARTIAL)
+    return min(1.0, avg_relevance * count_factor)
+
+
+def _build_critic_decision(filtered: list[dict], reasoning: str) -> CriticDecision:
+    evidence_count = len(filtered)
+    magnitude_coverage = _compute_magnitude_coverage(filtered)
+
+    if evidence_count >= K_SUFFICIENT and magnitude_coverage >= M_THRESHOLD:
+        sufficiency = "sufficient"
+        next_action = "proceed"
+    elif evidence_count == 0:
+        sufficiency = "insufficient"
+        next_action = "refuse"
+    elif evidence_count >= K_PARTIAL or magnitude_coverage < M_THRESHOLD:
+        sufficiency = "partial"
+        next_action = "proceed"
+    else:
+        sufficiency = "insufficient"
+        next_action = "refuse"
+
+    return CriticDecision(
+        sufficiency=sufficiency,
+        next_action=next_action,
+        magnitude_coverage=magnitude_coverage,
+        reasoning=reasoning,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public nodes
 # ---------------------------------------------------------------------------
@@ -120,6 +157,13 @@ def critic(state: AttributionState, *, llm: Any = None) -> dict:
         return {
             "graded_evidence": [],
             "critic_reasoning": "No chunks to grade.",
+            "critic_decision": CriticDecision(
+                sufficiency="insufficient",
+                next_action="refuse",
+                magnitude_coverage=0.0,
+                reasoning="No chunks to grade.",
+            ),
+            "phase": Phase.CRITIC,
         }
 
     prompt_template = _load_prompt()
@@ -139,22 +183,32 @@ def critic(state: AttributionState, *, llm: Any = None) -> dict:
 
         # Strict greater-than filter per spec Section 4.3
         filtered = [g for g in graded if g.get("relevance", 0) > RELEVANCE_THRESHOLD]
+        decision = _build_critic_decision(filtered, parsed.get("reasoning", ""))
 
         return {
             "graded_evidence": filtered,
             "critic_reasoning": parsed.get("reasoning", ""),
+            "critic_decision": decision,
             "cost_breakdown": state.get("cost_breakdown", []),
             "total_cost_usd": state.get("total_cost_usd", 0.0),
             "total_tokens": state.get("total_tokens", 0),
+            "phase": Phase.CRITIC,
         }
     except RuntimeError as exc:
         return {
             "graded_evidence": [],
             "critic_reasoning": str(exc),
+            "critic_decision": CriticDecision(
+                sufficiency="insufficient",
+                next_action="refuse",
+                magnitude_coverage=0.0,
+                reasoning=str(exc),
+            ),
             "error_type": "system_error",
             "cost_breakdown": state.get("cost_breakdown", []),
             "total_cost_usd": state.get("total_cost_usd", 0.0),
             "total_tokens": state.get("total_tokens", 0),
+            "phase": Phase.CRITIC,
         }
 
 
@@ -183,6 +237,7 @@ def system_error_handler(state: AttributionState) -> dict:
             f"This is an infrastructure issue, not an evidence gap."
         ),
         "grounding_rate": None,
+        "output_status": OutputStatus.SYSTEM_ERROR,
     }
 
 
@@ -221,4 +276,5 @@ def insufficient_handler(state: AttributionState) -> dict:
             f"or sources we do not ingest)."
         ),
         "grounding_rate": None,
+        "output_status": OutputStatus.INSUFFICIENT,
     }

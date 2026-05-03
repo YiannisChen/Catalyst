@@ -2,6 +2,7 @@
 
 Written before implementation per TDD discipline.
 """
+from dataclasses import fields
 import pytest
 from typing import get_type_hints
 
@@ -160,3 +161,22 @@ def test_attribution_state_instantiation():
     }
     assert instance["ticker"] == "AAPL"
     assert instance["model_id"] == "claude-sonnet-4-20250514"
+
+
+def test_output_status_enum_has_expected_names():
+    from catalyst_agents.state import OutputStatus
+
+    assert {"SUFFICIENT", "PARTIAL", "INSUFFICIENT", "SYSTEM_ERROR"} == {
+        status.name for status in OutputStatus
+    }
+
+
+def test_critic_decision_dataclass_has_required_fields():
+    from catalyst_agents.state import CriticDecision
+
+    assert [field.name for field in fields(CriticDecision)] == [
+        "sufficiency",
+        "next_action",
+        "magnitude_coverage",
+        "reasoning",
+    ]
