@@ -12,7 +12,12 @@ import pytest
 
 from catalyst_data.connectors.base import FetchResult
 from catalyst_data.orchestrator import process_request
-from catalyst_data.storage.sqlite import compute_asset_id, get_clean_asset, init_db
+from catalyst_data.storage.sqlite import (
+    compute_asset_id,
+    get_clean_asset,
+    get_ohlcv,
+    init_db,
+)
 
 
 @pytest.fixture
@@ -48,6 +53,24 @@ async def mock_fetch(ticker: str, endpoint: str, date: str) -> FetchResult:
             },
             latency_ms=10.0,
             source_label="polygon:news",
+        )
+    if endpoint == "ohlcv":
+        return FetchResult(
+            status=200,
+            data={
+                "ticker": ticker,
+                "results": [
+                    {
+                        "o": 150.12,
+                        "h": 150.89,
+                        "l": 147.22,
+                        "c": 148.34,
+                        "v": 98322150,
+                    }
+                ],
+            },
+            latency_ms=10.0,
+            source_label="polygon:ohlcv",
         )
     if endpoint in ("income_statement", "balance_sheet", "cash_flow"):
         return FetchResult(
@@ -141,6 +164,93 @@ async def test_process_request_yfinance_fundamentals_source_maps_correctly(db_pa
     assert len(results) == 1
     assert results[0]["ok"] is True
     assert results[0]["asset_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_process_request_persists_ohlcv_rows_on_production_path(db_path):
+    results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["polygon_ohlcv"],
+        db_path=db_path,
+        fetch_fn=mock_fetch,
+    )
+
+    assert len(results) == 1
+    assert results[0]["ok"] is True
+
+    conn = _read_conn(db_path)
+    bar = get_ohlcv(conn, "AAPL", "2026-01-15")
+    conn.close()
+
+    assert bar is not None
+    assert bar["open"] == pytest.approx(150.12)
+    assert bar["close"] == pytest.approx(148.34)
+    assert bar["source"] == "polygon"
+
+
+@pytest.mark.asyncio
+async def test_process_request_skips_empty_news_without_storing_clean_asset(db_path):
+    async def empty_news_fetch(
+        ticker: str, endpoint: str, date: str
+    ) -> FetchResult:
+        return FetchResult(
+            status=200,
+            data={"results": []},
+            latency_ms=1.0,
+            source_label="polygon:news",
+        )
+
+    results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["polygon_news"],
+        db_path=db_path,
+        fetch_fn=empty_news_fetch,
+    )
+
+    assert len(results) == 1
+    summary = results[0]
+    assert summary["ok"] is False
+    assert summary["skipped"] is True
+    assert summary["skip_reason"] == "no_articles"
+
+    conn = _read_conn(db_path)
+    clean_count = conn.execute("SELECT COUNT(*) FROM clean_assets").fetchone()[0]
+    conn.close()
+    assert clean_count == 0
+
+
+@pytest.mark.asyncio
+async def test_process_request_skips_empty_ohlcv_without_storing_bar(db_path):
+    async def empty_ohlcv_fetch(
+        ticker: str, endpoint: str, date: str
+    ) -> FetchResult:
+        return FetchResult(
+            status=200,
+            data={"results": []},
+            latency_ms=1.0,
+            source_label="polygon:ohlcv",
+        )
+
+    results = await process_request(
+        ticker="AAPL",
+        date="2026-01-15",
+        sources=["polygon_ohlcv"],
+        db_path=db_path,
+        fetch_fn=empty_ohlcv_fetch,
+    )
+
+    assert len(results) == 1
+    summary = results[0]
+    assert summary["ok"] is False
+    assert summary["skipped"] is True
+    assert summary["skip_reason"] == "no_ohlcv_bar"
+
+    conn = _read_conn(db_path)
+    bar = get_ohlcv(conn, "AAPL", "2026-01-15")
+    conn.close()
+    assert bar is None
 
 
 @pytest.mark.asyncio
