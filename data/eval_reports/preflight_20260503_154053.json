@@ -1,0 +1,40 @@
+{
+  "answerable_case_count": 7,
+  "checks": {
+    "direct_evidence_per_ticker_min": {
+      "pass": true,
+      "per_ticker": {
+        "AMD": 10,
+        "AMZN": 10,
+        "NVDA": 10,
+        "TSLA": 30,
+        "UNH": 9
+      },
+      "threshold": 5,
+      "value": 9
+    },
+    "geo_tier2_doc_count": {
+      "pass": true,
+      "threshold": 20,
+      "value": 237
+    },
+    "macro_doc_count": {
+      "pass": true,
+      "threshold": 30,
+      "value": 310
+    }
+  },
+  "db_path": "data/catalyst_eval_frozen.db",
+  "db_sha256": "3d8a1ee3a86b216779dfd9cc2e6ccd45090326c65b08e4a19e7b89d25935e491",
+  "frozen_golden_set": "packages/eval/golden_set/v1_2_p0_set.jsonl",
+  "geo_corpus_tier": 2,
+  "lancedb_dir_sha256": "DEFERRED_P1",
+  "lancedb_status": "deferred_p1",
+  "pass": true,
+  "row_counts": {
+    "clean_assets": 10092,
+    "raw_assets": 10092
+  },
+  "schema_version": "1.0",
+  "ts": "2026-05-03T15:40:53.052671+00:00"
+}
