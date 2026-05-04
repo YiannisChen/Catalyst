@@ -1,0 +1,35 @@
+{
+  "config": "direct_llm",
+  "ended_at": "2026-05-04T03:06:37.466543+00:00",
+  "error_message": null,
+  "error_type": null,
+  "events": [
+    {
+      "cost_usd": 0.001398,
+      "decision": "{\"output_status\": \"SUFFICIENT\", \"validation_error\": null}",
+      "ended_at": "2026-05-04T03:06:37.466252+00:00",
+      "error_message": null,
+      "error_type": null,
+      "event_seq": 1,
+      "input_tokens": 126,
+      "latency_ms": 0,
+      "model_id": "claude-sonnet-4-6",
+      "node": "direct_llm",
+      "output_tokens": 68,
+      "run_id": "2fa7de1f85bf4768956784b802f844fd",
+      "started_at": "2026-05-04T03:06:37.466250+00:00",
+      "status_after": "SUFFICIENT",
+      "status_before": null,
+      "trace_id": "10e38a0b11104921bd666589e0a1c414"
+    }
+  ],
+  "model_id_per_role": "{\"direct_llm\": \"claude-sonnet-4-6\"}",
+  "run_id": "2fa7de1f85bf4768956784b802f844fd",
+  "started_at": "2026-05-04T03:06:37.465856+00:00",
+  "status": "SUFFICIENT",
+  "ticker": "AMZN",
+  "total_cost_usd": 0.001398,
+  "total_latency_ms": 0,
+  "trace_id": "10e38a0b11104921bd666589e0a1c414",
+  "trade_date": "2025-10-31"
+}

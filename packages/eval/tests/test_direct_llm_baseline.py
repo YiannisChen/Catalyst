@@ -169,3 +169,20 @@ def test_apply_direct_llm_cost_guard_downgrades_model_and_records_header():
         "to": "claude-haiku-4-5",
         "projected_total_cost_usd": pytest.approx(25.5),
     }
+
+
+def test_run_direct_llm_returns_insufficient_for_refusal_case(tmp_path: Path):
+    db_path, _asset_id = _build_fixture_db(tmp_path)
+    case = {
+        "ticker": "OPENAI",
+        "trade_date": "2026-06-15",
+        "query": "Why did OPENAI move?",
+        "price_move_pct": 0.0,
+    }
+    llm = MockLLM({"causes": [], "summary_md": "Insufficient public evidence."})
+
+    output = run_direct_llm(case, "claude-sonnet-4-6", db_path, llm=llm)
+
+    assert output["output_status"] == "INSUFFICIENT"
+    assert output["causes"] == []
+    assert output["retrieved_evidence"] == []

@@ -223,8 +223,15 @@ def run_direct_llm(
     causes, missing_evidence = _sanitize_causes(parsed.causes, valid_ids)
 
     cost_usd = _compute_cost(model_id, tokens_in, tokens_out)
-    output_status = "PARTIAL" if missing_evidence else "SUFFICIENT"
-    validation_error = "evidence_id_missing" if missing_evidence else None
+    if not causes:
+        output_status = "INSUFFICIENT"
+        validation_error = None
+    elif missing_evidence:
+        output_status = "PARTIAL"
+        validation_error = "evidence_id_missing"
+    else:
+        output_status = "SUFFICIENT"
+        validation_error = None
     total_tokens = tokens_in + tokens_out
 
     return {

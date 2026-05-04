@@ -1,0 +1,35 @@
+{
+  "config": "direct_llm",
+  "ended_at": "2026-05-04T03:06:37.516822+00:00",
+  "error_message": null,
+  "error_type": null,
+  "events": [
+    {
+      "cost_usd": 0.00063,
+      "decision": "{\"output_status\": \"INSUFFICIENT\", \"validation_error\": null}",
+      "ended_at": "2026-05-04T03:06:37.516506+00:00",
+      "error_message": null,
+      "error_type": null,
+      "event_seq": 1,
+      "input_tokens": 90,
+      "latency_ms": 0,
+      "model_id": "claude-sonnet-4-6",
+      "node": "direct_llm",
+      "output_tokens": 24,
+      "run_id": "ba3a9c13db614a08be77df3f9a7fcd7a",
+      "started_at": "2026-05-04T03:06:37.516502+00:00",
+      "status_after": "INSUFFICIENT",
+      "status_before": null,
+      "trace_id": "e601bc977ad54dffa0eb731341b43115"
+    }
+  ],
+  "model_id_per_role": "{\"direct_llm\": \"claude-sonnet-4-6\"}",
+  "run_id": "ba3a9c13db614a08be77df3f9a7fcd7a",
+  "started_at": "2026-05-04T03:06:37.515953+00:00",
+  "status": "INSUFFICIENT",
+  "ticker": "OPENAI",
+  "total_cost_usd": 0.00063,
+  "total_latency_ms": 0,
+  "trace_id": "e601bc977ad54dffa0eb731341b43115",
+  "trade_date": "2026-06-15"
+}
