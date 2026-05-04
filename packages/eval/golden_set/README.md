@@ -2,6 +2,24 @@
 
 The golden set is the ground-truth reference for evaluating attribution agents. Each entry represents a significant stock price movement and its verified causal factors.
 
+## Frozen P0 Subset
+
+`v1_2_p0_set.jsonl` is the Day-9 frozen P0 subset used for the direct-vs-MCJ evaluation protocol.
+
+- Distribution is fixed at `5 sufficient / 2 partial / 3 should_refuse`.
+- `v1_2.jsonl` remains the unfrozen 50-row source file and is not rewritten by the freeze step.
+- The refusal bucket uses the minimal P0 row contract: two temporal out-of-corpus cases sourced from `v1_2.jsonl` plus one fresh-authored out-of-corpus entity case (`p0r001`).
+
+## Immutability
+
+After T-13a/T-13b freeze capture, the following are protocol-bound and must not change without re-freezing the eval protocol:
+
+- `packages/eval/golden_set/v1_2_p0_set.jsonl`
+- `data/catalyst_eval_frozen.db` SHA-256
+- `data/eval_reports/preflight_*.json` / freeze-header artifacts that pin the frozen sample
+
+This is a hard sample-protocol immutability rule for P0, not a preference.
+
 ## Format
 
 JSONL (one JSON object per line) conforming to `catalyst_eval.schema.golden_event.GoldenEvent`.

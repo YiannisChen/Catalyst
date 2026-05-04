@@ -1,0 +1,35 @@
+{
+  "artifacts": {
+    "db_path": "data/catalyst_eval_frozen.db",
+    "golden_set": "packages/eval/golden_set/v1_2_p0_set.jsonl",
+    "preflight_json": "data/eval_reports/preflight_20260503_154053.json"
+  },
+  "header": {
+    "case_distribution": {
+      "partial": 2,
+      "should_refuse": 3,
+      "sufficient": 5
+    },
+    "code_git_sha": "05a5d25bcd94b1602ca5a6fc6e9209a9654430e8",
+    "db_sha256": "3d8a1ee3a86b216779dfd9cc2e6ccd45090326c65b08e4a19e7b89d25935e491",
+    "frozen_ts": "20260503_154053",
+    "geo_corpus_tier": 2,
+    "lancedb_dir_sha256": "DEFERRED_P1",
+    "model_id_per_role": {
+      "critic": "claude-sonnet-4-20250514",
+      "direct_llm": "claude-sonnet-4-6",
+      "judge": "claude-sonnet-4-20250514",
+      "validator": "claude-sonnet-4-20250514"
+    },
+    "provider_version": {
+      "anthropic": null,
+      "langchain_anthropic": null
+    },
+    "random_seed": 42
+  },
+  "immutability": {
+    "documented_in": "packages/eval/golden_set/README.md",
+    "rule": "Frozen sample protocol must not change after freeze capture without re-freezing the eval protocol."
+  },
+  "schema_version": "1.0"
+}
