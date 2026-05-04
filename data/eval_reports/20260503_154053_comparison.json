@@ -517,5 +517,6 @@
         0.7
       ]
     }
-  }
+  },
+  "warning": "W-15: vector index deferred to P1 \u2014 retrieval quality may be degraded"
 }
