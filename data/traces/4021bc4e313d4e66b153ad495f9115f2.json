@@ -1,0 +1,35 @@
+{
+  "config": "direct_llm",
+  "ended_at": "2026-05-04T03:06:37.469587+00:00",
+  "error_message": "evidence_id_missing",
+  "error_type": null,
+  "events": [
+    {
+      "cost_usd": 0.001194,
+      "decision": "{\"output_status\": \"PARTIAL\", \"validation_error\": \"evidence_id_missing\"}",
+      "ended_at": "2026-05-04T03:06:37.468905+00:00",
+      "error_message": "evidence_id_missing",
+      "error_type": null,
+      "event_seq": 1,
+      "input_tokens": 118,
+      "latency_ms": 0,
+      "model_id": "claude-sonnet-4-6",
+      "node": "direct_llm",
+      "output_tokens": 56,
+      "run_id": "4021bc4e313d4e66b153ad495f9115f2",
+      "started_at": "2026-05-04T03:06:37.468902+00:00",
+      "status_after": "PARTIAL",
+      "status_before": null,
+      "trace_id": "335457e5285847edba038118fdc396a0"
+    }
+  ],
+  "model_id_per_role": "{\"direct_llm\": \"claude-sonnet-4-6\"}",
+  "run_id": "4021bc4e313d4e66b153ad495f9115f2",
+  "started_at": "2026-05-04T03:06:37.468101+00:00",
+  "status": "PARTIAL",
+  "ticker": "TSLA",
+  "total_cost_usd": 0.001194,
+  "total_latency_ms": 1,
+  "trace_id": "335457e5285847edba038118fdc396a0",
+  "trade_date": "2025-06-05"
+}
