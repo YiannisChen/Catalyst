@@ -1,6 +1,6 @@
 # Catalyst P1 Implementation Plan
 
-> **For Claude / Executor:** After ADR **APPROVE** gates, use **superpowers:executing-plans** (or equivalent) to implement **one P1-Txx milestone at a time** with review checkpoints. This document is executable intent; authoritative behavior remains **`docs/full-version-execution-spec.md`** and the listed ADRs.
+> **For Claude / Executor:** Follow this plan and **ADR lifecycle (Policy B)** in the header: ADRs may stay **Proposed** until their **P1-Txx** definition-of-done is met, then flip **Status** with **evidence SHA**. Use **superpowers:executing-plans** (or equivalent) to implement **one P1-Txx milestone at a time** with review checkpoints. This document is executable intent; authoritative behavior remains **`docs/full-version-execution-spec.md`** and the listed ADRs.
 
 **Goal:** Close **P1** as defined in **`docs/plans/2026-05-04-p1-p2-architecture-plan.md`**: frozen **bge-m3** embeddings → Lance Gold index → two-level chunking + gated rerank → **Layer.DIRECT/MACRO** hybrid activation (**Layer.RELATED** still **P2-blocked**) → **`rag_only`** + **`mcj_full`** + **`direct_llm`** three-way eval on **`v1_2_p1_set.jsonl`** → LangSmith-aligned traces → thresholds + freeze + **G5** disposition per **ADR-011**.
 
@@ -8,7 +8,7 @@
 
 **Tech stack anchors:** SQLite + LanceDB (**data-core**), LangGraph-agent stack (**agents**), **`catalyst_eval`** harness**, **LangChain tracing env vars** for LangSmith**, **GDELT** connector**, optional **sentence-transformers** / **cross-encoder** rerank**.
 
-**ADR assumption:** Coding starts only after reviewer marks relevant ADRs **Accepted** for their gates (currently drafts use **Proposed** — executor must verify status before **`git commit`** on implementation branches).
+**ADR lifecycle (Policy B):** Implementation may start while ADRs are Proposed. Each ADR moves to Accepted when its gated P1-Txx passes its DoD verification; update docs/ADR/ADR-xxx.md Status in the same PR as the evidence commit (or immediate follow-up with referenced SHA). Revert to Proposed with a dated note if a later task invalidates assumptions.
 
 ---
 
@@ -79,7 +79,7 @@ flowchart TD
 | Task ID | ADR gate / spec | Primary owner | Packages / paths (implementation locus) | Definition of Done | Verification command(s) | Risk |
 |--------|-----------------|---------------|----------------------------------------|---------------------|--------------------------|------|
 | P1-T01 | **ADR-008** | Cursor (script); **HUMAN** (GPU run + artifact handoff) | `scripts/build_embeddings_gpu.py` (create); **`data/embeddings/`** outputs; SQLite read of `data/catalyst_eval_frozen.db` | Artifact paths exist; **`N`** rows match embedding manifest; vectors **1024**-dim **float32**; SHA256 logged; revision pin documented | Manifest + dim check (post-handoff pytest or `python -c` one-liners added in task—not yet present); **`shasum -a 256`** on `.npy` / `.json` | Cloud cost/time; HF access; divergence if DB revision changes mid-job |
-| P1-T02 | ADR-008 (consumption) | Cursor | `scripts/build_index.py`; `packages/data-core/catalyst_data/storage/` Lance builders; **`data/lancedb_gold/eval_frozen/`** | Valid **`gold_chunks`**; row counts / null-vector checks vs **`clean_assets`**; **`lancedb_dir_sha256`** computable as real hash | Package tests for data-core + smoke query / health script from architecture plan | Schema mismatch vs ADR-009 after L2 lands—may iterate in T03 |
+| P1-T02 | ADR-008 (consumption) | Cursor | `scripts/build_index.py`; `packages/data-core/catalyst_data/storage/` Lance builders; **`data/lancedb_gold/eval_frozen/`** | **Prerequisite:** **LanceDB** (client/API) **version-pinned** in **`pyproject.toml`** or lockfile **before** starting P1-T02. Valid **`gold_chunks`**; row counts / null-vector checks vs **`clean_assets`**; **`lancedb_dir_sha256`** computable as real hash | Package tests for data-core + smoke query / health script from architecture plan | Schema mismatch vs ADR-009 after L2 lands—may iterate in T03 |
 | P1-T03 | **ADR-009** | Cursor | `lancedb_store.py` (**`hybrid_search`**, rerank attachment); chunking pipeline (new/adjacent modules); index schema (`parent_asset_id`, L2 vectors) | **`rrf_score`** always when hybrid returns; **`rerank_score`** when reranker loads; gated fallback tests | `pytest packages/data-core/tests/...` (paths TBD with new tests); agents tests touching `retrieve(..., rerank=...)` | Index size explosion; splitter errors on finance text |
 | P1-T04 | **ADR-004**, **W-15** closure | Cursor | `packages/agents/catalyst_agents/retrieval/policy.py`; miner/router call sites | DIRECT+MACRO use Lance when **`_lancedb_available`**; SQL fallback intact; **`check_sufficiency`** integrated as plan describes; RELATED still **`NotImplementedError`** | Agents retrieval + graph pytest suites; comparative smoke run documenting hit-rate delta | Regression on P0-subset gates if retrieval reordering shocks metrics |
 | P1-T05 | W-09 | Cursor + **HUMAN** if API keys / ops | `packages/data-core/catalyst_data/connectors/gdelt.py`; ingestion/backfill scripts; Silver → `clean_assets` | `gdelt_news` rows in eval date window; provider audit format matches existing; dedup fingerprint via **`dedup/hard.py`** | Connector tests + ingestion dry-run checklist; **`grep`** audit patterns per plan | Poor GDELT quality—may narrow scope per risk register |
@@ -102,7 +102,7 @@ flowchart TD
 
 | Field | Content |
 |-------|---------|
-| **Trigger** | ADR-008 **Accepted**; Cursor lands **`scripts/build_embeddings_gpu.py`** (or reviewable draft). |
+| **Trigger** | **Start script work:** ADR-008 may remain **Proposed** while no blocking OPEN items remain. **ADR-008 → Accepted:** when **P1-T01** DoD is green (manifest + verification), update **`docs/ADR/ADR-008*.md`** in the same PR as the evidence commit or immediate follow-up with referenced SHA (Policy B). **HUMAN cloud GPU batch:** requires a lightweight **`docs/decisions/*-gpu-runtime.md`** (provider/account)—does **not** block Cursor landing **`scripts/build_embeddings_gpu.py`**. |
 | **Ideal inputs** | Read-only **`data/catalyst_eval_frozen.db`** (or approved export of **`clean_assets`**) with columns **asset_id, content_md, ticker, source_type, reference_date**; frozen **model revision pin** (HF commit hash or tarball SHA256); agreed **max wall time** and **max spend** for rental. |
 | **Ideal outputs** | **`data/embeddings/bge_m3_eval_frozen.npy`**: shape **(N, 1024)**, dtype **float32** (or documented equivalent). **`data/embeddings/asset_id_index.json`**: deterministic **row index → asset_id** mapping. **`manifest.json`** (or plan appendix table): **`db_sha256`** of DB used, **`embedding_model_revision`**, **`n_vectors`**, **SHA256** per `.npy` and `.json`. |
 | **Human validation before handoff** | Compute and record **SHA256** for each file; confirm **N** matches manifest; optional **random row** dot-check: decode index → fetch **`content_md`** → re-embed single row on GPU to compare cosine ~1.0 (tolerance TBD). |
@@ -116,7 +116,7 @@ flowchart TD
 | Field | Content |
 |-------|---------|
 | **Trigger** | After **P1-T04** (vector path real). |
-| **Ideal inputs** | LangSmith account; project created (default name slug **`catalyst`** per plan). |
+| **Ideal inputs** | LangSmith account; **before P1-T14**, create a LangSmith project (e.g. slug **`catalyst-p1`**; legacy default **`catalyst`** remains acceptable if unchanged). **Org:** TBD—record where the project lives for access audits. |
 | **Ideal outputs** | Local **`.env`** or shell exports only—document **names**: `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_ENDPOINT` (if non-default), `LANGCHAIN_PROJECT` — **omit values** from docs/commits. |
 | **How to validate** | Visible root run keyed to SQLite **`trace_id`**; flipping tracing off yields identical functional outcomes in smoke pytest. |
 
@@ -172,9 +172,9 @@ flowchart TD
 
 ---
 
-## 7. Open questions (≤10)
+## 7. Open questions
 
-1. **ADR approval state:** Confirm all P1 ADRs move from **Proposed → Accepted** before merge to main integration branch—who signs?
+1. **ADR lifecycle (resolved under Policy B, header):** Merge to **main** requires each **in-scope** ADR **Accepted** with **evidence SHA** for that track. Implementation branches may start while ADRs are **Proposed**. **Sign-off:** human confirms the PR that updates **`docs/ADR/ADR-xxx.md`** **Status** (or immediate follow-up commit referencing the passing SHA).
 2. **Embedding blob VCS policy:** Git LFS vs release tarball vs hashed external URL—pick default before merging multi-GB files.
 3. **L2 row explosion:** Caps on sentences per asset to bound Lance row count—default assumption: cap + overflow merges to truncated L1-only row with flag?
 4. **Reranker in CI:** Use stub-only CI vs optional heavy model download—default: **stub in CI**, full model locally / nightly?
@@ -184,6 +184,7 @@ flowchart TD
 8. **P1-T09 go/no-go overlap threshold:** Operational definition of **5%** overlap computation—specify numerator/denominator in measurement task.
 9. **`run_experiments.py` canonical path:** If script naming differs (`run_frozen_eval.py` legacy), unify CLI interface in implementation—default: architecture plan **`scripts/run_experiments.py`** as target name with thin wrapper aliases if needed.
 10. **Teacher Mac extraction:** If **ADR-011 = Go(P2)**—confirm freeze still ships without blocking P1 exit (yes per plan—the decision is artifact).
+11. **Cloud GPU runtime:** Provider/account decision for the ADR-008 batch—**HUMAN** records **`docs/decisions/*-gpu-runtime.md`** before running the cloud job (does **not** block Cursor from delivering the P1-T01 script).
 
 ---
 
@@ -225,7 +226,7 @@ Use a committed **`data/embeddings/manifest.json`** (or equivalently **`docs/dec
 | Field | Value |
 |-------|-------|
 | **Staged paths** | _(none staged by this authoring step — stage with)_ `git add docs/plans/2026-05-06-p1-implementation-plan.md` _(when committing)_ |
-| **Next human actions** | Approve remaining ADRs; run **GPU embedding batch + manifest** once **P1-T01** script merges; provision **LangSmith** env locally; annotate **P1-T10** golden expansion. |
-| **Next Cursor coding task ID** | **P1-T01** after **ADR-008 Accepted** and handoff artifacts available (or script-only milestone if team agrees HUMAN runs follow immediately). |
+| **Next human actions** | Confirm ADR Status PRs per Policy B; add **`docs/decisions/*-gpu-runtime.md`** before **HUMAN** cloud embedding batch; run batch + manifest after P1-T01 merges and runtime doc exists; provision **LangSmith** (incl. project **catalyst-p1** before P1-T14); annotate **P1-T10** golden expansion. |
+| **Next Cursor coding task ID** | **P1-T01:** deliver **script + manifest/verification** while ADR-008 may stay **Proposed**; flip **ADR-008 → Accepted** with **P1-T01** evidence per Policy B. **HUMAN** GPU batch follows **runtime** decision doc + script readiness. |
 
-**Suggested commit message (human authorizes commit):** `docs: add P1 implementation plan`
+**Suggested commit message (human authorizes commit):** `docs: align P1 implementation plan with ADR Policy B`
