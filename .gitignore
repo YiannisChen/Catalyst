@@ -18,6 +18,7 @@ venv/
 /data/eval_reports/*_case_study_report.md
 /data/eval_reports/*_case_study_trace.json
 /DemoUI/
+docs/.DS_Store 
 
 # local script outputs
 /packages/data-core/scripts/debug_output/
