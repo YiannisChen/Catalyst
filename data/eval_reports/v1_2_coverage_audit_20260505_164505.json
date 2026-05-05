@@ -1,0 +1,974 @@
+{
+  "cases": [
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 9,
+      "geo_keyword_news_count": 25,
+      "id": "g001",
+      "macro_doc_count": 75,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "TSLA",
+      "ticker_window_doc_count": 18,
+      "trade_date": "2025-01-02",
+      "window_end": "2025-01-05",
+      "window_start": "2024-12-30"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 9,
+      "geo_keyword_news_count": 31,
+      "id": "g002",
+      "macro_doc_count": 81,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "TSLA",
+      "ticker_window_doc_count": 19,
+      "trade_date": "2025-03-10",
+      "window_end": "2025-03-13",
+      "window_start": "2025-03-07"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 9,
+      "geo_keyword_news_count": 25,
+      "id": "g003",
+      "macro_doc_count": 75,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "TSLA",
+      "ticker_window_doc_count": 19,
+      "trade_date": "2025-03-24",
+      "window_end": "2025-03-27",
+      "window_start": "2025-03-21"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 35,
+      "id": "g004",
+      "macro_doc_count": 85,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "TSLA",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-04-03",
+      "window_end": "2025-04-06",
+      "window_start": "2025-03-31"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 38,
+      "id": "g005",
+      "macro_doc_count": 88,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "TSLA",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-06-05",
+      "window_end": "2025-06-08",
+      "window_start": "2025-06-02"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 40,
+      "id": "g006",
+      "macro_doc_count": 90,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "TSLA",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-07-24",
+      "window_end": "2025-07-27",
+      "window_start": "2025-07-21"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 38,
+      "id": "g007",
+      "macro_doc_count": 88,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "TSLA",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-08-22",
+      "window_end": "2025-08-25",
+      "window_start": "2025-08-19"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 44,
+      "id": "g008",
+      "macro_doc_count": 94,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "TSLA",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-09-12",
+      "window_end": "2025-09-15",
+      "window_start": "2025-09-09"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 30,
+      "id": "g009",
+      "macro_doc_count": 80,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "NVDA",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-01-27",
+      "window_end": "2025-01-30",
+      "window_start": "2025-01-24"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 35,
+      "id": "g010",
+      "macro_doc_count": 85,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "NVDA",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-04-03",
+      "window_end": "2025-04-06",
+      "window_start": "2025-03-31"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 41,
+      "id": "g011",
+      "macro_doc_count": 91,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "NVDA",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-04-09",
+      "window_end": "2025-04-12",
+      "window_start": "2025-04-06"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 41,
+      "id": "g012",
+      "macro_doc_count": 91,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "NVDA",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-10-14",
+      "window_end": "2025-10-17",
+      "window_start": "2025-10-11"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 41,
+      "id": "g013",
+      "macro_doc_count": 91,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "NVDA",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-10-28",
+      "window_end": "2025-10-31",
+      "window_start": "2025-10-25"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 25,
+      "id": "g014",
+      "macro_doc_count": 75,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AMD",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-03-24",
+      "window_end": "2025-03-27",
+      "window_start": "2025-03-21"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 35,
+      "id": "g015",
+      "macro_doc_count": 85,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AMD",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-04-03",
+      "window_end": "2025-04-06",
+      "window_start": "2025-03-31"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 30,
+      "id": "g016",
+      "macro_doc_count": 80,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AMD",
+      "ticker_window_doc_count": 19,
+      "trade_date": "2025-06-16",
+      "window_end": "2025-06-19",
+      "window_start": "2025-06-13"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 40,
+      "id": "g017",
+      "macro_doc_count": 90,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AMD",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-07-15",
+      "window_end": "2025-07-18",
+      "window_start": "2025-07-12"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 40,
+      "id": "g018",
+      "macro_doc_count": 90,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AMD",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-08-06",
+      "window_end": "2025-08-09",
+      "window_start": "2025-08-03"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 40,
+      "id": "g019",
+      "macro_doc_count": 90,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AMD",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-10-06",
+      "window_end": "2025-10-09",
+      "window_start": "2025-10-03"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 42,
+      "id": "g020",
+      "macro_doc_count": 92,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AMD",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-11-12",
+      "window_end": "2025-11-15",
+      "window_start": "2025-11-09"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 8,
+      "geo_keyword_news_count": 40,
+      "id": "g021",
+      "macro_doc_count": 90,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "UNH",
+      "ticker_window_doc_count": 18,
+      "trade_date": "2025-01-16",
+      "window_end": "2025-01-19",
+      "window_start": "2025-01-13"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 7,
+      "geo_keyword_news_count": 31,
+      "id": "g022",
+      "macro_doc_count": 81,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "UNH",
+      "ticker_window_doc_count": 17,
+      "trade_date": "2025-02-21",
+      "window_end": "2025-02-24",
+      "window_start": "2025-02-18"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 8,
+      "geo_keyword_news_count": 40,
+      "id": "g023",
+      "macro_doc_count": 90,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "UNH",
+      "ticker_window_doc_count": 17,
+      "trade_date": "2025-04-17",
+      "window_end": "2025-04-20",
+      "window_start": "2025-04-14"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 9,
+      "geo_keyword_news_count": 32,
+      "id": "g024",
+      "macro_doc_count": 82,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "UNH",
+      "ticker_window_doc_count": 19,
+      "trade_date": "2025-05-13",
+      "window_end": "2025-05-16",
+      "window_start": "2025-05-10"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 9,
+      "geo_keyword_news_count": 38,
+      "id": "g025",
+      "macro_doc_count": 88,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "UNH",
+      "ticker_window_doc_count": 19,
+      "trade_date": "2025-07-29",
+      "window_end": "2025-08-01",
+      "window_start": "2025-07-26"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 8,
+      "geo_keyword_news_count": 41,
+      "id": "g026",
+      "macro_doc_count": 91,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "UNH",
+      "ticker_window_doc_count": 18,
+      "trade_date": "2025-08-15",
+      "window_end": "2025-08-18",
+      "window_start": "2025-08-12"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 36,
+      "id": "g027",
+      "macro_doc_count": 86,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "GOOGL",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-02-05",
+      "window_end": "2025-02-08",
+      "window_start": "2025-02-02"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 41,
+      "id": "g028",
+      "macro_doc_count": 91,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "GOOGL",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-05-07",
+      "window_end": "2025-05-10",
+      "window_start": "2025-05-04"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 37,
+      "id": "g029",
+      "macro_doc_count": 87,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "GOOGL",
+      "ticker_window_doc_count": 19,
+      "trade_date": "2025-09-03",
+      "window_end": "2025-09-06",
+      "window_start": "2025-08-31"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 40,
+      "id": "g030",
+      "macro_doc_count": 90,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "GOOGL",
+      "ticker_window_doc_count": 19,
+      "trade_date": "2025-11-24",
+      "window_end": "2025-11-27",
+      "window_start": "2025-11-21"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 32,
+      "id": "g031",
+      "macro_doc_count": 82,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "MSFT",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-01-30",
+      "window_end": "2025-02-02",
+      "window_start": "2025-01-27"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 41,
+      "id": "g032",
+      "macro_doc_count": 91,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "MSFT",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-04-09",
+      "window_end": "2025-04-12",
+      "window_start": "2025-04-06"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 9,
+      "geo_keyword_news_count": 35,
+      "id": "g033",
+      "macro_doc_count": 85,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "META",
+      "ticker_window_doc_count": 19,
+      "trade_date": "2025-04-03",
+      "window_end": "2025-04-06",
+      "window_start": "2025-03-31"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 38,
+      "id": "g034",
+      "macro_doc_count": 88,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "META",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-07-31",
+      "window_end": "2025-08-03",
+      "window_start": "2025-07-28"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 41,
+      "id": "g035",
+      "macro_doc_count": 91,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "META",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-10-30",
+      "window_end": "2025-11-02",
+      "window_start": "2025-10-27"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 38,
+      "id": "g036",
+      "macro_doc_count": 88,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "META",
+      "ticker_window_doc_count": 19,
+      "trade_date": "2025-11-25",
+      "window_end": "2025-11-28",
+      "window_start": "2025-11-22"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 38,
+      "id": "g037",
+      "macro_doc_count": 88,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "META",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-12-04",
+      "window_end": "2025-12-07",
+      "window_start": "2025-12-01"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 35,
+      "id": "g038",
+      "macro_doc_count": 85,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AMZN",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-04-03",
+      "window_end": "2025-04-06",
+      "window_start": "2025-03-31"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 41,
+      "id": "g039",
+      "macro_doc_count": 91,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AMZN",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-04-09",
+      "window_end": "2025-04-12",
+      "window_start": "2025-04-06"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 38,
+      "id": "g040",
+      "macro_doc_count": 88,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AMZN",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-08-01",
+      "window_end": "2025-08-04",
+      "window_start": "2025-07-29"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 41,
+      "id": "g041",
+      "macro_doc_count": 91,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AMZN",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-10-31",
+      "window_end": "2025-11-03",
+      "window_start": "2025-10-28"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 35,
+      "id": "g042",
+      "macro_doc_count": 85,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AAPL",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-04-03",
+      "window_end": "2025-04-06",
+      "window_start": "2025-03-31"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 40,
+      "id": "g043",
+      "macro_doc_count": 90,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AAPL",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-04-07",
+      "window_end": "2025-04-10",
+      "window_start": "2025-04-04"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 41,
+      "id": "g044",
+      "macro_doc_count": 91,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AAPL",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-04-09",
+      "window_end": "2025-04-12",
+      "window_start": "2025-04-06"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 39,
+      "id": "g045",
+      "macro_doc_count": 89,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "AAPL",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-10-20",
+      "window_end": "2025-10-23",
+      "window_start": "2025-10-17"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 8,
+      "geo_keyword_news_count": 35,
+      "id": "g046",
+      "macro_doc_count": 85,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "JPM",
+      "ticker_window_doc_count": 17,
+      "trade_date": "2025-02-20",
+      "window_end": "2025-02-23",
+      "window_start": "2025-02-17"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 8,
+      "geo_keyword_news_count": 31,
+      "id": "g047",
+      "macro_doc_count": 81,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "JPM",
+      "ticker_window_doc_count": 18,
+      "trade_date": "2025-03-10",
+      "window_end": "2025-03-13",
+      "window_start": "2025-03-07"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 9,
+      "geo_keyword_news_count": 41,
+      "id": "g048",
+      "macro_doc_count": 91,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "JPM",
+      "ticker_window_doc_count": 19,
+      "trade_date": "2025-04-09",
+      "window_end": "2025-04-12",
+      "window_start": "2025-04-06"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 9,
+      "geo_keyword_news_count": 40,
+      "id": "g049",
+      "macro_doc_count": 90,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "JPM",
+      "ticker_window_doc_count": 19,
+      "trade_date": "2025-09-05",
+      "window_end": "2025-09-08",
+      "window_start": "2025-09-02"
+    },
+    {
+      "covered_direct": true,
+      "covered_macro": true,
+      "direct_doc_count": 10,
+      "geo_keyword_news_count": 42,
+      "id": "g050",
+      "macro_doc_count": 92,
+      "source_types_present": [
+        "fmp_fundamentals",
+        "fred_macro",
+        "polygon_news",
+        "polygon_ohlcv"
+      ],
+      "ticker": "JPM",
+      "ticker_window_doc_count": 20,
+      "trade_date": "2025-12-09",
+      "window_end": "2025-12-12",
+      "window_start": "2025-12-06"
+    }
+  ],
+  "created_at_utc": "2026-05-05T16:45:05.453207Z",
+  "db_path": "/Users/yiannischen/Desktop/Catalyst/data/catalyst_eval_frozen_v2.db",
+  "db_reference_window": {
+    "clean_assets": 13474,
+    "max_reference_date": "2026-05-01",
+    "min_reference_date": "2024-12-30"
+  },
+  "db_sha256": "14231853db606cf5c422ba333a0c1fdf599ffb3b845f15bd3de9456694b7223f",
+  "golden_set_path": "/Users/yiannischen/Desktop/Catalyst/packages/eval/golden_set/v1_2.jsonl",
+  "golden_set_sha256": "f6f8cc453ccce11c307ec1639f074cb5c7415619385391363834676c0469ee4c",
+  "schema_version": 1,
+  "summary": {
+    "cases_missing_any_ticker_docs": [],
+    "cases_missing_direct_docs": [],
+    "cases_with_any_ticker_docs": 50,
+    "cases_with_direct_docs": 50,
+    "cases_with_macro_docs": 50,
+    "total_cases": 50
+  },
+  "window_days": 3
+}

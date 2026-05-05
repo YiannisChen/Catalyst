@@ -111,8 +111,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", default=str(DEFAULT_DB_PATH))
     parser.add_argument("--tickers", default=",".join(DEFAULT_TICKERS))
     parser.add_argument("--days", type=int, default=365)
+    parser.add_argument("--start-date", default=None)
+    parser.add_argument("--end-date", default=None)
     parser.add_argument("--sources", default=None)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if (args.start_date is None) != (args.end_date is None):
+        parser.error("--start-date and --end-date must be provided together")
+    if args.start_date is not None and args.days != 365:
+        parser.error("--days cannot be combined with --start-date/--end-date")
+    return args
 
 
 def _utc_now_iso() -> str:
@@ -135,6 +142,18 @@ def trailing_calendar_days(days: int) -> list[str]:
     return [
         (start + timedelta(days=offset)).strftime("%Y-%m-%d")
         for offset in range(days)
+    ]
+
+
+def explicit_calendar_days(start_date: str, end_date: str) -> list[str]:
+    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    if end < start:
+        raise ValueError("end_date must be >= start_date")
+    span_days = (end - start).days + 1
+    return [
+        (start + timedelta(days=offset)).strftime("%Y-%m-%d")
+        for offset in range(span_days)
     ]
 
 
@@ -206,16 +225,49 @@ def _checkpoint_error_class(summary: dict[str, Any]) -> str | None:
     return "fetch"
 
 
-def _run_notes() -> str:
+def build_run_notes(
+    *,
+    tickers: list[str],
+    sources: list[str],
+    start_date: str,
+    end_date: str,
+) -> str:
+    rate_policies = {
+        provider: {
+            "min_interval_sec": policy.min_interval_sec,
+            "max_concurrent": policy.max_concurrent,
+            "daily_budget": policy.daily_budget,
+        }
+        for provider, policy in RATE_POLICIES.get("dev", {}).items()
+        if provider in {"polygon", "fmp", "fred", "yfinance"}
+    }
     return json.dumps(
         {
+            "tickers": tickers,
+            "sources": sources,
+            "date_window": {
+                "start": start_date,
+                "end": end_date,
+            },
             "api_key_ids": {
                 "polygon": api_key_id("polygon"),
                 "fmp": api_key_id("fmp"),
                 "fred": api_key_id("fred"),
-            }
+            },
+            "rate_policies": rate_policies,
         },
         sort_keys=True,
+    )
+
+
+def _run_notes(*, tickers: list[str], sources: list[str], dates: list[str]) -> str:
+    if not dates:
+        raise ValueError("dates must not be empty")
+    return build_run_notes(
+        tickers=tickers,
+        sources=sources,
+        start_date=dates[0],
+        end_date=dates[-1],
     )
 
 
@@ -228,6 +280,12 @@ def _db_abspath(raw_path: str) -> Path:
 
 def _tickers_from_arg(raw: str) -> list[str]:
     return [ticker.strip().upper() for ticker in raw.split(",") if ticker.strip()]
+
+
+def resolve_dates(args: argparse.Namespace) -> list[str]:
+    if args.start_date and args.end_date:
+        return explicit_calendar_days(args.start_date, args.end_date)
+    return trailing_calendar_days(args.days)
 
 
 async def _init_database(db_path: Path) -> None:
@@ -249,6 +307,7 @@ async def _insert_ingestion_run(
     run_id: str,
     tickers: list[str],
     sources: list[str],
+    dates: list[str],
 ) -> None:
     def _work() -> None:
         conn = sqlite3.connect(str(db_path))
@@ -265,7 +324,7 @@ async def _insert_ingestion_run(
                     json.dumps(tickers),
                     json.dumps(sources),
                     "running",
-                    _run_notes(),
+                    _run_notes(tickers=tickers, sources=sources, dates=dates),
                 ),
             )
             conn.commit()
@@ -603,13 +662,19 @@ async def run_backfill(args: argparse.Namespace) -> BackfillStats:
     tickers = _tickers_from_arg(args.tickers)
     available_sources = get_available_sources()
     selected_sources = resolve_sources(args.sources, available_sources)
-    dates = trailing_calendar_days(args.days)
+    dates = resolve_dates(args)
     total_expected = sum(len(tickers) * len(sources_for_date(selected_sources, d)) for d in dates)
 
     await _init_database(db_path)
 
     run_id = str(uuid.uuid4())
-    await _insert_ingestion_run(db_path, run_id=run_id, tickers=tickers, sources=selected_sources)
+    await _insert_ingestion_run(
+        db_path,
+        run_id=run_id,
+        tickers=tickers,
+        sources=selected_sources,
+        dates=dates,
+    )
 
     fetch_fn, client, monitor = _build_fetch_router(dates=dates)
     stats = BackfillStats()

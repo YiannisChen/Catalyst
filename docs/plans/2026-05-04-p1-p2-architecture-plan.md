@@ -39,6 +39,8 @@
 
 The **P0 10-case set** (`v1_2_p0_set.jsonl`, distribution 5/2/3) and its frozen gate results are **immutable**. P1 may introduce an **expanded** golden set (`v1_2_p1_set.jsonl`) that is a strict superset of the P0 set, but the P0 set and P0 gate baselines are never retroactively modified. Any comparison that claims "P1 improved over P0" must report both the P0-set-only results (apples-to-apples) and the expanded-set results (if applicable) side by side.
 
+For the retrieval/data runway specifically, **`data/catalyst_eval_frozen.db` remains immutable**. P1 may create a separate **`data/catalyst_eval_frozen_v2.db`** as a **consumption artifact** through at least **P1-T04**, but only with an explicit superset/provenance manifest documenting lineage from the original frozen DB.
+
 ### Working Constraints
 - **Compute:** Mac CPU primary. Cloud GPU (rental) available for embedding batch jobs.
 - **Time:** Quality-first, no hard deadline. Estimated cadence: P1 ~3–4 weeks, P2 ~3–4 weeks.
@@ -84,12 +86,43 @@ Without (1), the eval measures a hobbled system. Without (2), "replayable" is a 
 
 #### Phase P1-A: Data & Retrieval Foundation
 
-**P1-T01: Cloud GPU Embedding Pipeline**
-- **What:** Build a script (`scripts/build_embeddings_gpu.py`) that runs on a cloud GPU (Colab / Lambda / RunPod) to generate bge-m3 embeddings for all `clean_assets` rows in `catalyst_eval_frozen.db`.
-- **Output:** Serialized embeddings file (`data/embeddings/bge_m3_eval_frozen.npy` + `data/embeddings/asset_id_index.json`).
-- **Design decision:** Separate embedding generation (GPU) from index building (local). This avoids requiring GPU on the dev machine.
+**T00a: Backfill P1 Coverage Window**
+- **What:** Backfill the evaluation corpus for **`2024-12-30 .. 2025-05-01`** without mutating **`data/catalyst_eval_frozen.db`**.
+- **Entry:** Immediate P1 prerequisite.
+- **Implementation:**
+  - Reuse existing ingestion/backfill flows to fill the P1 pre-T04 coverage gap.
+  - Treat the original frozen DB as lineage/input only, not a mutable target.
 - **Acceptance:**
-  - All `clean_assets` rows in frozen DB have corresponding embedding vectors.
+  - Required window is populated in the candidate P1 corpus.
+  - Backfill outputs are ready for formal coverage audit.
+
+**T00b: Coverage Audit (`v1_2.jsonl` × `trade_date ± 3 days`)**
+- **What:** Audit whether the candidate P1 corpus covers the event pool used to build **`v1_2_p1_set.jsonl`**.
+- **Entry:** T00a complete.
+- **Implementation:**
+  - Check each case in **`packages/eval/golden_set/v1_2.jsonl`** against source coverage within **trade_date ± 3 days**.
+  - Record gaps before any new freeze is declared canonical for P1 consumption.
+- **Acceptance:**
+  - Coverage report exists with explicit passes/gaps.
+  - Audit findings are carried into the v2 freeze manifest.
+
+**T00c: Freeze `catalyst_eval_frozen_v2.db` + Superset/Provenance Manifest**
+- **What:** Produce **`data/catalyst_eval_frozen_v2.db`** as the P1 consumption artifact through at least **P1-T04**.
+- **Entry:** T00b complete.
+- **Implementation:**
+  - Freeze a separate DB file instead of editing **`data/catalyst_eval_frozen.db`**.
+  - Record source DB SHA, row-count deltas, backfill window, and superset/provenance notes in a future **`docs/decisions/frozen-db-v2-manifest.md`**.
+- **Acceptance:**
+  - **`data/catalyst_eval_frozen_v2.db`** exists.
+  - Manifest records provenance and makes the superset claim auditable.
+
+**P1-T01: Cloud GPU Embedding Pipeline**
+- **What:** Build a script (`packages/data-core/scripts/build_embeddings_gpu.py`) that runs on a cloud GPU (Colab / Lambda / RunPod) to generate bge-m3 embeddings for **all qualifying L1 `clean_assets` rows** in **`data/catalyst_eval_frozen_v2.db`**.
+- **Output:** Serialized embeddings file (`data/embeddings/bge_m3_eval_frozen_v2.npy` + `data/embeddings/asset_id_index.json`).
+- **Design decision:** Separate embedding generation (GPU) from index building (local). This avoids requiring GPU on the dev machine.
+- **Resolved scope:** The canonical T01 embedding object is **one 1024-dim vector per qualifying L1 `clean_assets` row**. **L2 sentence vectors are excluded from T01** and are produced later in **P1-T03** after **T03-pre** locks chunking parameters.
+- **Acceptance:**
+  - Every qualifying L1 `clean_assets` row in **`data/catalyst_eval_frozen_v2.db`** has a corresponding vector.
   - Embedding dimensions = 1024 (bge-m3 default).
   - SHA256 of output files recorded for reproducibility.
 - **ADR gate:** ADR-008 (embedding generation strategy) must be approved before implementation begins.
@@ -98,7 +131,7 @@ Without (1), the eval measures a hobbled system. Without (2), "replayable" is a 
 - **What:** Consume pre-computed embeddings from P1-T01 and build `data/lancedb_gold/eval_frozen/gold_chunks` table locally.
 - **Entry:** P1-T01 complete.
 - **Implementation:**
-  - `scripts/build_index.py` already exists; extend to accept pre-computed embeddings instead of running bge-m3 inline.
+  - `packages/data-core/scripts/build_index.py` already exists; extend to accept pre-computed embeddings instead of running bge-m3 inline.
   - Index includes: `asset_id`, `content_md`, `ticker`, `source_type`, `reference_date`, `vector` (1024-dim).
   - Health check: row count matches `clean_assets`, zero null vectors.
 - **Acceptance:**
@@ -106,9 +139,21 @@ Without (1), the eval measures a hobbled system. Without (2), "replayable" is a 
   - `lancedb_dir_sha256` is a real hash (replaces `DEFERRED_P1` sentinel).
   - Smoke retrieval: `SELECT * WHERE ticker='NVDA' LIMIT 5` returns results with vector similarity scores.
 
+**T03-pre: ADR-009 / W-14 Parameter-Selection Gate**
+- **What:** Lock the parameter choices needed to implement **P1-T03** cleanly.
+- **Entry:** P1-T02 complete.
+- **Implementation:**
+  - Decide sentence splitter.
+  - Decide **`max_sentences_per_asset`**.
+  - Decide reranker shortlist / top-k and related retrieval parameters.
+  - Record the outcome in a future **`docs/decisions/chunking-ablation-{date}.md`**.
+- **Acceptance:**
+  - Parameter choices are explicit and reviewable before `P1-T03` lands.
+  - This gate is **parameter selection only**, not permission to reduce **L2 / W-14** scope.
+
 **P1-T03: Two-Level Chunking + Reranker (W-14)**
 - **What:** Implement the chunking and reranking pipeline specified in the design delta §2.
-- **Entry:** P1-T02 complete.
+- **Entry:** T03-pre complete.
 - **Implementation:**
   - Level 1: Document-level chunks (current `content_md` as-is).
   - Level 2: Sentence-level chunks with `parent_asset_id` back-pointer for context expansion.
@@ -118,6 +163,7 @@ Without (1), the eval measures a hobbled system. Without (2), "replayable" is a 
   - `hybrid_search(query, ticker, date_range)` returns results with both `rrf_score` and `rerank_score`.
   - Reranker path is gated: `if reranker_available:` — falls back to RRF-only gracefully.
   - Unit test covers both paths.
+- **Scope note:** `T03-pre` may tune parameters, but it does **not** change the P1 commitment to ship **L2 / W-14**.
 - **ADR gate:** ADR-009 (chunking strategy + reranker selection).
 
 **P1-T04: Activate Vector-Backed Retrieval in Policy (W-15 Closure)**
@@ -126,7 +172,7 @@ Without (1), the eval measures a hobbled system. Without (2), "replayable" is a 
 - **Implementation:**
   - `retrieval/policy.py` — `Layer.DIRECT` and `Layer.MACRO` now use `lancedb_store.hybrid_search()` when LanceDB is available.
   - SQL-only path remains as tested fallback (if `lancedb_gold/` absent).
-  - Sufficiency check function (from design delta §2): `check_sufficiency(chunks, min_count=5, min_mean_score=0.02)`.
+  - Add a **new** **`check_sufficiency(chunks, min_count=5, min_mean_score=0.02)`** helper **(design delta §2 is illustrative only — function is not shipped today)** and wire callers.
   - `Layer.RELATED` still raises `NotImplementedError` (deferred to P2-T01).
 - **Acceptance:**
   - End-to-end run with vector retrieval produces higher evidence hit rates than SQL-only baseline.
@@ -243,7 +289,8 @@ Without (1), the eval measures a hobbled system. Without (2), "replayable" is a 
 - **Entry:** P1-T06 + P1-T04 + P1-T10 + P1-T14 all complete.
 - **Frozen-sample rule:** The experiment runner executes on `v1_2_p1_set.jsonl`. Additionally, it **must** produce a separate "P0-subset" comparison restricted to the original 10 P0 cases, enabling an apples-to-apples delta report against the P0 frozen baselines. The P0-subset results are the primary evidence for "P1 improved over P0"; the full-set results are the primary evidence for "MCJ beats direct_llm."
 - **Implementation:**
-  - Extend `scripts/run_experiments.py` to support all three configs.
+  - **Primary:** extend repo-root **`scripts/run_experiments.py`** — three configs **`direct_llm`**, **`rag_only`**, **`mcj_full`**; **`v1_2_p1_set.jsonl`** as default golden once available; **`p1_experiment_comparison.{md,json}`**; P0-subset slice; reuse **`packages/eval/catalyst_eval/**`** helpers (metrics, `compare`, reports). **Golden lineage:** **`packages/eval/golden_set/v1_2*.jsonl` only** (pool **`v1_2.jsonl`**, subsets **`v1_2_p0_set.jsonl`**, **`v1_2_p1_set.jsonl`**). There is no `v1.jsonl` artifact in-repo; ignore stale `v1.jsonl` mentions in tooling docstrings until P1-T11 updates code documentation.
+  - **`packages/eval/scripts/run_frozen_eval.py`** remains the shipped **frozen eval / gate-matrix** CLI (T-13b lineage, default **`v1_2_p0_set.jsonl`**); optional later refactor may thin-wrap into **`run_experiments.py`** but **does not replace P1-T11 scope by default**.
   - Output: `ComparisonReport` as both Markdown table and JSON.
   - Statistical rigor (from design delta §8c):
     - Mean ± std for each metric per config.
@@ -304,8 +351,18 @@ Without (1), the eval measures a hobbled system. Without (2), "replayable" is a 
                          │                    CRITICAL PATH (red)                           │
                          └─────────────────────────────────────────────────────────────────┘
 
-P1-T01 (GPU embed) ──► P1-T02 (Lance index) ──► P1-T03 (chunk+rerank) ──► P1-T04 (vector retrieval)
-  [ADR-008]                                        [ADR-009]                  [ADR-004]
+T00a (backfill) ──► T00b (coverage audit) ──► T00c (freeze v2 + manifest) ──► P1-T01 (GPU embed)
+                                                                                  [ADR-008]
+                                                                                       │
+                                                                                       ▼
+                                                                              P1-T02 (Lance index)
+                                                                                       │
+                                                                                       ▼
+                                                                               T03-pre (param gate)
+                                                                                       │
+                                                                                       ▼
+                                                                      P1-T03 (chunk+rerank) ──► P1-T04 (vector retrieval)
+                                                                           [ADR-009 / W-14]          [ADR-004]
                                                                                   │
                                                                     ┌─────────────┼─────────────┐
                                                                     ▼             ▼             ▼
@@ -334,9 +391,9 @@ P1-T10 (golden set expansion) ────────────────�
                                                                     [ADR-011]
 ```
 
-**Critical path:** T01 → T02 → T03 → T04 → T06 → T11 → T12 → T13 → T15
+**Critical path:** T00a → T00b → T00c → T01 → T02 → T03-pre → T03 → T04 → T06 → T11 → T12 → T13 → T15
 
-**Parallel tracks (can start day 1):**
+**Parallel tracks (after `catalyst_eval_frozen_v2.db` exists):**
 - P1-T05 (GDELT) + P1-T08 (retry) + P1-T10 (golden set expansion)
 - P1-T14 (LangSmith) starts after T04, runs parallel with T06/T07
 

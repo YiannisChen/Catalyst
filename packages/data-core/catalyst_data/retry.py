@@ -93,6 +93,26 @@ RETRY_POLICIES = {
             jitter=False,
         ),
     ),
+    "yfinance": RetryPolicy(
+        rate_limit=RetryRule(
+            base_seconds=10.0,
+            max_seconds=30.0,
+            max_retries=3,
+            jitter=False,
+        ),
+        server_error=RetryRule(
+            base_seconds=5.0,
+            max_seconds=20.0,
+            max_retries=3,
+            jitter=False,
+        ),
+        timeout=RetryRule(
+            base_seconds=5.0,
+            max_seconds=20.0,
+            max_retries=3,
+            jitter=False,
+        ),
+    ),
 }
 
 MAX_RETRIES = RETRY_POLICIES["polygon"].rate_limit.max_retries

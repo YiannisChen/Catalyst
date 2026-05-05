@@ -53,6 +53,7 @@ Today, `packages/data-core/catalyst_data/storage/lancedb_store.py` documents tha
 
 **Follow-up tasks**
 
+- Run an explicit **`T03-pre`** parameter-selection gate before shipping **P1-T03**, recording the chosen **sentence splitter**, **`max_sentences_per_asset`**, and reranker shortlist / top-k settings in **`docs/decisions/chunking-ablation-{date}.md`**.
 - Extend `hybrid_search` / store layer so rerank attachment behavior matches this ADR uniformly (P1-T03 scope).
 - Calibrate thresholds when mean score statistics mix RRF-only and rerank-available runs.
 
@@ -65,9 +66,11 @@ Today, `packages/data-core/catalyst_data/storage/lancedb_store.py` documents tha
 
 ## Implementation notes
 
+- **Planning guardrail:** `T03-pre` is a **parameter-selection gate only**. It is not a scope-reduction gate and must not be used to defer **L2 / W-14** to P2.
 - **Primary wiring surface:** `catalyst_data.storage.lancedb_store.hybrid_search` and `catalyst_data.storage.lancedb_store._apply_reranker` (rerank enrichment pattern).
 - **Policy integration:** `catalyst_agents.retrieval.policy.retrieve` optional `rerank` parameter already forwards to `_apply_reranker` when Lance path is active.
 - Miner/graph code paths that bypass `retrieve(..., rerank=...)` must be audited during P1-T03 so scores remain consistent.
+- **Open coordination note:** The exact canonical embedding object consumed by the shipped P1 index (**L1 `clean_assets` rows** vs **final L1+L2 chunk rows**) remains an ADR-008/ADR-009 coordination decision unless separately frozen by architect instruction; this ADR does not resolve that question by itself.
 
 ### Related ADRs
 
