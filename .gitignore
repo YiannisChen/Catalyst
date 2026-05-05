@@ -17,7 +17,6 @@ venv/
 /data/case_studies/
 /data/eval_reports/*_case_study_report.md
 /data/eval_reports/*_case_study_trace.json
-/docs/plans/
 /DemoUI/
 
 # local script outputs
