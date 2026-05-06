@@ -1,0 +1,110 @@
+{
+  "method": "real_bge_m3_query_embeddings",
+  "total_queries": 10,
+  "topk20_feasible_queries": 3,
+  "topk20_feasible_ratio": 0.3,
+  "threshold_ratio": 0.8,
+  "pass": false,
+  "rows": [
+    {
+      "id": "g006",
+      "ticker": "TSLA",
+      "trade_date": "2025-07-24",
+      "query": "Explain the price move for TSLA on 2025-07-24.",
+      "direct_rrf_candidates": 10,
+      "macro_rrf_candidates": 9,
+      "combined_rrf_candidates": 19,
+      "topk20_feasible": false
+    },
+    {
+      "id": "g013",
+      "ticker": "NVDA",
+      "trade_date": "2025-10-28",
+      "query": "Explain the price move for NVDA on 2025-10-28.",
+      "direct_rrf_candidates": 10,
+      "macro_rrf_candidates": 7,
+      "combined_rrf_candidates": 17,
+      "topk20_feasible": false
+    },
+    {
+      "id": "g017",
+      "ticker": "AMD",
+      "trade_date": "2025-07-15",
+      "query": "Explain the price move for AMD on 2025-07-15.",
+      "direct_rrf_candidates": 10,
+      "macro_rrf_candidates": 5,
+      "combined_rrf_candidates": 15,
+      "topk20_feasible": false
+    },
+    {
+      "id": "g024",
+      "ticker": "UNH",
+      "trade_date": "2025-05-13",
+      "query": "Explain the price move for UNH on 2025-05-13.",
+      "direct_rrf_candidates": 9,
+      "macro_rrf_candidates": 11,
+      "combined_rrf_candidates": 20,
+      "topk20_feasible": true
+    },
+    {
+      "id": "g041",
+      "ticker": "AMZN",
+      "trade_date": "2025-10-31",
+      "query": "Explain the price move for AMZN on 2025-10-31.",
+      "direct_rrf_candidates": 10,
+      "macro_rrf_candidates": 6,
+      "combined_rrf_candidates": 16,
+      "topk20_feasible": false
+    },
+    {
+      "id": "g005",
+      "ticker": "TSLA",
+      "trade_date": "2025-06-05",
+      "query": "Explain the price move for TSLA on 2025-06-05.",
+      "direct_rrf_candidates": 10,
+      "macro_rrf_candidates": 10,
+      "combined_rrf_candidates": 20,
+      "topk20_feasible": true
+    },
+    {
+      "id": "g007",
+      "ticker": "TSLA",
+      "trade_date": "2025-08-22",
+      "query": "Explain the price move for TSLA on 2025-08-22.",
+      "direct_rrf_candidates": 10,
+      "macro_rrf_candidates": 10,
+      "combined_rrf_candidates": 20,
+      "topk20_feasible": true
+    },
+    {
+      "id": "g001",
+      "ticker": "TSLA",
+      "trade_date": "2025-01-02",
+      "query": "Explain the price move for TSLA on 2025-01-02.",
+      "direct_rrf_candidates": 9,
+      "macro_rrf_candidates": 10,
+      "combined_rrf_candidates": 19,
+      "topk20_feasible": false
+    },
+    {
+      "id": "g009",
+      "ticker": "NVDA",
+      "trade_date": "2025-01-27",
+      "query": "Explain the price move for NVDA on 2025-01-27.",
+      "direct_rrf_candidates": 10,
+      "macro_rrf_candidates": 6,
+      "combined_rrf_candidates": 16,
+      "topk20_feasible": false
+    },
+    {
+      "id": "p0r001",
+      "ticker": "OPENAI",
+      "trade_date": "2026-06-15",
+      "query": "Explain the price move for OPENAI on 2026-06-15.",
+      "direct_rrf_candidates": 0,
+      "macro_rrf_candidates": 0,
+      "combined_rrf_candidates": 0,
+      "topk20_feasible": false
+    }
+  ]
+}

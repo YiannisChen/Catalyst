@@ -1,0 +1,254 @@
+{
+  "selected_cases": [
+    {
+      "asset_id": "91638df1b1c65409d899c2c60c24af0dbb42ca6910434d093ee91e10e29d4cf1",
+      "ticker": "NVDA",
+      "reference_date": "2026-03-17",
+      "sentence_count": 125,
+      "head_20": [
+        "## NVDA: The $110 Billion Catalyst That Makes It More Likely Oracle Will Hit Its 700% Cloud Infrastructure Revenue Growth Guidance by 2030\n*Source: The Motley Fool | 2026-03-17T00:15:00Z | Category: news*\n\nOracle's cloud infrastructure business aims for 700% revenue growth by fiscal 2030, with guidance of $144 billion in revenue.",
+        "The company's outlook heavily depends on a $300 billion contract with OpenAI.",
+        "Recent concerns about OpenAI's ability to meet commitments have been eased by its successful $110 billion funding round led by Amazon, Nvidia, and SoftBank, which improves Oracle's risk-reward profile and makes the ambitious guidance more achievable.",
+        "## NVDA: Skild AI Expands Generalized Robot Intelligence Across Industries With ABB Robotics, Universal Robots, and NVIDIA\n*Source: GlobeNewswire Inc. | 2026-03-17T00:51:00Z | Category: news*\n\nSkild AI announced expanded partnerships with NVIDIA, ABB Robotics, and Universal Robots to deploy its omni-bodied AI robot brain across industries without task-specific reprogramming.",
+        "The technology will be deployed in production environments including NVIDIA Blackwell GPU assembly lines with Foxconn, leveraging NVIDIA's robotics simulation platforms and Jetson hardware for real-time inference.",
+        "## NVDA: WeRide Showcases Robotaxi GXR Powered by NVIDIA DRIVE Hyperion Platform at NVIDIA GTC 2026, Accelerating Southeast Asia Expansion and Beyond\n*Source: GlobeNewswire Inc. | 2026-03-17T01:00:00Z | Category: news*\n\nWeRide showcased its Robotaxi GXR at NVIDIA GTC 2026, powered by the NVIDIA DRIVE Hyperion platform.",
+        "The company plans to expand operations in Southeast Asia through its partnership with Grab, with trial operations launching in Singapore on April 1, 2026.",
+        "WeRide aims to deploy over 2,600 active Robotaxis globally by 2026 and tens of thousands by 2030, with manufacturing support from Geely Farizon.",
+        "## NVDA: Tecan to create Data-Driven Labs with NVIDIA\n*Source: GlobeNewswire Inc. | 2026-03-17T06:00:00Z | Category: news*\n\nTecan Group announced a strategic collaboration with NVIDIA to develop AI-enabled platforms for data-driven laboratories.",
+        "The partnership aims to integrate NVIDIA's GPU-accelerated models and libraries into Tecan's products, including the Introspect analytics platform, to accelerate drug discovery, improve lab productivity, and enable next-generation lab instrumentation through agentic AI, discovery AI, and physical AI capabilities.",
+        "## NVDA: Defensive Sectors: Are Utilities, Staples, and Health Care Signaling Trouble?",
+        "*Source: Investing.com | 2026-03-17T06:44:00Z | Category: news*\n\nThe article analyzes whether defensive sectors (Utilities, Consumer Staples, and Health Care) are signaling market trouble amid rising volatility.",
+        "Utilities show strong relative strength with an uptrend, Consumer Staples are testing key support levels, and Health Care exhibits a bearish double top pattern.",
+        "The author cautions that while defensive strength can indicate market weakness, current signals are mixed and traders should monitor these sectors alongside broader market analysis.",
+        "## NVDA: STMicroelectronics étend son portefeuille de produits de conversion de puissance pour centres de données d’IA en 800 VDC avec de nouvelles architectures 12V et 6V en collaboration avec NVIDIA\n*Source: GlobeNewswire Inc. | 2026-03-17T07:00:00Z | Category: news*\n\nSTMicroelectronics announced new 800 VDC to 12V and 6V power conversion architectures developed in collaboration with NVIDIA for AI datacenters.",
+        "These solutions complement the existing 800 VDC to 50V offering and enable more efficient, scalable power distribution for high-density AI infrastructure at gigawatt scale, featuring improved efficiency, reduced copper usage, and better thermal performance.",
+        "## NVDA: STMicroelectronics expands 800 VDC AI datacenter power conversion portfolio with new 12V and 6V architectures in collaboration with NVIDIA\n*Source: GlobeNewswire Inc. | 2026-03-17T07:00:00Z | Category: news*\n\nSTMicroelectronics announced the expansion of its 800 VDC power conversion portfolio with new 12V and 6V architectures developed in collaboration with NVIDIA.",
+        "These solutions complement the existing 800V to 50V converter and enable higher energy efficiency, reduced power losses, and greater scalability for AI datacenter infrastructure.",
+        "The new converters support different server form factors and GPU configurations while reducing conversion steps and copper usage.",
+        "## NVDA: Google Parent Alphabet's $346 Billion Investment Is Providing a Big Lift to Its Bottom Line -- but It Has Nothing to Do With Artificial Intelligence (AI)\n*Source: The Motley Fool | 2026-03-17T08:06:00Z | Category: news*\n\nAlphabet's $346 billion share repurchase program since 2016 has significantly boosted its earnings per share by reducing outstanding shares by over 13%, returning share count to 2006 levels."
+      ],
+      "tail_21_30": [
+        "While AI drives long-term growth through Google Cloud's 48% reacceleration, the company's aggressive buyback strategy—enabled by its $126.8 billion cash position and $164.7 billion in annual operating cash flow—is the primary driver of recent bottom-line improvements.",
+        "## NVDA: Nvidia Stock vs. Micron Stock: Billionaires Buy One and Sell the Other\n*Source: The Motley Fool | 2026-03-17T08:12:00Z | Category: news*\n\nBillionaire hedge fund managers Israel Englander and David Tepper sold Nvidia and bought Micron in Q4, but Wall Street now favors Nvidia.",
+        "Nvidia trades at a cheap 38x adjusted earnings with 47% upside potential and 82% earnings growth, while Micron's impressive 167% earnings growth is driven by temporary supply shortages expected to reverse, making it less attractive despite 6% upside.",
+        "## NVDA: Prediction: This Unstoppable Vanguard ETF Will Crush the S&P 500 Again in 2026\n*Source: The Motley Fool | 2026-03-17T08:26:00Z | Category: news*\n\nThe Vanguard Information Technology ETF (VGT) is predicted to outperform the S&P 500 in 2026, driven by strong momentum in artificial intelligence and semiconductor sectors.",
+        "The ETF has consistently outperformed the S&P 500 since 2004 with a 13.7% compound annual return versus 10.6% for the broader index.",
+        "Key holdings in semiconductors (Nvidia, Broadcom, AMD, Micron) and cloud providers (Microsoft, Oracle) are expected to benefit from trillions in AI infrastructure spending.",
+        "## NVDA: Billionaire Philippe Laffont Has Sold Shares of Nvidia in 10 of the Last 11 Quarters -- What Does He Know That Wall Street Doesn't?",
+        "*Source: The Motley Fool | 2026-03-17T09:06:00Z | Category: news*\n\nBillionaire Philippe Laffont of Coatue Management has sold over 40 million split-adjusted shares of Nvidia since March 2023, reducing his stake by more than 80%.",
+        "While profit-taking explains some selling, potential headwinds include concerns about an AI bubble burst, increasing GPU competition from major customers developing cheaper internal chips, and trade uncertainties with China and tariff policies.",
+        "## NVDA: Oracle Is Soaring After Blowout Earnings."
+      ],
+      "head_20_preview": [
+        "## NVDA: The $110 Billion Catalyst That Makes It More Likely Oracle Will Hit Its 700% Cloud Infrastructure Revenue Growth Guidance by 2030\n*Source: The Motley Fool | 2026-03-17T00:15:00Z | Category: news*\n\nOracle's cloud infrastructure business aims for 700% revenue growth by fiscal 2030, with guidance of $144 billion in revenue.",
+        "The company's outlook heavily depends on a $300 billion contract with OpenAI.",
+        "Recent concerns about OpenAI's ability to meet commitments have been eased by its successful $110 billion funding round led by Amazon, Nvidia, and SoftBank, which improves Oracle's risk-reward profile and makes the ambitious guidance more achievable."
+      ],
+      "tail_21_30_preview": [
+        "While AI drives long-term growth through Google Cloud's 48% reacceleration, the company's aggressive buyback strategy—enabled by its $126.8 billion cash position and $164.7 billion in annual operating cash flow—is the primary driver of recent bottom-line improvements.",
+        "## NVDA: Nvidia Stock vs. Micron Stock: Billionaires Buy One and Sell the Other\n*Source: The Motley Fool | 2026-03-17T08:12:00Z | Category: news*\n\nBillionaire hedge fund managers Israel Englander and David Tepper sold Nvidia and bought Micron in Q4, but Wall Street now favors Nvidia.",
+        "Nvidia trades at a cheap 38x adjusted earnings with 47% upside potential and 82% earnings growth, while Micron's impressive 167% earnings growth is driven by temporary supply shortages expected to reverse, making it less attractive despite 6% upside."
+      ]
+    },
+    {
+      "asset_id": "fcbacc87f469b338ab25648a03c93920e41f3b76b3cf2bc83303e95da439d1c7",
+      "ticker": "NVDA",
+      "reference_date": "2026-03-31",
+      "sentence_count": 119,
+      "head_20": [
+        "## NVDA: Is QQQ Still Worth Buying After the Market's Recent Slide?",
+        "*Source: The Motley Fool | 2026-03-31T01:05:00Z | Category: news*\n\nThe Invesco QQQ ETF has fallen 8% from its all-time high, but the article argues this presents a buying opportunity.",
+        "Tech stocks are trading at reasonable valuations with strong projected earnings growth of 36% in 2026 and 24% in 2027.",
+        "However, risks remain around whether AI investments will generate sufficient returns, and short-term volatility could persist.",
+        "## NVDA: Nvidia's Rubin Chip Arrives in Late 2026.",
+        "Is Now the Time to Buy This Artificial Intelligence (AI) Stock?",
+        "*Source: The Motley Fool | 2026-03-31T02:15:00Z | Category: news*\n\nNvidia's stock has fallen nearly 20% from its 52-week high ahead of its next-generation Rubin chip platform launching in late 2026.",
+        "While the stock appears cheap relative to its historical valuations, it remains expensive compared to broader market averages.",
+        "Rising oil and natural gas prices pose risks to AI infrastructure expansion and operational costs.",
+        "The article suggests investors should remain cautious and watch from the sidelines unless they have strong conviction in AI's future, citing potential for further declines similar to the dot-com bubble aftermath.",
+        "## NVDA: Beyond Nvidia: This Under-the-Radar AI Stock Is Up Nearly 300% Over the Past Year\n*Source: The Motley Fool | 2026-03-31T07:25:00Z | Category: news*\n\nMicron Technology stock has surged nearly 300% over the past year due to soaring demand for high-bandwidth memory (HBM) in AI computing.",
+        "The HBM market is expected to grow from $35 billion in 2025 to $100 billion by 2028, with Micron currently unable to meet total demand.",
+        "Despite recent concerns about Google's TurboQuant algorithm reducing memory requirements, the analyst believes this will only redirect demand rather than eliminate it, and projects strong revenue growth ahead.",
+        "## NVDA: The Best Quantum Computing Stock to Buy With $1,000 Right Now\n*Source: The Motley Fool | 2026-03-31T07:30:00Z | Category: news*\n\nNvidia is positioned as a superior quantum computing investment compared to pure-play quantum startups like IonQ and Rigetti Computing.",
+        "The article argues that Nvidia's existing dominance in AI data centers, combined with its CUDA software platform extended into quantum toolkits, creates a unique advantage in the quantum AI ecosystem.",
+        "Rather than betting on unproven quantum hardware companies, investors can gain quantum exposure through Nvidia's hybrid computing platform at a reasonable forward P/E of 21.",
+        "## NVDA: Billionaire Stanley Druckenmiller Piled Into 2 of the Hottest AI Stocks for a Second Consecutive Quarter (No, Not Nvidia or Palantir)\n*Source: The Motley Fool | 2026-03-31T08:06:00Z | Category: news*\n\nBillionaire Stanley Druckenmiller's Duquesne Family Office significantly increased positions in Alphabet and Amazon during Q4 2025, marking the second consecutive quarter of purchases.",
+        "Druckenmiller sold his stakes in Nvidia and Palantir, instead favoring these two AI-focused companies that are trading at historically attractive valuations relative to their projected cash flows.",
+        "Both companies are leveraging generative AI and large language models in their cloud infrastructure platforms, with Google Cloud reporting 48% revenue growth and AWS accelerating to 24% growth.",
+        "## NVDA: Is Nvidia a Smart Buy for a Value Investor Right Now?"
+      ],
+      "tail_21_30": [
+        "*Source: The Motley Fool | 2026-03-31T08:10:00Z | Category: news*\n\nNvidia stock has declined to its lowest level in about a year amid market uncertainties and concerns about AI spending.",
+        "Despite remaining fundamentally a growth stock with strong revenue growth expectations (72% annually), the article argues that Nvidia now trades at valuations attractive to value investors.",
+        "The company maintains its position as the world's leading AI chip designer with high profitability margins and expanding product portfolio including AI agents and networking tools.",
+        "## NVDA: The Nasdaq Is Officially in a Correction.",
+        "Here's What Investors Should Do, According to History.",
+        "*Source: The Motley Fool | 2026-03-31T08:24:00Z | Category: news*\n\nThe Nasdaq-100 has entered correction territory, declining over 10% from its record high due to Middle East geopolitical tensions driving oil prices higher and creating economic uncertainty.",
+        "The tech-heavy index faces headwinds from potential slowdowns in AI infrastructure spending, job losses, and inflation concerns.",
+        "However, historical data suggests buying market dips has yielded strong long-term returns, with the QQQ ETF delivering 10.3% compound annual returns since 1999 despite multiple bear markets.",
+        "## NVDA: Qodo מגייסת 70 מיליון דולר כדי להאיץ את המאבק נגד גלישת תוכנה מ-OpenClaw ו- Claude Code\n*Source: GlobeNewswire Inc. | 2026-03-31T08:26:00Z | Category: news*\n\nQodo, an AI code review and governance platform, announced a $70M Series B funding round led by Qumra Capital, bringing total funding to $120M.",
+        "The platform addresses the growing challenge of validating AI-generated code in production, with 95% of surveyed developers reporting increased code review scrutiny for AI-generated code."
+      ],
+      "head_20_preview": [
+        "## NVDA: Is QQQ Still Worth Buying After the Market's Recent Slide?",
+        "*Source: The Motley Fool | 2026-03-31T01:05:00Z | Category: news*\n\nThe Invesco QQQ ETF has fallen 8% from its all-time high, but the article argues this presents a buying opportunity.",
+        "Tech stocks are trading at reasonable valuations with strong projected earnings growth of 36% in 2026 and 24% in 2027."
+      ],
+      "tail_21_30_preview": [
+        "*Source: The Motley Fool | 2026-03-31T08:10:00Z | Category: news*\n\nNvidia stock has declined to its lowest level in about a year amid market uncertainties and concerns about AI spending.",
+        "Despite remaining fundamentally a growth stock with strong revenue growth expectations (72% annually), the article argues that Nvidia now trades at valuations attractive to value investors.",
+        "The company maintains its position as the world's leading AI chip designer with high profitability margins and expanding product portfolio including AI agents and networking tools."
+      ]
+    },
+    {
+      "asset_id": "2253975a11f804f52aae555c342f1e81a8eb7ece36f0af9cd1fb3f4dad80f39a",
+      "ticker": "NVDA",
+      "reference_date": "2026-03-27",
+      "sentence_count": 117,
+      "head_20": [
+        "## NVDA: IWO vs. VUG: One Offers Broad Growth Exposure While the Other Has Lower Fees\n*Source: The Motley Fool | 2026-03-27T00:05:33Z | Category: news*\n\nVanguard Growth ETF (VUG) and iShares Russell 2000 Growth ETF (IWO) offer different approaches to U.S. growth investing.",
+        "VUG focuses on mega-cap tech stocks with superior long-term performance ($1,000 invested 5 years ago worth $1,756) and ultra-low fees (0.03%), while IWO provides small-cap diversification across 1,100+ stocks with higher fees (0.24%) but broader sector exposure.",
+        "VUG delivered 13.3% 1-year returns versus IWO's 17.2%, though IWO experienced deeper drawdowns.",
+        "## NVDA: Move Over, Nvidia GPUs.",
+        "The AI CPU Era Is Here\n*Source: The Motley Fool | 2026-03-27T00:30:00Z | Category: news*\n\nThe AI market is shifting from GPU-focused training to CPU-dependent inference, creating a new growth opportunity.",
+        "Arm launched its first in-house AI CPU, while Intel and AMD announced plans to raise CPU prices by up to 15% due to expected shortages.",
+        "Nvidia is also entering the CPU market, and all major chip makers are positioned to benefit from surging CPU demand driven by agentic AI deployment.",
+        "## NVDA: IWO vs. VOOG: How Small-Cap Diversification Compares to Large-Cap Growth\n*Source: The Motley Fool | 2026-03-27T01:10:11Z | Category: news*\n\nThe iShares Russell 2000 Growth ETF (IWO) and Vanguard S&P 500 Growth ETF (VOOG) offer different approaches to growth investing.",
+        "VOOG focuses on large-cap tech stocks with lower fees and better 5-year returns, while IWO provides broader small-cap diversification with less tech concentration but higher volatility and expense ratios.",
+        "VOOG's top holdings (Nvidia, Microsoft, Apple) dominate its portfolio, whereas IWO spreads risk across 1,100+ companies.",
+        "## NVDA: Recession Risks Are Rising According To Wall Street.",
+        "Here's What It Means for Investors.",
+        "*Source: The Motley Fool | 2026-03-27T02:30:00Z | Category: news*\n\nWall Street economists are raising recession risk assessments following the Iran war outbreak and resulting oil price spikes.",
+        "Moody's Analytics estimates a 48.6% recession risk over the next 12 months, Goldman Sachs raised its estimate to 30%, and prediction markets now show 35% odds of recession before year-end.",
+        "Rising oil prices increase transportation costs and consumer expenses, pressuring the economy.",
+        "However, the S&P 500 has historically recovered from all recessions and set new highs afterward.",
+        "## NVDA: Nvidia Stock Has Gone Nowhere for 6 Months.",
+        "What Will It Take for Shares to Go Higher?",
+        "*Source: The Motley Fool | 2026-03-27T03:30:00Z | Category: news*\n\nDespite Nvidia's exceptional business performance—including 73% revenue growth, $1 trillion revenue forecast through 2027, and strong guidance—the stock has stalled over the past six months.",
+        "The market's cautious valuation (36x P/E) reflects concerns about sustaining high margins as competition intensifies from custom AI chips developed by major tech companies like Google, Amazon, and Meta."
+      ],
+      "tail_21_30": [
+        "The stock may remain stuck until investors gain confidence that the AI boom will last longer than expected or that Nvidia's software and networking platforms can insulate the business from traditional hardware cycles.",
+        "## NVDA: Micron Stock: Did the AI Memory Leader Just Peak?",
+        "*Source: The Motley Fool | 2026-03-27T04:30:00Z | Category: news*\n\nMicron stock has fallen 23% following a strong earnings report, raising questions about whether the AI memory boom has peaked.",
+        "The decline is attributed to concerns about memory cycle sustainability, geopolitical tensions, and Google's new TurboQuant algorithm that could reduce AI storage needs.",
+        "However, the company's guidance suggests significant growth ahead through 2028, with analysts projecting continued profit expansion through fiscal 2027.",
+        "## NVDA: What Happens If the Nasdaq and S&P 500 Both Fall Into Correction Territory?",
+        "*Source: The Motley Fool | 2026-03-27T06:15:00Z | Category: news*\n\nThe Nasdaq has entered correction territory (down 10%+ from highs) while the S&P 500 approaches it.",
+        "The market shift from megacap growth dominance to broader sector participation has left many large-cap tech stocks significantly undervalued.",
+        "Investors should identify quality companies beaten down for cyclical or sentiment reasons rather than fundamental deterioration, with Home Depot highlighted as a compelling value opportunity.",
+        "## NVDA: This Brilliant Artificial Intelligence (AI) Stock Just Unveiled Plans to Reach a $9 Trillion Valuation by 2031 (Hint: Not Nvidia)\n*Source: The Motley Fool | 2026-03-27T07:02:00Z | Category: news*\n\nMeta Platforms has announced ambitious plans to reach a $9 trillion market valuation by 2031, requiring 43% annual revenue growth and a 494% stock price increase."
+      ],
+      "head_20_preview": [
+        "## NVDA: IWO vs. VUG: One Offers Broad Growth Exposure While the Other Has Lower Fees\n*Source: The Motley Fool | 2026-03-27T00:05:33Z | Category: news*\n\nVanguard Growth ETF (VUG) and iShares Russell 2000 Growth ETF (IWO) offer different approaches to U.S. growth investing.",
+        "VUG focuses on mega-cap tech stocks with superior long-term performance ($1,000 invested 5 years ago worth $1,756) and ultra-low fees (0.03%), while IWO provides small-cap diversification across 1,100+ stocks with higher fees (0.24%) but broader sector exposure.",
+        "VUG delivered 13.3% 1-year returns versus IWO's 17.2%, though IWO experienced deeper drawdowns."
+      ],
+      "tail_21_30_preview": [
+        "The stock may remain stuck until investors gain confidence that the AI boom will last longer than expected or that Nvidia's software and networking platforms can insulate the business from traditional hardware cycles.",
+        "## NVDA: Micron Stock: Did the AI Memory Leader Just Peak?",
+        "*Source: The Motley Fool | 2026-03-27T04:30:00Z | Category: news*\n\nMicron stock has fallen 23% following a strong earnings report, raising questions about whether the AI memory boom has peaked."
+      ]
+    },
+    {
+      "asset_id": "0c7b15d756b353299d237c620ee6a3170ca2c82dc289fa15ee2e9ff81067bf55",
+      "ticker": "NVDA",
+      "reference_date": "2025-10-30",
+      "sentence_count": 45,
+      "head_20": [
+        "## NVDA: Can Nvidia Become a $10 Trillion Stock by 2030?",
+        "*Source: The Motley Fool | 2025-10-30T00:05:00Z | Category: news*\n\nNvidia, the AI chip leader with a $4.9 trillion market cap, is positioned to potentially reach $10 trillion by 2030 through continued AI infrastructure development and impressive revenue growth, despite increasing market competition.",
+        "## NVDA: History Says the Nasdaq Will Soar in 2026.",
+        "1 Unstoppable Stock to Buy Before It Does.",
+        "*Source: The Motley Fool | 2025-10-30T07:02:00Z | Category: news*\n\nThe Nasdaq Composite has experienced significant growth, with potential for continued expansion in 2026.",
+        "Broadcom stands out as a promising semiconductor and data center specialist, driven by strong AI infrastructure demand and impressive financial performance.",
+        "## NVDA: AI Tech Trends: 3 ETFs Poised for Explosive Growth Over 8 Years\n*Source: The Motley Fool | 2025-10-30T07:15:00Z | Category: news*\n\nThe article explores three AI-focused ETFs that offer investors exposure to the rapidly growing artificial intelligence market, which is expected to expand from $279.2 billion in 2024 to $3.5 trillion in eight years.",
+        "## NVDA: 5 Tech Stocks You Can Buy and Hold for the Next Decade\n*Source: The Motley Fool | 2025-10-30T08:20:00Z | Category: news*\n\nThe article highlights five tech stocks positioned to benefit from AI growth over the next decade, focusing on companies with strong market positions in AI infrastructure, chips, and emerging technologies.",
+        "## NVDA: Billionaire Stanley Druckenmiller Sold 100% of Duquesne's Stakes in Nvidia and Palantir and Is Piling Into This Trillion-Dollar Artificial Intelligence (AI) Stock Instead\n*Source: The Motley Fool | 2025-10-30T08:35:00Z | Category: news*\n\nBillionaire investor Stanley Druckenmiller has sold his entire stakes in Nvidia and Palantir due to valuation concerns, and is now investing heavily in Microsoft as a more compelling AI growth opportunity with strong cloud computing and enterprise software potential.",
+        "## NVDA: The Unexpected Bull Case for AMD Stock\n*Source: The Motley Fool | 2025-10-30T09:30:00Z | Category: news*\n\nAMD is positioned as a strong No.",
+        "2 player in the AI chip market, with potential for significant stock growth due to its smaller market cap and competitive pricing, despite Nvidia's market leadership.",
+        "## NVDA: Is Nvidia Stock Overvalued?",
+        "*Source: The Motley Fool | 2025-10-30T09:30:00Z | Category: news*\n\nThe article analyzes Nvidia's stock valuation, arguing that despite its significant price run-up (1,350% over three years), the stock is not overvalued when using metrics like PEG ratio.",
+        "The current PEG of 0.881 suggests the stock remains attractively valued.",
+        "## NVDA: If You'd Invested $1,000 in IonQ Stock 1 Year Ago, Here's How Much You'd Have Today\n*Source: The Motley Fool | 2025-10-30T11:05:00Z | Category: news*\n\nAn analysis of IonQ stock performance shows an investor who put $1,000 in the quantum computing company a year ago would now have $3,689, significantly outperforming the S&P 500's return.",
+        "The article emphasizes the importance of a long-term, buy-and-hold investment strategy, especially for volatile stocks.",
+        "## NVDA: What’s Next for Stocks After October Fed Rate Cut?",
+        "*Source: Investing.com | 2025-10-30T12:14:00Z | Category: news*\n\nThe Federal Reserve cut rates by 25 basis points in October, with mixed signals from Fed leadership.",
+        "Powell suggested uncertainty about future rate cuts, causing market volatility.",
+        "Historical data shows potential for market growth, but earnings and credit conditions will be critical in determining market performance."
+      ],
+      "tail_21_30": [
+        "## NVDA: EndoQuest to Advance Next-Generation Surgical Robotics powered by NVIDIA IGX Thor\n*Source: GlobeNewswire Inc. | 2025-10-30T13:00:00Z | Category: news*\n\nEndoQuest Robotics is advancing its endoluminal robotic surgical technology by integrating NVIDIA IGX Thor platform to enhance visualization, robotic control, and cloud services for its investigational surgical system.",
+        "## NVDA: Nvidia’s Path to $5 Trillion and Beyond\n*Source: Investing.com | 2025-10-30T13:05:00Z | Category: news*\n\nNvidia became the world's first $5 trillion company, driven by massive AI investments and strategic public-private partnerships.",
+        "Despite concerns about potential market bubble, experts like Bill Gates suggest AI investments are justified and transformative.",
+        "## NVDA: 5 Top Artificial Intelligence Stocks to Buy Right Now\n*Source: The Motley Fool | 2025-10-30T13:15:00Z | Category: news*\n\nThe article highlights five AI-focused stocks that are positioned to benefit from the growing artificial intelligence revolution, emphasizing companies involved in chip manufacturing, robotics, and cloud computing.",
+        "## NVDA: Mounjaro And Zepbound Power Eli Lilly's 54% Revenue Jump In Q3, Hikes 2025 Forecast\n*Source: Benzinga | 2025-10-30T14:05:19Z | Category: news*\n\nEli Lilly reported Q3 revenue of $17.60 billion, a 54% year-over-year increase, driven by strong performance of weight loss drugs Mounjaro and Zepbound.",
+        "The company raised its 2025 sales and earnings guidance, boosting investor confidence.",
+        "## NVDA: Up 111%, Should You Buy Intel Stock Right Now?",
+        "*Source: The Motley Fool | 2025-10-30T14:15:00Z | Category: news*\n\nIntel reported Q3 earnings beating analyst expectations, with strong AI chip demand and investments from Nvidia and SoftBank.",
+        "However, challenges remain in chip production yields and market competition.",
+        "## NVDA: Tesla Stock: The Bulls Are Winning for Now\n*Source: Investing.com | 2025-10-30T15:17:00Z | Category: news*\n\nTesla stock is showing bullish momentum after consolidating in October, trading near $450 and potentially breaking out past $470."
+      ],
+      "head_20_preview": [
+        "## NVDA: Can Nvidia Become a $10 Trillion Stock by 2030?",
+        "*Source: The Motley Fool | 2025-10-30T00:05:00Z | Category: news*\n\nNvidia, the AI chip leader with a $4.9 trillion market cap, is positioned to potentially reach $10 trillion by 2030 through continued AI infrastructure development and impressive revenue growth, despite increasing market competition.",
+        "## NVDA: History Says the Nasdaq Will Soar in 2026."
+      ],
+      "tail_21_30_preview": [
+        "## NVDA: EndoQuest to Advance Next-Generation Surgical Robotics powered by NVIDIA IGX Thor\n*Source: GlobeNewswire Inc. | 2025-10-30T13:00:00Z | Category: news*\n\nEndoQuest Robotics is advancing its endoluminal robotic surgical technology by integrating NVIDIA IGX Thor platform to enhance visualization, robotic control, and cloud services for its investigational surgical system.",
+        "## NVDA: Nvidia’s Path to $5 Trillion and Beyond\n*Source: Investing.com | 2025-10-30T13:05:00Z | Category: news*\n\nNvidia became the world's first $5 trillion company, driven by massive AI investments and strategic public-private partnerships.",
+        "Despite concerns about potential market bubble, experts like Bill Gates suggest AI investments are justified and transformative."
+      ]
+    },
+    {
+      "asset_id": "17e4e010569565f995c274ba60af8e7db7781ddf584766459a919ac94a96a50c",
+      "ticker": "AMZN",
+      "reference_date": "2026-03-27",
+      "sentence_count": 45,
+      "head_20": [
+        "## AMZN: Microsoft, Meta, and Alphabet Stocks Are All Getting Hammered.",
+        "But I Think Only 1 Is Worth Buying\n*Source: The Motley Fool | 2026-03-27T02:37:00Z | Category: news*\n\nAll three tech giants—Microsoft, Meta, and Alphabet—are experiencing sharp stock declines amid market reevaluation of AI infrastructure spending.",
+        "However, analyst Daniel Sparks identifies Alphabet as the only compelling buy among the three, citing its dominant search business, surging Google Cloud growth (48% YoY), and superior earnings trajectory, while Microsoft faces cloud growth challenges and Meta remains over-dependent on social media advertising.",
+        "## AMZN: Why the Class of 2025 Refuses to Interview Without AI After Watching a Generation Get Laid Off\n*Source: GlobeNewswire Inc. | 2026-03-27T02:49:00Z | Category: news*\n\nRecent college graduates facing a brutal entry-level job market with 5.7% unemployment and 42.5% underemployment are increasingly using AI tools like real-time interview assistants to compete.",
+        "The Class of 2025 argues this is justified given that companies use AI throughout their hiring processes while banning candidate use, creating a double standard in a market where average job postings attract 340 applicants but only 2% advance to interviews.",
+        "## AMZN: Nvidia Stock Has Gone Nowhere for 6 Months.",
+        "What Will It Take for Shares to Go Higher?",
+        "*Source: The Motley Fool | 2026-03-27T03:30:00Z | Category: news*\n\nDespite Nvidia's exceptional business performance—including 73% revenue growth, $1 trillion revenue forecast through 2027, and strong guidance—the stock has stalled over the past six months.",
+        "The market's cautious valuation (36x P/E) reflects concerns about sustaining high margins as competition intensifies from custom AI chips developed by major tech companies like Google, Amazon, and Meta.",
+        "The stock may remain stuck until investors gain confidence that the AI boom will last longer than expected or that Nvidia's software and networking platforms can insulate the business from traditional hardware cycles.",
+        "## AMZN: Quantum Computing Stocks IonQ, Rigetti Computing, and D-Wave Quantum Have Created Shockwaves With This $930 Million Warning to Wall Street\n*Source: The Motley Fool | 2026-03-27T08:06:00Z | Category: news*\n\nDespite quantum computing stocks IonQ, Rigetti Computing, and D-Wave Quantum surging 670-6,217% over the past year, insiders at these companies are selling shares aggressively while barely buying any, signaling they may not view their stocks as bargains.",
+        "With quantum computers still years away from being cost-effective and these companies likely to continue losing money, their valuations may have gotten ahead of themselves despite the sector's long-term potential.",
+        "## AMZN: Is This AI Stock a Better Bargain Than the Magnificent Seven?",
+        "*Source: The Motley Fool | 2026-03-27T08:10:00Z | Category: news*\n\nRecent market corrections have made both the Magnificent Seven tech stocks and other AI players cheaper.",
+        "Micron Technology, an AI memory solutions provider, is presented as a potentially better bargain than the Magnificent Seven (Alphabet, Amazon, Apple, Meta, Microsoft, Nvidia, Tesla) due to strong earnings growth driven by AI demand for memory chips, though the article notes Nvidia may still be preferable for some investors.",
+        "## AMZN: Have Tech Stocks Finally Run Out of Road?",
+        "Here's What the Data Actually Says.",
+        "*Source: The Motley Fool | 2026-03-27T10:16:00Z | Category: news*\n\nTech stocks have pulled back from frothy valuations but remain priced for significant AI-driven earnings growth in 2026.",
+        "While the sector's forward P/E of ~24x is reasonable historically, most popular AI stocks have no margin for error.",
+        "Selective picking is essential, as disappointing earnings could trigger broader sector selloffs, though reasonably-priced non-AI tech stocks exist."
+      ],
+      "tail_21_30": [
+        "## AMZN: The Newest Big Idea From Elon Musk: Terafab\n*Source: The Motley Fool | 2026-03-27T18:16:17Z | Category: news*\n\nElon Musk announced Terafab, a $25 billion joint venture between Tesla, SpaceX, and XAI to build a vertically integrated semiconductor factory producing 1 terawatt of AI computing power annually.",
+        "The facility aims to address supply chain bottlenecks and support Tesla's robotaxi and humanoid robot ambitions, plus SpaceX's orbital AI satellite constellation.",
+        "While ambitious, industry experts question feasibility given the complexity of chip fabrication and Musk's mixed track record on delivery timelines.",
+        "## AMZN: Worried About a Market Downturn?",
+        "How Retirees Can Protect Their Savings in 2026.",
+        "*Source: The Motley Fool | 2026-03-27T19:06:00Z | Category: news*\n\nThe article provides guidance for retirees concerned about potential market downturns in 2026.",
+        "It recommends three key strategies: diversifying retirement portfolios across different asset classes and industries, maintaining flexible withdrawal approaches during market declines, and keeping two years' worth of living expenses in cash reserves to avoid selling investments at losses.",
+        "## AMZN: Deal Dispatch: Estée Lauder Considers Merger, KKR Buys Nothing Bundt Cakes, Amazon Acquires Fauna Robotics\n*Source: Benzinga | 2026-03-27T19:29:13Z | Category: news*\n\nMajor M&A activity continues with Estée Lauder in merger discussions with Puig ($40B), KKR acquiring Nothing Bundt Cakes ($2B+), and Amazon acquiring robotics firm Fauna.",
+        "Other significant deals include Corebridge-Equitable Holdings merger ($22B), Merck's acquisition of Terns Pharmaceuticals ($6.7B), and Abbott closing its Exact Sciences deal ($21B).",
+        "Several companies filed for bankruptcy including 23andMe and Applebee's franchisee NRPF."
+      ],
+      "head_20_preview": [
+        "## AMZN: Microsoft, Meta, and Alphabet Stocks Are All Getting Hammered.",
+        "But I Think Only 1 Is Worth Buying\n*Source: The Motley Fool | 2026-03-27T02:37:00Z | Category: news*\n\nAll three tech giants—Microsoft, Meta, and Alphabet—are experiencing sharp stock declines amid market reevaluation of AI infrastructure spending.",
+        "However, analyst Daniel Sparks identifies Alphabet as the only compelling buy among the three, citing its dominant search business, surging Google Cloud growth (48% YoY), and superior earnings trajectory, while Microsoft faces cloud growth challenges and Meta remains over-dependent on social media advertising."
+      ],
+      "tail_21_30_preview": [
+        "## AMZN: The Newest Big Idea From Elon Musk: Terafab\n*Source: The Motley Fool | 2026-03-27T18:16:17Z | Category: news*\n\nElon Musk announced Terafab, a $25 billion joint venture between Tesla, SpaceX, and XAI to build a vertically integrated semiconductor factory producing 1 terawatt of AI computing power annually.",
+        "The facility aims to address supply chain bottlenecks and support Tesla's robotaxi and humanoid robot ambitions, plus SpaceX's orbital AI satellite constellation.",
+        "While ambitious, industry experts question feasibility given the complexity of chip fabrication and Musk's mixed track record on delivery timelines."
+      ]
+    }
+  ]
+}

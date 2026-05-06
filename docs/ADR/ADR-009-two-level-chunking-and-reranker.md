@@ -67,6 +67,7 @@ Today, `packages/data-core/catalyst_data/storage/lancedb_store.py` documents tha
 ## Implementation notes
 
 - **Planning guardrail:** `T03-pre` is a **parameter-selection gate only**. It is not a scope-reduction gate and must not be used to defer **L2 / W-14** to P2.
+- **L2 scope lock (T03-preb):** L2 sentence splitting is prose-only (starting with `polygon_news`); structured types remain L1-only.
 - **Primary wiring surface:** `catalyst_data.storage.lancedb_store.hybrid_search` and `catalyst_data.storage.lancedb_store._apply_reranker` (rerank enrichment pattern).
 - **Policy integration:** `catalyst_agents.retrieval.policy.retrieve` optional `rerank` parameter already forwards to `_apply_reranker` when Lance path is active.
 - Miner/graph code paths that bypass `retrieve(..., rerank=...)` must be audited during P1-T03 so scores remain consistent.
