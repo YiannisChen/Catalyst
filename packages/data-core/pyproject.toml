@@ -23,7 +23,7 @@ dev = [
     "pytest-asyncio>=0.23",
 ]
 vector = [
-    "lancedb>=0.6",
+    "lancedb==0.30.2",
     "FlagEmbedding>=1.2",
 ]
 

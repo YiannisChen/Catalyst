@@ -1,0 +1,362 @@
+{
+  "db_path": "/Users/yiannischen/Desktop/Catalyst/data/catalyst_eval_frozen_v2.db",
+  "l1_row_count": 13474,
+  "polygon_news_sample_size": 100,
+  "source_type_profile": [
+    {
+      "source_type": "fmp_fundamentals",
+      "row_count": 3500,
+      "min": 5131,
+      "median": 5220.5,
+      "p75": 5249.0,
+      "p95": 5297.0,
+      "max": 5297
+    },
+    {
+      "source_type": "fred_macro",
+      "row_count": 3500,
+      "min": 6028,
+      "median": 9434.0,
+      "p75": 9635.0,
+      "p95": 9739.0,
+      "max": 9744
+    },
+    {
+      "source_type": "polygon_ohlcv",
+      "row_count": 3349,
+      "min": 166,
+      "median": 177.0,
+      "p75": 179.0,
+      "p95": 182.0,
+      "max": 188
+    },
+    {
+      "source_type": "polygon_news",
+      "row_count": 3125,
+      "min": 387,
+      "median": 3551.0,
+      "p75": 6304.0,
+      "p95": 12550.4,
+      "max": 31486
+    }
+  ],
+  "splitter_summary": {
+    "spacy_en_core_web_sm": {
+      "sentence_count_stats": {
+        "min": 3,
+        "median": 18.0,
+        "p75": 31.25,
+        "p95": 54.05,
+        "max": 116,
+        "mean": 23.42
+      },
+      "pathological_split_rate": 0.3,
+      "pathological_asset_count": 30,
+      "pathology_counts": {
+        "short_fragment": 28,
+        "overlong_sentence": 2
+      }
+    },
+    "regex_boundary": {
+      "sentence_count_stats": {
+        "min": 1,
+        "median": 7.0,
+        "p75": 14.25,
+        "p95": 29.099999999999994,
+        "max": 68,
+        "mean": 10.71
+      },
+      "pathological_split_rate": 0.49,
+      "pathological_asset_count": 49,
+      "pathology_counts": {
+        "overlong_sentence": 49
+      }
+    },
+    "nltk_punkt_tab": {
+      "sentence_count_stats": {
+        "min": 3,
+        "median": 16.0,
+        "p75": 26.25,
+        "p95": 49.05,
+        "max": 117,
+        "mean": 20.39
+      },
+      "pathological_split_rate": 0.26,
+      "pathological_asset_count": 26,
+      "pathology_counts": {
+        "overlong_sentence": 26
+      }
+    }
+  },
+  "pathological_definition": {
+    "asset_level": "asset is pathological if any anomaly below occurs",
+    "rules": [
+      "sentence_count == 0",
+      "sentence_count > 120",
+      "any sentence len <= 8 with >=4 alphabetic chars",
+      "any sentence len >= 1200",
+      "any punctuation-only sentence fragment"
+    ]
+  },
+  "representative_examples": [
+    {
+      "asset_id": "2253975a11f804f52aae555c342f1e81a8eb7ece36f0af9cd1fb3f4dad80f39a",
+      "text_preview": "## NVDA: IWO vs. VUG: One Offers Broad Growth Exposure While the Other Has Lower Fees *Source: The Motley Fool | 2026-03-27T00:05:33Z | Category: news*  Vanguard Growth ETF (VUG) and iShares Russell 2000 Growth ETF (IWO) offer different approaches to U.S. growth investing. VUG focuses on mega-cap tech stocks with superior long-term performance ($1,000 invest",
+      "splitters": {
+        "spacy_en_core_web_sm": {
+          "count": 116,
+          "flags": [
+            "short_fragment"
+          ],
+          "first_sentences": [
+            "## NVDA:",
+            "IWO vs. VUG: One Offers Broad Growth Exposure While the Other Has Lower Fees\n*Source: The Motley Fool | 2026-03-27T00:05:33Z | Category: news*\n\nVanguard Growth ETF (VUG) and iShares Russell 2000 Growth ETF (IWO) offer different approaches to U.S. growth investing.",
+            "VUG focuses on mega-cap tech stocks with superior long-term performance ($1,000 invested 5 years ago worth $1,756) and ultra-low fees (0.03%), while IWO provides small-cap diversification across 1,100+ stocks with higher fees (0.24%) but broader sector exposure."
+          ],
+          "last_sentence": "Today, March 27: Nvidia Slides as Valuation Drops Below S&P 500 on Forward Earnings\n[26] https://www.fool.com/coverage/stock-market-today/2026/03/27/stock-market-today-march-27-crude-surges-above-usd110-driving-broad-sell-off/?source=iedfolrf0000001: Stock Market Today, March 27: Crude Surges Above $110, Driving Broad Sell-Off\n[27] https://www.globenewswire.com/news-release/2026/03/27/3264148/0/en/Wall-Street-Insider-Who-Predicted-2008-Crash-Issues-Urgent-Warning-The-AI-Bubble-Will-Pop-by-April-29th.html: Wall Street Insider Who Predicted 2008 Crash Issues Urgent Warning: \"The AI Bubble Will Pop by April 29th\""
+        },
+        "regex_boundary": {
+          "count": 68,
+          "flags": [
+            "overlong_sentence"
+          ],
+          "first_sentences": [
+            "## NVDA: IWO vs.",
+            "VUG: One Offers Broad Growth Exposure While the Other Has Lower Fees\n*Source: The Motley Fool | 2026-03-27T00:05:33Z | Category: news*\n\nVanguard Growth ETF (VUG) and iShares Russell 2000 Growth ETF (IWO) offer different approaches to U.S. growth investing.",
+            "VUG focuses on mega-cap tech stocks with superior long-term performance ($1,000 invested 5 years ago worth $1,756) and ultra-low fees (0.03%), while IWO provides small-cap diversification across 1,100+ stocks with higher fees (0.24%) but broader sector exposure."
+          ],
+          "last_sentence": "How Retirees Can Protect Their Savings in 2026.\n[23] https://www.fool.com/investing/2026/03/27/dow-tumbles-800-points-and-the-sp-500-posts-its-fi/?source=iedfolrf0000001: Dow Tumbles 800 Points and the S&P 500 Posts Its Fifth Straight Weekly Loss: What Investors Need to Know About the Worst Streak Since 2022\n[24] https://www.fool.com/coverage/etfs/2026/03/27/is-fidelity-s-ftec-a-better-tech-etf-than-state-street-s-xlk/?source=iedfolrf0000001: Is Fidelity's FTEC a Better Tech ETF Than State Street's XLK?\n[25] https://www.fool.com/coverage/stock-market-today/2026/03/27/stock-market-today-march-27-nvidia-slides-as-valuation-drops-below-sp-500-on-forward-earnings/?source=iedfolrf0000001: Stock Market Today, March 27: Nvidia Slides as Valuation Drops Below S&P 500 on Forward Earnings\n[26] https://www.fool.com/coverage/stock-market-today/2026/03/27/stock-market-today-march-27-crude-surges-above-usd110-driving-broad-sell-off/?source=iedfolrf0000001: Stock Market Today, March 27: Crude Surges Above $110, Driving Broad Sell-Off\n[27] https://www.globenewswire.com/news-release/2026/03/27/3264148/0/en/Wall-Street-Insider-Who-Predicted-2008-Crash-Issues-Urgent-Warning-The-AI-Bubble-Will-Pop-by-April-29th.html: Wall Street Insider Who Predicted 2008 Crash Issues Urgent Warning: \"The AI Bubble Will Pop by April 29th\""
+        },
+        "nltk_punkt_tab": {
+          "count": 117,
+          "flags": [],
+          "first_sentences": [
+            "## NVDA: IWO vs. VUG: One Offers Broad Growth Exposure While the Other Has Lower Fees\n*Source: The Motley Fool | 2026-03-27T00:05:33Z | Category: news*\n\nVanguard Growth ETF (VUG) and iShares Russell 2000 Growth ETF (IWO) offer different approaches to U.S. growth investing.",
+            "VUG focuses on mega-cap tech stocks with superior long-term performance ($1,000 invested 5 years ago worth $1,756) and ultra-low fees (0.03%), while IWO provides small-cap diversification across 1,100+ stocks with higher fees (0.24%) but broader sector exposure.",
+            "VUG delivered 13.3% 1-year returns versus IWO's 17.2%, though IWO experienced deeper drawdowns."
+          ],
+          "last_sentence": "[25] https://www.fool.com/coverage/stock-market-today/2026/03/27/stock-market-today-march-27-nvidia-slides-as-valuation-drops-below-sp-500-on-forward-earnings/?source=iedfolrf0000001: Stock Market Today, March 27: Nvidia Slides as Valuation Drops Below S&P 500 on Forward Earnings\n[26] https://www.fool.com/coverage/stock-market-today/2026/03/27/stock-market-today-march-27-crude-surges-above-usd110-driving-broad-sell-off/?source=iedfolrf0000001: Stock Market Today, March 27: Crude Surges Above $110, Driving Broad Sell-Off\n[27] https://www.globenewswire.com/news-release/2026/03/27/3264148/0/en/Wall-Street-Insider-Who-Predicted-2008-Crash-Issues-Urgent-Warning-The-AI-Bubble-Will-Pop-by-April-29th.html: Wall Street Insider Who Predicted 2008 Crash Issues Urgent Warning: \"The AI Bubble Will Pop by April 29th\""
+        }
+      }
+    },
+    {
+      "asset_id": "7c38111573ad448eebdf0357a4949116dd0c53e0ac73562dbb666d19fbce8cd3",
+      "text_preview": "## NVDA: Republic of Gamers Announces Next-Gen RTX 50 Series Laptop Lineup – Now Available for Pre-Order in Canada *Source: GlobeNewswire Inc. | 2025-02-26T00:51:00Z | Category: news*  ASUS Republic of Gamers (ROG) announced the launch of its 2025 NVIDIA RTX Laptop GPU line-up, featuring the latest RTX 50 Series GPUs with advanced technologies like DLSS 4 an",
+      "splitters": {
+        "spacy_en_core_web_sm": {
+          "count": 77,
+          "flags": [],
+          "first_sentences": [
+            "## NVDA: Republic of Gamers Announces Next-Gen RTX 50 Series Laptop Lineup – Now Available for Pre-Order in Canada\n*Source: GlobeNewswire Inc.",
+            "| 2025-02-26T00:51:00Z | Category: news*\n\nASUS Republic of Gamers (ROG) announced the launch of its 2025 NVIDIA RTX Laptop GPU line-up, featuring the latest RTX 50 Series GPUs with advanced technologies like DLSS 4 and Frame Generation.",
+            "The new laptops, including the ROG Strix SCAR, ROG Strix G, and ROG Zephyrus series, are now available for pre-order in Canada.\n\n## NVDA: Here's How Intel Can Still Be an AI Winner\n*Source: The Motley Fool | 2025-02-26T10:20:00Z | Category: news*\n\nIntel has largely given up on the AI accelerator market, but its Xeon server CPUs could still play a role in the AI infrastructure market."
+          ],
+          "last_sentence": "[23] https://www.fool.com/investing/2025/02/26/1-surprising-stock-harnessing-the-power-of-artific/?source=iedfolrf0000001: 1 Surprising Stock Harnessing the Power of Artificial Intelligence (AI)"
+        },
+        "regex_boundary": {
+          "count": 28,
+          "flags": [
+            "overlong_sentence"
+          ],
+          "first_sentences": [
+            "## NVDA: Republic of Gamers Announces Next-Gen RTX 50 Series Laptop Lineup – Now Available for Pre-Order in Canada\n*Source: GlobeNewswire Inc. | 2025-02-26T00:51:00Z | Category: news*\n\nASUS Republic of Gamers (ROG) announced the launch of its 2025 NVIDIA RTX Laptop GPU line-up, featuring the latest RTX 50 Series GPUs with advanced technologies like DLSS 4 and Frame Generation.",
+            "The new laptops, including the ROG Strix SCAR, ROG Strix G, and ROG Zephyrus series, are now available for pre-order in Canada.\n\n## NVDA: Here's How Intel Can Still Be an AI Winner\n*Source: The Motley Fool | 2025-02-26T10:20:00Z | Category: news*\n\nIntel has largely given up on the AI accelerator market, but its Xeon server CPUs could still play a role in the AI infrastructure market.",
+            "As AI models become more efficient, Intel's CPUs with built-in AI acceleration can be a cost-effective solution for running AI inference tasks.\n\n## NVDA: Palantir's CEO Alex Karp Plans to Sell $1 Billion In Stock."
+          ],
+          "last_sentence": "Investors with Substantial Losses Have Opportunity to Lead Class Action Lawsuit\n[19] https://www.fool.com/investing/2025/02/26/nvidia-sees-sustained-ai-growth/?source=iedfolrf0000001: Nvidia Sees Sustained AI Growth\n[20] https://www.fool.com/investing/2025/02/26/arista-networks-jumped-today-is-the-stock-a-buy/?source=iedfolrf0000001: Arista Networks Jumped Today -- Is the Stock a Buy?\n[21] https://www.fool.com/data-news/2025/02/26/nvidia-shatters-revenue-expectations-in-q4/?source=iedfolrf0000001: Nvidia Shatters Revenue Expectations in Q4\n[22] https://www.fool.com/investing/2025/02/26/where-will-nvidia-stock-be-in-10-years/?source=iedfolrf0000001: Where Will Nvidia Stock Be in 10 Years?\n[23] https://www.fool.com/investing/2025/02/26/1-surprising-stock-harnessing-the-power-of-artific/?source=iedfolrf0000001: 1 Surprising Stock Harnessing the Power of Artificial Intelligence (AI)"
+        },
+        "nltk_punkt_tab": {
+          "count": 67,
+          "flags": [
+            "overlong_sentence"
+          ],
+          "first_sentences": [
+            "## NVDA: Republic of Gamers Announces Next-Gen RTX 50 Series Laptop Lineup – Now Available for Pre-Order in Canada\n*Source: GlobeNewswire Inc. | 2025-02-26T00:51:00Z | Category: news*\n\nASUS Republic of Gamers (ROG) announced the launch of its 2025 NVIDIA RTX Laptop GPU line-up, featuring the latest RTX 50 Series GPUs with advanced technologies like DLSS 4 and Frame Generation.",
+            "The new laptops, including the ROG Strix SCAR, ROG Strix G, and ROG Zephyrus series, are now available for pre-order in Canada.",
+            "## NVDA: Here's How Intel Can Still Be an AI Winner\n*Source: The Motley Fool | 2025-02-26T10:20:00Z | Category: news*\n\nIntel has largely given up on the AI accelerator market, but its Xeon server CPUs could still play a role in the AI infrastructure market."
+          ],
+          "last_sentence": "[23] https://www.fool.com/investing/2025/02/26/1-surprising-stock-harnessing-the-power-of-artific/?source=iedfolrf0000001: 1 Surprising Stock Harnessing the Power of Artificial Intelligence (AI)"
+        }
+      }
+    },
+    {
+      "asset_id": "d5a428c6d5f80b87a80906de45dec95d3002a1089841c03444e4620cd5964036",
+      "text_preview": "## NVDA: My 10 Top Stocks to Buy to Start the New Year Off Right *Source: The Motley Fool | 2026-01-06T01:15:00Z | Category: news*  The Motley Fool recommends 10 stocks across various sectors for new year investing. The selection includes AI leaders like Palantir and Nvidia, growth plays in quantum computing (IonQ), established tech giants (Microsoft), consu",
+      "splitters": {
+        "spacy_en_core_web_sm": {
+          "count": 83,
+          "flags": [
+            "short_fragment"
+          ],
+          "first_sentences": [
+            "## NVDA:",
+            "My 10 Top Stocks to Buy to Start the New Year Off Right\n*Source: The Motley Fool | 2026-01-06T01:15:00Z | Category: news*\n\nThe Motley Fool recommends 10 stocks across various sectors for new year investing.",
+            "The selection includes AI leaders like Palantir and Nvidia, growth plays in quantum computing (IonQ), established tech giants (Microsoft), consumer staples (Costco), recovery stories (Carnival, Target), healthcare innovators (Intuitive Surgical, Vertex Pharmaceuticals), and financial services (American Express)."
+          ],
+          "last_sentence": "Today, Jan. 6: Dow Jones Sets Record High As Tech Rally Continues\n[22] https://www.globenewswire.com/news-release/2026/01/06/3214202/0/es/BitMEX-lanza-Equity-Perps-para-trading-de-acciones-24-7.html: BitMEX lanza Equity Perps para trading de acciones 24/7\n[23] https://www.fool.com/investing/2026/01/06/why-investors-hit-the-brakes-on-tesla-stock-today/?source=iedfolrf0000001: Why Investors Hit the Brakes on Tesla Stock Today"
+        },
+        "regex_boundary": {
+          "count": 41,
+          "flags": [
+            "overlong_sentence"
+          ],
+          "first_sentences": [
+            "## NVDA: My 10 Top Stocks to Buy to Start the New Year Off Right\n*Source: The Motley Fool | 2026-01-06T01:15:00Z | Category: news*\n\nThe Motley Fool recommends 10 stocks across various sectors for new year investing.",
+            "The selection includes AI leaders like Palantir and Nvidia, growth plays in quantum computing (IonQ), established tech giants (Microsoft), consumer staples (Costco), recovery stories (Carnival, Target), healthcare innovators (Intuitive Surgical, Vertex Pharmaceuticals), and financial services (American Express).",
+            "These stocks are chosen for interesting valuations, growth potential, earnings track records, and market leadership.\n\n## NVDA: Motley Fool Money: Stock Market Naughty and Nice List\n*Source: The Motley Fool | 2026-01-06T05:33:00Z | Category: news*\n\nMotley Fool contributors review 2025's best and worst performing stocks."
+          ],
+          "last_sentence": "Nvidia CEO Jensen Huang unveiled Alpamayo, an open-source AI reasoning model for autonomous vehicle development at CES 2026, positioning Nvidia as a formidable competitor in the self-driving technology space where Tesla has heavily invested.\n\n## References\n[1] https://www.fool.com/investing/2026/01/05/my-10-top-stocks-to-buy-to-start-the-new-year-off/?source=iedfolrf0000001: My 10 Top Stocks to Buy to Start the New Year Off Right\n[2] https://www.fool.com/investing/2026/01/06/motley-fool-money-stock-market-naughty-and-nice-li/?source=iedfolrf0000001: Motley Fool Money: Stock Market Naughty and Nice List\n[3] https://www.investing.com/analysis/sp-500-volatility-set-to-rise-as-tech-stocks-lose-momentum-200672725: S&P 500: Volatility Set to Rise as Tech Stocks Lose Momentum\n[4] https://www.fool.com/investing/2026/01/06/should-you-buy-nvidia-stock-to-kick-off-2026/?source=iedfolrf0000001: Should You Buy Nvidia Stock to Kick Off 2026?\n[5] https://www.fool.com/investing/2026/01/06/ai-stocks-nvidia-pltr-33-billion-warning-wall-st/?source=iedfolrf0000001: Artificial Intelligence (AI) Stocks Nvidia and Palantir Have Issued a $3.3 Billion Warning for Wall Street in 2026\n[6] https://www.fool.com/investing/2026/01/06/buying-vanguard-stock-market-etf-2026-millionaire/?source=iedfolrf0000001: Could Buying the Vanguard Total Stock Market ETF in 2026 Make You a Millionaire?\n[7] https://www.benzinga.com/markets/large-cap/26/01/49715771/coreweave-adds-nvidia-rubin-to-power-next-gen-ai?utm_source=benzinga_taxonomy&utm_medium=rss_feed_free&utm_content=taxonomy_rss&utm_campaign=channel: CoreWeave Adds Nvidia Rubin To Power Next-Gen AI\n[8] https://www.fool.com/investing/2026/01/06/do-ai-stocks-still-offer-investors-a-once-in-a-gen/?source=iedfolrf0000001: Do AI Stocks Still Offer Investors a Once-in-a-Generation Investment Opportunity?\n[9] https://www.investing.com/analysis/top-2026-market-prediction-and-3-cheap-dividends-to-play-it-200672750: Top 2026 Market Prediction and 3 Cheap Dividends to Play It\n[10] https://www.globenewswire.com/news-release/2026/01/06/3213433/0/en/BitMEX-Launches-Equity-Perps-for-24-7-Stock-Trading.html: BitMEX Launches Equity Perps for 24/7 Stock Trading\n[11] https://www.investing.com/analysis/the-ai-tech-paradox-insiders-sell-the-case-for-buying-gets-stronger-200672758: The AI Tech Paradox: Insiders Sell, the Case for Buying Gets Stronger\n[12] https://www.fool.com/investing/2026/01/06/interview-with-nyu-professor-vasant-dhar-thinking/?source=iedfolrf0000001: The Motley Fool Interviews NYU Professor Vasant Dhar: Thinking With Machines\n[13] https://www.globenewswire.com/news-release/2026/01/06/3213793/0/en/Swift-Navigation-Breaks-the-Autonomy-Cost-Barrier-Integrating-High-Integrity-GNSS-with-NVIDIA-DRIVE-AGX-Platform.html: Swift Navigation Breaks the Autonomy Cost Barrier, Integrating High-Integrity GNSS with NVIDIA DRIVE AGX Platform\n[14] https://www.globenewswire.com/news-release/2026/01/06/3213871/0/en/Two-Months-to-Go-Sustainability-LIVE-The-Net-Zero-Summit-Returns-to-London-in-March-2026.html: Two Months to Go: Sustainability LIVE: The Net Zero Summit Returns to London in March 2026\n[15] https://www.fool.com/investing/2026/01/06/why-qqq-popular-proxy-for-ai-driven-growth/?source=iedfolrf0000001: Why QQQ Remains a Popular Proxy for AI-Driven Growth\n[16] https://www.fool.com/investing/2026/01/06/prediction-these-4-quantum-computing-stocks-will-s/?source=iedfolrf0000001: Prediction: These 4 Quantum Computing Stocks Will Skyrocket in 2026\n[17] https://www.investing.com/analysis/meta-trades-in-repair-mode-as-ai-spend-and-core-ad-growth-pull-valuation-apart-200672781: Meta Trades in Repair Mode as AI Spend and Core Ad Growth Pull Valuation Apart\n[18] https://www.fool.com/investing/2026/01/06/2-top-ai-stocks-ready-bull-run/?source=iedfolrf0000001: 2 Top Artificial Intelligence (AI) Stocks Ready for a Bull Run\n[19] https://www.investing.com/analysis/winners-and-losers-of-2025-a-sectorbysector-stock-market-review-200672786: Winners and Losers of 2025: A Sector-by-Sector Stock Market Review\n[20] https://www.fool.com/investing/2026/01/06/top-artificial-intelligence-ai-stocks-to-buy/?source=iedfolrf0000001: What Are the 3 Top Artificial Intelligence (AI) Stocks to Buy Right Now?\n[21] https://www.fool.com/coverage/stock-market-today/2026/01/06/stock-market-today-jan-6-dow-jones-sets-record-high-as-tech-rally-continues/?source=iedfolrf0000001: Stock Market Today, Jan. 6: Dow Jones Sets Record High As Tech Rally Continues\n[22] https://www.globenewswire.com/news-release/2026/01/06/3214202/0/es/BitMEX-lanza-Equity-Perps-para-trading-de-acciones-24-7.html: BitMEX lanza Equity Perps para trading de acciones 24/7\n[23] https://www.fool.com/investing/2026/01/06/why-investors-hit-the-brakes-on-tesla-stock-today/?source=iedfolrf0000001: Why Investors Hit the Brakes on Tesla Stock Today"
+        },
+        "nltk_punkt_tab": {
+          "count": 73,
+          "flags": [
+            "overlong_sentence"
+          ],
+          "first_sentences": [
+            "## NVDA: My 10 Top Stocks to Buy to Start the New Year Off Right\n*Source: The Motley Fool | 2026-01-06T01:15:00Z | Category: news*\n\nThe Motley Fool recommends 10 stocks across various sectors for new year investing.",
+            "The selection includes AI leaders like Palantir and Nvidia, growth plays in quantum computing (IonQ), established tech giants (Microsoft), consumer staples (Costco), recovery stories (Carnival, Target), healthcare innovators (Intuitive Surgical, Vertex Pharmaceuticals), and financial services (American Express).",
+            "These stocks are chosen for interesting valuations, growth potential, earnings track records, and market leadership."
+          ],
+          "last_sentence": "[21] https://www.fool.com/coverage/stock-market-today/2026/01/06/stock-market-today-jan-6-dow-jones-sets-record-high-as-tech-rally-continues/?source=iedfolrf0000001: Stock Market Today, Jan. 6: Dow Jones Sets Record High As Tech Rally Continues\n[22] https://www.globenewswire.com/news-release/2026/01/06/3214202/0/es/BitMEX-lanza-Equity-Perps-para-trading-de-acciones-24-7.html: BitMEX lanza Equity Perps para trading de acciones 24/7\n[23] https://www.fool.com/investing/2026/01/06/why-investors-hit-the-brakes-on-tesla-stock-today/?source=iedfolrf0000001: Why Investors Hit the Brakes on Tesla Stock Today"
+        }
+      }
+    },
+    {
+      "asset_id": "b2f7b047d9ac526d7a38774fcd703c1a64ced5aa1ea1bb1c449825bd8b3abd1d",
+      "text_preview": "## NVDA: Nov. 19 Will Be a Big Day for Nvidia. Should You Buy or Sell the Stock Now? *Source: The Motley Fool | 2025-11-12T01:10:00Z | Category: news*  Nvidia is set to report Q3 2026 earnings on Nov. 19, with strong expectations in the AI chip market. The company has demonstrated leadership in AI technology and continues to show promising growth potential, ",
+      "splitters": {
+        "spacy_en_core_web_sm": {
+          "count": 45,
+          "flags": [
+            "overlong_sentence"
+          ],
+          "first_sentences": [
+            "## NVDA: Nov. 19 Will Be a Big Day for Nvidia.",
+            "Should You Buy or Sell the Stock Now?",
+            "*Source: The Motley Fool | 2025-11-12T01:10:00Z | Category: news*\n\nNvidia is set to report Q3 2026 earnings on Nov. 19, with strong expectations in the AI chip market."
+          ],
+          "last_sentence": "[20] https://www.fool.com/investing/2025/11/12/why-amd-stock-jumped-today/?source=iedfolrf0000001: Why AMD Stock Jumped Today"
+        },
+        "regex_boundary": {
+          "count": 12,
+          "flags": [
+            "overlong_sentence"
+          ],
+          "first_sentences": [
+            "## NVDA: Nov. 19 Will Be a Big Day for Nvidia.",
+            "Should You Buy or Sell the Stock Now?\n*Source: The Motley Fool | 2025-11-12T01:10:00Z | Category: news*\n\nNvidia is set to report Q3 2026 earnings on Nov. 19, with strong expectations in the AI chip market.",
+            "The company has demonstrated leadership in AI technology and continues to show promising growth potential, despite potential market volatility.\n\n## NVDA: S&P 500: Correlation Breakdown and 1966 Model Indicate Weakening Momentum\n*Source: Investing.com | 2025-11-12T07:04:00Z | Category: news*\n\nThe S&P 500 experienced modest gains amid potential weakening market momentum, with correlation and dispersion metrics suggesting potential downside risk."
+          ],
+          "last_sentence": "Should You Buy or Sell the Stock Now?\n[2] https://www.investing.com/analysis/volatility-dynamics-and-1966-analog-signal-a-potential-market-turn-200670003: S&P 500: Correlation Breakdown and 1966 Model Indicate Weakening Momentum\n[3] https://www.fool.com/investing/2025/11/12/is-broadcom-stock-your-ticket-to-becoming-a-millio/?source=iedfolrf0000001: Is Broadcom Stock Your Ticket to Becoming a Millionaire?\n[4] https://www.fool.com/investing/2025/11/12/1-reason-cant-take-eyes-off-nvidia-stock-2025/?source=iedfolrf0000001: 1 Reason I Can't Take My Eyes Off Nvidia Stock in 2025\n[5] https://www.fool.com/investing/2025/11/12/how-does-amazon-make-money/?source=iedfolrf0000001: How Does Amazon Make Money?\n[6] https://www.fool.com/coverage/filings/2025/11/12/here-s-why-one-investor-just-bet-usd14-million-on-this-struggling-marketing-stock/?source=iedfolrf0000001: Here's Why One Investor Just Bet $14 Million on This Struggling Marketing Stock\n[7] https://www.fool.com/investing/2025/11/12/palantir-valued-at-455-billion-2-reasons-to-sell/?source=iedfolrf0000001: Palantir Is Valued at $455 Billion: 2 Reasons to Sell the Stock Now\n[8] https://www.investing.com/analysis/amd-targets-35-revenue-growth-eyeing-1-trillion-ai-chip-market-by-2030-200670042: AMD Targets 35%+ Revenue Growth, Eyeing $1 Trillion AI Chip Market by 2030\n[9] https://www.fool.com/investing/2025/11/12/should-you-buy-nvidia-stock-before-nov-19/?source=iedfolrf0000001: Should You Buy Nvidia Stock Before Nov. 19?\n[10] https://www.fool.com/investing/2025/11/12/up-by-about-2000-in-the-past-year-is-rigetti-compu/?source=iedfolrf0000001: Up by About 2,000% in the Past Year, Is Rigetti Computing Stock a Buy?\n[11] https://www.fool.com/investing/2025/11/12/great-news-arms-ai-growth-story-is-just-getting-st/?source=iedfolrf0000001: Great News: Arm's AI Growth Story Is Just Getting Started\n[12] https://www.investing.com/analysis/nvidia-stock-unfazed-by-softbanks-stake-sale-upside-still-seen-200670046: Nvidia Stock Unfazed by SoftBank’s Stake Sale, Upside Still Seen\n[13] https://www.fool.com/investing/2025/11/12/if-invested-500-in-nvidia-stock-1-year-ago-today/?source=iedfolrf0000001: If You'd Invested $500 in Nvidia Stock 1 Year Ago, Here's How Much You'd Have Today\n[14] https://www.globenewswire.com/news-release/2025/11/12/3186514/0/en/MLCommons-Releases-MLPerf-Training-v5-1-Results.html: MLCommons Releases MLPerf Training v5.1 Results\n[15] https://www.benzinga.com/trading-ideas/movers/25/11/48813541/meta-stock-continues-to-slide-whats-going-on?utm_source=benzinga_taxonomy&utm_medium=rss_feed_free&utm_content=taxonomy_rss&utm_campaign=channel: Meta Stock Continues To Slide: What's Going On?\n[16] https://www.fool.com/investing/2025/11/12/should-you-buy-nvidia-stock-november-19/?source=iedfolrf0000001: Should You Buy Nvidia Stock Before Nov. 19?\n[17] https://www.investing.com/analysis/nvidia-shortterm-bullish-sentiment-gathers-momentum-ahead-of-earnings-200670056: Nvidia Short-Term Bullish Sentiment Gathers Momentum Ahead of Earnings\n[18] https://www.investing.com/analysis/stock-market-rotation-2025-financials-industrials-surge-while-tech-pulls-back-200670067: Stock Market Rotation 2025: Financials, Industrials Surge While Tech Pulls Back\n[19] https://www.fool.com/coverage/etfs/2025/11/12/spy-vs-ivv-which-sp-500-etf-is-better-for-investors/?source=iedfolrf0000001: SPY vs IVV: Which S&P 500 ETF Is Better for Investors?\n[20] https://www.fool.com/investing/2025/11/12/why-amd-stock-jumped-today/?source=iedfolrf0000001: Why AMD Stock Jumped Today"
+        },
+        "nltk_punkt_tab": {
+          "count": 48,
+          "flags": [],
+          "first_sentences": [
+            "## NVDA: Nov. 19 Will Be a Big Day for Nvidia.",
+            "Should You Buy or Sell the Stock Now?",
+            "*Source: The Motley Fool | 2025-11-12T01:10:00Z | Category: news*\n\nNvidia is set to report Q3 2026 earnings on Nov. 19, with strong expectations in the AI chip market."
+          ],
+          "last_sentence": "[20] https://www.fool.com/investing/2025/11/12/why-amd-stock-jumped-today/?source=iedfolrf0000001: Why AMD Stock Jumped Today"
+        }
+      }
+    },
+    {
+      "asset_id": "c4a280f67918102221d012b766d2e5589ee1d4685b83a7a262f08440363c9a4a",
+      "text_preview": "## NVDA: Artificial Intelligence in Healthcare Industry Unlocking New Horizons in Patient Care and Cost Efficiency at a CAGR of 18.2% between 2025 and 2035 | Future Market Insights Inc. *Source: GlobeNewswire Inc. | 2025-01-13T00:30:00Z | Category: news*  The global artificial intelligence in healthcare market is projected to grow exponentially, reaching an ",
+      "splitters": {
+        "spacy_en_core_web_sm": {
+          "count": 55,
+          "flags": [],
+          "first_sentences": [
+            "## NVDA: Artificial Intelligence in Healthcare Industry",
+            "Unlocking New Horizons in Patient Care and Cost Efficiency at a CAGR of 18.2% between 2025 and 2035 | Future Market Insights Inc.\n*Source: GlobeNewswire Inc.",
+            "| 2025-01-13T00:30:00Z | Category: news*\n\nThe global artificial intelligence in healthcare market is projected to grow exponentially, reaching an estimated valuation of USD 17,198.9 million by 2025 and USD 77,456.4 million by 2035."
+          ],
+          "last_sentence": "[18] https://www.fool.com/investing/2025/01/13/why-ionq-stock-is-plummeting-today/?source=iedfolrf0000001: Why IonQ Stock Is Plummeting Today"
+        },
+        "regex_boundary": {
+          "count": 21,
+          "flags": [
+            "overlong_sentence"
+          ],
+          "first_sentences": [
+            "## NVDA: Artificial Intelligence in Healthcare Industry Unlocking New Horizons in Patient Care and Cost Efficiency at a CAGR of 18.2% between 2025 and 2035 | Future Market Insights Inc.\n*Source: GlobeNewswire Inc. | 2025-01-13T00:30:00Z | Category: news*\n\nThe global artificial intelligence in healthcare market is projected to grow exponentially, reaching an estimated valuation of USD 17,198.9 million by 2025 and USD 77,456.4 million by 2035.",
+            "This growth is driven by advancements in AI technologies, rising healthcare costs, and increasing demand for innovative solutions.\n\n## NVDA: All 10 of These Stocks More Than Doubled in 2024.",
+            "Here Are the 5 I Want to Buy Now Heading Into 2025.\n*Source: The Motley Fool | 2025-01-13T08:35:00Z | Category: news*\n\nThe article discusses 10 stocks that more than doubled in 2024, with the author highlighting 5 stocks they want to buy heading into 2025."
+          ],
+          "last_sentence": "Here Are the 5 I Want to Buy Now Heading Into 2025.\n[3] https://www.fool.com/investing/2025/01/13/why-broadcom-stock-more-than-doubled-in-2024/?source=iedfolrf0000001: Why Broadcom Stock More Than Doubled in 2024\n[4] https://www.fool.com/investing/2025/01/13/1-stock-nvidia-apple-microsoft-in-3-trillion-2025/?source=iedfolrf0000001: 1 Unstoppable Stock That Could Join Nvidia, Apple, and Microsoft in the $3 Trillion Club in 2025\n[5] https://www.fool.com/investing/2025/01/13/mrvl-stock-performance-best-ai-chip-stocks/?source=iedfolrf0000001: Why Marvell Stock Soared 83% in 2024\n[6] https://www.fool.com/investing/2025/01/13/my-3-highest-conviction-growth-stocks-to-buy-in-20/?source=iedfolrf0000001: My 3 Highest-Conviction Growth Stocks to Buy in 2025\n[7] https://www.fool.com/investing/2025/01/13/billionaires-cant-get-enough-of-this-ai-stock/?source=iedfolrf0000001: The Wealthiest Investors Can't Get Enough of This Artificial Intelligence (AI) Stock\n[8] https://www.fool.com/investing/2025/01/13/this-artificial-intelligence-ai-stock-has-surged-x/?source=iedfolrf0000001: This Artificial Intelligence (AI) Stock Has Surged 733% Over the Past 21 Months -- Is a Split on the Horizon?\n[9] https://www.fool.com/investing/2025/01/13/did-nvidia-ceo-jensen-huang-just-crush-the-quantum/?source=iedfolrf0000001: Did Nvidia CEO Jensen Huang Just Crush the Quantum Computing Industry?\n[10] https://www.fool.com/investing/2025/01/13/did-amd-just-say-checkmate-to-nvidia/?source=iedfolrf0000001: Did AMD Just Say \"Checkmate\" to Nvidia?\n[11] https://www.investing.com/analysis/despite-choppy-start-to-2025-bulls-could-reclaim-record-highs-by-spring-200656121: Despite Choppy Start to 2025, Bulls Could Reclaim Record Highs by Spring\n[12] https://www.fool.com/investing/2025/01/13/why-are-nvidia-intel-amd-and-micron-crashing-today/?source=iedfolrf0000001: Why Are Nvidia, Intel, AMD, and Micron Crashing Today?\n[13] https://www.benzinga.com/economics/macro-economic-events/25/01/42958107/stocks-edge-down-ahead-of-key-inflation-reports-crude-hits-5-month-high-bitcoin-s: Stocks Edge Down Ahead Of Key Inflation Reports, Crude Hits 5-Month High, Bitcoin Sinks: What's Driving Markets Monday?\n[14] https://www.fool.com/investing/2025/01/13/artificial-intelligence-ai-stocks-today-why-nvidia/?source=iedfolrf0000001: Artificial Intelligence (AI) Stocks Today: Why Nvidia, Micron, and TSMC Are Sinking\n[15] https://www.fool.com/investing/2025/01/13/why-super-micro-computer-stock-is-sinking-today/?source=iedfolrf0000001: Why Super Micro Computer Stock Is Sinking Today\n[16] https://www.fool.com/investing/2025/01/13/why-nvidia-stock-skyrocketed-1712-in-2024-but-is-s/?source=iedfolrf0000001: Why Nvidia Stock Skyrocketed 171.2% in 2024 but Is Losing Ground in 2025\n[17] https://www.investing.com/analysis/can-us-export-restrictions-lead-to-the-end-of-the-ai-boom-200656171: Can US Export Restrictions Lead to the End of the AI Boom?\n[18] https://www.fool.com/investing/2025/01/13/why-ionq-stock-is-plummeting-today/?source=iedfolrf0000001: Why IonQ Stock Is Plummeting Today"
+        },
+        "nltk_punkt_tab": {
+          "count": 52,
+          "flags": [],
+          "first_sentences": [
+            "## NVDA: Artificial Intelligence in Healthcare Industry Unlocking New Horizons in Patient Care and Cost Efficiency at a CAGR of 18.2% between 2025 and 2035 | Future Market Insights Inc.\n*Source: GlobeNewswire Inc. | 2025-01-13T00:30:00Z | Category: news*\n\nThe global artificial intelligence in healthcare market is projected to grow exponentially, reaching an estimated valuation of USD 17,198.9 million by 2025 and USD 77,456.4 million by 2035.",
+            "This growth is driven by advancements in AI technologies, rising healthcare costs, and increasing demand for innovative solutions.",
+            "## NVDA: All 10 of These Stocks More Than Doubled in 2024."
+          ],
+          "last_sentence": "[18] https://www.fool.com/investing/2025/01/13/why-ionq-stock-is-plummeting-today/?source=iedfolrf0000001: Why IonQ Stock Is Plummeting Today"
+        }
+      }
+    }
+  ],
+  "candidate_assumptions": {
+    "splitter": "nltk_punkt_tab",
+    "eligible_source_types": [
+      "polygon_news"
+    ],
+    "note": "candidate only; final lock deferred to T03-preb with retrieval-distribution evidence"
+  },
+  "inflation_estimate": [
+    {
+      "max_sentences_per_asset": 20,
+      "l2_rows": 41579,
+      "l1_plus_l2_rows": 55053,
+      "expansion_multiple": 4.0859
+    },
+    {
+      "max_sentences_per_asset": 30,
+      "l2_rows": 49731,
+      "l1_plus_l2_rows": 63205,
+      "expansion_multiple": 4.6909
+    },
+    {
+      "max_sentences_per_asset": 50,
+      "l2_rows": 56967,
+      "l1_plus_l2_rows": 70441,
+      "expansion_multiple": 5.2279
+    }
+  ],
+  "inflation_sensitivity_polygon_news_plus_fred_macro": [
+    {
+      "eligible_types": [
+        "polygon_news",
+        "fred_macro"
+      ],
+      "max_sentences_per_asset": 20,
+      "l2_rows": 45079,
+      "l1_plus_l2_rows": 58553,
+      "expansion_multiple": 4.3456
+    },
+    {
+      "eligible_types": [
+        "polygon_news",
+        "fred_macro"
+      ],
+      "max_sentences_per_asset": 30,
+      "l2_rows": 53231,
+      "l1_plus_l2_rows": 66705,
+      "expansion_multiple": 4.9506
+    },
+    {
+      "eligible_types": [
+        "polygon_news",
+        "fred_macro"
+      ],
+      "max_sentences_per_asset": 50,
+      "l2_rows": 60467,
+      "l1_plus_l2_rows": 73941,
+      "expansion_multiple": 5.4877
+    }
+  ]
+}
