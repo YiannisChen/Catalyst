@@ -111,3 +111,36 @@ def test_retrieve_respects_top_k_limit_in_sql_fallback(tmp_path):
     results = retrieve("Why did Apple move?", Layer.DIRECT, metadata, rerank=None)
 
     assert len(results) == 1
+
+
+def test_retrieve_with_reranker_uses_locked_top_k(tmp_path, monkeypatch):
+    metadata = _metadata(tmp_path)
+    metadata.lancedb_dir = tmp_path / "lancedb_gold" / "eval_frozen"
+    metadata.lancedb_dir.mkdir(parents=True)
+    metadata.table = object()
+    metadata.embedding_fn = lambda text: [0.1, 0.2]
+    metadata.top_k = 20
+
+    def fake_hybrid_search(table, query, ticker=None, date_range=None, top_k=20, embedding_fn=None):  # noqa: ARG001
+        return [
+            {
+                "asset_id": f"vec{i}",
+                "ticker": "AAPL",
+                "source_type": "polygon_news",
+                "reference_date": "2026-01-15",
+                "content_md": f"Vector result {i}",
+                "rrf_score": 1.0 / (60 + i),
+            }
+            for i in range(20)
+        ]
+
+    class MockReranker:
+        def compute_score(self, pairs):
+            return list(range(len(pairs)))
+
+    monkeypatch.setattr("catalyst_agents.retrieval.policy.hybrid_search", fake_hybrid_search)
+
+    reranked = retrieve("Why did Apple move?", Layer.DIRECT, metadata, rerank=MockReranker())
+
+    assert len(reranked) == 8
+    assert all("rerank_score" in row for row in reranked)

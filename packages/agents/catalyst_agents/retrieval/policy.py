@@ -8,7 +8,7 @@ import sqlite3
 from typing import Any, Literal
 
 from catalyst_data.config import db_path as default_db_path
-from catalyst_data.storage.lancedb_store import hybrid_search, _apply_reranker
+from catalyst_data.storage.lancedb_store import DEFAULT_RERANK_TOP_K, hybrid_search, _apply_reranker
 
 MAX_LAYERS_P0 = 2
 MAX_EXPANSIONS = 2
@@ -165,5 +165,5 @@ def retrieve(query: str, layer: Layer, metadata: RetrievalMetadata, *, rerank: A
     _update_metadata(metadata, layer, results)
 
     if rerank is not None and results:
-        return _apply_reranker(list(results), query, rerank, top_k=metadata.top_k)
+        return _apply_reranker(list(results), query, rerank, top_k=DEFAULT_RERANK_TOP_K)
     return results

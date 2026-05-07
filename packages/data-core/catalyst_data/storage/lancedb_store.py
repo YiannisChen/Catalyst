@@ -31,6 +31,9 @@ DEFAULT_TOP_K: int = 20
 DEFAULT_RERANK_TOP_K: int = 8
 EMBEDDING_MODEL: str = "BAAI/bge-m3"
 RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
+L2_ELIGIBLE_SOURCE_TYPES: tuple[str, ...] = ("polygon_news",)
+L2_MAX_SENTENCES_PER_ASSET: int = 30
+L2_MIN_SENTENCE_LENGTH: int = 12
 
 # LanceDB table name for the Gold layer
 _TABLE_NAME = "chunks"
@@ -41,6 +44,9 @@ _SILVER_QUERY = """
     FROM clean_assets
     WHERE is_duplicate = 0
 """
+
+_L1_CHUNK_LEVEL = "l1"
+_L2_CHUNK_LEVEL = "l2"
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +181,96 @@ def _apply_reranker(
 
 
 # ---------------------------------------------------------------------------
+# L2 chunking helpers: nltk punkt_tab splitter
+# ---------------------------------------------------------------------------
+
+
+def _load_punkt_tab_tokenizer() -> Any:
+    try:
+        from nltk.tokenize.punkt import PunktTokenizer
+    except ImportError as exc:
+        raise ImportError(
+            "nltk is required for L2 sentence splitting. "
+            "Install it with: pip install 'catalyst-data[vector]'"
+        ) from exc
+
+    try:
+        return PunktTokenizer("english")
+    except LookupError as exc:
+        raise ImportError(
+            "NLTK punkt_tab resource is required for L2 sentence splitting. "
+            "Run: python -c \"import nltk; nltk.download('punkt_tab')\""
+        ) from exc
+
+
+def _stable_l2_asset_id(parent_asset_id: str, sentence_index: int) -> str:
+    return f"{parent_asset_id}::l2s{sentence_index:04d}"
+
+
+def _split_l2_sentences(
+    content_md: str,
+    *,
+    tokenizer: Any,
+    max_sentences_per_asset: int = L2_MAX_SENTENCES_PER_ASSET,
+    min_sentence_length: int = L2_MIN_SENTENCE_LENGTH,
+) -> list[str]:
+    if not content_md:
+        return []
+
+    raw_sentences = tokenizer.tokenize(content_md)
+    filtered = [s.strip() for s in raw_sentences if s and s.strip() and len(s.strip()) >= min_sentence_length]
+    return filtered[:max_sentences_per_asset]
+
+
+def _build_chunk_records(
+    rows: list[tuple[str, str, str, str, str]],
+    *,
+    tokenizer: Any,
+    max_sentences_per_asset: int = L2_MAX_SENTENCES_PER_ASSET,
+    min_sentence_length: int = L2_MIN_SENTENCE_LENGTH,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for asset_id, ticker, source_type, reference_date, content_md in rows:
+        content_text = content_md or ""
+        records.append(
+            {
+                "asset_id": asset_id,
+                "parent_asset_id": asset_id,
+                "chunk_level": _L1_CHUNK_LEVEL,
+                "sentence_index": 0,
+                "ticker": ticker,
+                "source_type": source_type,
+                "reference_date": reference_date,
+                "content_md": content_text,
+            }
+        )
+
+        if source_type not in L2_ELIGIBLE_SOURCE_TYPES:
+            continue
+
+        l2_sentences = _split_l2_sentences(
+            content_text,
+            tokenizer=tokenizer,
+            max_sentences_per_asset=max_sentences_per_asset,
+            min_sentence_length=min_sentence_length,
+        )
+        for sentence_index, sentence in enumerate(l2_sentences, start=1):
+            records.append(
+                {
+                    "asset_id": _stable_l2_asset_id(asset_id, sentence_index),
+                    "parent_asset_id": asset_id,
+                    "chunk_level": _L2_CHUNK_LEVEL,
+                    "sentence_index": sentence_index,
+                    "ticker": ticker,
+                    "source_type": source_type,
+                    "reference_date": reference_date,
+                    "content_md": sentence,
+                }
+            )
+    return records
+
+
+# ---------------------------------------------------------------------------
 # build_index: Silver → Gold
 # ---------------------------------------------------------------------------
 
@@ -235,30 +331,18 @@ def build_index(
     if not rows:
         return 0
 
-    asset_ids = [r[0] for r in rows]
-    tickers = [r[1] for r in rows]
-    source_types = [r[2] for r in rows]
-    reference_dates = [r[3] for r in rows]
-    texts = [r[4] for r in rows]
+    tokenizer = _load_punkt_tab_tokenizer()
+    records = _build_chunk_records(rows, tokenizer=tokenizer)
+    texts = [record["content_md"] for record in records]
 
-    # --- Embed all texts with bge-m3 ---
+    # --- Embed all L1+L2 texts with bge-m3 ---
     model = BGEM3FlagModel(embedding_model, use_fp16=True)
     # encode returns a dict; "dense_vecs" is the 1024-dim dense embedding
     encoded = model.encode(texts, batch_size=32, max_length=8192)
     vectors = encoded["dense_vecs"].tolist()
 
-    # --- Build LanceDB records ---
-    records = [
-        {
-            "asset_id": asset_ids[i],
-            "ticker": tickers[i],
-            "source_type": source_types[i],
-            "reference_date": reference_dates[i],
-            "content_md": texts[i],
-            "vector": vectors[i],
-        }
-        for i in range(len(rows))
-    ]
+    for idx, vector in enumerate(vectors):
+        records[idx]["vector"] = vector
 
     # --- Upsert into LanceDB (overwrite table for idempotent re-indexing) ---
     db = lancedb.connect(str(lancedb_path))
@@ -349,7 +433,16 @@ def hybrid_search(
     fts_df = fts_query.to_pandas()
 
     # Convert DataFrames to list[dict], keeping only required fields
-    _keep = {"asset_id", "ticker", "source_type", "reference_date", "content_md"}
+    _keep = {
+        "asset_id",
+        "parent_asset_id",
+        "chunk_level",
+        "sentence_index",
+        "ticker",
+        "source_type",
+        "reference_date",
+        "content_md",
+    }
 
     def _df_to_dicts(df: Any) -> list[dict[str, Any]]:
         results = []
@@ -361,4 +454,13 @@ def hybrid_search(
     fts_results = _df_to_dicts(fts_df)
 
     merged = reciprocal_rank_fusion(vector_results, fts_results, k=RRF_K)
-    return merged[:top_k]
+    available_rrf_candidates = len(merged)
+    effective_top_k = min(top_k, available_rrf_candidates)
+    if effective_top_k < top_k:
+        logger.warning(
+            "RRF guardrail fallback: requested top_k=%d but only %d candidates available; using effective_top_k=%d",
+            top_k,
+            available_rrf_candidates,
+            effective_top_k,
+        )
+    return merged[:effective_top_k]
