@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 
-from catalyst_agents.adapter import make_catalyst_predict
+from catalyst_agents.adapter import make_catalyst_predict, make_rag_only_predict
 from catalyst_agents.graph import build_attribution_graph
 from catalyst_eval.schema.result import AttributionResult
+from catalyst_agents.state import OutputStatus
 
 
 # ---------------------------------------------------------------------------
@@ -187,3 +188,45 @@ def test_adapter_works_with_eval_harness(monkeypatch):
     report = evaluate(predict_fn=predict, golden_set=golden_set, metrics=[AttributionF1()])
     assert "attribution_f1" in report.scores
     assert report.scores["attribution_f1"] > 0
+
+
+def test_rag_only_predict_uses_retrieval_outputs(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
+
+    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    predict = make_rag_only_predict(graph)
+    result = predict("AAPL", "2026-01-15")
+
+    assert len(result.retrieved_evidence) > 0
+    assert result.retrieved_evidence[0].asset_id == "c1"
+
+
+def test_rag_only_predict_preserves_insufficient_status_mapping():
+    class StubGraph:
+        def invoke(self, state):
+            return {
+                **state,
+                "ticker": state["ticker"],
+                "trade_date": state["trade_date"],
+                "causes": [
+                    {
+                        "text": "Insufficient evidence in available data sources",
+                        "category": "unknown",
+                        "confidence": 1.0,
+                        "evidence_ids": [],
+                        "direction": "unknown",
+                    }
+                ],
+                "summary_md": "No evidence meeting relevance threshold.",
+                "reranked_chunks": [],
+                "output_status": OutputStatus.INSUFFICIENT,
+                "cost_breakdown": [],
+                "total_cost_usd": 0.0,
+                "total_tokens": 0,
+            }
+
+    predict = make_rag_only_predict(StubGraph())
+    result = predict("AAPL", "2026-01-15")
+
+    assert result.causes[0].category == "unknown"
+    assert result.retrieved_evidence == []

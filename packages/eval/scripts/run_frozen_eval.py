@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -41,6 +42,9 @@ DEFAULT_TRACE_DIR = Path("data/traces")
 DEFAULT_LANCEDB_DIR = Path("data/lancedb_gold/eval_frozen")
 DIRECT_MODEL_ID = DEFAULT_DIRECT_LLM_MODEL
 MCJ_MODEL_ID = "claude-sonnet-4-20250514"
+PIPELINE_MODE_SQL_ONLY = "sql_only"
+PIPELINE_MODE_RAG_ONLY = "rag_only"
+RAG_ONLY_EMBEDDING_DIM = 1024
 
 
 class _MockUsage:
@@ -145,7 +149,53 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--trace-dir", default=str(DEFAULT_TRACE_DIR))
     parser.add_argument("--trace-db", default=None)
     parser.add_argument("--lancedb-dir", default=str(DEFAULT_LANCEDB_DIR))
+    parser.add_argument(
+        "--pipeline-mode",
+        choices=[PIPELINE_MODE_SQL_ONLY, PIPELINE_MODE_RAG_ONLY],
+        default=PIPELINE_MODE_SQL_ONLY,
+    )
     return parser.parse_args()
+
+
+def _rag_query_embedding(query: str, dim: int = RAG_ONLY_EMBEDDING_DIM) -> list[float]:
+    """Deterministic embedding fallback for offline rag_only runs.
+
+    This keeps hybrid retrieval testable without requiring online embedding
+    dependencies in frozen/mock eval runs.
+    """
+    digest = hashlib.sha256(query.encode("utf-8")).digest()
+    values: list[float] = []
+    for idx in range(dim):
+        byte = digest[idx % len(digest)]
+        values.append((byte / 255.0) - 0.5)
+    return values
+
+
+def _open_lancedb_table(lancedb_dir: Path) -> Any | None:
+    if not lancedb_dir.exists():
+        return None
+    try:
+        import lancedb  # type: ignore
+    except ImportError:
+        return None
+
+    try:
+        from catalyst_data.storage.lancedb_store import _TABLE_NAME
+
+        db = lancedb.connect(str(lancedb_dir))
+        return db.open_table(_TABLE_NAME)
+    except Exception:
+        return None
+
+
+def _resolve_pipeline_retrieval_runtime(pipeline_mode: str, lancedb_dir: Path) -> tuple[Any | None, Any | None, str]:
+    if pipeline_mode == PIPELINE_MODE_SQL_ONLY:
+        return None, None, PIPELINE_MODE_SQL_ONLY
+
+    table = _open_lancedb_table(lancedb_dir)
+    if table is None:
+        return None, None, PIPELINE_MODE_SQL_ONLY
+    return table, _rag_query_embedding, PIPELINE_MODE_RAG_ONLY
 
 
 def _extract_field(prompt: str, label: str) -> str:
@@ -466,8 +516,16 @@ def _run_mcj_cases(
     frozen_db: Path,
     trace_db: Path,
     trace_dir: Path,
+    lancedb_dir: Path,
+    table: Any = None,
+    embedding_fn: Any = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    graph = build_attribution_graph(use_critic=True, llm=FrozenGraphLLM(fixtures))
+    graph = build_attribution_graph(
+        use_critic=True,
+        table=table,
+        embedding_fn=embedding_fn,
+        llm=FrozenGraphLLM(fixtures),
+    )
     per_case: list[dict[str, Any]] = []
     raw_results: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
@@ -501,6 +559,7 @@ def _run_mcj_cases(
                 trade_date=case["trade_date"],
                 date_range=_compute_date_range(case["trade_date"]),
                 db_path=frozen_db,
+                lancedb_dir=lancedb_dir,
             ),
             "cost_breakdown": [],
             "total_cost_usd": 0.0,
@@ -691,6 +750,10 @@ def main() -> int:
     cases = load_jsonl(golden_set_path)
     fixtures = _build_fixtures(cases, frozen_db)
     case_distribution = build_case_distribution(cases)
+    retrieval_table, retrieval_embedding_fn, effective_pipeline_mode = _resolve_pipeline_retrieval_runtime(
+        args.pipeline_mode,
+        lancedb_dir,
+    )
 
     direct_rows, direct_results, direct_substitution, final_direct_model = _run_direct_cases(
         cases,
@@ -705,6 +768,9 @@ def main() -> int:
         frozen_db=frozen_db,
         trace_db=trace_db,
         trace_dir=trace_dir,
+        lancedb_dir=lancedb_dir,
+        table=retrieval_table,
+        embedding_fn=retrieval_embedding_fn,
     )
     calibration = calibrate_thresholds(observations, current=CURRENT_THRESHOLDS)
 
@@ -725,6 +791,10 @@ def main() -> int:
         direct_llm_model_substitution=direct_substitution,
         cwd=Path("."),
     )
+    header["pipeline_mode"] = {
+        "requested": args.pipeline_mode,
+        "effective": effective_pipeline_mode,
+    }
 
     direct_report = {
         "schema_version": SCHEMA_VERSION,
@@ -796,6 +866,8 @@ def main() -> int:
 
     summary = {
         "frozen_ts": frozen_ts,
+        "pipeline_mode_requested": args.pipeline_mode,
+        "pipeline_mode_effective": effective_pipeline_mode,
         "run_count": len(direct_rows) + len(mcj_rows),
         "trace_count": len({row["run_id"] for row in direct_rows + mcj_rows}),
         "direct_report": str(direct_json),

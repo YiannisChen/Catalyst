@@ -93,3 +93,16 @@ def make_catalyst_predict(
         )
 
     return predict
+
+
+def make_rag_only_predict(
+    graph,
+    model_id: str = "claude-sonnet-4-20250514",
+) -> Callable[[str, str], AttributionResult]:
+    """Alias for the P1 rag_only pipeline route.
+
+    rag_only reuses the same Miner→Critic→Judge graph output contract as
+    make_catalyst_predict while allowing callers to register an explicit
+    pipeline-mode name.
+    """
+    return make_catalyst_predict(graph, model_id=model_id)
