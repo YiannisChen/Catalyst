@@ -2,7 +2,8 @@
 from catalyst_agents.retrieval.policy import (
     Layer,
     RetrievalMetadata,
+    check_sufficiency,
     retrieve,
 )
 
-__all__ = ["Layer", "RetrievalMetadata", "retrieve"]
+__all__ = ["Layer", "RetrievalMetadata", "check_sufficiency", "retrieve"]

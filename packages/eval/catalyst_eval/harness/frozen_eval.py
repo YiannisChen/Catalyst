@@ -158,6 +158,32 @@ def sha256_file(path: Path | str) -> str:
     return digest.hexdigest()
 
 
+def sha256_directory(path: Path | str) -> str:
+    root = Path(path)
+    files = sorted([p for p in root.rglob("*") if p.is_file()], key=lambda p: p.relative_to(root).as_posix())
+
+    digest = hashlib.sha256()
+    for file_path in files:
+        rel = file_path.relative_to(root).as_posix().encode("utf-8")
+        digest.update(rel)
+        digest.update(b"\0")
+        digest.update(bytes.fromhex(sha256_file(file_path)))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def resolve_lancedb_dir_sha256(path: Path | str) -> str:
+    lancedb_dir = Path(path)
+    if not lancedb_dir.exists() or not lancedb_dir.is_dir():
+        return W15_LANCEDB_SENTINEL
+
+    has_files = any(p.is_file() for p in lancedb_dir.rglob("*"))
+    if not has_files:
+        return W15_LANCEDB_SENTINEL
+
+    return sha256_directory(lancedb_dir)
+
+
 def latest_freeze_header(path: Path | str = "data/eval_reports") -> dict[str, Any]:
     out_dir = Path(path)
     latest = sorted(out_dir.glob("freeze_header_*.json"))[-1]

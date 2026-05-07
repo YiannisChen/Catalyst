@@ -149,6 +149,26 @@ def _update_metadata(metadata: RetrievalMetadata, layer: Layer, results: list[di
     metadata.total_unique_evidence = len(metadata._seen_asset_ids)
 
 
+def check_sufficiency(
+    chunks: list[dict[str, Any]],
+    min_count: int = 5,
+    min_mean_score: float = 0.02,
+) -> bool:
+    if len(chunks) < min_count:
+        return False
+
+    scores: list[float] = []
+    for chunk in chunks:
+        raw_score = chunk.get("rrf_score", 0.0)
+        try:
+            scores.append(float(raw_score))
+        except (TypeError, ValueError):
+            scores.append(0.0)
+
+    mean_rrf = sum(scores) / len(scores) if scores else 0.0
+    return mean_rrf >= min_mean_score
+
+
 def retrieve(query: str, layer: Layer, metadata: RetrievalMetadata, *, rerank: Any = None) -> list[dict[str, Any]]:
     """Retrieve evidence for the requested layer, falling back to SQL when needed."""
     _record_attempt(metadata, layer)
@@ -163,6 +183,7 @@ def retrieve(query: str, layer: Layer, metadata: RetrievalMetadata, *, rerank: A
         else _sql_fallback_query(layer, metadata)
     )
     _update_metadata(metadata, layer, results)
+    metadata.stop_reason = "sufficiency_reached" if check_sufficiency(results) else "expansions_exhausted"
 
     if rerank is not None and results:
         return _apply_reranker(list(results), query, rerank, top_k=DEFAULT_RERANK_TOP_K)

@@ -10,6 +10,7 @@ from catalyst_agents.retrieval.policy import (
     MAX_EXPANSIONS,
     MAX_LAYERS_P0,
     RetrievalMetadata,
+    check_sufficiency,
     retrieve,
 )
 from tests.fixtures.retrieval_fixture import build_retrieval_fixture
@@ -144,3 +145,60 @@ def test_retrieve_with_reranker_uses_locked_top_k(tmp_path, monkeypatch):
 
     assert len(reranked) == 8
     assert all("rerank_score" in row for row in reranked)
+
+
+def test_check_sufficiency_passes_when_count_and_mean_rrf_meet_threshold():
+    chunks = [
+        {"asset_id": f"a{i}", "rrf_score": 0.03}
+        for i in range(5)
+    ]
+    assert check_sufficiency(chunks, min_count=5, min_mean_score=0.02) is True
+
+
+def test_check_sufficiency_fails_when_count_or_mean_rrf_below_threshold():
+    too_few = [{"asset_id": "a1", "rrf_score": 0.5}]
+    low_mean = [{"asset_id": f"a{i}", "rrf_score": 0.001} for i in range(6)]
+
+    assert check_sufficiency(too_few, min_count=5, min_mean_score=0.02) is False
+    assert check_sufficiency(low_mean, min_count=5, min_mean_score=0.02) is False
+
+
+def test_retrieve_marks_stop_reason_based_on_sufficiency(tmp_path, monkeypatch):
+    metadata = _metadata(tmp_path)
+
+    sufficient_rows = [
+        {
+            "asset_id": f"a{i}",
+            "ticker": "AAPL",
+            "source_type": "polygon_news",
+            "reference_date": "2026-01-15",
+            "content_md": f"row{i}",
+            "rrf_score": 0.03,
+        }
+        for i in range(6)
+    ]
+    insufficient_rows = [
+        {
+            "asset_id": f"b{i}",
+            "ticker": "AAPL",
+            "source_type": "polygon_news",
+            "reference_date": "2026-01-15",
+            "content_md": f"row{i}",
+            "rrf_score": 0.001,
+        }
+        for i in range(6)
+    ]
+
+    monkeypatch.setattr(
+        "catalyst_agents.retrieval.policy._sql_fallback_query",
+        lambda layer, md: sufficient_rows,  # noqa: ARG005
+    )
+    retrieve("query", Layer.DIRECT, metadata, rerank=None)
+    assert metadata.stop_reason == "sufficiency_reached"
+
+    monkeypatch.setattr(
+        "catalyst_agents.retrieval.policy._sql_fallback_query",
+        lambda layer, md: insufficient_rows,  # noqa: ARG005
+    )
+    retrieve("query", Layer.MACRO, metadata, rerank=None)
+    assert metadata.stop_reason == "expansions_exhausted"

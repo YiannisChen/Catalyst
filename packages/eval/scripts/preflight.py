@@ -10,6 +10,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from catalyst_eval.harness.frozen_eval import resolve_lancedb_dir_sha256
+
 
 SCHEMA_VERSION = "1.0"
 WINDOW_DAYS = 3
@@ -122,13 +124,10 @@ def _geo_tier2_doc_count(conn: sqlite3.Connection, windows: list[tuple[str, str]
 
 
 def _lancedb_freeze_status(path: Path) -> tuple[str, str]:
-    if not path.exists():
+    lancedb_dir_sha256 = resolve_lancedb_dir_sha256(path)
+    if lancedb_dir_sha256 == W15_LANCEDB_SENTINEL:
         return "deferred_p1", W15_LANCEDB_SENTINEL
-    if any(path.rglob("*")):
-        files = [p for p in path.rglob("*") if p.is_file()]
-        if files:
-            return "available", W15_LANCEDB_SENTINEL
-    return "deferred_p1", W15_LANCEDB_SENTINEL
+    return "available", lancedb_dir_sha256
 
 
 def _write_artifact(payload: dict) -> Path:

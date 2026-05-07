@@ -23,12 +23,12 @@ from catalyst_eval.harness.frozen_eval import (
     CURRENT_THRESHOLDS,
     DEFAULT_RANDOM_SEED,
     SCHEMA_VERSION,
-    W15_LANCEDB_SENTINEL,
     build_case_distribution,
     build_report_header,
     calibrate_thresholds,
     latest_freeze_header,
     load_jsonl,
+    resolve_lancedb_dir_sha256,
     utc_now_iso,
 )
 from catalyst_eval.schema.result import AttributionResult
@@ -38,6 +38,7 @@ DEFAULT_GOLDEN_SET = Path("packages/eval/golden_set/v1_2_p0_set.jsonl")
 DEFAULT_FROZEN_DB = Path("data/catalyst_eval_frozen.db")
 DEFAULT_REPORT_DIR = Path("data/eval_reports")
 DEFAULT_TRACE_DIR = Path("data/traces")
+DEFAULT_LANCEDB_DIR = Path("data/lancedb_gold/eval_frozen")
 DIRECT_MODEL_ID = DEFAULT_DIRECT_LLM_MODEL
 MCJ_MODEL_ID = "claude-sonnet-4-20250514"
 
@@ -143,6 +144,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--report-dir", default=str(DEFAULT_REPORT_DIR))
     parser.add_argument("--trace-dir", default=str(DEFAULT_TRACE_DIR))
     parser.add_argument("--trace-db", default=None)
+    parser.add_argument("--lancedb-dir", default=str(DEFAULT_LANCEDB_DIR))
     return parser.parse_args()
 
 
@@ -677,6 +679,7 @@ def main() -> int:
     frozen_db = Path(args.db)
     report_dir = Path(args.report_dir)
     trace_dir = Path(args.trace_dir)
+    lancedb_dir = Path(args.lancedb_dir)
     freeze_header = latest_freeze_header(report_dir)
     frozen_ts = freeze_header["header"]["frozen_ts"]
     trace_db = Path(args.trace_db) if args.trace_db else report_dir / f"{frozen_ts}_trace_runs.db"
@@ -711,10 +714,11 @@ def main() -> int:
         "judge": MCJ_MODEL_ID,
         "validator": MCJ_MODEL_ID,
     }
+    lancedb_dir_sha256 = resolve_lancedb_dir_sha256(lancedb_dir)
     header = build_report_header(
         frozen_ts=frozen_ts,
         db_path=frozen_db,
-        lancedb_dir_sha256=freeze_header["header"].get("lancedb_dir_sha256", W15_LANCEDB_SENTINEL),
+        lancedb_dir_sha256=lancedb_dir_sha256,
         model_id_per_role=model_id_per_role,
         random_seed=freeze_header["header"].get("random_seed", DEFAULT_RANDOM_SEED),
         case_distribution=case_distribution,
