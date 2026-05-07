@@ -4,6 +4,8 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import pytest
+
 
 SCRIPT_PATH = Path(__file__).resolve().parents[3] / "packages" / "eval" / "scripts" / "run_frozen_eval.py"
 SPEC = importlib.util.spec_from_file_location("run_frozen_eval_script", SCRIPT_PATH)
@@ -13,13 +15,14 @@ SPEC.loader.exec_module(MODULE)
 
 
 def test_resolve_pipeline_runtime_sql_only_keeps_sql_path(tmp_path: Path):
-    table, embedding_fn, effective = MODULE._resolve_pipeline_retrieval_runtime(
+    table, embedding_fn, reranker, effective = MODULE._resolve_pipeline_retrieval_runtime(
         MODULE.PIPELINE_MODE_SQL_ONLY,
         tmp_path / "missing",
     )
 
     assert table is None
     assert embedding_fn is None
+    assert reranker is None
     assert effective == MODULE.PIPELINE_MODE_SQL_ONLY
 
 
@@ -27,19 +30,22 @@ def test_parse_args_defaults_to_sql_only(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["run_frozen_eval.py"])
     args = MODULE._parse_args()
     assert args.pipeline_mode == MODULE.PIPELINE_MODE_SQL_ONLY
+    assert args.allow_unlabeled_golden_set is False
+    assert args.require_lancedb_sha256 is None
 
 
 def test_resolve_pipeline_runtime_rag_only_uses_lancedb_when_available(tmp_path: Path, monkeypatch):
     fake_table = object()
     monkeypatch.setattr(MODULE, "_open_lancedb_table", lambda _p: fake_table)
 
-    table, embedding_fn, effective = MODULE._resolve_pipeline_retrieval_runtime(
+    table, embedding_fn, reranker, effective = MODULE._resolve_pipeline_retrieval_runtime(
         MODULE.PIPELINE_MODE_RAG_ONLY,
         tmp_path,
     )
 
     assert table is fake_table
     assert callable(embedding_fn)
+    assert reranker is None
     assert len(embedding_fn("why did AAPL move?")) == MODULE.RAG_ONLY_EMBEDDING_DIM
     assert effective == MODULE.PIPELINE_MODE_RAG_ONLY
 
@@ -49,17 +55,46 @@ def test_resolve_pipeline_runtime_rag_only_falls_back_to_sql_when_lancedb_unavai
 ):
     monkeypatch.setattr(MODULE, "_open_lancedb_table", lambda _p: None)
 
-    table, embedding_fn, effective = MODULE._resolve_pipeline_retrieval_runtime(
+    table, embedding_fn, reranker, effective = MODULE._resolve_pipeline_retrieval_runtime(
         MODULE.PIPELINE_MODE_RAG_ONLY,
         tmp_path / "missing",
     )
 
     assert table is None
     assert embedding_fn is None
+    assert reranker is None
     assert effective == MODULE.PIPELINE_MODE_SQL_ONLY
 
 
-def test_run_mcj_cases_binds_table_and_embedding_fn_for_rag_only(tmp_path: Path, monkeypatch):
+def test_parse_args_accepts_rag_rerank(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["run_frozen_eval.py", "--pipeline-mode", MODULE.PIPELINE_MODE_RAG_RERANK])
+    args = MODULE._parse_args()
+    assert args.pipeline_mode == MODULE.PIPELINE_MODE_RAG_RERANK
+
+
+def test_parse_args_accepts_unlabeled_override(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["run_frozen_eval.py", "--allow-unlabeled-golden-set"])
+    args = MODULE._parse_args()
+    assert args.allow_unlabeled_golden_set is True
+
+
+def test_resolve_pipeline_runtime_rag_rerank_enables_reranker(tmp_path: Path, monkeypatch):
+    fake_table = object()
+    monkeypatch.setattr(MODULE, "_open_lancedb_table", lambda _p: fake_table)
+
+    table, embedding_fn, reranker, effective = MODULE._resolve_pipeline_retrieval_runtime(
+        MODULE.PIPELINE_MODE_RAG_RERANK,
+        tmp_path,
+    )
+
+    assert table is fake_table
+    assert callable(embedding_fn)
+    assert reranker is not None
+    assert hasattr(reranker, "compute_score")
+    assert effective == MODULE.PIPELINE_MODE_RAG_RERANK
+
+
+def test_run_mcj_cases_binds_table_embedding_and_reranker_for_rag_modes(tmp_path: Path, monkeypatch):
     captured: dict[str, object] = {}
 
     class FakeGraph:
@@ -112,6 +147,7 @@ def test_run_mcj_cases_binds_table_and_embedding_fn_for_rag_only(tmp_path: Path,
 
     table = object()
     embedding_fn = lambda text: [0.0] * MODULE.RAG_ONLY_EMBEDDING_DIM
+    reranker = object()
     lancedb_dir = tmp_path / "lancedb"
     lancedb_dir.mkdir()
 
@@ -147,10 +183,50 @@ def test_run_mcj_cases_binds_table_and_embedding_fn_for_rag_only(tmp_path: Path,
         lancedb_dir=lancedb_dir,
         table=table,
         embedding_fn=embedding_fn,
+        reranker=reranker,
     )
 
     assert captured["use_critic"] is True
     assert captured["table"] is table
     assert captured["embedding_fn"] is embedding_fn
+    assert captured["reranker"] is reranker
     assert rows[0]["retrieved_count"] == 1
     assert rows[0]["reranked_count"] == 1
+
+
+def test_normalize_case_schema_backfills_expected_status_and_should_refuse():
+    rows = [
+        {"id": "g001", "ticker": "AAPL", "trade_date": "2026-01-15", "price_move_pct": -1.0, "causes": []},
+        {
+            "id": "g002",
+            "ticker": "MSFT",
+            "trade_date": "2026-01-16",
+            "price_move_pct": 2.0,
+            "causes": [],
+            "should_refuse": True,
+        },
+    ]
+
+    normalized = MODULE._normalize_case_schema(rows)
+
+    assert normalized[0]["should_refuse"] is False
+    assert normalized[0]["expected_status"] == "SUFFICIENT"
+    assert normalized[1]["should_refuse"] is True
+    assert normalized[1]["expected_status"] == "INSUFFICIENT"
+
+
+def test_prepare_cases_strict_mode_fails_when_labels_missing():
+    with pytest.raises(ValueError, match="Golden-set schema error"):
+        MODULE._prepare_cases(
+            [{"id": "g001", "ticker": "AAPL", "trade_date": "2026-01-15", "price_move_pct": -1.0, "causes": []}],
+            strict_golden_schema=True,
+        )
+
+
+def test_prepare_cases_non_strict_mode_backfills_when_labels_missing():
+    prepared = MODULE._prepare_cases(
+        [{"id": "g001", "ticker": "AAPL", "trade_date": "2026-01-15", "price_move_pct": -1.0, "causes": []}],
+        strict_golden_schema=False,
+    )
+    assert prepared[0]["expected_status"] == "SUFFICIENT"
+    assert prepared[0]["should_refuse"] is False

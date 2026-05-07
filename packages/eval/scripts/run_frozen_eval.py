@@ -44,6 +44,7 @@ DIRECT_MODEL_ID = DEFAULT_DIRECT_LLM_MODEL
 MCJ_MODEL_ID = "claude-sonnet-4-20250514"
 PIPELINE_MODE_SQL_ONLY = "sql_only"
 PIPELINE_MODE_RAG_ONLY = "rag_only"
+PIPELINE_MODE_RAG_RERANK = "rag_rerank"
 RAG_ONLY_EMBEDDING_DIM = 1024
 
 
@@ -150,8 +151,21 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--trace-db", default=None)
     parser.add_argument("--lancedb-dir", default=str(DEFAULT_LANCEDB_DIR))
     parser.add_argument(
+        "--allow-unlabeled-golden-set",
+        action="store_true",
+        help=(
+            "Allow rows missing expected_status/should_refuse by backfilling defaults. "
+            "Off by default to preserve decision-grade strictness."
+        ),
+    )
+    parser.add_argument(
+        "--require-lancedb-sha256",
+        default=None,
+        help="Optional expected lancedb_dir_sha256; fail if the resolved hash differs.",
+    )
+    parser.add_argument(
         "--pipeline-mode",
-        choices=[PIPELINE_MODE_SQL_ONLY, PIPELINE_MODE_RAG_ONLY],
+        choices=[PIPELINE_MODE_SQL_ONLY, PIPELINE_MODE_RAG_ONLY, PIPELINE_MODE_RAG_RERANK],
         default=PIPELINE_MODE_SQL_ONLY,
     )
     return parser.parse_args()
@@ -188,14 +202,34 @@ def _open_lancedb_table(lancedb_dir: Path) -> Any | None:
         return None
 
 
-def _resolve_pipeline_retrieval_runtime(pipeline_mode: str, lancedb_dir: Path) -> tuple[Any | None, Any | None, str]:
+class _DeterministicReranker:
+    """Small deterministic reranker for offline rag_rerank frozen evals."""
+
+    def compute_score(self, pairs: list[tuple[str, str]]) -> list[float]:
+        scores: list[float] = []
+        for query, text in pairs:
+            q_tokens = {token for token in re.findall(r"\w+", query.lower()) if token}
+            t_tokens = {token for token in re.findall(r"\w+", text.lower()) if token}
+            overlap = len(q_tokens & t_tokens)
+            denom = max(1, len(q_tokens))
+            scores.append(overlap / denom)
+        return scores
+
+
+def _resolve_pipeline_retrieval_runtime(
+    pipeline_mode: str,
+    lancedb_dir: Path,
+) -> tuple[Any | None, Any | None, Any | None, str]:
     if pipeline_mode == PIPELINE_MODE_SQL_ONLY:
-        return None, None, PIPELINE_MODE_SQL_ONLY
+        return None, None, None, PIPELINE_MODE_SQL_ONLY
 
     table = _open_lancedb_table(lancedb_dir)
     if table is None:
-        return None, None, PIPELINE_MODE_SQL_ONLY
-    return table, _rag_query_embedding, PIPELINE_MODE_RAG_ONLY
+        return None, None, None, PIPELINE_MODE_SQL_ONLY
+
+    if pipeline_mode == PIPELINE_MODE_RAG_RERANK:
+        return table, _rag_query_embedding, _DeterministicReranker(), PIPELINE_MODE_RAG_RERANK
+    return table, _rag_query_embedding, None, PIPELINE_MODE_RAG_ONLY
 
 
 def _extract_field(prompt: str, label: str) -> str:
@@ -329,6 +363,46 @@ def _build_fixtures(cases: list[dict[str, Any]], db_path: Path) -> dict[tuple[st
             "direct_evidence_ids": _direct_evidence_ids(case, db_path),
         }
     return fixtures
+
+
+def _normalize_case_schema(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Backfill optional status fields for non-decision-grade compatibility.
+
+    This is intentionally opt-in from CLI because decision-grade runs must fail
+    fast when labels are missing.
+    """
+    normalized: list[dict[str, Any]] = []
+    for case in cases:
+        materialized = dict(case)
+        should_refuse = bool(materialized.get("should_refuse", False))
+        materialized["should_refuse"] = should_refuse
+        if "expected_status" not in materialized:
+            materialized["expected_status"] = "INSUFFICIENT" if should_refuse else "SUFFICIENT"
+        normalized.append(materialized)
+    return normalized
+
+
+def _prepare_cases(
+    cases: list[dict[str, Any]],
+    *,
+    strict_golden_schema: bool,
+) -> list[dict[str, Any]]:
+    missing: list[str] = []
+    for case in cases:
+        if "expected_status" not in case or "should_refuse" not in case:
+            missing.append(str(case.get("id", "<unknown>")))
+
+    if missing and strict_golden_schema:
+        preview = ", ".join(missing[:10])
+        if len(missing) > 10:
+            preview += ", ..."
+        raise ValueError(
+            "Golden-set schema error: expected_status and should_refuse are required for decision-grade runs. "
+            f"Missing fields on {len(missing)} case(s): {preview}. "
+            "Either provide labeled rows (recommended) or rerun with --allow-unlabeled-golden-set."
+        )
+
+    return cases if not missing else _normalize_case_schema(cases)
 
 
 def _direct_trace_event(result: dict[str, Any]) -> dict[str, Any]:
@@ -519,11 +593,13 @@ def _run_mcj_cases(
     lancedb_dir: Path,
     table: Any = None,
     embedding_fn: Any = None,
+    reranker: Any = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     graph = build_attribution_graph(
         use_critic=True,
         table=table,
         embedding_fn=embedding_fn,
+        reranker=reranker,
         llm=FrozenGraphLLM(fixtures),
     )
     per_case: list[dict[str, Any]] = []
@@ -747,10 +823,13 @@ def main() -> int:
     if trace_db.exists():
         trace_db.unlink()
 
-    cases = load_jsonl(golden_set_path)
+    cases = _prepare_cases(
+        load_jsonl(golden_set_path),
+        strict_golden_schema=not args.allow_unlabeled_golden_set,
+    )
     fixtures = _build_fixtures(cases, frozen_db)
     case_distribution = build_case_distribution(cases)
-    retrieval_table, retrieval_embedding_fn, effective_pipeline_mode = _resolve_pipeline_retrieval_runtime(
+    retrieval_table, retrieval_embedding_fn, retrieval_reranker, effective_pipeline_mode = _resolve_pipeline_retrieval_runtime(
         args.pipeline_mode,
         lancedb_dir,
     )
@@ -771,6 +850,7 @@ def main() -> int:
         lancedb_dir=lancedb_dir,
         table=retrieval_table,
         embedding_fn=retrieval_embedding_fn,
+        reranker=retrieval_reranker,
     )
     calibration = calibrate_thresholds(observations, current=CURRENT_THRESHOLDS)
 
@@ -781,6 +861,11 @@ def main() -> int:
         "validator": MCJ_MODEL_ID,
     }
     lancedb_dir_sha256 = resolve_lancedb_dir_sha256(lancedb_dir)
+    if args.require_lancedb_sha256 and lancedb_dir_sha256 != args.require_lancedb_sha256:
+        raise ValueError(
+            "LanceDB hash mismatch: "
+            f"expected {args.require_lancedb_sha256}, got {lancedb_dir_sha256} for {lancedb_dir}."
+        )
     header = build_report_header(
         frozen_ts=frozen_ts,
         db_path=frozen_db,
@@ -875,6 +960,7 @@ def main() -> int:
         "comparison_report": str(comparison_json),
         "calibration_report": str(calibration_json),
         "thresholds": calibration["chosen"],
+        "lancedb_dir_sha256": lancedb_dir_sha256,
     }
     print(json.dumps(summary, sort_keys=True))
     return 0

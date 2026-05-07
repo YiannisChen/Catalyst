@@ -16,6 +16,7 @@ Design decisions (per ADR-003 / Section 6 spec):
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,7 @@ _SILVER_QUERY = """
 
 _L1_CHUNK_LEVEL = "l1"
 _L2_CHUNK_LEVEL = "l2"
+_EMBED_BATCH_SIZE = 32
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +272,23 @@ def _build_chunk_records(
     return records
 
 
+def _encode_dense_vectors(
+    model: Any,
+    texts: list[str],
+    *,
+    batch_size: int = _EMBED_BATCH_SIZE,
+    max_length: int = 8192,
+) -> list[list[float]]:
+    """Encode texts in chunks to avoid large-batch tokenizer edge cases."""
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), batch_size):
+        chunk = texts[start : start + batch_size]
+        encoded = model.encode(chunk, batch_size=min(batch_size, len(chunk)), max_length=max_length)
+        dense = encoded["dense_vecs"].tolist()
+        vectors.extend(dense)
+    return vectors
+
+
 # ---------------------------------------------------------------------------
 # build_index: Silver → Gold
 # ---------------------------------------------------------------------------
@@ -336,10 +355,16 @@ def build_index(
     texts = [record["content_md"] for record in records]
 
     # --- Embed all L1+L2 texts with bge-m3 ---
-    model = BGEM3FlagModel(embedding_model, use_fp16=True)
-    # encode returns a dict; "dense_vecs" is the 1024-dim dense embedding
-    encoded = model.encode(texts, batch_size=32, max_length=8192)
-    vectors = encoded["dense_vecs"].tolist()
+    device_override = os.getenv("CATALYST_BGE_DEVICES")
+    use_fp16 = os.getenv("CATALYST_BGE_USE_FP16", "1") != "0"
+    if device_override:
+        try:
+            model = BGEM3FlagModel(embedding_model, use_fp16=use_fp16, devices=device_override)
+        except TypeError:
+            model = BGEM3FlagModel(embedding_model, use_fp16=use_fp16)
+    else:
+        model = BGEM3FlagModel(embedding_model, use_fp16=use_fp16)
+    vectors = _encode_dense_vectors(model, texts, batch_size=_EMBED_BATCH_SIZE, max_length=8192)
 
     for idx, vector in enumerate(vectors):
         records[idx]["vector"] = vector
