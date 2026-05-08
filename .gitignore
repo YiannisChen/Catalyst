@@ -26,3 +26,8 @@ docs/.DS_Store
 
 # reference files
 /packages/data-core/core_references
+/data/eval_frozen_lancedb.tgz
+/data/eval_frozen_lancedb.tgz.sha256
+/data/catalyst_eval_frozen_v2.db-wal
+/data/eval_frozen/
+/data/traces/

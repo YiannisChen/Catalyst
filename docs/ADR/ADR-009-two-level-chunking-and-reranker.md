@@ -2,9 +2,15 @@
 
 # ADR-009: Two-Level Chunking and Reranker (L1 Asset / L2 Sentence)
 
-**Status:** Proposed  
+**Status:** Accepted (2026-05-08)  
 **Date:** 2026-05-04  
 **Decision:** Standardize **L1 document-level chunks** aligned to **`clean_assets` rows** plus **L2 sentence-level chunks** with **`parent_asset_id`**, and require **`hybrid_search`** outputs to expose both **`rrf_score`** (fusion rank proxy) and **`rerank_score`** when a reranker is attached — with graceful **CPU / ONNX / absent-model** degradation.
+
+**Acceptance evidence (P1 closeout):**
+- `data/eval_reports/p1_closure_20260508_101639/stepA_index_check.txt`
+- `data/eval_reports/p1_closure_20260508_101639/stepC_t11_analysis_postfix.txt`
+- `data/eval_reports/p1_closure_20260508_101639/t11_postfix_rag_rerank_20260508_102300/20260508_102300_mcj_full.json`
+- `data/eval_reports/p1_freeze_audit_20260508_102439/p1_freeze_header_20260508_022452.json`
 
 ## Context
 

@@ -2,9 +2,14 @@
 
 # ADR-004: Adaptive Three-Layer Retrieval Ordering (Direct → Macro → Related)
 
-**Status:** Proposed  
+**Status:** Accepted (2026-05-08)  
 **Date:** 2026-05-04  
 **Decision:** Freeze **canonical adaptive ordering** **`Layer.DIRECT → Layer.MACRO → Layer.RELATED`**, **`full-version-execution-spec.md` §5** naming. **P1 activates hybrid (BM25 + vector + gated rerank) for DIRECT and MACRO only.** **`Layer.RELATED` remains unavailable until P2**, surfacing **`NotImplementedError`** from `retrieve()` as the defensive seam.
+
+**Acceptance evidence (P1 closeout):**
+- `data/eval_reports/p1_closure_20260508_101639/stepA_index_check.txt`
+- `data/eval_reports/p1_closure_20260508_101639/stepC_t11_analysis_postfix.txt`
+- `data/eval_reports/p1_freeze_audit_20260508_102439/p1_freeze_header_20260508_022452.json`
 
 ## Context
 

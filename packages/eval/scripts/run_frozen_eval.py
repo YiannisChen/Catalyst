@@ -493,10 +493,12 @@ def _normalize_mcj_case(
     result: dict[str, Any],
     trace_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    reranked_chunks = result.get("reranked_chunks", [])
+    rerank_scored_count = sum(1 for chunk in reranked_chunks if "rerank_score" in chunk)
     materialized = {
         **result,
         "output_status": _status_name(result.get("output_status")),
-        "retrieved_evidence": result.get("reranked_chunks", []),
+        "retrieved_evidence": reranked_chunks,
     }
     _validate_result_schema(materialized, evidence_key="retrieved_evidence")
     return {
@@ -515,7 +517,9 @@ def _normalize_mcj_case(
         "total_tokens": result.get("total_tokens", 0),
         "validation_error": result.get("validation_error"),
         "retrieved_count": len(result.get("retrieved_chunks", [])),
-        "reranked_count": len(result.get("reranked_chunks", [])),
+        "reranked_count": rerank_scored_count,
+        "reranked_candidate_count": len(reranked_chunks),
+        "has_rerank_scores": rerank_scored_count > 0,
         "critic_sufficiency": result.get("critic_decision").sufficiency if result.get("critic_decision") else None,
         "critic_magnitude_coverage": (
             result.get("critic_decision").magnitude_coverage if result.get("critic_decision") else None

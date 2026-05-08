@@ -120,6 +120,7 @@ def test_run_mcj_cases_binds_table_embedding_and_reranker_for_rag_modes(tmp_path
                         "content_md": "content",
                         "source_type": "polygon_news",
                         "rrf_score": 0.2,
+                        "rerank_score": 0.9,
                     }
                 ],
                 "graded_evidence": [],
@@ -192,6 +193,8 @@ def test_run_mcj_cases_binds_table_embedding_and_reranker_for_rag_modes(tmp_path
     assert captured["reranker"] is reranker
     assert rows[0]["retrieved_count"] == 1
     assert rows[0]["reranked_count"] == 1
+    assert rows[0]["reranked_candidate_count"] == 1
+    assert rows[0]["has_rerank_scores"] is True
 
 
 def test_normalize_case_schema_backfills_expected_status_and_should_refuse():

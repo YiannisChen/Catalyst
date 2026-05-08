@@ -2,9 +2,15 @@
 
 # ADR-008: Embedding Batch and GPU Strategy for bge-m3 (P1)
 
-**Status:** Proposed  
+**Status:** Accepted (2026-05-08)  
 **Date:** 2026-05-04  
 **Decision:** Separate **cloud-GPU batch embedding generation** from **local CPU index build**, with explicit artifact layout, pinning, and coverage linkage to frozen eval Silver rows.
+
+**Acceptance evidence (P1 closeout):**
+- `data/embeddings/bge_m3_eval_frozen_v2.npy`
+- `data/embeddings/asset_id_index.json`
+- `data/eval_reports/p1_closure_20260508_101639/stepA_index_check.txt`
+- `data/eval_reports/p1_freeze_audit_20260508_102439/p1_freeze_header_20260508_022452.json`
 
 ## Context
 
