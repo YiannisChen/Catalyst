@@ -1,0 +1,37 @@
+from pathlib import Path
+import importlib.util
+
+SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/lint_h_refusal_cases.py"
+
+
+def load_script_module(script_path: str, module_name: str):
+    spec = importlib.util.spec_from_file_location(module_name, script_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec is not None and spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_lint_outputs_schema_and_holiday_warning_and_h001_typo_signal():
+    mod = load_script_module(SCRIPT_PATH, "lint_h_refusal_cases")
+    out = mod.lint_cases(
+        Path("/Users/yiannischen/Desktop/Catalyst/packages/eval/golden_set/h_refusal_cases.json"),
+        db_path=Path("/Users/yiannischen/Desktop/Catalyst/data/catalyst_eval_frozen_v2.db"),
+        holiday_config=Path("/Users/yiannischen/Desktop/Catalyst/configs/us_market_holidays_2025_2026.json"),
+    )
+
+    assert isinstance(out.get("errors"), list)
+    assert isinstance(out.get("warnings"), list)
+    assert all(set(item.keys()) == {"case_id", "code", "message"} for item in out["errors"])
+    assert all(set(item.keys()) == {"case_id", "code", "message"} for item in out["warnings"])
+
+    assert any(e["case_id"] == "h001" and e["code"] == "ticker_not_in_db" for e in out["errors"])
+    assert any(w["case_id"] == "h003" and w["code"] == "market_closed_date" for w in out["warnings"])
+    assert any(w["case_id"] == "h001" and w["code"] == "query_ticker_mismatch_expected_refusal" for w in out["warnings"])
+
+    validated_out = mod.lint_cases(
+        Path("/Users/yiannischen/Desktop/Catalyst/packages/eval/golden_set/h_refusal_cases.validated.json"),
+        db_path=Path("/Users/yiannischen/Desktop/Catalyst/data/catalyst_eval_frozen_v2.db"),
+        holiday_config=Path("/Users/yiannischen/Desktop/Catalyst/configs/us_market_holidays_2025_2026.json"),
+    )
+    assert validated_out["ok"] is True
