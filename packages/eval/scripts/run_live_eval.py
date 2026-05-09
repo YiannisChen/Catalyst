@@ -76,5 +76,47 @@ def validate_live_payload_schema(payload: dict[str, Any]) -> list[dict[str, Any]
     return mod.validate_contract(payload, mod.frozen_contract())
 
 
+def build_cost_latency_payload(
+    *,
+    node_latency_ms: dict[str, int],
+    miner_step_latency_ms: dict[str, int],
+    node_api_cost_usd: dict[str, float],
+    gpu_hourly_usd: float,
+    run_wall_time_sec: float,
+) -> dict[str, Any]:
+    nodes = ["miner", "critic", "judge", "validator", "finalizer"]
+    infra_total = float(gpu_hourly_usd) * (float(run_wall_time_sec) / 3600.0)
+    sum_node_latency_ms = float(sum(float(node_latency_ms.get(n, 0)) for n in nodes))
+    infra_allocation_warning = sum_node_latency_ms == 0.0
+
+    node_cost_usd: dict[str, dict[str, float]] = {}
+    for node in nodes:
+        api = float(node_api_cost_usd.get(node, 0.0))
+        if infra_allocation_warning:
+            infra = 0.0
+        else:
+            infra = infra_total * float(node_latency_ms.get(node, 0)) / sum_node_latency_ms
+        node_cost_usd[node] = {"api": api, "infra": infra, "total": api + infra}
+
+    api_total = float(sum(v["api"] for v in node_cost_usd.values()))
+    return {
+        "node_latency_ms": {n: int(node_latency_ms.get(n, 0)) for n in nodes},
+        "miner_step_latency_ms": {
+            "bm25": int(miner_step_latency_ms.get("bm25", 0)),
+            "vector": int(miner_step_latency_ms.get("vector", 0)),
+            "rrf": int(miner_step_latency_ms.get("rrf", 0)),
+            "rerank": int(miner_step_latency_ms.get("rerank", 0)),
+            "total": int(miner_step_latency_ms.get("total", 0)),
+        },
+        "node_cost_usd": node_cost_usd,
+        "run_cost_usd": {
+            "api_total": api_total,
+            "infra_total": infra_total,
+            "grand_total": api_total + infra_total,
+        },
+        "infra_allocation_warning": infra_allocation_warning,
+    }
+
+
 if __name__ == "__main__":
     parse_args()
