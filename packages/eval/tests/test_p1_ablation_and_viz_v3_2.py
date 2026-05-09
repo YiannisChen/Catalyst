@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import sys
 
@@ -26,10 +27,24 @@ def test_ablation_axes_and_fixed_png_outputs(tmp_path: Path):
         index_variants=["l1l2", "l1"],
         case_ids=["g013", "h001"],
     )
-    assert len(rows) == 32
+    assert len(rows) == 64
+    routing_values = {row["routing_profile"] for row in rows}
+    assert routing_values == {"R0_single", "R1_split"}
 
     src = tmp_path / "a.json"
-    src.write_text("{}", encoding="utf-8")
+    payload = {
+        "aggregate": [
+            {
+                "profile": "full",
+                "index_variant": "l1l2",
+                "avg_latency_ms": 1200.0,
+                "avg_total_cost_usd": 0.012,
+                "status_accuracy": 0.9,
+                "avg_grounding_rate": 0.86,
+            }
+        ]
+    }
+    src.write_text(json.dumps(payload), encoding="utf-8")
     vz.render_pngs(src, tmp_path)
     assert (tmp_path / "latency_breakdown.png").exists()
     assert (tmp_path / "cost_quality_scatter.png").exists()

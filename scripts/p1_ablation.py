@@ -391,21 +391,22 @@ def build_matrix(
     index_variants: list[str],
     case_ids: list[str],
 ) -> list[dict[str, str]]:
-    primary_routing = routing_profiles[0] if routing_profiles else "R0_single"
+    routing_values = routing_profiles or ["R0_single"]
     rows: list[dict[str, str]] = []
     for m in model_profiles:
-        for retr in retrieval_profiles:
-            for idx in index_variants:
-                for case_id in case_ids:
-                    rows.append(
-                        {
-                            "model_profile": m,
-                            "routing_profile": primary_routing,
-                            "retrieval_profile": retr,
-                            "index_variant": idx,
-                            "case_id": case_id,
-                        }
-                    )
+        for routing in routing_values:
+            for retr in retrieval_profiles:
+                for idx in index_variants:
+                    for case_id in case_ids:
+                        rows.append(
+                            {
+                                "model_profile": m,
+                                "routing_profile": routing,
+                                "retrieval_profile": retr,
+                                "index_variant": idx,
+                                "case_id": case_id,
+                            }
+                        )
     return rows
 
 
