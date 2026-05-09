@@ -32,3 +32,7 @@ class AttributionResult(BaseModel):
     cost_breakdown: list[dict] = Field(default_factory=list)
     total_cost_usd: float = 0.0
     total_tokens: int = 0
+    cost_cap_triggered: bool = False
+    stopped_after_case_id: str | None = None
+    executed_case_count: int = 0
+    cost_cap_policy: str = "strict_gt"
