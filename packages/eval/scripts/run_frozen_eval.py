@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -46,6 +47,20 @@ PIPELINE_MODE_SQL_ONLY = "sql_only"
 PIPELINE_MODE_RAG_ONLY = "rag_only"
 PIPELINE_MODE_RAG_RERANK = "rag_rerank"
 RAG_ONLY_EMBEDDING_DIM = 1024
+
+
+def validate_frozen_payload_schema(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    contract_path = (
+        Path(__file__).resolve().parents[1]
+        / "catalyst_eval"
+        / "reports"
+        / "schema_contract.py"
+    )
+    spec = importlib.util.spec_from_file_location("schema_contract", str(contract_path))
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.validate_contract(payload, mod.frozen_contract())
 
 
 class _MockUsage:

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
+from pathlib import Path
 from typing import Any
 
 
@@ -15,6 +17,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def run_live_cases(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return {"status": "not_implemented_yet"}
+
+
+def validate_live_payload_schema(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    contract_path = (
+        Path(__file__).resolve().parents[1]
+        / "catalyst_eval"
+        / "reports"
+        / "schema_contract.py"
+    )
+    spec = importlib.util.spec_from_file_location("schema_contract", str(contract_path))
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.validate_contract(payload, mod.frozen_contract())
 
 
 if __name__ == "__main__":
