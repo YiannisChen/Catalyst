@@ -188,6 +188,24 @@ def holm_correction(p_values: list[float]) -> dict[str, Any]:
     }
 
 
+def class_balance_block(statuses: list[str]) -> dict[str, Any]:
+    per_class_n = {
+        "SUFFICIENT": int(sum(1 for s in statuses if s == "SUFFICIENT")),
+        "PARTIAL": int(sum(1 for s in statuses if s == "PARTIAL")),
+        "INSUFFICIENT": int(sum(1 for s in statuses if s == "INSUFFICIENT")),
+    }
+    class_balance_warning = min(per_class_n.values()) < 10 if per_class_n else True
+    limitation_template = (
+        "Class imbalance warning active; interpret p-values with caution. "
+        "If result is not statistically significant at α=0.05, keep that conclusion explicitly."
+    )
+    return {
+        "per_class_n": per_class_n,
+        "class_balance_warning": class_balance_warning,
+        "limitation_template": limitation_template,
+    }
+
+
 def run_all_tests(pairs: list[dict[str, Any]], stats_seed: int) -> dict[str, Any]:
     status_table = build_status_contingency_3x3(pairs)
     status_test = run_stuart_maxwell_or_bowker(status_table)
