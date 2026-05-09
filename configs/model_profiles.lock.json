@@ -1,0 +1,13 @@
+{
+  "provider": "openai_compat",
+  "profiles": [
+    {"model_id": "gemini-2.5-flash-nothink"},
+    {"model_id": "claude-opus-4-6"},
+    {"model_id": "deepseek-v4-flash"},
+    {"model_id": "qwen3.6-flash"},
+    {"model_id": "qwen-turbo"},
+    {"model_id": "deepseek-v3"},
+    {"model_id": "coding-minimax-m2.7-free"},
+    {"model_id": "qwen3.6-plus-preview-free"}
+  ]
+}
