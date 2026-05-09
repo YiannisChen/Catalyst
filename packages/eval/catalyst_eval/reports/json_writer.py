@@ -23,6 +23,7 @@ def normalize_comparison_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"comparison payload missing keys: {missing}")
     if normalized.get("schema_version") != "1.0":
         raise ValueError("comparison payload must use schema_version=1.0")
+    normalized.setdefault("statistical_tests", {})
     return normalized
 
 
