@@ -95,6 +95,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-output-tokens", type=int, default=4096)
     parser.add_argument("--window-days", type=int, default=3)
     parser.add_argument("--tag", default=None)
+    parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -117,7 +118,7 @@ def _load_cases(path: Path, wanted_case_ids: set[str] | None) -> list[dict[str, 
     return rows
 
 
-def _run_one(
+def _build_trace_command(
     *,
     profile: Profile,
     index_variant: str,
@@ -126,9 +127,9 @@ def _run_one(
     run_tag: str,
     args: argparse.Namespace,
     out_dir: Path,
-) -> Path:
+) -> list[str]:
     per_run_tag = f"{run_tag}_{index_variant}_{profile.name}_{case_id}"
-    cmd = [
+    return [
         sys.executable,
         str(TRACE_SCRIPT),
         "--case-id",
@@ -158,6 +159,28 @@ def _run_one(
         "--tag",
         per_run_tag,
     ]
+
+
+def _run_one(
+    *,
+    profile: Profile,
+    index_variant: str,
+    lancedb_dir: str,
+    case_id: str,
+    run_tag: str,
+    args: argparse.Namespace,
+    out_dir: Path,
+) -> Path:
+    per_run_tag = f"{run_tag}_{index_variant}_{profile.name}_{case_id}"
+    cmd = _build_trace_command(
+        profile=profile,
+        index_variant=index_variant,
+        lancedb_dir=lancedb_dir,
+        case_id=case_id,
+        run_tag=run_tag,
+        args=args,
+        out_dir=out_dir,
+    )
     subprocess.run(cmd, check=True)
     return out_dir / f"{per_run_tag}_{case_id}_p1_trace.summary.json"
 
@@ -313,12 +336,13 @@ def main() -> int:
         for profile in profiles
     }
     per_case_rows: list[dict[str, Any]] = []
+    failed_cases: list[dict[str, Any]] = []
     for index_name, lancedb_dir in index_variants.items():
         for profile in profiles:
             for case in cases:
                 case_id = case["id"]
                 print(f"[run] index_variant={index_name} profile={profile.name} case={case_id}")
-                summary_path = _run_one(
+                command = _build_trace_command(
                     profile=profile,
                     index_variant=index_name,
                     lancedb_dir=lancedb_dir,
@@ -327,6 +351,34 @@ def main() -> int:
                     args=args,
                     out_dir=out_dir,
                 )
+                try:
+                    summary_path = _run_one(
+                        profile=profile,
+                        index_variant=index_name,
+                        lancedb_dir=lancedb_dir,
+                        case_id=case_id,
+                        run_tag=run_tag,
+                        args=args,
+                        out_dir=out_dir,
+                    )
+                except Exception as exc:
+                    if not args.continue_on_error:
+                        raise
+                    failed_cases.append(
+                        {
+                            "index_variant": index_name,
+                            "profile": profile.name,
+                            "case_id": case_id,
+                            "error_type": type(exc).__name__,
+                            "error_message": str(exc),
+                            "command": command,
+                        }
+                    )
+                    print(
+                        f"[warn] continue-on-error index_variant={index_name} profile={profile.name} "
+                        f"case={case_id} error={type(exc).__name__}: {exc}"
+                    )
+                    continue
                 summary = json.loads(summary_path.read_text())
                 profile_to_rows[(index_name, profile.name)].append(summary)
                 per_case_rows.append(
@@ -372,6 +424,9 @@ def main() -> int:
         "profiles": profile_defs,
         "aggregate": aggregate_rows,
         "per_case": per_case_rows,
+        "failed_cases": failed_cases,
+        "num_failed_cases": len(failed_cases),
+        "run_status": "completed_with_errors" if failed_cases else "completed",
     }
 
     json_path = out_dir / f"{run_tag}_p1_ablation.json"
