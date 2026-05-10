@@ -96,6 +96,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--window-days", type=int, default=3)
     parser.add_argument("--tag", default=None)
     parser.add_argument("--continue-on-error", action="store_true")
+    parser.add_argument("--resume-from", default=None, help="Path to existing *_p1_ablation.json for resume.")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -116,6 +117,27 @@ def _load_cases(path: Path, wanted_case_ids: set[str] | None) -> list[dict[str, 
         if missing:
             raise ValueError(f"case ids not found in golden set: {missing}")
     return rows
+
+
+def _load_resume_completed_keys(path: Path) -> set[tuple[str, str, str]]:
+    if not path.exists():
+        raise FileNotFoundError(f"resume file not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    per_case = payload.get("per_case")
+    if not isinstance(per_case, list):
+        raise ValueError("invalid resume schema: 'per_case' list is required")
+
+    keys: set[tuple[str, str, str]] = set()
+    for row in per_case:
+        if not isinstance(row, dict):
+            raise ValueError("invalid resume schema: each per_case item must be an object")
+        index_variant = row.get("index_variant")
+        profile = row.get("profile")
+        case_id = row.get("case_id")
+        if not (isinstance(index_variant, str) and isinstance(profile, str) and isinstance(case_id, str)):
+            raise ValueError("invalid resume schema: per_case item requires index_variant/profile/case_id strings")
+        keys.add((index_variant, profile, case_id))
+    return keys
 
 
 def _build_trace_command(
@@ -337,10 +359,25 @@ def main() -> int:
     }
     per_case_rows: list[dict[str, Any]] = []
     failed_cases: list[dict[str, Any]] = []
+    skipped_cases: list[dict[str, Any]] = []
+    resume_done: set[tuple[str, str, str]] = set()
+    if args.resume_from:
+        resume_done = _load_resume_completed_keys(Path(args.resume_from))
     for index_name, lancedb_dir in index_variants.items():
         for profile in profiles:
             for case in cases:
                 case_id = case["id"]
+                combo = (index_name, profile.name, case_id)
+                if combo in resume_done:
+                    skipped_cases.append(
+                        {
+                            "index_variant": index_name,
+                            "profile": profile.name,
+                            "case_id": case_id,
+                        }
+                    )
+                    print(f"[skip] index_variant={index_name} profile={profile.name} case={case_id} resume-hit")
+                    continue
                 print(f"[run] index_variant={index_name} profile={profile.name} case={case_id}")
                 command = _build_trace_command(
                     profile=profile,
@@ -426,6 +463,8 @@ def main() -> int:
         "per_case": per_case_rows,
         "failed_cases": failed_cases,
         "num_failed_cases": len(failed_cases),
+        "skipped_cases": skipped_cases,
+        "num_skipped_cases": len(skipped_cases),
         "run_status": "completed_with_errors" if failed_cases else "completed",
     }
 
