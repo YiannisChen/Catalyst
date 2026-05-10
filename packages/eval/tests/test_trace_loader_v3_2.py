@@ -24,5 +24,25 @@ def test_loader_uses_validated_file_and_query_precedence():
     assert len(rows) == 8
 
     case = {"ticker": "NVDA", "trade_date": "2025-10-28", "query_override": "CASE_Q"}
-    assert trace.resolve_query(case, "CLI_Q") == "CLI_Q"
-    assert trace.resolve_query(case, None) == "CASE_Q"
+    query, source = trace.resolve_query_with_source(case, "CLI_Q")
+    assert query == "CLI_Q"
+    assert source == "cli_override"
+
+    query, source = trace.resolve_query_with_source(case, None)
+    assert query == "CASE_Q"
+    assert source == "case_override"
+
+    case_no_override = {"ticker": "NVDA", "trade_date": "2025-10-29"}
+    query, source = trace.resolve_query_with_source(case_no_override, None)
+    assert query == "Why did NVDA move on 2025-10-29?"
+    assert source == "default_template"
+
+    state = trace._build_initial_state(
+        case_no_override,
+        query=query,
+        db_path=trace.DEFAULT_DB_PATH,
+        lancedb_dir=trace.DEFAULT_LANCEDB_DIR,
+        model="gemini-2.5-flash-nothink",
+        window_days=3,
+    )
+    assert state["query"] == "Why did NVDA move on 2025-10-29?"

@@ -57,12 +57,17 @@ DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_BASE_URL = "https://aihubmix.com/v1"
 
 
-def resolve_query(case: dict[str, Any], cli_query_override: str | None) -> str:
+def resolve_query_with_source(case: dict[str, Any], cli_query_override: str | None) -> tuple[str, str]:
     if cli_query_override is not None:
-        return cli_query_override
+        return cli_query_override, "cli_override"
     if case.get("query_override"):
-        return str(case["query_override"])
-    return f"Why did {case['ticker']} move on {case['trade_date']}?"
+        return str(case["query_override"]), "case_override"
+    return f"Why did {case['ticker']} move on {case['trade_date']}?", "default_template"
+
+
+def resolve_query(case: dict[str, Any], cli_query_override: str | None) -> str:
+    query, _ = resolve_query_with_source(case, cli_query_override)
+    return query
 
 
 @dataclass
@@ -157,6 +162,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
     parser.add_argument("--trace-dir", default=str(DEFAULT_TRACE_DIR))
     parser.add_argument("--tag", default=None, help="Optional run tag; defaults to UTC timestamp.")
+    parser.add_argument("--query-override", default=None, help="Override query for this run.")
     return parser.parse_args()
 
 
@@ -348,6 +354,7 @@ def _collect_index_stats(lancedb_dir: Path) -> dict[str, Any]:
 def _build_initial_state(
     case: dict[str, Any],
     *,
+    query: str,
     db_path: Path,
     lancedb_dir: Path,
     model: str,
@@ -356,7 +363,7 @@ def _build_initial_state(
     return {
         "ticker": case["ticker"],
         "trade_date": case["trade_date"],
-        "query": f"Why did {case['ticker']} move on {case['trade_date']}?",
+        "query": query,
         "price_move_pct": case.get("price_move_pct"),
         "retrieved_chunks": [],
         "reranked_chunks": [],
@@ -622,6 +629,7 @@ def main() -> int:
         raise FileNotFoundError(f"lancedb dir not found: {lancedb_dir}")
 
     case = _load_case(golden_set_path, case_id)
+    effective_query, effective_query_source = resolve_query_with_source(case, args.query_override)
     db_stats = _collect_db_stats(case, db_path, args.window_days)
     index_stats = _collect_index_stats(lancedb_dir)
 
@@ -662,6 +670,7 @@ def main() -> int:
 
     state = _build_initial_state(
         case,
+        query=effective_query,
         db_path=db_path,
         lancedb_dir=lancedb_dir,
         model=args.model,
@@ -706,6 +715,8 @@ def main() -> int:
             "lancedb_dir_sha256": index_stats["lancedb_dir_sha256"],
             "trace_db": str(trace_db),
             "trace_json": str(trace_json_path),
+            "effective_query_source": effective_query_source,
+            "effective_query": effective_query,
         },
         "case": case,
         "database": db_stats,
