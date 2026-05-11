@@ -5,7 +5,8 @@ import sys
 
 import pytest
 
-SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/g013_direct_baseline.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_PATH = PROJECT_ROOT / "scripts" / "g013_direct_baseline.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -32,7 +33,7 @@ def _ok_result(model_id: str) -> dict:
 
 
 def test_continue_on_error_records_failures_and_keeps_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    mod = load_script_module(SCRIPT_PATH, "g013_direct_baseline_continue")
+    mod = load_script_module(str(SCRIPT_PATH), "g013_direct_baseline_continue")
     out_dir = tmp_path / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -90,7 +91,7 @@ def test_continue_on_error_records_failures_and_keeps_running(tmp_path: Path, mo
 
 
 def test_without_continue_on_error_stops_batch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    mod = load_script_module(SCRIPT_PATH, "g013_direct_baseline_stop")
+    mod = load_script_module(str(SCRIPT_PATH), "g013_direct_baseline_stop")
     out_dir = tmp_path / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
 

@@ -183,8 +183,12 @@ def main() -> int:
         "rows": rows,
     }
 
-    out_json = out_dir / "g013_dual_track_compare.json"
-    out_md = out_dir / "g013_dual_track_compare.md"
+    if args.tag:
+        out_json = out_dir / f"{args.tag}_g013_dual_track_compare.json"
+        out_md = out_dir / f"{args.tag}_g013_dual_track_compare.md"
+    else:
+        out_json = out_dir / "g013_dual_track_compare.json"
+        out_md = out_dir / "g013_dual_track_compare.md"
     out_json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     out_md.write_text(_render_markdown(rows, payload["direct_json"], payload["catalyst_input"]), encoding="utf-8")
 

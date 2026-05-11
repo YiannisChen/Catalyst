@@ -3,7 +3,8 @@ import json
 from pathlib import Path
 import sys
 
-SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/g013_compare_report.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_PATH = PROJECT_ROOT / "scripts" / "g013_compare_report.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -16,7 +17,7 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_compare_report_handles_missing_side_and_writes_markdown(tmp_path: Path, monkeypatch):
-    mod = load_script_module(SCRIPT_PATH, "g013_compare_report_test")
+    mod = load_script_module(str(SCRIPT_PATH), "g013_compare_report_test")
 
     direct_payload = {
         "tag": "exp1",
@@ -82,8 +83,8 @@ def test_compare_report_handles_missing_side_and_writes_markdown(tmp_path: Path,
     rc = mod.main()
     assert rc == 0
 
-    out_json = out_dir / "g013_dual_track_compare.json"
-    out_md = out_dir / "g013_dual_track_compare.md"
+    out_json = out_dir / "exp1_g013_dual_track_compare.json"
+    out_md = out_dir / "exp1_g013_dual_track_compare.md"
     assert out_json.exists()
     assert out_md.exists()
 
