@@ -1,33 +1,38 @@
+# Python
 __pycache__/
 *.py[cod]
-
-
-.env
 venv/
 .venv/
 
+# Secrets & local IDE
+.env
 .cursor/
+
+# Databases (root-level patterns)
 *.db
 *.sqlite
+
+# Broad: ignore text dumps (narrow if you need committed .txt)
 *.txt
 
-# generated local data artifacts
+# Generated / local data under data/
 /data/e2e_strict/
 /data/lancedb_gold/
 /data/case_studies/
-/data/eval_reports/*_case_study_report.md
-/data/eval_reports/*_case_study_trace.json
-/DemoUI/
-docs/.DS_Store 
-
-# local script outputs
-/packages/data-core/scripts/debug_output/
-/packages/data-core/scripts/smoke_test_assets.db
-
-# reference files
-/packages/data-core/core_references
+/data/eval_reports/
+/data/eval_frozen/
 /data/eval_frozen_lancedb.tgz
 /data/eval_frozen_lancedb.tgz.sha256
-/data/catalyst_eval_frozen_v2.db-wal
-/data/eval_frozen/
 /data/traces/
+/data/.fuse_hidden*
+/data/*.db-wal
+
+/DemoUI/
+
+# macOS
+docs/.DS_Store
+
+# Package: data-core scripts & references
+/packages/data-core/scripts/debug_output/
+/packages/data-core/scripts/smoke_test_assets.db
+/packages/data-core/core_references
