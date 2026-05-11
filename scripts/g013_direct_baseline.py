@@ -22,7 +22,7 @@ DEFAULT_MODELS = [
     "deepseek-v4-flash",
     "qwen3.6-flash",
     "qwen-turbo",
-    "deepseek-v3",
+    "DeepSeek-V3.1-Terminus",
     "claude-opus-4-6",
 ]
 DEFAULT_PROVIDER = "aihubmix"

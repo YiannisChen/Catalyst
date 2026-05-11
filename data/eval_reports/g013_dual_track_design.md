@@ -23,7 +23,7 @@ python scripts/p1_trace_report.py \
 python scripts/p1_trace_report.py --case-id g013 --provider aihubmix --model deepseek-v4-flash --base-url https://aihubmix.com/v1 --query-override "Why did NVDA move on 2025-10-28? Provide 3 grounded causes with evidence IDs." --out-dir data/eval_reports --tag g013_dual_track
 python scripts/p1_trace_report.py --case-id g013 --provider aihubmix --model qwen3.6-flash --base-url https://aihubmix.com/v1 --query-override "Why did NVDA move on 2025-10-28? Provide 3 grounded causes with evidence IDs." --out-dir data/eval_reports --tag g013_dual_track
 python scripts/p1_trace_report.py --case-id g013 --provider aihubmix --model qwen-turbo --base-url https://aihubmix.com/v1 --query-override "Why did NVDA move on 2025-10-28? Provide 3 grounded causes with evidence IDs." --out-dir data/eval_reports --tag g013_dual_track
-python scripts/p1_trace_report.py --case-id g013 --provider aihubmix --model deepseek-v3 --base-url https://aihubmix.com/v1 --query-override "Why did NVDA move on 2025-10-28? Provide 3 grounded causes with evidence IDs." --out-dir data/eval_reports --tag g013_dual_track
+python scripts/p1_trace_report.py --case-id g013 --provider aihubmix --model DeepSeek-V3.1-Terminus --base-url https://aihubmix.com/v1 --query-override "Why did NVDA move on 2025-10-28? Provide 3 grounded causes with evidence IDs." --out-dir data/eval_reports --tag g013_dual_track
 python scripts/p1_trace_report.py --case-id g013 --provider aihubmix --model claude-opus-4-6 --base-url https://aihubmix.com/v1 --query-override "Why did NVDA move on 2025-10-28? Provide 3 grounded causes with evidence IDs." --out-dir data/eval_reports --tag g013_dual_track
 ```
 
@@ -37,7 +37,7 @@ cd /Users/yiannischen/Desktop/Catalyst
 python scripts/g013_direct_baseline.py \
   --provider aihubmix \
   --base-url https://aihubmix.com/v1 \
-  --models gemini-2.5-flash-nothink,deepseek-v4-flash,qwen3.6-flash,qwen-turbo,deepseek-v3,claude-opus-4-6 \
+  --models gemini-2.5-flash-nothink,deepseek-v4-flash,qwen3.6-flash,qwen-turbo,DeepSeek-V3.1-Terminus,claude-opus-4-6 \
   --query "Why did NVDA move on 2025-10-28? Provide 3 grounded causes with evidence IDs." \
   --continue-on-error \
   --out-dir data/eval_reports \
