@@ -1,7 +1,9 @@
 import importlib.util
+from pathlib import Path
 from unittest.mock import patch
 
-SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/verify_model_lock.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_PATH = PROJECT_ROOT / "scripts" / "verify_model_lock.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -13,7 +15,7 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_model_verifier_contract_and_error_branches(tmp_path):
-    mod = load_script_module(SCRIPT_PATH, "verify_model_lock")
+    mod = load_script_module(str(SCRIPT_PATH), "verify_model_lock")
 
     lock_path = tmp_path / "model_profiles.lock.json"
     lock_path.write_text(

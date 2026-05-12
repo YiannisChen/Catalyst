@@ -1,6 +1,8 @@
 import importlib.util
+from pathlib import Path
 
-SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/packages/eval/scripts/run_live_eval.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_PATH = PROJECT_ROOT / "packages" / "eval" / "scripts" / "run_live_eval.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -12,7 +14,7 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_cost_cap_policy_strict_gt_boundaries_and_fields():
-    mod = load_script_module(SCRIPT_PATH, "run_live_eval")
+    mod = load_script_module(str(SCRIPT_PATH), "run_live_eval")
 
     class P:
         def __init__(self, costs):
@@ -39,7 +41,7 @@ def test_cost_cap_policy_strict_gt_boundaries_and_fields():
 
 
 def test_provider_failure_fallback_does_not_crash():
-    mod = load_script_module(SCRIPT_PATH, "run_live_eval")
+    mod = load_script_module(str(SCRIPT_PATH), "run_live_eval")
 
     class BadProvider:
         def run_case(self, case, llm_seed):

@@ -1,6 +1,8 @@
 import importlib.util
+from pathlib import Path
 
-SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/packages/eval/catalyst_eval/langsmith_bridge.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_PATH = PROJECT_ROOT / "packages" / "eval" / "catalyst_eval" / "langsmith_bridge.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -12,6 +14,6 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_langsmith_disabled_returns_null_project():
-    mod = load_script_module(SCRIPT_PATH, "langsmith_bridge")
+    mod = load_script_module(str(SCRIPT_PATH), "langsmith_bridge")
     out = mod.resolve_langsmith_header(env={"LANGCHAIN_TRACING_V2": "false"})
     assert out == {"langsmith_enabled": False, "langsmith_project": None}

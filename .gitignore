@@ -12,9 +12,6 @@ venv/
 *.db
 *.sqlite
 
-# Broad: ignore text dumps (narrow if you need committed .txt)
-*.txt
-
 # Generated / local data under data/
 /data/e2e_strict/
 /data/lancedb_gold/
@@ -36,3 +33,6 @@ docs/.DS_Store
 /packages/data-core/scripts/debug_output/
 /packages/data-core/scripts/smoke_test_assets.db
 /packages/data-core/core_references
+
+# local pullback artifacts
+.local/

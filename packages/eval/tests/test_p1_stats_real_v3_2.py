@@ -1,9 +1,11 @@
 import importlib.util
+from pathlib import Path
 
 import numpy as np
 from scipy.stats import wilcoxon
 
-SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/p1_stats.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_PATH = PROJECT_ROOT / "scripts" / "p1_stats.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -15,7 +17,7 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_stats_are_computed_not_stubbed():
-    mod = load_script_module(SCRIPT_PATH, "p1_stats")
+    mod = load_script_module(str(SCRIPT_PATH), "p1_stats")
     pairs = [
         {"a_status": "SUFFICIENT", "b_status": "PARTIAL", "a_refuse": 0, "b_refuse": 1, "a_metric": 0.81, "b_metric": 0.63},
         {"a_status": "PARTIAL", "b_status": "PARTIAL", "a_refuse": 0, "b_refuse": 0, "a_metric": 0.59, "b_metric": 0.55},

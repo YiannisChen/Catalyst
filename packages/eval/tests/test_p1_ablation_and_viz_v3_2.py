@@ -3,8 +3,9 @@ import json
 from pathlib import Path
 import sys
 
-ABLATION_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/p1_ablation.py"
-VIZ_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/p1_trace_viz.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+ABLATION_PATH = PROJECT_ROOT / "scripts" / "p1_ablation.py"
+VIZ_PATH = PROJECT_ROOT / "scripts" / "p1_trace_viz.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -17,8 +18,8 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_ablation_axes_and_fixed_png_outputs(tmp_path: Path):
-    ab = load_script_module(ABLATION_PATH, "p1_ablation")
-    vz = load_script_module(VIZ_PATH, "p1_trace_viz")
+    ab = load_script_module(str(ABLATION_PATH), "p1_ablation")
+    vz = load_script_module(str(VIZ_PATH), "p1_trace_viz")
 
     rows = ab.build_matrix(
         model_profiles=["gemini-2.5-flash-nothink", "deepseek-v4-flash"],

@@ -84,12 +84,61 @@ def _compute_cost(model_id: str, input_tokens: int, output_tokens: int) -> float
     pricing = MODEL_PRICING.get(_resolve_pricing_model_id(model_id))
     if pricing is None:
         return 0.0
-    in_cost = float(input_tokens) * float(pricing.input_per_1m) / 1_000_000.0
-    out_cost = float(output_tokens) * float(pricing.output_per_1m) / 1_000_000.0
+
+    def _price_value(item: Any, keys: tuple[str, ...]) -> float | None:
+        if isinstance(item, dict):
+            for key in keys:
+                raw = item.get(key)
+                if raw is not None:
+                    try:
+                        return float(raw)
+                    except (TypeError, ValueError):
+                        return None
+            return None
+        for key in keys:
+            raw = getattr(item, key, None)
+            if raw is not None:
+                try:
+                    return float(raw)
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    input_price = _price_value(pricing, ("input_per_1m", "input"))
+    output_price = _price_value(pricing, ("output_per_1m", "output"))
+    if input_price is None or output_price is None:
+        return 0.0
+
+    try:
+        in_cost = float(input_tokens) * input_price / 1_000_000.0
+        out_cost = float(output_tokens) * output_price / 1_000_000.0
+    except (TypeError, ValueError):
+        return 0.0
     return in_cost + out_cost
 
 
+def is_refusal_response(answer_text: str) -> bool:
+    lowered = answer_text.lower()
+    refusal_signals = [
+        "knowledge cutoff",
+        "date is in the future",
+        "future relative to my knowledge",
+        "cannot verify",
+        "can't verify",
+        "no data available",
+        "no market data",
+        "cannot provide real causes",
+        "cannot access real-time",
+        "outside my training data",
+        "i don't have access to",
+        "has not yet occurred",
+    ]
+    return any(signal in lowered for signal in refusal_signals)
+
+
 def _classify_status(answer_text: str) -> str:
+    if is_refusal_response(answer_text):
+        return "INSUFFICIENT"
     lowered = answer_text.lower()
     if any(token in lowered for token in ["insufficient", "not enough evidence", "cannot determine", "no evidence"]):
         return "INSUFFICIENT"
@@ -97,6 +146,8 @@ def _classify_status(answer_text: str) -> str:
 
 
 def _has_hallucination(query: str, answer_text: str) -> bool:
+    if is_refusal_response(answer_text):
+        return False
     text = answer_text.lower()
     if re.search(r"\b\d{7}-\d{2}-\d{6}\b", answer_text):
         return True

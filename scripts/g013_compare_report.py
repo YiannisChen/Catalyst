@@ -79,7 +79,12 @@ def _to_float(value: Any) -> float | None:
 def _reliability_verdict(direct: dict[str, Any] | None, catalyst: dict[str, Any] | None) -> bool:
     if direct is None or catalyst is None:
         return False
-    direct_reliable = (not bool(direct.get("hallucination_flag"))) and direct.get("status_class") != "SYSTEM_ERROR"
+    direct_status = str(direct.get("status_class") or "")
+    direct_reliable = (
+        direct_status == "SUFFICIENT"
+        and not bool(direct.get("hallucination_flag"))
+        and direct_status != "SYSTEM_ERROR"
+    )
     output_status = str(catalyst.get("output_status") or "")
     grounding = _to_float(catalyst.get("grounding_rate"))
     citation = _to_float(catalyst.get("citation_precision"))
@@ -97,12 +102,13 @@ def _delta(catalyst_value: Any, direct_value: Any) -> float | None:
     return c - d
 
 
-def _render_markdown(rows: list[dict[str, Any]], direct_json: str, catalyst_input: str) -> str:
+def _render_markdown(rows: list[dict[str, Any]], direct_json: str, catalyst_input: str, comparison_mode: str) -> str:
     lines: list[str] = []
     lines.append("# g013 Dual-Track Compare")
     lines.append("")
     lines.append(f"- direct_json: `{direct_json}`")
     lines.append(f"- catalyst_input: `{catalyst_input}`")
+    lines.append(f"- comparison_mode: `{comparison_mode}`")
     lines.append("")
     lines.append("| model_id | direct_status | direct_hallucination | direct_latency_ms | direct_cost_usd | catalyst_status | catalyst_grounding | catalyst_citation_precision | catalyst_latency_ms | catalyst_cost_usd | cost_delta | latency_delta | catalyst_better_on_reliability |")
     lines.append("|---|---|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|")
@@ -139,12 +145,19 @@ def main() -> int:
         if isinstance(model_id, str) and model_id:
             direct_map[model_id] = row
 
-    model_ids = sorted(set(direct_map.keys()) | set(catalyst_map.keys()))
+    if len(catalyst_map) == 1 and len(direct_map) >= 1:
+        comparison_mode = "single_catalyst_vs_multi_direct"
+        single_catalyst = next(iter(catalyst_map.values()))
+        model_ids = sorted(direct_map.keys())
+    else:
+        comparison_mode = "model_aligned"
+        single_catalyst = None
+        model_ids = sorted(set(direct_map.keys()) | set(catalyst_map.keys()))
     rows: list[dict[str, Any]] = []
 
     for model_id in model_ids:
         direct_row = direct_map.get(model_id)
-        catalyst_row = catalyst_map.get(model_id)
+        catalyst_row = single_catalyst if comparison_mode == "single_catalyst_vs_multi_direct" else catalyst_map.get(model_id)
 
         direct_block = {
             "missing": direct_row is None,
@@ -180,6 +193,7 @@ def main() -> int:
         "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "direct_json": str(Path(args.direct_json)),
         "catalyst_input": str(Path(args.catalyst_input)),
+        "comparison_mode": comparison_mode,
         "rows": rows,
     }
 
@@ -190,7 +204,10 @@ def main() -> int:
         out_json = out_dir / "g013_dual_track_compare.json"
         out_md = out_dir / "g013_dual_track_compare.md"
     out_json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    out_md.write_text(_render_markdown(rows, payload["direct_json"], payload["catalyst_input"]), encoding="utf-8")
+    out_md.write_text(
+        _render_markdown(rows, payload["direct_json"], payload["catalyst_input"], comparison_mode),
+        encoding="utf-8",
+    )
 
     print(f"[ok] compare_json={out_json}")
     print(f"[ok] compare_md={out_md}")

@@ -121,3 +121,38 @@ def test_without_continue_on_error_stops_batch(tmp_path: Path, monkeypatch: pyte
     with pytest.raises(RuntimeError, match="boom"):
         mod.main()
     assert calls == ["gemini-2.5-flash-nothink", "deepseek-v4-flash"]
+
+
+def test_compute_cost_accepts_dict_and_object_pricing(monkeypatch: pytest.MonkeyPatch):
+    mod = load_script_module(str(SCRIPT_PATH), "g013_direct_baseline_pricing")
+
+    class PricingObj:
+        input_per_1m = 2.0
+        output_per_1m = 8.0
+
+    monkeypatch.setitem(mod.MODEL_PRICING, "dict_pricing", {"input": 1.0, "output": 4.0})
+    monkeypatch.setitem(mod.MODEL_PRICING, "obj_pricing", PricingObj())
+    monkeypatch.setitem(mod.MODEL_PRICING, "broken_pricing", {"foo": 1.0})
+
+    # dict pricing
+    assert mod._compute_cost("dict_pricing", input_tokens=1000, output_tokens=1000) == pytest.approx(0.005)
+    # object pricing
+    assert mod._compute_cost("obj_pricing", input_tokens=1000, output_tokens=1000) == pytest.approx(0.01)
+    # broken/missing pricing fields should not raise
+    assert mod._compute_cost("broken_pricing", input_tokens=1000, output_tokens=1000) == 0.0
+    assert mod._compute_cost("missing_pricing", input_tokens=1000, output_tokens=1000) == 0.0
+
+
+def test_refusal_text_classifies_as_insufficient():
+    mod = load_script_module(str(SCRIPT_PATH), "g013_direct_baseline_refusal")
+    refusal_answer = (
+        "I cannot provide real causes for NVDA on 2025-10-28 because that date is in the future "
+        "relative to my knowledge cutoff and no market data is available to verify."
+    )
+    grounded_answer = (
+        "NVDA rose after DOE supercomputer contract and AI infrastructure demand strength, "
+        "supported by cited filings and news IDs."
+    )
+
+    assert mod._classify_status(refusal_answer) == "INSUFFICIENT"
+    assert mod._classify_status(grounded_answer) == "SUFFICIENT"

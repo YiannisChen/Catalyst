@@ -5,7 +5,8 @@ import sys
 
 from PIL import Image
 
-VIZ_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/p1_trace_viz.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+VIZ_PATH = PROJECT_ROOT / "scripts" / "p1_trace_viz.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -18,7 +19,7 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_render_publication_grade_pngs(tmp_path: Path):
-    vz = load_script_module(VIZ_PATH, "p1_trace_viz")
+    vz = load_script_module(str(VIZ_PATH), "p1_trace_viz")
 
     payload = {
         "aggregate": [

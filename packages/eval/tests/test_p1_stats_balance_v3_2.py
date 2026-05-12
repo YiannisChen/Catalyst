@@ -1,6 +1,8 @@
 import importlib.util
+from pathlib import Path
 
-SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/p1_stats.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_PATH = PROJECT_ROOT / "scripts" / "p1_stats.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -12,7 +14,7 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_balance_warning_and_limitation_template():
-    mod = load_script_module(SCRIPT_PATH, "p1_stats")
+    mod = load_script_module(str(SCRIPT_PATH), "p1_stats")
     out = mod.class_balance_block(["SUFFICIENT"] * 18 + ["PARTIAL"] * 4 + ["INSUFFICIENT"] * 3)
     assert out["class_balance_warning"] is True
     assert out["per_class_n"] == {"SUFFICIENT": 18, "PARTIAL": 4, "INSUFFICIENT": 3}

@@ -1,6 +1,8 @@
 import importlib.util
+from pathlib import Path
 
-SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/packages/eval/scripts/run_live_eval.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_PATH = PROJECT_ROOT / "packages" / "eval" / "scripts" / "run_live_eval.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -12,7 +14,7 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_cost_latency_payload_contract():
-    mod = load_script_module(SCRIPT_PATH, "run_live_eval")
+    mod = load_script_module(str(SCRIPT_PATH), "run_live_eval")
     out = mod.build_cost_latency_payload(
         node_latency_ms={"miner": 12, "critic": 14, "judge": 16, "validator": 10, "finalizer": 4},
         miner_step_latency_ms={"bm25": 2, "vector": 4, "rrf": 2, "rerank": 4, "total": 12},

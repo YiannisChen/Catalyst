@@ -1,8 +1,10 @@
 import importlib.util
+from pathlib import Path
 import sys
 
-LOADER_SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/load_refusal_cases.py"
-TRACE_SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/p1_trace_report.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+LOADER_SCRIPT_PATH = PROJECT_ROOT / "scripts" / "load_refusal_cases.py"
+TRACE_SCRIPT_PATH = PROJECT_ROOT / "scripts" / "p1_trace_report.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -15,11 +17,11 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_loader_uses_validated_file_and_query_precedence():
-    loader = load_script_module(LOADER_SCRIPT_PATH, "load_refusal_cases")
-    trace = load_script_module(TRACE_SCRIPT_PATH, "p1_trace_report")
+    loader = load_script_module(str(LOADER_SCRIPT_PATH), "load_refusal_cases")
+    trace = load_script_module(str(TRACE_SCRIPT_PATH), "p1_trace_report")
 
     rows = loader.load_refusal_cases(
-        "/Users/yiannischen/Desktop/Catalyst/packages/eval/golden_set/h_refusal_cases.validated.json"
+        str(PROJECT_ROOT / "packages" / "eval" / "golden_set" / "h_refusal_cases.validated.json")
     )
     assert len(rows) == 8
 

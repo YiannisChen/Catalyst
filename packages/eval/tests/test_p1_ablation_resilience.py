@@ -5,7 +5,8 @@ import sys
 
 import pytest
 
-SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/p1_ablation.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_PATH = PROJECT_ROOT / "scripts" / "p1_ablation.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -48,7 +49,7 @@ def _summary_payload(case_id: str) -> dict:
 
 
 def test_ablation_default_mode_stops_on_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    ab = load_script_module(SCRIPT_PATH, "p1_ablation_resilience_default")
+    ab = load_script_module(str(SCRIPT_PATH), "p1_ablation_resilience_default")
     golden = tmp_path / "golden.jsonl"
     out_dir = tmp_path / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -89,7 +90,7 @@ def test_ablation_default_mode_stops_on_error(tmp_path: Path, monkeypatch: pytes
 
 
 def test_ablation_continue_on_error_keeps_running_and_records_failures(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    ab = load_script_module(SCRIPT_PATH, "p1_ablation_resilience_continue")
+    ab = load_script_module(str(SCRIPT_PATH), "p1_ablation_resilience_continue")
     golden = tmp_path / "golden.jsonl"
     out_dir = tmp_path / "out"
     out_dir.mkdir(parents=True, exist_ok=True)

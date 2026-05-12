@@ -1,7 +1,8 @@
 from pathlib import Path
 import importlib.util
 
-SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/scripts/lint_h_refusal_cases.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_PATH = PROJECT_ROOT / "scripts" / "lint_h_refusal_cases.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -13,11 +14,11 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_lint_outputs_schema_and_holiday_warning_and_h001_typo_signal():
-    mod = load_script_module(SCRIPT_PATH, "lint_h_refusal_cases")
+    mod = load_script_module(str(SCRIPT_PATH), "lint_h_refusal_cases")
     out = mod.lint_cases(
-        Path("/Users/yiannischen/Desktop/Catalyst/packages/eval/golden_set/h_refusal_cases.json"),
-        db_path=Path("/Users/yiannischen/Desktop/Catalyst/data/catalyst_eval_frozen_v2.db"),
-        holiday_config=Path("/Users/yiannischen/Desktop/Catalyst/configs/us_market_holidays_2025_2026.json"),
+        PROJECT_ROOT / "packages" / "eval" / "golden_set" / "h_refusal_cases.json",
+        db_path=PROJECT_ROOT / "data" / "catalyst_eval_frozen_v2.db",
+        holiday_config=PROJECT_ROOT / "configs" / "us_market_holidays_2025_2026.json",
     )
 
     assert isinstance(out.get("errors"), list)
@@ -30,8 +31,8 @@ def test_lint_outputs_schema_and_holiday_warning_and_h001_typo_signal():
     assert any(w["case_id"] == "h001" and w["code"] == "query_ticker_mismatch_expected_refusal" for w in out["warnings"])
 
     validated_out = mod.lint_cases(
-        Path("/Users/yiannischen/Desktop/Catalyst/packages/eval/golden_set/h_refusal_cases.validated.json"),
-        db_path=Path("/Users/yiannischen/Desktop/Catalyst/data/catalyst_eval_frozen_v2.db"),
-        holiday_config=Path("/Users/yiannischen/Desktop/Catalyst/configs/us_market_holidays_2025_2026.json"),
+        PROJECT_ROOT / "packages" / "eval" / "golden_set" / "h_refusal_cases.validated.json",
+        db_path=PROJECT_ROOT / "data" / "catalyst_eval_frozen_v2.db",
+        holiday_config=PROJECT_ROOT / "configs" / "us_market_holidays_2025_2026.json",
     )
     assert validated_out["ok"] is True

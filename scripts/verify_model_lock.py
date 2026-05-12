@@ -7,6 +7,9 @@ from typing import Any
 
 import requests
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_LOCK_PATH = PROJECT_ROOT / "configs" / "model_profiles.lock.json"
+
 
 def now_iso_utc() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -136,7 +139,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--lock-path", default="/Users/yiannischen/Desktop/Catalyst/configs/model_profiles.lock.json")
+    parser.add_argument("--lock-path", default=str(DEFAULT_LOCK_PATH))
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--api-key", required=True)
     parser.add_argument("--timeout-sec", type=int, default=10)

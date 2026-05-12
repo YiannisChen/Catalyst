@@ -1,6 +1,8 @@
 import importlib.util
+from pathlib import Path
 
-SCRIPT_PATH = "/Users/yiannischen/Desktop/Catalyst/packages/eval/catalyst_eval/reports/schema_contract.py"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+SCRIPT_PATH = PROJECT_ROOT / "packages" / "eval" / "catalyst_eval" / "reports" / "schema_contract.py"
 
 
 def load_script_module(script_path: str, module_name: str):
@@ -12,7 +14,7 @@ def load_script_module(script_path: str, module_name: str):
 
 
 def test_nested_key_paths_and_error_kinds_are_enforced():
-    mod = load_script_module(SCRIPT_PATH, "schema_contract")
+    mod = load_script_module(str(SCRIPT_PATH), "schema_contract")
     contract = mod.frozen_contract()
     key_paths = {c["key_path"] for c in contract}
 
