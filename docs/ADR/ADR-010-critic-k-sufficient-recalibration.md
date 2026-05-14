@@ -40,3 +40,27 @@ If rerun KPI gates regress or refusal precision degrades:
 1. Revert `K_SUFFICIENT` from `3` back to `4`.
 2. Re-run targeted and full P1 ablation.
 3. Compare `status_accuracy`, full-vs-degraded gap, and SYSTEM_ERROR/label quality diffs before re-adopting.
+
+## Diagnostic v2 Follow-up (2026-05-14)
+
+Diagnostic run summary (20 cases, full profile only):
+
+- files: `20`
+- scores: `159`
+- below-threshold total: `103`
+- relevance quantiles: `p25=0.0`, `p50=0.2`, `p75=0.7`
+- `0.4 <= score < 0.5` band: `6` (`ratio=0.0377`)
+
+Decision update:
+
+- Keep `RELEVANCE_THRESHOLD = 0.5`
+- Lower `K_SUFFICIENT: 3 -> 2`
+
+Why:
+
+- The 0.4–0.5 band ratio is very low (`0.0377 < 0.20`), so lowering threshold is not supported by observed score distribution.
+- Lowering `K_SUFFICIENT` is the targeted calibration expected to improve sufficiency recall without broadening low-confidence evidence acceptance.
+
+Rollback condition:
+
+- If full rerun fails KPI gate or causes refusal-quality regression, revert `K_SUFFICIENT` to `3` and rerun.

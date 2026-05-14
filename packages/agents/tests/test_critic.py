@@ -13,6 +13,7 @@ from catalyst_agents.nodes.critic import (
     system_error_handler,
     _format_chunks,
     _parse_critic_response,
+    K_SUFFICIENT,
     RELEVANCE_THRESHOLD,
 )
 from catalyst_agents.nodes.decision_router import decision_router
@@ -226,6 +227,10 @@ def test_parse_critic_response_rejects_multi_item_wrapper_list():
 def test_relevance_threshold_value():
     """Threshold must be 0.5 per spec Section 4.3."""
     assert RELEVANCE_THRESHOLD == 0.5
+
+
+def test_k_sufficient_value():
+    assert K_SUFFICIENT == 2
 
 
 # ---------------------------------------------------------------------------
