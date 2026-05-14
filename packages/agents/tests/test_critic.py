@@ -299,6 +299,36 @@ def test_critic_threshold_boundary_included():
     assert len(result["graded_evidence"]) == 1
 
 
+def test_critic_k3_marks_sufficient_with_three_high_relevance_chunks():
+    payload = json.dumps({
+        "graded_chunks": [
+            {"chunk_id": "c1", "relevance": 0.9, "category": "earnings", "temporal_match": True, "reasoning": "r1"},
+            {"chunk_id": "c2", "relevance": 0.8, "category": "earnings", "temporal_match": True, "reasoning": "r2"},
+            {"chunk_id": "c3", "relevance": 0.7, "category": "sector", "temporal_match": True, "reasoning": "r3"},
+        ],
+        "reasoning": "enough",
+    })
+    state = {**BASE_STATE, "reranked_chunks": [
+        {"asset_id": "c1", "source_type": "polygon_news", "reference_date": "2026-01-15", "content_md": "a"},
+        {"asset_id": "c2", "source_type": "polygon_news", "reference_date": "2026-01-15", "content_md": "b"},
+        {"asset_id": "c3", "source_type": "polygon_news", "reference_date": "2026-01-15", "content_md": "c"},
+    ]}
+    result = critic(state, llm=MockLLM(payload))
+    assert result["critic_decision"].sufficiency == "sufficient"
+
+
+def test_critic_one_chunk_relevant_is_partial_not_insufficient():
+    payload = json.dumps({
+        "graded_chunks": [
+            {"chunk_id": "c1", "relevance": 0.9, "category": "earnings", "temporal_match": True, "reasoning": "single"},
+        ],
+        "reasoning": "single",
+    })
+    state = {**BASE_STATE, "reranked_chunks": [{"asset_id": "c1", "source_type": "polygon_news", "reference_date": "2026-01-15", "content_md": "a"}]}
+    result = critic(state, llm=MockLLM(payload))
+    assert result["critic_decision"].sufficiency == "partial"
+
+
 def test_critic_retries_invoke_exception_then_succeeds(monkeypatch):
     sleeps = []
     monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)

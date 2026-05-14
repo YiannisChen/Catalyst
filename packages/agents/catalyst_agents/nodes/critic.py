@@ -21,7 +21,7 @@ from catalyst_agents.backoff import invoke_with_retries, MAX_RETRIES
 # ---------------------------------------------------------------------------
 
 RELEVANCE_THRESHOLD = 0.5
-K_SUFFICIENT = 4
+K_SUFFICIENT = 3
 K_PARTIAL = 2
 M_THRESHOLD = 0.6
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "critic.md"
@@ -112,6 +112,7 @@ def _compute_magnitude_coverage(filtered: list[dict]) -> float:
         return 0.0
 
     avg_relevance = sum(chunk.get("relevance", 0.0) for chunk in filtered) / len(filtered)
+    # K_PARTIAL is retained for magnitude scaling only.
     count_factor = min(1.0, len(filtered) / K_PARTIAL)
     return min(1.0, avg_relevance * count_factor)
 
@@ -126,12 +127,9 @@ def _build_critic_decision(filtered: list[dict], reasoning: str) -> CriticDecisi
     elif evidence_count == 0:
         sufficiency = "insufficient"
         next_action = "refuse"
-    elif evidence_count >= K_PARTIAL or magnitude_coverage < M_THRESHOLD:
+    else:
         sufficiency = "partial"
         next_action = "proceed"
-    else:
-        sufficiency = "insufficient"
-        next_action = "refuse"
 
     return CriticDecision(
         sufficiency=sufficiency,
