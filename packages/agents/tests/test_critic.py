@@ -185,6 +185,13 @@ def test_parse_critic_response_with_plain_fences():
     assert result["reasoning"] == "fenced"
 
 
+def test_parse_critic_response_accepts_single_item_list_wrapper():
+    payload = '[{"graded_chunks":[{"chunk_id":"c1","relevance":0.9,"category":"earnings","temporal_match":true,"reasoning":"ok"}],"reasoning":"wrapped"}]'
+    result = _parse_critic_response(payload)
+    assert result["reasoning"] == "wrapped"
+    assert result["graded_chunks"][0]["chunk_id"] == "c1"
+
+
 def test_relevance_threshold_value():
     """Threshold must be 0.5 per spec Section 4.3."""
     assert RELEVANCE_THRESHOLD == 0.5

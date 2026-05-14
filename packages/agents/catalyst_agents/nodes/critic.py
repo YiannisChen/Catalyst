@@ -93,6 +93,11 @@ def _parse_critic_response(text: str) -> dict:
         inner_lines = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
         cleaned = "\n".join(inner_lines)
     parsed = json.loads(cleaned)
+    if isinstance(parsed, list):
+        if len(parsed) == 1 and isinstance(parsed[0], dict):
+            parsed = parsed[0]
+        else:
+            raise ValueError("critic response list payload is invalid")
     validated = CriticResponse.model_validate(parsed)
     return validated.model_dump()
 
