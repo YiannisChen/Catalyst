@@ -30,7 +30,7 @@ _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "critic.md"
 class GradedChunk(BaseModel):
     chunk_id: str = Field(min_length=1)
     relevance: float = Field(ge=0.0, le=1.0)
-    category: Literal["earnings", "macro", "geopolitical", "sector", "technical", "regulatory"]
+    category: Literal["earnings", "macro", "geopolitical", "sector", "technical", "regulatory", "other"]
     temporal_match: bool
     reasoning: str = Field(min_length=1)
 
@@ -98,6 +98,11 @@ def _parse_critic_response(text: str) -> dict:
             parsed = parsed[0]
         else:
             raise ValueError("critic response list payload is invalid")
+    if isinstance(parsed, dict):
+        for chunk in parsed.get("graded_chunks", []) or []:
+            cat = str(chunk.get("category", "")).strip().lower()
+            if cat in {"", "none", "null"}:
+                chunk["category"] = "other"
     validated = CriticResponse.model_validate(parsed)
     return validated.model_dump()
 

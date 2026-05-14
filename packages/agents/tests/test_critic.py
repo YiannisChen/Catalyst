@@ -192,6 +192,18 @@ def test_parse_critic_response_accepts_single_item_list_wrapper():
     assert result["graded_chunks"][0]["chunk_id"] == "c1"
 
 
+def test_parse_critic_response_accepts_other_category():
+    payload = '{"graded_chunks":[{"chunk_id":"c1","relevance":0.8,"category":"other","temporal_match":true,"reasoning":"misc"}],"reasoning":"ok"}'
+    result = _parse_critic_response(payload)
+    assert result["graded_chunks"][0]["category"] == "other"
+
+
+def test_parse_critic_response_normalizes_none_to_other():
+    payload = '{"graded_chunks":[{"chunk_id":"c1","relevance":0.8,"category":"None","temporal_match":true,"reasoning":"misc"}],"reasoning":"ok"}'
+    result = _parse_critic_response(payload)
+    assert result["graded_chunks"][0]["category"] == "other"
+
+
 def test_relevance_threshold_value():
     """Threshold must be 0.5 per spec Section 4.3."""
     assert RELEVANCE_THRESHOLD == 0.5
