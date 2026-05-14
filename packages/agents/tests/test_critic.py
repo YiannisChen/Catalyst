@@ -329,6 +329,14 @@ def test_critic_one_chunk_relevant_is_partial_not_insufficient():
     assert result["critic_decision"].sufficiency == "partial"
 
 
+def test_critic_recoverable_payload_does_not_set_system_error():
+    payload = '[{"graded_chunks":[{"chunk_id":"c1","relevance":0.9,"category":"other","temporal_match":true,"reasoning":"ok"}],"reasoning":"wrapped"}]'
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    result = critic(state, llm=MockLLM(payload))
+    assert result["critic_decision"] is not None
+    assert result.get("error_type") is None
+
+
 def test_critic_retries_invoke_exception_then_succeeds(monkeypatch):
     sleeps = []
     monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)
