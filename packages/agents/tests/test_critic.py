@@ -16,7 +16,7 @@ from catalyst_agents.nodes.critic import (
     RELEVANCE_THRESHOLD,
 )
 from catalyst_agents.nodes.decision_router import decision_router
-from catalyst_agents.state import CriticDecision
+from catalyst_agents.state import AttributionState, CriticDecision
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +204,12 @@ def test_parse_critic_response_normalizes_none_to_other():
     assert result["graded_chunks"][0]["category"] == "other"
 
 
+def test_parse_critic_response_normalizes_unknown_category_to_other():
+    payload = '{"graded_chunks":[{"chunk_id":"c1","relevance":0.8,"category":"news","temporal_match":true,"reasoning":"misc"}],"reasoning":"ok"}'
+    result = _parse_critic_response(payload)
+    assert result["graded_chunks"][0]["category"] == "other"
+
+
 def test_parse_critic_response_accepts_direct_graded_chunks_list():
     payload = '[{"chunk_id":"c1","relevance":0.9,"category":"earnings","temporal_match":true,"reasoning":"ok"},{"chunk_id":"c2","relevance":0.8,"category":"None","temporal_match":true,"reasoning":"ok2"}]'
     result = _parse_critic_response(payload)
@@ -226,6 +232,10 @@ def test_relevance_threshold_value():
 # Critic node integration tests
 # ---------------------------------------------------------------------------
 
+def test_state_declares_all_graded_chunks_field():
+    assert "all_graded_chunks" in AttributionState.__annotations__
+
+
 def test_critic_filters_by_relevance():
     """Only chunks with relevance > 0.5 survive; c1=0.8 passes, c2=0.3 is dropped."""
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
@@ -246,6 +256,14 @@ def test_critic_returns_reasoning():
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     result = critic(state, llm=MockLLM(GOOD_LLM_RESPONSE))
     assert result["critic_reasoning"] == "Strong earnings evidence available"
+
+
+def test_critic_persists_all_graded_chunks():
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    result = critic(state, llm=MockLLM(GOOD_LLM_RESPONSE))
+    assert len(result["all_graded_chunks"]) == 2
+    ids = {c["chunk_id"] for c in result["all_graded_chunks"]}
+    assert {"c1", "c2"} <= ids
 
 
 def test_critic_tracks_cost():
@@ -348,6 +366,14 @@ def test_critic_recoverable_payload_does_not_set_system_error():
     result = critic(state, llm=MockLLM(payload))
     assert result["critic_decision"] is not None
     assert result.get("error_type") is None
+
+
+def test_critic_all_graded_empty_on_error(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    result = critic(state, llm=FlakyLLM(failures=3))
+    assert result["all_graded_chunks"] == []
 
 
 def test_critic_retries_invoke_exception_then_succeeds(monkeypatch):

@@ -25,6 +25,9 @@ K_SUFFICIENT = 3
 K_PARTIAL = 2
 M_THRESHOLD = 0.6
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "critic.md"
+_VALID_CATEGORIES = {
+    "earnings", "macro", "geopolitical", "sector", "technical", "regulatory", "other",
+}
 
 
 class GradedChunk(BaseModel):
@@ -114,7 +117,7 @@ def _parse_critic_response(text: str) -> dict:
     if isinstance(parsed, dict):
         for chunk in parsed.get("graded_chunks", []) or []:
             cat = str(chunk.get("category", "")).strip().lower()
-            if cat in {"", "none", "null"}:
+            if cat not in _VALID_CATEGORIES:
                 chunk["category"] = "other"
     validated = CriticResponse.model_validate(parsed)
     return validated.model_dump()
@@ -177,6 +180,7 @@ def critic(state: AttributionState, *, llm: Any = None) -> dict:
     if not chunks:
         return {
             "graded_evidence": [],
+            "all_graded_chunks": [],
             "critic_reasoning": "No chunks to grade.",
             "critic_decision": CriticDecision(
                 sufficiency="insufficient",
@@ -208,6 +212,7 @@ def critic(state: AttributionState, *, llm: Any = None) -> dict:
 
         return {
             "graded_evidence": filtered,
+            "all_graded_chunks": graded,
             "critic_reasoning": parsed.get("reasoning", ""),
             "critic_decision": decision,
             "cost_breakdown": state.get("cost_breakdown", []),
@@ -218,6 +223,7 @@ def critic(state: AttributionState, *, llm: Any = None) -> dict:
     except RuntimeError as exc:
         return {
             "graded_evidence": [],
+            "all_graded_chunks": [],
             "critic_reasoning": str(exc),
             "critic_decision": CriticDecision(
                 sufficiency="insufficient",

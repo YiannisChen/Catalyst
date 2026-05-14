@@ -55,6 +55,7 @@ class AttributionState(TypedDict):
     # Critic output
     # ------------------------------------------------------------------
     graded_evidence: list[dict]    # scored + category-tagged chunks
+    all_graded_chunks: list[dict]  # pre-filter graded chunks (for observability)
     critic_reasoning: str          # chain-of-thought logged to LangSmith
     critic_decision: CriticDecision | None
 

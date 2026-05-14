@@ -734,6 +734,16 @@ def main() -> int:
             "next_action": critic_decision.next_action if critic_decision else None,
             "magnitude_coverage": critic_decision.magnitude_coverage if critic_decision else None,
             "reasoning_preview": (result.get("critic_reasoning", "") or "")[:1200],
+            "all_graded_count": len(result.get("all_graded_chunks", [])),
+            "all_graded_scores": [
+                {
+                    "chunk_id": c.get("chunk_id", ""),
+                    "relevance": c.get("relevance", 0.0),
+                    "category": c.get("category", ""),
+                }
+                for c in result.get("all_graded_chunks", [])
+            ],
+            "below_threshold_count": max(0, len(result.get("all_graded_chunks", [])) - len(result.get("graded_evidence", []))),
         },
         "judge": {
             "output_status": _status_name(result.get("output_status")),

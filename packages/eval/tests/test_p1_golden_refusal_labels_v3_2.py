@@ -17,3 +17,15 @@ def test_g009_not_refusal_case():
     g009 = _load("g009")
     assert g009["should_refuse"] is False
     assert g009["expected_status"] == "SUFFICIENT"
+
+
+def test_g001_not_refusal_case():
+    row = _load("g001")
+    assert row["expected_status"] == "SUFFICIENT"
+    assert row["should_refuse"] is False
+
+
+def test_p1_coverage_gap_cases_tagged():
+    for cid in ("g015", "g046", "g049"):
+        row = _load(cid)
+        assert row.get("data_coverage_gap") is True
