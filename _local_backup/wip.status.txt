@@ -1,0 +1,74 @@
+ D data/traces/.gitkeep
+ D data/traces/019acafe4dc744e8b9628b51f8b13120.json
+ D data/traces/11e464a6c3e74fb7839d094038aa4be0.json
+ D data/traces/218bcc494b024649878573867c1f33fc.json
+ D data/traces/22c2b63875a245879e37cc0bd8706d83.json
+ D data/traces/2fa7de1f85bf4768956784b802f844fd.json
+ D data/traces/35559e6e8d264861a7f4eefef1f32d31.json
+ D data/traces/4021bc4e313d4e66b153ad495f9115f2.json
+ D data/traces/41016a5e3fdd491582129347beb95c76.json
+ D data/traces/4111a2a783fe49f086a01d44c627b62c.json
+ D data/traces/573de660eb9746dc9f95c71fb2bce065.json
+ D data/traces/6c873d2dcc544130881a6cb8d350da03.json
+ D data/traces/734138e59bd64ece865974213f417653.json
+ D data/traces/8325ee03fee4426c898dfb18c78ca823.json
+ D data/traces/9152296b601f4765b1506a6417322883.json
+ D data/traces/ba3a9c13db614a08be77df3f9a7fcd7a.json
+ D data/traces/bf4af07ee08845c79530b92269ca352c.json
+ D data/traces/c13f59a27a0f4eef9814dec86d48fec0.json
+ D data/traces/d33a6f67bc9d457e84e08348df82bb05.json
+ D data/traces/f27762f2779c4e97a9a926fb7498d2d3.json
+ D data/traces/f9dce92036684dbda684e425b9a5318c.json
+ D data/traces/rerun_1102bdd97d334eefbce52bf91475db0e.json
+ D data/traces/rerun_506ab34045c7473bbc5e07b3986fdaa6.json
+ D data/traces/rerun_5ebac41abade485fbf6e9bf60913396d.json
+ D data/traces/rerun_7bb54c4f5686406da1ec7b100911a7d5.json
+ D data/traces/rerun_85ae7baf75b14ad1890f3e2d2629c881.json
+ D data/traces/rerun_a0783012cbd54ad68933984f35075adc.json
+ D data/traces/rerun_b29c5427e8e54b198c682db1483d1b1d.json
+ D data/traces/rerun_e1b34b3c3a92445a9d1c9f7c4b267595.json
+ D data/traces/rerun_e6fb9ed9dd1c4187ba4da3b3bdf896b3.json
+ D data/traces/rerun_fc646e81180346dc94a72aee507acad1.json
+ M packages/eval/tests/test_cost_latency_contract_v3_2.py
+ M packages/eval/tests/test_h_refusal_case_lint_v3_2.py
+ M packages/eval/tests/test_langsmith_bridge_v3_2.py
+ M packages/eval/tests/test_p1_ablation_and_viz_v3_2.py
+ M packages/eval/tests/test_p1_ablation_resilience.py
+ M packages/eval/tests/test_p1_ablation_resume.py
+ M packages/eval/tests/test_p1_stats_balance_v3_2.py
+ M packages/eval/tests/test_p1_stats_real_v3_2.py
+ M packages/eval/tests/test_p1_trace_viz_v3_2.py
+ M packages/eval/tests/test_run_live_eval_cost_cap_v3_2.py
+ M packages/eval/tests/test_run_live_eval_scaffold_v3_2.py
+ M packages/eval/tests/test_schema_contract_nested_v3_2.py
+ M packages/eval/tests/test_trace_loader_v3_2.py
+ M packages/eval/tests/test_verify_model_lock_v3_2.py
+ M scripts/p1_ablation.py
+ M scripts/verify_model_lock.py
+?? _local_backup/
+?? data/.fuse_hidden0000001100000001
+?? data/.fuse_hidden0000001100000002
+?? data/.fuse_hidden0000001100000003
+?? data/.fuse_hidden0000001100000004
+?? data/.fuse_hidden0000001100000005
+?? data/.fuse_hidden0000001400000001
+?? data/LLM_Models.md
+?? data/LLM_Models_aihubmix_slim.md
+?? data/eval_reports/20260508_040401_g013_p1_trace.report.md
+?? data/eval_reports/20260508_040401_g013_p1_trace.summary.json
+?? data/eval_reports/20260508_040401_g013_p1_trace.trace.json
+?? data/eval_reports/freeze_header_20260508_022517.json
+?? data/eval_reports/frozen_db_v2_manifest_20260505_161630.json
+?? data/eval_reports/g013_retrieval_dump_deterministic_off.json
+?? data/eval_reports/g013_retrieval_human_readable.md
+?? data/eval_reports/g013_retrieval_nlp_cards.md
+?? data/eval_reports/p1_closure_20260508_101639/
+?? data/eval_reports/p1_freeze_audit_20260508_102439/
+?? data/eval_reports/preflight_20260510_040418.json
+?? data/eval_reports/stability_patch_evidence/
+?? data/eval_reports/task11_evidence_20260509_180323/
+?? docs/plans/2026-05-08-p1-1-scripts-design-v2.md
+?? docs/plans/2026-05-09-p1-1-scripts-design-v3-1.md
+?? docs/plans/2026-05-09-p1-1-scripts-design-v3-2.md
+?? docs/plans/2026-05-09-p1-1-scripts-design-v3.md
+?? packages/eval/golden_set/h_refusal_cases.json
