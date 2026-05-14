@@ -204,6 +204,12 @@ def test_parse_critic_response_normalizes_none_to_other():
     assert result["graded_chunks"][0]["category"] == "other"
 
 
+def test_parse_critic_response_rejects_multi_item_list():
+    payload = '[{"graded_chunks":[],"reasoning":"a"},{"graded_chunks":[],"reasoning":"b"}]'
+    with pytest.raises(ValueError, match="invalid"):
+        _parse_critic_response(payload)
+
+
 def test_relevance_threshold_value():
     """Threshold must be 0.5 per spec Section 4.3."""
     assert RELEVANCE_THRESHOLD == 0.5
