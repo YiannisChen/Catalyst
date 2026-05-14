@@ -94,8 +94,21 @@ def _parse_critic_response(text: str) -> dict:
         cleaned = "\n".join(inner_lines)
     parsed = json.loads(cleaned)
     if isinstance(parsed, list):
-        if len(parsed) == 1 and isinstance(parsed[0], dict):
+        if (
+            len(parsed) == 1
+            and isinstance(parsed[0], dict)
+            and "graded_chunks" in parsed[0]
+        ):
             parsed = parsed[0]
+        elif parsed and all(
+            isinstance(item, dict) and {"chunk_id", "relevance"}.issubset(item.keys())
+            for item in parsed
+        ):
+            # Some models return the graded_chunks array directly.
+            parsed = {
+                "graded_chunks": parsed,
+                "reasoning": "Auto-wrapped from graded_chunks list payload.",
+            }
         else:
             raise ValueError("critic response list payload is invalid")
     if isinstance(parsed, dict):

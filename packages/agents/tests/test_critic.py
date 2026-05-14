@@ -204,7 +204,14 @@ def test_parse_critic_response_normalizes_none_to_other():
     assert result["graded_chunks"][0]["category"] == "other"
 
 
-def test_parse_critic_response_rejects_multi_item_list():
+def test_parse_critic_response_accepts_direct_graded_chunks_list():
+    payload = '[{"chunk_id":"c1","relevance":0.9,"category":"earnings","temporal_match":true,"reasoning":"ok"},{"chunk_id":"c2","relevance":0.8,"category":"None","temporal_match":true,"reasoning":"ok2"}]'
+    result = _parse_critic_response(payload)
+    assert result["graded_chunks"][0]["chunk_id"] == "c1"
+    assert result["graded_chunks"][1]["category"] == "other"
+
+
+def test_parse_critic_response_rejects_multi_item_wrapper_list():
     payload = '[{"graded_chunks":[],"reasoning":"a"},{"graded_chunks":[],"reasoning":"b"}]'
     with pytest.raises(ValueError, match="invalid"):
         _parse_critic_response(payload)
