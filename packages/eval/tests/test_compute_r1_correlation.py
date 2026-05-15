@@ -24,3 +24,11 @@ def test_compute_metrics_returns_pearson_spearman_bucket():
     assert set(metrics) >= {"pearson", "spearman", "bucket_agreement"}
     assert metrics["pearson"] > 0
     assert metrics["spearman"] > 0
+
+
+def test_correlation_accepts_real_grader_schema():
+    metrics = compute_metrics(
+        catalyst_rows=[{"case_id": "g001", "chunk_id": "c1", "relevance": 0.8}],
+        external_rows=[{"case_id": "g001", "chunk_id": "c1", "relevance": 0.7, "model": "claude", "mode": "real"}],
+    )
+    assert metrics["aligned_pairs"] == 1
