@@ -34,13 +34,16 @@ $PY scripts/reports/run_r1_external_baseline.py \
   --mock --limit 3
 ```
 
-Cloud execution: `cloud real grading command placeholder`
+Cloud real run (requires API key in env):
 
 ```bash
-# placeholder: use cloud real grader implementation (not this local/mock script)
-# required input:  /root/Catalyst/data/eval_reports/r1_external/r1_input_chunks.jsonl
-# required output: /root/Catalyst/data/eval_reports/r1_external/r1_sonnet_grades.jsonl
-# required fields per row: case_id, chunk_id, relevance
+export AIHUBMIX_API_KEY=...
+$PY scripts/reports/run_r1_external_baseline.py \
+  --input /root/Catalyst/data/eval_reports/r1_external/r1_input_chunks.jsonl \
+  --output /root/Catalyst/data/eval_reports/r1_external/r1_sonnet_grades.jsonl \
+  --model claude-sonnet-4-20250514 \
+  --base-url https://aihubmix.com/v1 \
+  --real
 ```
 
 ## Experiment 2: Coverage-Gap Label Verify (12-case)
@@ -89,6 +92,16 @@ scp -P 23 root@117.50.223.51:/root/Catalyst/data/eval_reports/r1_external/r1_son
 
 scp -P 23 root@117.50.223.51:/root/Catalyst/docs/reports/2026-05-15-k-sensitivity-curve.md \
   /Users/yiannischen/Desktop/Catalyst/docs/reports/
+```
+
+Then compute local correlation:
+
+```bash
+/Users/yiannischen/Desktop/Catalyst/packages/data-core/.venv/bin/python \
+  /Users/yiannischen/Desktop/Catalyst/scripts/reports/compute_r1_correlation.py \
+  --catalyst-input /Users/yiannischen/Desktop/Catalyst/data/eval_reports/r1_external/r1_input_chunks.jsonl \
+  --external-input /Users/yiannischen/Desktop/Catalyst/data/eval_reports/r1_external/r1_sonnet_grades.jsonl \
+  --output-report /Users/yiannischen/Desktop/Catalyst/docs/reports/2026-05-16-r1-external-baseline-results.md
 ```
 
 ## Acceptance Thresholds

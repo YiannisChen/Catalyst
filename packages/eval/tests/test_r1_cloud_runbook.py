@@ -11,5 +11,12 @@ def test_r1_runbook_contains_cloud_experiment_semantics():
     assert "Do NOT run experiments on local machine" in text
     assert "p1_ablation.py" in text
     assert "run_r1_external_baseline.py local/mock only" in text
-    assert "cloud real grading command placeholder" in text
     assert "Pearson >= 0.65" in text
+
+
+def test_runbook_contains_concrete_real_exp1_command():
+    text = (PROJECT_ROOT / "docs/plans/2026-05-15-r1-cloud-execution-runbook.md").read_text(encoding="utf-8")
+    assert "--real" in text
+    assert "AIHUBMIX_API_KEY" in text
+    assert "r1_sonnet_grades.jsonl" in text
+    assert "cloud real grading command placeholder" not in text
