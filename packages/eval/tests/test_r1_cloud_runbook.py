@@ -11,7 +11,9 @@ def test_r1_runbook_contains_cloud_experiment_semantics():
     assert "Do NOT run experiments on local machine" in text
     assert "p1_ablation.py" in text
     assert "run_r1_external_baseline.py local/mock only" in text
-    assert "Pearson >= 0.65" in text
+    assert "Pearson >= 0.70" in text
+    assert "Spearman >= 0.70" in text
+    assert "Bucket agreement >= 0.80" in text
 
 
 def test_runbook_contains_concrete_real_exp1_command():

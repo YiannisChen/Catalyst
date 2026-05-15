@@ -106,9 +106,9 @@ Then compute local correlation:
 
 ## Acceptance Thresholds
 
-- Pearson >= 0.65
-- Spearman >= 0.65
-- Bucket agreement >= 0.75
+- Pearson >= 0.70
+- Spearman >= 0.70
+- Bucket agreement >= 0.80
 - Coverage-gap verify run: 12/12 INSUFFICIENT expected alignment
 - K sensitivity: K=2 local-optimum check documented
 
