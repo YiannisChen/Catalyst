@@ -1,7 +1,17 @@
 from pathlib import Path
 import json
 import sqlite3
-from scripts.reports.prepare_r1_external_chunks import build_rows
+
+import importlib.util
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+MODULE_PATH = PROJECT_ROOT / "scripts/reports/prepare_r1_external_chunks.py"
+SPEC = importlib.util.spec_from_file_location("prepare_r1_external_chunks", MODULE_PATH)
+MODULE = importlib.util.module_from_spec(SPEC)
+assert SPEC is not None and SPEC.loader is not None
+SPEC.loader.exec_module(MODULE)
+build_rows = MODULE.build_rows
+
 
 
 def test_build_rows_extracts_20_cases_with_chunk_text(tmp_path):
