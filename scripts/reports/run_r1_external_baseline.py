@@ -155,6 +155,17 @@ def _parse_relevance_from_response(text: str) -> float:
             if brace_match:
                 candidate = brace_match.group(1)
         if not candidate:
+            # 3) Last-resort: parse a numeric score from free-form text.
+            rel_match = re.search(r"(?i)relevance[^0-9]*([01](?:\.\d+)?)", text)
+            if rel_match:
+                score = float(rel_match.group(1))
+                if 0.0 <= score <= 1.0:
+                    return round(score, 6)
+            num_match = re.search(r"\b(?:0(?:\.\d+)?|1(?:\.0+)?)\b", text)
+            if num_match:
+                score = float(num_match.group(0))
+                if 0.0 <= score <= 1.0:
+                    return round(score, 6)
             raise ValueError("real grader response is not valid JSON") from exc
         try:
             data = json.loads(candidate)

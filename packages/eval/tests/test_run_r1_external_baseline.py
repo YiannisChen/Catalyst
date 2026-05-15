@@ -152,3 +152,9 @@ def test_parse_relevance_accepts_json_embedded_in_text():
     payload = 'Here is score: {"relevance": 0.44} thanks.'
     score = MODULE._parse_relevance_from_response(payload)
     assert score == 0.44
+
+
+def test_parse_relevance_accepts_freeform_numeric_fallback():
+    payload = "I estimate relevance around 0.27 given weak causal support."
+    score = MODULE._parse_relevance_from_response(payload)
+    assert score == 0.27
