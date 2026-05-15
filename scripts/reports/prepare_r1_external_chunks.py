@@ -79,28 +79,33 @@ def _resolve_chunk_text(
     conn: sqlite3.Connection,
     splitter: _SentenceSplitter,
     chunk_id: str,
-) -> tuple[str, bool]:
-    """Return (chunk_text, fallback_to_full_content)."""
+) -> tuple[str, bool, bool]:
+    """Return (chunk_text, fallback_to_full_content, missing_text)."""
     m = _L2_PAT.match(chunk_id)
     if not m:
-        content = _load_asset_content(conn, chunk_id) or ""
-        return content, False
+        content = _load_asset_content(conn, chunk_id)
+        if not content or not str(content).strip():
+            return "", True, True
+        return str(content), False, False
 
     base_asset_id = m.group("base")
     sentence_index = int(m.group("idx"))
 
     parent_content = _load_asset_content(conn, base_asset_id)
     if not parent_content:
-        return "", True
+        return "", True, True
 
     sentences = splitter.split(parent_content)
     # l2s0001 is 1-based index.
     if 1 <= sentence_index <= len(sentences):
         sentence = sentences[sentence_index - 1].strip()
         if sentence:
-            return sentence, False
+            return sentence, False, False
 
-    return parent_content, True
+    fallback_text = str(parent_content or "").strip()
+    if not fallback_text:
+        return "", True, True
+    return fallback_text, True, False
 
 
 def build_rows(summary_paths: list[Path], db_path: Path | str, case_ids: set[str], profile: str = "full") -> list[dict[str, Any]]:
@@ -126,7 +131,7 @@ def build_rows(summary_paths: list[Path], db_path: Path | str, case_ids: set[str
                 chunk_id = str(score.get("chunk_id", ""))
                 if not chunk_id:
                     continue
-                chunk_text, fallback = _resolve_chunk_text(conn=conn, splitter=splitter, chunk_id=chunk_id)
+                chunk_text, fallback, missing_text = _resolve_chunk_text(conn=conn, splitter=splitter, chunk_id=chunk_id)
                 chunks.append(
                     {
                         "chunk_id": chunk_id,
@@ -134,6 +139,7 @@ def build_rows(summary_paths: list[Path], db_path: Path | str, case_ids: set[str
                         "relevance": float(score.get("relevance", 0.0) or 0.0),
                         "category": str(score.get("category", "")),
                         "fallback_to_full_content": fallback,
+                        "missing_text": missing_text,
                     }
                 )
 
@@ -165,6 +171,11 @@ def main() -> int:
     parser.add_argument("--case-ids", required=True, help="Comma-separated case ids")
     parser.add_argument("--profile", default="full")
     parser.add_argument("--output", required=True)
+    parser.add_argument(
+        "--strict-empty-text",
+        action="store_true",
+        help="Exit non-zero when any chunk has missing/empty chunk_text.",
+    )
     args = parser.parse_args()
 
     summary_paths = _iter_summary_paths(
@@ -182,8 +193,21 @@ def main() -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + ("\n" if rows else ""), encoding="utf-8")
 
+    empty_count = sum(
+        1
+        for row in rows
+        for chunk in row.get("chunks", [])
+        if (not str(chunk.get("chunk_text", "")).strip()) or bool(chunk.get("missing_text"))
+    )
+
     print(f"[ok] output={out_path}")
     print(f"[ok] rows={len(rows)}")
+    print(f"[info] empty_or_missing_chunk_text={empty_count}")
+    if empty_count > 0:
+        print("[warn] detected empty/missing chunk_text rows; review fallback and source coverage.")
+        if args.strict_empty_text:
+            print("[fail] strict mode enabled and empty/missing chunk_text > 0")
+            return 2
     return 0
 
 

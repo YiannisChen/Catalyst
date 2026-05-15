@@ -33,3 +33,24 @@ def test_build_rows_extracts_20_cases_with_chunk_text(tmp_path):
     assert len(rows) == 1
     assert rows[0]["case_id"] == "g001"
     assert rows[0]["chunks"][0]["chunk_text"]
+
+
+def test_build_rows_marks_missing_text_and_fallback_when_db_content_missing(tmp_path):
+    summary_path = tmp_path / "g001.summary.json"
+    summary_path.write_text(json.dumps({
+        "case": {"id": "g001", "ticker": "TSLA", "trade_date": "2025-01-02", "price_move_pct": -6.08},
+        "critic": {"all_graded_scores": [{"chunk_id": "missing-asset::l2s0001", "relevance": 0.8, "category": "macro"}]},
+        "run": {"tag": "t"}
+    }), encoding="utf-8")
+
+    db_path = tmp_path / "mock.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE clean_assets (asset_id TEXT, content_md TEXT)")
+    conn.commit()
+    conn.close()
+
+    rows = build_rows(summary_paths=[summary_path], db_path=db_path, case_ids={"g001"})
+    assert len(rows) == 1
+    chunk = rows[0]["chunks"][0]
+    assert chunk["fallback_to_full_content"] is True
+    assert chunk["missing_text"] is True
