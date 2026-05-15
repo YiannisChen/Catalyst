@@ -29,3 +29,10 @@ def test_p1_coverage_gap_cases_tagged():
     for cid in ("g015", "g046", "g049"):
         row = _load(cid)
         assert row.get("data_coverage_gap") is True
+
+
+def test_coverage_gap_cases_are_insufficient():
+    for cid in ("g015", "g046", "g049"):
+        row = _load(cid)
+        assert row["expected_status"] == "INSUFFICIENT"
+        assert row["should_refuse"] is True
