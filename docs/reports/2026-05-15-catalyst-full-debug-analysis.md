@@ -81,7 +81,7 @@ Remediation phase: R0/R1/R2
 12. 问题: degraded/g049 SUFFICIENT→INSUFFICIENT（DATA_COVERAGE_GAP）
    证据: expected=SUFFICIENT, output=INSUFFICIENT; critic(all=8, below=8, top=0.2); retrieval(graded=0, reranked=8); judge(validation_error=None, grounding_rate_field=None)
    建议: 对标记 coverage_gap 的样本单独打分或补充来源，避免把数据空洞计入模型能力缺陷。
-13. 问题: degraded/g050 SUFFICIENT→INSUFFICIENT（ROUTER_PATH）
+13. 问题: degraded/g050 SUFFICIENT→INSUFFICIENT（MINER_COVERAGE）
    证据: expected=SUFFICIENT, output=INSUFFICIENT; critic(all=8, below=8, top=0.2); retrieval(graded=0, reranked=8); judge(validation_error=None, grounding_rate_field=None)
    建议: 对 critic=insufficient 但 top_relevance 较高样本增加一次 proceed 分支复核，比较误拒率变化。
 14. 问题: full/g023 SUFFICIENT→PARTIAL（CRITIC_GATE）
