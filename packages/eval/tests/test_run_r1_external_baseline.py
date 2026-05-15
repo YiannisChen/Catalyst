@@ -1,6 +1,7 @@
 from pathlib import Path
 import importlib.util
 import json
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = PROJECT_ROOT / "scripts/reports/run_r1_external_baseline.py"
@@ -127,3 +128,13 @@ def test_real_mode_with_stubbed_api_writes_expected_schema(tmp_path, monkeypatch
     row = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
     assert set(row.keys()) >= {"case_id", "chunk_id", "relevance", "model", "mode"}
     assert row["mode"] == "real"
+
+
+def test_parse_relevance_accepts_valid_json_score():
+    score = MODULE._parse_relevance_from_response('{"relevance": 0.73}')
+    assert score == 0.73
+
+
+def test_parse_relevance_rejects_invalid_payload():
+    with pytest.raises(ValueError):
+        MODULE._parse_relevance_from_response("not-json")

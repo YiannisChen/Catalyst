@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import os
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -81,7 +83,76 @@ def _grade_chunk_real(
     trade_date: str,
     price_move_pct: Any,
 ) -> float:
-    raise NotImplementedError("real grader API call is implemented in Task 3")
+    prompt = (
+        "You are grading retrieval evidence for a stock move explanation task.\n"
+        f"Ticker: {ticker}\n"
+        f"Trade date: {trade_date}\n"
+        f"Price move pct: {price_move_pct}\n"
+        f"Case id: {case_id}\n"
+        f"Chunk id: {chunk_id}\n"
+        "Task: score how relevant this chunk is for explaining the SPECIFIC price move above.\n"
+        "Do not score topical similarity; score explanatory relevance to the exact move.\n"
+        "Return STRICT JSON only with this schema: {\"relevance\": <float between 0 and 1>}.\n"
+        f"Chunk text:\n{chunk_text}"
+    )
+    payload = {
+        "model": model,
+        "max_tokens": 128,
+        "temperature": 0,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    req = urllib.request.Request(
+        f"{base_url.rstrip('/')}/messages",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"real grader HTTPError {exc.code}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(f"real grader URLError: {exc.reason}") from exc
+
+    response = json.loads(raw)
+    content = response.get("content")
+    text: str | None = None
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = str(item.get("text", "")).strip()
+                if text:
+                    break
+    if not text and isinstance(response.get("output_text"), str):
+        text = response["output_text"].strip()
+    if not text and isinstance(response.get("completion"), str):
+        text = response["completion"].strip()
+    if not text:
+        raise ValueError("real grader response missing text content")
+
+    return _parse_relevance_from_response(text)
+
+
+def _parse_relevance_from_response(text: str) -> float:
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("real grader response is not valid JSON") from exc
+
+    if not isinstance(data, dict) or "relevance" not in data:
+        raise ValueError("real grader JSON must contain `relevance`")
+    try:
+        score = float(data["relevance"])
+    except (TypeError, ValueError) as exc:
+        raise ValueError("relevance must be numeric") from exc
+    if not (0.0 <= score <= 1.0):
+        raise ValueError("relevance out of range [0,1]")
+    return round(score, 6)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -139,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
                         trade_date=str(row.get("trade_date", "")),
                         price_move_pct=row.get("price_move_pct", ""),
                     )
-                except NotImplementedError as exc:
+                except ValueError as exc:
                     print(f"[fail] {exc}")
                     return 8
                 out = {
