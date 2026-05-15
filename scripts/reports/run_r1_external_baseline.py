@@ -4,6 +4,8 @@ import argparse
 import hashlib
 import json
 import os
+import re
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -139,10 +141,25 @@ def _grade_chunk_real(
 
 
 def _parse_relevance_from_response(text: str) -> float:
+    # 1) Try strict JSON first.
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise ValueError("real grader response is not valid JSON") from exc
+        # 2) Fallback: extract JSON from markdown fences or mixed text.
+        candidate: str | None = None
+        fence_match = re.search(r"```(?:json)?\s*({.*?})\s*```", text, flags=re.S | re.I)
+        if fence_match:
+            candidate = fence_match.group(1)
+        else:
+            brace_match = re.search(r"({.*})", text, flags=re.S)
+            if brace_match:
+                candidate = brace_match.group(1)
+        if not candidate:
+            raise ValueError("real grader response is not valid JSON") from exc
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError as exc2:
+            raise ValueError("real grader response is not valid JSON") from exc2
 
     if not isinstance(data, dict) or "relevance" not in data:
         raise ValueError("real grader JSON must contain `relevance`")
@@ -164,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--real", action="store_true", help="Use cloud real grading mode.")
     parser.add_argument("--base-url", default="https://aihubmix.com/v1", help="Base URL for cloud real grader API.")
     parser.add_argument("--limit", type=int, default=0, help="Optional max number of output rows; 0 means all.")
+    parser.add_argument("--max-retries", type=int, default=1, help="Retries for each chunk in --real mode on parse/network failure.")
     args = parser.parse_args(argv)
 
     input_path = Path(args.input)
@@ -198,20 +216,29 @@ def main(argv: list[str] | None = None) -> int:
     with output_path.open("w", encoding="utf-8") as f:
         for row in rows:
             if args.real:
-                try:
-                    relevance = _grade_chunk_real(
-                        api_key=api_key,
-                        base_url=args.base_url,
-                        model=args.model,
-                        case_id=row["case_id"],
-                        chunk_id=row["chunk_id"],
-                        chunk_text=str(row.get("chunk_text", "")),
-                        ticker=str(row.get("ticker", "")),
-                        trade_date=str(row.get("trade_date", "")),
-                        price_move_pct=row.get("price_move_pct", ""),
-                    )
-                except ValueError as exc:
-                    print(f"[fail] {exc}")
+                relevance: float | None = None
+                last_error: ValueError | None = None
+                for attempt in range(args.max_retries + 1):
+                    try:
+                        relevance = _grade_chunk_real(
+                            api_key=api_key,
+                            base_url=args.base_url,
+                            model=args.model,
+                            case_id=row["case_id"],
+                            chunk_id=row["chunk_id"],
+                            chunk_text=str(row.get("chunk_text", "")),
+                            ticker=str(row.get("ticker", "")),
+                            trade_date=str(row.get("trade_date", "")),
+                            price_move_pct=row.get("price_move_pct", ""),
+                        )
+                        break
+                    except ValueError as exc:
+                        last_error = exc
+                        if attempt < args.max_retries:
+                            time.sleep(0.4)
+                            continue
+                if relevance is None:
+                    print(f"[fail] chunk_id={row['chunk_id']} error={last_error}")
                     return 8
                 out = {
                     "case_id": row["case_id"],

@@ -138,3 +138,17 @@ def test_parse_relevance_accepts_valid_json_score():
 def test_parse_relevance_rejects_invalid_payload():
     with pytest.raises(ValueError):
         MODULE._parse_relevance_from_response("not-json")
+
+
+def test_parse_relevance_accepts_json_in_markdown_fence():
+    payload = """```json
+{"relevance": 0.61}
+```"""
+    score = MODULE._parse_relevance_from_response(payload)
+    assert score == 0.61
+
+
+def test_parse_relevance_accepts_json_embedded_in_text():
+    payload = 'Here is score: {"relevance": 0.44} thanks.'
+    score = MODULE._parse_relevance_from_response(payload)
+    assert score == 0.44
