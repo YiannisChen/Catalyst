@@ -80,7 +80,7 @@ def test_non_mock_mode_fails_with_cloud_only_message(tmp_path, capsys):
 
     assert rc != 0
     message = (captured.out + captured.err).lower()
-    assert "cloud-only" in message or "real grading not implemented" in message
+    assert "choose one mode" in message
 
 
 def test_real_mode_requires_cloud_flag_and_key(tmp_path):
