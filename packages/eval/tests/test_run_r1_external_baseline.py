@@ -81,3 +81,49 @@ def test_non_mock_mode_fails_with_cloud_only_message(tmp_path, capsys):
     assert rc != 0
     message = (captured.out + captured.err).lower()
     assert "cloud-only" in message or "real grading not implemented" in message
+
+
+def test_real_mode_requires_cloud_flag_and_key(tmp_path):
+    input_path = tmp_path / "in.jsonl"
+    out = tmp_path / "out.jsonl"
+    _write_input(input_path)
+
+    rc = main([
+        "--input",
+        str(input_path),
+        "--output",
+        str(out),
+        "--model",
+        "claude-sonnet-4-20250514",
+    ])
+    assert rc != 0
+
+
+def test_real_mode_with_stubbed_api_writes_expected_schema(tmp_path, monkeypatch):
+    input_path = tmp_path / "in.jsonl"
+    out = tmp_path / "out.jsonl"
+    _write_input(input_path)
+
+    monkeypatch.setenv("AIHUBMIX_API_KEY", "fake")
+
+    def fake_grade_chunk_real(**kwargs):
+        return 0.73
+
+    monkeypatch.setattr(MODULE, "_grade_chunk_real", fake_grade_chunk_real, raising=False)
+
+    rc = main([
+        "--input",
+        str(input_path),
+        "--output",
+        str(out),
+        "--model",
+        "claude-sonnet-4-20250514",
+        "--real",
+        "--limit",
+        "1",
+    ])
+    assert rc == 0
+
+    row = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    assert set(row.keys()) >= {"case_id", "chunk_id", "relevance", "model", "mode"}
+    assert row["mode"] == "real"
