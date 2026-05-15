@@ -34,13 +34,12 @@ Remediation phase: R0/R1/R2
 
 | first_failure_point | count | share |
 |---|---:|---:|
+| CRITIC_GATE | 15 | 32.6% |
 | DATA_COVERAGE_GAP | 12 | 26.1% |
-| MINER_COVERAGE | 11 | 23.9% |
 | RETRIEVAL_RERANK | 8 | 17.4% |
 | GOLDEN_LABEL_AMBIGUITY | 7 | 15.2% |
-| CRITIC_GATE | 6 | 13.0% |
+| MINER_COVERAGE | 3 | 6.5% |
 | VALIDATOR_FINALIZER | 1 | 2.2% |
-| ROUTER_PATH | 1 | 2.2% |
 
 逐 case 证据链详见 `2026-05-15-catalyst-error-taxonomy.csv`。
 
