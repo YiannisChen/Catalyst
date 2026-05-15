@@ -24,13 +24,23 @@ Do NOT run experiments on local machine.
 
 Purpose: run external baseline grading on fixed 20-case input chunks.
 
-Template command:
+Local preflight (mock only): `run_r1_external_baseline.py local/mock only`
 
 ```bash
 $PY scripts/reports/run_r1_external_baseline.py \
-  --input /root/Catalyst/data/eval_reports/r1_external/r1_input_chunks.jsonl \
-  --output /root/Catalyst/data/eval_reports/r1_external/r1_sonnet_grades.jsonl \
-  --model claude-sonnet-4-20250514
+  --input /Users/yiannischen/Desktop/Catalyst/data/eval_reports/r1_external/r1_input_chunks.jsonl \
+  --output /Users/yiannischen/Desktop/Catalyst/data/eval_reports/r1_external/r1_sonnet_grades.mock.local.jsonl \
+  --model claude-sonnet-4-20250514 \
+  --mock --limit 3
+```
+
+Cloud execution: `cloud real grading command placeholder`
+
+```bash
+# placeholder: use cloud real grader implementation (not this local/mock script)
+# required input:  /root/Catalyst/data/eval_reports/r1_external/r1_input_chunks.jsonl
+# required output: /root/Catalyst/data/eval_reports/r1_external/r1_sonnet_grades.jsonl
+# required fields per row: case_id, chunk_id, relevance
 ```
 
 ## Experiment 2: Coverage-Gap Label Verify (12-case)
@@ -40,11 +50,17 @@ Purpose: verify coverage-gap relabel behavior on designated insufficient/refusal
 Template command:
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 $PY -m pytest \
-  /root/Catalyst/packages/eval/tests/test_p1_golden_refusal_labels_v3_2.py::test_coverage_gap_cases_are_insufficient -v
+RUN_TAG=r1_gap_verify_$(date +%Y%m%d_%H%M%S)
+$PY scripts/p1_ablation.py \
+  --golden-set /root/Catalyst/packages/eval/golden_set/v1_2_p1_set.jsonl \
+  --case-ids g015,g046,g049 \
+  --profiles full,no_rerank,no_vector,degraded \
+  --continue-on-error \
+  --tag ${RUN_TAG} \
+  --out-dir /root/Catalyst/data/eval_reports
 ```
 
-Acceptance: 12/12 INSUFFICIENT expectation alignment for cloud verification subset.
+Acceptance: 12/12 expected outputs are INSUFFICIENT across the 3 cases x 4 profiles, verified from ablation `summary` and `per_case` fields.
 
 ## Experiment 3: K-Sensitivity Consistency Check
 

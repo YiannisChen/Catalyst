@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input", required=True, help="Input r1_input_chunks.jsonl")
     parser.add_argument("--output", required=True, help="Output r1_sonnet_grades.jsonl")
     parser.add_argument("--model", required=True, help="Model label for output metadata")
-    parser.add_argument("--mock", action="store_true", default=True, help="Use deterministic mock grading (default).")
+    parser.add_argument("--mock", action="store_true", help="Use deterministic mock grading (local preflight only).")
     parser.add_argument("--limit", type=int, default=0, help="Optional max number of output rows; 0 means all.")
     args = parser.parse_args(argv)
 
@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if not args.mock:
-        print("[fail] non-mock mode is disabled for local runner; use --mock and run real grading on cloud only")
+        print("[fail] real grading not implemented in this script; cloud-only real grader required")
         return 3
 
     rows = _flatten_rows(_load_jsonl(input_path))

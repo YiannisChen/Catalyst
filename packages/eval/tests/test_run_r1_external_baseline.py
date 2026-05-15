@@ -61,3 +61,23 @@ def test_mock_output_is_deterministic_and_limit_applies(tmp_path):
     assert rows1[0]["case_id"] == "g001"
     assert rows1[0]["chunk_id"] == "asset-1::l2s0001"
     assert 0.0 <= float(rows1[0]["relevance"]) <= 1.0
+
+
+def test_non_mock_mode_fails_with_cloud_only_message(tmp_path, capsys):
+    input_path = tmp_path / "in.jsonl"
+    out = tmp_path / "out.jsonl"
+    _write_input(input_path)
+
+    rc = main([
+        "--input",
+        str(input_path),
+        "--output",
+        str(out),
+        "--model",
+        "real-sonnet",
+    ])
+    captured = capsys.readouterr()
+
+    assert rc != 0
+    message = (captured.out + captured.err).lower()
+    assert "cloud-only" in message or "real grading not implemented" in message
