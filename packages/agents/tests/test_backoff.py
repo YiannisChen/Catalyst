@@ -20,11 +20,14 @@ def test_safe_sleep_blocks_outside_event_loop():
     _safe_sleep(0)  # zero-duration sleep, just assert no exception
 
 
-@pytest.mark.asyncio
-async def test_safe_sleep_raises_inside_event_loop():
+def test_safe_sleep_raises_inside_event_loop():
     """Calling _safe_sleep from an async context must raise RuntimeError."""
-    with pytest.raises(RuntimeError, match="running asyncio event loop"):
-        _safe_sleep(0.01)
+
+    async def _inner():
+        with pytest.raises(RuntimeError, match="running asyncio event loop"):
+            _safe_sleep(0.01)
+
+    asyncio.run(_inner())
 
 
 # ---------------------------------------------------------------------------
@@ -100,3 +103,60 @@ def test_invoke_with_retries_parse_failure_retries(monkeypatch):
     resp, parsed = invoke_with_retries(llm, "p", parse_fn=flaky_parse)
     assert parsed == {"ok": True}
     assert llm.calls == 3  # invoked 3 times (first 2 parse fails, 3rd succeeds)
+
+
+def test_invoke_with_retries_parse_failure_appends_json_repair_hint(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", lambda _: None)
+
+    prompts: list[str] = []
+
+    class _LLM:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, prompt: str):
+            self.calls += 1
+            prompts.append(prompt)
+
+            class _Resp:
+                pass
+
+            r = _Resp()
+            r.content = '{"ok": true}'
+            return r
+
+    llm = _LLM()
+    parse_calls = 0
+
+    def flaky_parse(text: str) -> dict:
+        nonlocal parse_calls
+        parse_calls += 1
+        if parse_calls == 1:
+            raise ValueError("invalid json payload")
+        import json
+        return json.loads(text)
+
+    invoke_with_retries(llm, "BASE_PROMPT", parse_fn=flaky_parse, node_name="Critic")
+    assert llm.calls == 2
+    assert prompts[0] == "BASE_PROMPT"
+    assert "Return ONLY the JSON object" in prompts[1]
+
+
+def test_invoke_with_retries_connection_error_keeps_original_prompt(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", lambda _: None)
+    prompts: list[str] = []
+
+    class _LLM:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, prompt: str):
+            self.calls += 1
+            prompts.append(prompt)
+            raise ConnectionError("socket timeout")
+
+    llm = _LLM()
+    with pytest.raises(RuntimeError):
+        invoke_with_retries(llm, "BASE_PROMPT", parse_fn=lambda _: {"ok": True}, node_name="Critic")
+
+    assert all(p == "BASE_PROMPT" for p in prompts)
