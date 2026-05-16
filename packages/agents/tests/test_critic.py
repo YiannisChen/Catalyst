@@ -353,7 +353,7 @@ def test_critic_k3_marks_sufficient_with_three_high_relevance_chunks():
     assert result["critic_decision"].sufficiency == "sufficient"
 
 
-def test_critic_one_chunk_relevant_is_partial_not_insufficient():
+def test_critic_one_chunk_relevant_can_be_sufficient_when_high_confidence():
     payload = json.dumps({
         "graded_chunks": [
             {"chunk_id": "c1", "relevance": 0.9, "category": "earnings", "temporal_match": True, "reasoning": "single"},
@@ -362,7 +362,7 @@ def test_critic_one_chunk_relevant_is_partial_not_insufficient():
     })
     state = {**BASE_STATE, "reranked_chunks": [{"asset_id": "c1", "source_type": "polygon_news", "reference_date": "2026-01-15", "content_md": "a"}]}
     result = critic(state, llm=MockLLM(payload))
-    assert result["critic_decision"].sufficiency == "partial"
+    assert result["critic_decision"].sufficiency == "sufficient"
 
 
 def test_critic_recoverable_payload_does_not_set_system_error():

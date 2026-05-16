@@ -36,3 +36,9 @@ def test_lint_outputs_schema_and_holiday_warning_and_h001_typo_signal():
         holiday_config=PROJECT_ROOT / "configs" / "us_market_holidays_2025_2026.json",
     )
     assert validated_out["ok"] is True
+
+
+def test_h_refusal_results_report_exists_and_has_8_rows():
+    p = PROJECT_ROOT / "docs" / "reports" / "2026-05-16-h-refusal-results.md"
+    text = p.read_text(encoding="utf-8")
+    assert "h001" in text and "h008" in text

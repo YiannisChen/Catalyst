@@ -13,6 +13,14 @@ For each chunk, provide a JSON object with:
 - `category`: one of "earnings", "macro", "geopolitical", "sector", "technical", "regulatory"
 - `temporal_match`: boolean (does this chunk's timing align with the price move?)
 - `reasoning`: 1-2 sentence explanation of your grading
+- `event_specificity`: 0.0-1.0 (how directly this chunk mentions the move-driving event)
+- `temporal_alignment`: 0.0-1.0 (how tightly timing aligns with the target move date)
+- `evidence_granularity`: 0.0-1.0 (how concrete/actionable the evidence is for attribution)
+- `conflict_signal`: 0.0-1.0 (higher means stronger contradiction/noise vs target explanation)
+
+Rubric notes:
+- relevance should align with these sub-scores and the target price move context.
+- pure fundamentals table without event sentence should usually be <= 0.4 relevance.
 
 ## Output Format
 Return a JSON object:

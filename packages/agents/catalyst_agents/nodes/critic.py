@@ -36,6 +36,10 @@ class GradedChunk(BaseModel):
     category: Literal["earnings", "macro", "geopolitical", "sector", "technical", "regulatory", "other"]
     temporal_match: bool
     reasoning: str = Field(min_length=1)
+    event_specificity: float | None = Field(default=None, ge=0.0, le=1.0)
+    temporal_alignment: float | None = Field(default=None, ge=0.0, le=1.0)
+    evidence_granularity: float | None = Field(default=None, ge=0.0, le=1.0)
+    conflict_signal: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
 class CriticResponse(BaseModel):
@@ -133,9 +137,32 @@ def _compute_magnitude_coverage(filtered: list[dict]) -> float:
     return min(1.0, avg_relevance * count_factor)
 
 
+def _apply_temporal_penalty_and_filter(graded: list[dict]) -> list[dict]:
+    adjusted: list[dict] = []
+    for g in graded:
+        row = dict(g)
+        rel = float(row.get("relevance", 0.0) or 0.0)
+        row["original_relevance"] = rel
+        if row.get("temporal_match") is False:
+            rel = max(0.0, rel * 0.7)
+        row["relevance"] = rel
+        adjusted.append(row)
+    return [g for g in adjusted if g.get("relevance", 0.0) > RELEVANCE_THRESHOLD]
+
+
 def _build_critic_decision(filtered: list[dict], reasoning: str) -> CriticDecision:
     evidence_count = len(filtered)
     magnitude_coverage = _compute_magnitude_coverage(filtered)
+
+    if evidence_count == 1:
+        c0 = filtered[0]
+        if float(c0.get("relevance", 0.0) or 0.0) >= 0.8 and bool(c0.get("temporal_match", False)):
+            return CriticDecision(
+                sufficiency="sufficient",
+                next_action="proceed",
+                magnitude_coverage=magnitude_coverage,
+                reasoning=reasoning,
+            )
 
     if evidence_count >= K_SUFFICIENT and magnitude_coverage >= M_THRESHOLD:
         sufficiency = "sufficient"
@@ -206,8 +233,7 @@ def critic(state: AttributionState, *, llm: Any = None) -> dict:
         track_cost(state, "critic", response)
         graded = parsed.get("graded_chunks", [])
 
-        # Strict greater-than filter per spec Section 4.3
-        filtered = [g for g in graded if g.get("relevance", 0) > RELEVANCE_THRESHOLD]
+        filtered = _apply_temporal_penalty_and_filter(graded)
         decision = _build_critic_decision(filtered, parsed.get("reasoning", ""))
 
         return {
