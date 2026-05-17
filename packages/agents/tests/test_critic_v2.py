@@ -122,3 +122,9 @@ def test_critic_prompt_contains_claim_evidence_alignment_rule():
     text = Path("packages/agents/catalyst_agents/prompts/critic.md").read_text(encoding="utf-8")
     assert "specific causal claim in the query" in text
     assert "relevance <= 0.3" in text
+
+
+def test_critic_prompt_keeps_claim_evidence_alignment_rule():
+    text = Path("packages/agents/catalyst_agents/prompts/critic.md").read_text(encoding="utf-8")
+    assert "specific causal claim in the query" in text
+    assert "relevance <= 0.3" in text
