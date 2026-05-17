@@ -138,3 +138,9 @@ def test_decision_router_invalid_market_session_short_circuits_to_insufficient()
     result = decision_router(state)
     assert result["router_edge"] == "insufficient"
     assert result["router_reason"] == "market_session_guard"
+
+
+def test_decision_router_does_not_block_when_ticker_consistent_none():
+    state = {**_base_state(), "ticker_consistent": None}
+    result = decision_router(state)
+    assert result["router_edge"] == "judge"

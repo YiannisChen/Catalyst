@@ -88,9 +88,9 @@ def _extract_query_ticker(query_text: str | None, known_tickers: set[str]) -> st
     return None
 
 
-def _is_ticker_consistent(query_ticker_raw: str | None, resolved_ticker: str) -> bool:
+def _is_ticker_consistent(query_ticker_raw: str | None, resolved_ticker: str) -> bool | None:
     if query_ticker_raw is None:
-        return True
+        return None
     return query_ticker_raw == resolved_ticker
 
 

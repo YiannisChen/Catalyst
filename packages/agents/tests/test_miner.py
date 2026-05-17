@@ -310,3 +310,10 @@ def test_extract_query_ticker_returns_none_for_typo_not_in_whitelist():
     known = {"AAPL", "TSLA"}
     q = "APPL dropped 3% today"
     assert _extract_query_ticker(q, known) is None
+
+
+def test_ticker_consistent_none_when_query_has_no_ticker(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
+    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": "why did it drop?", "price_move_pct": None}
+    out = miner(state, table=None, embedding_fn=None, reranker=None)
+    assert out["ticker_consistent"] is None
