@@ -509,6 +509,12 @@ def test_insufficient_handler_no_llm_call():
     assert state["cost_breakdown"] == []
 
 
+def test_insufficient_handler_includes_router_guard_reason():
+    state = {"ticker": "AAPL", "trade_date": "2025-04-19", "router_reason": "market_session_guard"}
+    out = insufficient_handler(state)
+    assert "No trading session" in out["summary_md"]
+
+
 # ---------------------------------------------------------------------------
 # System error handler tests (BUG-005)
 # ---------------------------------------------------------------------------

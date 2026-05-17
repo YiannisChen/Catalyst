@@ -396,6 +396,12 @@ def insufficient_handler(state: AttributionState) -> dict:
     """
     ticker = state["ticker"]
     trade_date = state["trade_date"]
+    reason_map = {
+        "ticker_mismatch_guard": "Query ticker does not match resolved ticker.",
+        "market_session_guard": "No trading session on requested date for this ticker.",
+    }
+    guard_reason = reason_map.get(state.get("router_reason"))
+    reason_prefix = f"{guard_reason} " if guard_reason else ""
 
     return {
         "causes": [
@@ -408,7 +414,7 @@ def insufficient_handler(state: AttributionState) -> dict:
             }
         ],
         "summary_md": (
-            f"No evidence meeting the relevance threshold (>{RELEVANCE_THRESHOLD}) was found "
+            f"{reason_prefix}No evidence meeting the relevance threshold (>{RELEVANCE_THRESHOLD}) was found "
             f"for {ticker} on {trade_date}. This may indicate the price move was driven by "
             f"factors outside our data coverage (private information, market microstructure, "
             f"or sources we do not ingest)."
