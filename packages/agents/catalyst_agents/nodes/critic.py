@@ -7,6 +7,8 @@ Spec reference: Section 4.3 — Critic Node.
 from __future__ import annotations
 
 import json
+import re
+from functools import partial
 from pathlib import Path
 from typing import Any, Literal
 
@@ -80,26 +82,53 @@ def _format_chunks(chunks: list[dict]) -> str:
     return "\n\n---\n\n".join(parts)
 
 
-def _parse_critic_response(text: str) -> dict:
-    """Parse LLM JSON response, stripping optional Markdown fences.
+def _build_critic_prompt(ticker: str, price_move_pct: float | str, trade_date: str, chunks: list[dict]) -> str:
+    prompt_template = _load_prompt()
+    return prompt_template.format(
+        ticker=ticker,
+        price_move_pct=price_move_pct,
+        trade_date=trade_date,
+        chunks_formatted=_format_chunks(chunks),
+    )
 
-    Args:
-        text: Raw LLM output, optionally wrapped in ```json ... ``` or ``` ... ```.
 
-    Returns:
-        Schema-validated dict from the JSON payload.
+def _retry_prompt_fn(base_prompt: str, attempt: int) -> str:
+    marker = "## Evidence Chunks\n"
+    sep = "\n## Instructions\n"
+    if marker not in base_prompt or sep not in base_prompt:
+        return base_prompt
+    before_marker, after_marker = base_prompt.split(marker, 1)
+    chunk_block, tail = after_marker.split(sep, 1)
+    chunks = [c for c in chunk_block.split("\n\n---\n\n") if c.strip()]
+    k = 4 if attempt == 1 else 2
+    shrunk = "\n\n---\n\n".join(chunks[:k])
+    return f"{before_marker}{marker}{shrunk}{sep}{tail}"
 
-    Raises:
-        json.JSONDecodeError: If the content after fence stripping is not valid JSON.
-        pydantic.ValidationError: If parsed JSON does not match CriticResponse schema.
-    """
+
+def _retry_prompt_fn_factory(state: AttributionState, chunks: list[dict]):
+    base = _build_critic_prompt(
+        state["ticker"],
+        state.get("price_move_pct", "unknown"),
+        state["trade_date"],
+        chunks,
+    )
+
+    def _fn(_: str, attempt: int) -> str:
+        return _retry_prompt_fn(base, attempt)
+
+    return _fn
+
+
+def _strip_md_fence(text: str) -> str:
     cleaned = text.strip()
     if cleaned.startswith("```"):
         lines = cleaned.split("\n")
-        # Drop the opening fence line and any trailing closing fence
         inner_lines = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
         cleaned = "\n".join(inner_lines)
-    parsed = json.loads(cleaned)
+    return cleaned
+
+
+def _coerce_payload(parsed: Any) -> dict[str, Any]:
     if isinstance(parsed, list):
         if (
             len(parsed) == 1
@@ -111,20 +140,73 @@ def _parse_critic_response(text: str) -> dict:
             isinstance(item, dict) and {"chunk_id", "relevance"}.issubset(item.keys())
             for item in parsed
         ):
-            # Some models return the graded_chunks array directly.
             parsed = {
                 "graded_chunks": parsed,
                 "reasoning": "Auto-wrapped from graded_chunks list payload.",
             }
         else:
             raise ValueError("critic response list payload is invalid")
-    if isinstance(parsed, dict):
-        for chunk in parsed.get("graded_chunks", []) or []:
-            cat = str(chunk.get("category", "")).strip().lower()
-            if cat not in _VALID_CATEGORIES:
-                chunk["category"] = "other"
-    validated = CriticResponse.model_validate(parsed)
-    return validated.model_dump()
+    if not isinstance(parsed, dict):
+        raise ValueError("critic response payload must be object-like")
+    return parsed
+
+
+def _normalize_chunk_categories(payload: dict[str, Any]) -> dict[str, Any]:
+    for chunk in payload.get("graded_chunks", []) or []:
+        cat = str(chunk.get("category", "")).strip().lower()
+        if cat not in _VALID_CATEGORIES:
+            chunk["category"] = "other"
+    return payload
+
+
+def _salvage_graded_chunks_with_regex(cleaned: str) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for match in re.finditer(r"\{[^{}]*\}", cleaned, flags=re.DOTALL):
+        try:
+            obj = json.loads(match.group(0))
+        except Exception:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if not {"chunk_id", "relevance"}.issubset(obj.keys()):
+            continue
+        obj = _normalize_chunk_categories({"graded_chunks": [obj]}).get("graded_chunks", [obj])[0]
+        try:
+            gc = GradedChunk.model_validate(obj)
+        except Exception:
+            continue
+        out.append(gc.model_dump())
+    return out
+
+
+def _parse_critic_response(text: str, *, expected_chunk_count: int = 0) -> dict:
+    """Parse Critic response with strict-first and chunk-salvage fallback."""
+    cleaned = _strip_md_fence(text)
+    parse_mode = "strict"
+
+    try:
+        parsed = json.loads(cleaned)
+        payload = _coerce_payload(parsed)
+        payload = _normalize_chunk_categories(payload)
+        validated = CriticResponse.model_validate(payload).model_dump()
+    except Exception:
+        chunks = _salvage_graded_chunks_with_regex(cleaned)
+        if not chunks:
+            raise
+        parse_mode = "chunk_salvage"
+        validated = {
+            "graded_chunks": chunks,
+            "reasoning": "auto-salvaged from partial critic output",
+        }
+
+    actual = len(validated.get("graded_chunks", []))
+    validated["_parse_meta"] = {
+        "parse_mode": parse_mode,
+        "expected_chunk_count": expected_chunk_count,
+        "parsed_chunk_count": actual,
+        "degraded": bool(expected_chunk_count > 0 and actual < expected_chunk_count),
+    }
+    return validated
 
 
 def _compute_magnitude_coverage(filtered: list[dict]) -> float:
@@ -218,17 +300,20 @@ def critic(state: AttributionState, *, llm: Any = None) -> dict:
             "phase": Phase.CRITIC,
         }
 
-    prompt_template = _load_prompt()
-    prompt = prompt_template.format(
-        ticker=state["ticker"],
-        price_move_pct=state.get("price_move_pct", "unknown"),
-        trade_date=state["trade_date"],
-        chunks_formatted=_format_chunks(chunks),
+    prompt = _build_critic_prompt(
+        state["ticker"],
+        state.get("price_move_pct", "unknown"),
+        state["trade_date"],
+        chunks,
     )
 
     try:
         response, parsed = invoke_with_retries(
-            llm, prompt, parse_fn=_parse_critic_response, node_name="Critic",
+            llm,
+            prompt,
+            parse_fn=partial(_parse_critic_response, expected_chunk_count=len(chunks)),
+            node_name="Critic",
+            retry_prompt_fn=_retry_prompt_fn_factory(state, chunks),
         )
         track_cost(state, "critic", response)
         graded = parsed.get("graded_chunks", [])

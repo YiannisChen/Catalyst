@@ -160,3 +160,73 @@ def test_invoke_with_retries_connection_error_keeps_original_prompt(monkeypatch)
         invoke_with_retries(llm, "BASE_PROMPT", parse_fn=lambda _: {"ok": True}, node_name="Critic")
 
     assert all(p == "BASE_PROMPT" for p in prompts)
+
+
+def test_invoke_with_retries_uses_retry_prompt_fn(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", lambda _: None)
+    prompts: list[str] = []
+
+    class _LLM:
+        def invoke(self, prompt: str):
+            prompts.append(prompt)
+
+            class _Resp:
+                pass
+
+            r = _Resp()
+            r.content = '{"ok": true}'
+            return r
+
+    parse_calls = {"n": 0}
+
+    def flaky_parse(text: str) -> dict:
+        parse_calls["n"] += 1
+        if parse_calls["n"] == 1:
+            raise ValueError("invalid json")
+        import json
+        return json.loads(text)
+
+    def retry_prompt_fn(base_prompt: str, attempt: int) -> str:
+        return f"{base_prompt} // retry={attempt}"
+
+    invoke_with_retries(
+        _LLM(),
+        "BASE_PROMPT",
+        parse_fn=flaky_parse,
+        node_name="Critic",
+        retry_prompt_fn=retry_prompt_fn,
+    )
+    assert prompts == ["BASE_PROMPT", "BASE_PROMPT // retry=1"]
+
+
+def test_invoke_with_retries_without_retry_prompt_fn_keeps_old_behavior(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", lambda _: None)
+    prompts: list[str] = []
+
+    class _LLM:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, prompt: str):
+            self.calls += 1
+            prompts.append(prompt)
+
+            class _Resp:
+                pass
+
+            r = _Resp()
+            r.content = '{"ok": true}'
+            return r
+
+    parse_calls = {"n": 0}
+
+    def flaky_parse(text: str) -> dict:
+        parse_calls["n"] += 1
+        if parse_calls["n"] == 1:
+            raise ValueError("invalid json")
+        import json
+        return json.loads(text)
+
+    invoke_with_retries(_LLM(), "BASE_PROMPT", parse_fn=flaky_parse, node_name="Critic")
+    assert prompts[0] == "BASE_PROMPT"
+    assert "Return ONLY the JSON object" in prompts[1]

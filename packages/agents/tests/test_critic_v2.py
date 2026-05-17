@@ -70,3 +70,49 @@ def test_single_high_confidence_evidence_can_be_sufficient():
     filtered = [{"chunk_id": "c1", "relevance": 0.85, "temporal_match": True, "category": "sector"}]
     decision = _build_critic_decision(filtered, "ok")
     assert decision.sufficiency == "sufficient"
+
+
+def test_parse_critic_response_salvages_valid_chunks_from_truncated_payload():
+    truncated = (
+        '{"graded_chunks": ['
+        '{"chunk_id":"c1","relevance":0.9,"category":"sector","temporal_match":true,"reasoning":"ok"},'
+        '{"chunk_id":"c2","relevance":0.8,"category":"macro","temporal_match":true,"reasoning":"unterminated'
+    )
+    out = _parse_critic_response(truncated, expected_chunk_count=2)
+    assert len(out["graded_chunks"]) == 1
+    assert out["_parse_meta"]["parse_mode"] == "chunk_salvage"
+    assert out["_parse_meta"]["degraded"] is True
+
+
+def test_parse_critic_response_raises_when_nothing_salvageable():
+    import pytest
+
+    with pytest.raises(Exception):
+        _parse_critic_response("not-json-at-all", expected_chunk_count=3)
+
+
+def test_parse_meta_contains_expected_and_actual_counts():
+    payload = {
+        "graded_chunks": [
+            {"chunk_id": "c1", "relevance": 0.7, "category": "sector", "temporal_match": True, "reasoning": "ok"}
+        ],
+        "reasoning": "ok",
+    }
+    out = _parse_critic_response(json.dumps(payload), expected_chunk_count=4)
+    assert out["_parse_meta"]["expected_chunk_count"] == 4
+    assert out["_parse_meta"]["parsed_chunk_count"] == 1
+    assert out["_parse_meta"]["degraded"] is True
+
+
+def test_retry_prompt_fn_shrinks_chunks_by_attempt():
+    from catalyst_agents.nodes import critic as critic_mod
+
+    chunks = [
+        {"asset_id": f"c{i}", "content_md": "x", "source_type": "news", "reference_date": "2025-01-01"}
+        for i in range(1, 7)
+    ]
+    base = critic_mod._build_critic_prompt("TSLA", -3.2, "2025-01-03", chunks)
+    p1 = critic_mod._retry_prompt_fn(base, 1)
+    p2 = critic_mod._retry_prompt_fn(base, 2)
+    assert p1.count("### Chunk") <= 4
+    assert p2.count("### Chunk") <= 2

@@ -56,6 +56,7 @@ def invoke_with_retries(
     *,
     parse_fn: Callable[[str], dict],
     node_name: str = "node",
+    retry_prompt_fn: Callable[[str, int], str] | None = None,
 ) -> tuple[Any, dict]:
     """Invoke *llm* with retries, parsing the response on each attempt.
 
@@ -75,7 +76,9 @@ def invoke_with_retries(
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES):
         effective_prompt = prompt
-        if attempt > 0 and _is_jsonish_error(last_error):
+        if attempt > 0 and retry_prompt_fn is not None:
+            effective_prompt = retry_prompt_fn(prompt, attempt)
+        elif attempt > 0 and _is_jsonish_error(last_error):
             effective_prompt = prompt + _JSON_REPAIR_HINT
         try:
             response = llm.invoke(effective_prompt)
