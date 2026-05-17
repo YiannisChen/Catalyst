@@ -48,3 +48,18 @@ def test_loader_uses_validated_file_and_query_precedence():
         window_days=3,
     )
     assert state["query"] == "Why did NVDA move on 2025-10-29?"
+
+
+def test_trace_summary_contract_includes_guardrail_fields():
+    trace = load_script_module(str(TRACE_SCRIPT_PATH), "p1_trace_report_guardrails")
+    state = trace._build_initial_state(
+        {"ticker": "NVDA", "trade_date": "2025-10-29"},
+        query="Why did NVDA move on 2025-10-29?",
+        db_path=trace.DEFAULT_DB_PATH,
+        lancedb_dir=trace.DEFAULT_LANCEDB_DIR,
+        model="gemini-2.5-flash-nothink",
+        window_days=3,
+    )
+    assert "query_ticker_raw" in state
+    assert "ticker_consistent" in state
+    assert "market_session_valid" in state
