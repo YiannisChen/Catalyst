@@ -124,3 +124,17 @@ def test_decision_router_missing_decision_falls_back_to_insufficient():
 def test_route_after_decision_router_uses_router_edge():
     assert route_after_decision_router({"router_edge": "judge"}) == "judge"
     assert route_after_decision_router({}) == "insufficient"
+
+
+def test_decision_router_ticker_mismatch_short_circuits_to_insufficient():
+    state = {**_base_state(), "ticker_consistent": False}
+    result = decision_router(state)
+    assert result["router_edge"] == "insufficient"
+    assert result["router_reason"] == "ticker_mismatch_guard"
+
+
+def test_decision_router_invalid_market_session_short_circuits_to_insufficient():
+    state = {**_base_state(), "market_session_valid": False}
+    result = decision_router(state)
+    assert result["router_edge"] == "insufficient"
+    assert result["router_reason"] == "market_session_guard"

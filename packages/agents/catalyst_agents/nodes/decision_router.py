@@ -14,6 +14,18 @@ def decision_router(state: AttributionState) -> dict:
             "router_reason": "upstream_system_error",
             "phase": Phase.ROUTER,
         }
+    if state.get("ticker_consistent") is False:
+        return {
+            "router_edge": "insufficient",
+            "router_reason": "ticker_mismatch_guard",
+            "phase": Phase.ROUTER,
+        }
+    if state.get("market_session_valid") is False:
+        return {
+            "router_edge": "insufficient",
+            "router_reason": "market_session_guard",
+            "phase": Phase.ROUTER,
+        }
 
     decision = state.get("critic_decision")
     if decision is None:
