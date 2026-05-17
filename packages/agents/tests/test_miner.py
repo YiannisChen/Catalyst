@@ -258,3 +258,16 @@ def test_miner_uses_macro_layer_when_requested(monkeypatch):
     assert captured["layer"] == Layer.MACRO
     assert captured["ticker"] == "AAPL"
     assert len(result["retrieved_chunks"]) == 4
+
+
+def test_miner_sets_ticker_consistent_false_on_query_ticker_mismatch(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
+    state = {
+        "ticker": "AAPL",
+        "trade_date": "2026-01-15",
+        "query": "APPL dropped about 3% on June 12, 2025. Why?",
+        "price_move_pct": None,
+    }
+    out = miner(state, table=None, embedding_fn=None, reranker=None)
+    assert out["query_ticker_raw"] == "APPL"
+    assert out["ticker_consistent"] is False

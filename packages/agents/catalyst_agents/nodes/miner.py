@@ -7,6 +7,7 @@ Spec reference: Section 4.3 — Miner Node.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import re
 from typing import Any
 
 from catalyst_agents.retrieval.policy import Layer, RetrievalMetadata, retrieve
@@ -57,6 +58,19 @@ def _build_query(state: AttributionState) -> str:
     if nlp_query:  # truthy check — rejects None and ""
         return nlp_query
     return f"Why did {state['ticker']} move on {state['trade_date']}?"
+
+
+def _extract_query_ticker_raw(query: str | None) -> str | None:
+    if not query:
+        return None
+    match = re.search(r"\b[A-Z]{2,5}\b", query)
+    return match.group(0) if match else None
+
+
+def _is_ticker_consistent(query_ticker_raw: str | None, resolved_ticker: str) -> bool:
+    if query_ticker_raw is None:
+        return True
+    return query_ticker_raw == resolved_ticker
 
 
 def _resolve_layer(state: AttributionState) -> Layer:
@@ -142,6 +156,8 @@ def miner(
     from catalyst_data.storage.lancedb_store import _apply_reranker
 
     query = _build_query(state)
+    query_ticker_raw = _extract_query_ticker_raw(query)
+    ticker_consistent = _is_ticker_consistent(query_ticker_raw, state["ticker"])
     date_range = _compute_date_range(state["trade_date"])
     layer = _resolve_layer(state)
     metadata = _build_retrieval_metadata(
@@ -172,6 +188,8 @@ def miner(
         reranked = all_retrieved[:TOP_K_RERANKED]
 
     return {
+        "query_ticker_raw": query_ticker_raw,
+        "ticker_consistent": ticker_consistent,
         "retrieved_chunks": all_retrieved,
         "reranked_chunks": reranked,
         "retrieval_metadata": metadata,
