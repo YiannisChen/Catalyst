@@ -365,7 +365,7 @@ def _build_initial_state(
         "trade_date": case["trade_date"],
         "query": query,
         "price_move_pct": case.get("price_move_pct"),
-        "query_ticker_raw": None,
+        "query_ticker_raw": case.get("query_ticker_raw"),
         "ticker_consistent": None,
         "market_session_valid": None,
         "retrieved_chunks": [],

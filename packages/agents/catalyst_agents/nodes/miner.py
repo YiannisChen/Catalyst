@@ -216,7 +216,11 @@ def miner(
         "JPM",
         "MRNA",
     }
-    query_ticker_raw = _extract_query_ticker(query, known_tickers)
+    provided_raw = state.get("query_ticker_raw")
+    if provided_raw:
+        query_ticker_raw = str(provided_raw).upper()
+    else:
+        query_ticker_raw = _extract_query_ticker(query, known_tickers)
     ticker_consistent = _is_ticker_consistent(query_ticker_raw, state["ticker"])
     layer = _resolve_layer(state)
     db_path = _resolve_db_path(state)

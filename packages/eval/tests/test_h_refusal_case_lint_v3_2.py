@@ -60,3 +60,10 @@ def test_h_refusal_results_v2_report_exists_and_has_8_rows():
     text = p.read_text(encoding="utf-8")
     assert "h001" in text and "h008" in text
     assert "SYSTEM_ERROR" in text
+
+
+def test_h001_contains_explicit_query_ticker_raw():
+    p = PROJECT_ROOT / "packages" / "eval" / "golden_set" / "h_refusal_cases.validated.json"
+    rows = json.loads(p.read_text(encoding="utf-8"))
+    h001 = next(r for r in rows if r["id"] == "h001")
+    assert h001.get("query_ticker_raw") == "APPL"

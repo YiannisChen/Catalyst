@@ -10,7 +10,8 @@
     "should_refuse": true,
     "failure_criteria": "System normalizes APPL silently or returns attribution instead of explicit insufficiency/refusal.",
     "realism_note": "APPL is the single most common misspelling of AAPL — real users make this typo constantly. The system must not silently resolve it. Date is valid and AAPL has data on this date, so only the ticker mismatch should trigger refusal.",
-    "guardrail_target": "fact_verification"
+    "guardrail_target": "fact_verification",
+    "query_ticker_raw": "APPL"
   },
   {
     "id": "h002",
