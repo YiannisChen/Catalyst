@@ -271,3 +271,18 @@ def test_miner_sets_ticker_consistent_false_on_query_ticker_mismatch(monkeypatch
     out = miner(state, table=None, embedding_fn=None, reranker=None)
     assert out["query_ticker_raw"] == "APPL"
     assert out["ticker_consistent"] is False
+
+
+def test_miner_short_circuits_when_market_session_invalid(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner._has_ohlcv_session", lambda *args, **kwargs: False)
+    state = {
+        "ticker": "AAPL",
+        "trade_date": "2025-04-19",
+        "query": "AAPL down 2%",
+        "price_move_pct": None,
+        "retrieval_metadata": {"db_path": "/tmp/mock.db"},
+    }
+    out = miner(state, table=None, embedding_fn=None, reranker=None)
+    assert out["market_session_valid"] is False
+    assert out["retrieved_chunks"] == []
+    assert out["reranked_chunks"] == []

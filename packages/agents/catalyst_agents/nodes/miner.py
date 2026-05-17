@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import re
+import sqlite3
 from typing import Any
 
 from catalyst_agents.retrieval.policy import Layer, RetrievalMetadata, retrieve
@@ -101,6 +102,7 @@ def _build_retrieval_metadata(
         ticker=state["ticker"],
         trade_date=state["trade_date"],
         date_range=date_range,
+        db_path=None,
         table=table,
         embedding_fn=embedding_fn,
         top_k=TOP_K_RETRIEVAL,
@@ -119,6 +121,32 @@ def _merge_unique_chunks(*chunk_groups: list[dict]) -> list[dict]:
                 seen.add(asset_id)
             merged.append(chunk)
     return merged
+
+
+def _resolve_db_path(state: AttributionState) -> str | None:
+    existing = state.get("retrieval_metadata")
+    if isinstance(existing, RetrievalMetadata) and existing.db_path is not None:
+        return str(existing.db_path)
+    if isinstance(existing, dict):
+        db_path = existing.get("db_path")
+        if isinstance(db_path, str) and db_path:
+            return db_path
+    db_path = state.get("db_path")
+    return db_path if isinstance(db_path, str) and db_path else None
+
+
+def _has_ohlcv_session(ticker: str, trade_date: str, db_path: str | None) -> bool:
+    if not db_path:
+        return False
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM ohlcv WHERE symbol = ? AND date = ? LIMIT 1",
+            (ticker, trade_date),
+        ).fetchone()
+        return row is not None
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -158,8 +186,28 @@ def miner(
     query = _build_query(state)
     query_ticker_raw = _extract_query_ticker_raw(query)
     ticker_consistent = _is_ticker_consistent(query_ticker_raw, state["ticker"])
-    date_range = _compute_date_range(state["trade_date"])
     layer = _resolve_layer(state)
+    db_path = _resolve_db_path(state)
+    market_session_valid: bool | None
+    if db_path is None:
+        market_session_valid = None
+    else:
+        try:
+            market_session_valid = _has_ohlcv_session(state["ticker"], state["trade_date"], db_path)
+        except Exception:
+            market_session_valid = None
+
+    if market_session_valid is False:
+        return {
+            "query_ticker_raw": query_ticker_raw,
+            "ticker_consistent": ticker_consistent,
+            "market_session_valid": False,
+            "retrieved_chunks": [],
+            "reranked_chunks": [],
+            "current_layer": layer,
+        }
+
+    date_range = _compute_date_range(state["trade_date"])
     metadata = _build_retrieval_metadata(
         state,
         table=table,
@@ -190,6 +238,7 @@ def miner(
     return {
         "query_ticker_raw": query_ticker_raw,
         "ticker_consistent": ticker_consistent,
+        "market_session_valid": market_session_valid,
         "retrieved_chunks": all_retrieved,
         "reranked_chunks": reranked,
         "retrieval_metadata": metadata,
