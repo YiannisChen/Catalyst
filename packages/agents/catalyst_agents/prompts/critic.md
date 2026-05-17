@@ -14,6 +14,11 @@ For each chunk, provide a JSON object with:
 - `temporal_match`: boolean (does this chunk's timing align with the price move?)
 - `reasoning`: 1-2 sentence explanation of your grading
 
+Claim-Evidence Alignment Rule
+- Grade relevance against the specific causal claim in the query, not only ticker/date topicality.
+- If a claimed event does not appear in any evidence chunk, chunks that are only topically related must receive relevance <= 0.3.
+- If query ticker text conflicts with {ticker}, reduce relevance and explain mismatch.
+
 ## Grading Rubric
 - Event specificity: 0.0-1.0 (how directly the chunk mentions the move-driving event)
 - Temporal alignment: 0.0-1.0 (how tightly timing aligns with the target move date)

@@ -116,3 +116,9 @@ def test_retry_prompt_fn_shrinks_chunks_by_attempt():
     p2 = critic_mod._retry_prompt_fn(base, 2)
     assert p1.count("### Chunk") <= 4
     assert p2.count("### Chunk") <= 2
+
+
+def test_critic_prompt_contains_claim_evidence_alignment_rule():
+    text = Path("packages/agents/catalyst_agents/prompts/critic.md").read_text(encoding="utf-8")
+    assert "specific causal claim in the query" in text
+    assert "relevance <= 0.3" in text
