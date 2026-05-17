@@ -63,3 +63,4 @@ def test_trace_summary_contract_includes_guardrail_fields():
     assert "query_ticker_raw" in state
     assert "ticker_consistent" in state
     assert "market_session_valid" in state
+    assert "magnitude_plausible" in state

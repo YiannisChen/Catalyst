@@ -368,6 +368,7 @@ def _build_initial_state(
         "query_ticker_raw": case.get("query_ticker_raw"),
         "ticker_consistent": None,
         "market_session_valid": None,
+        "magnitude_plausible": None,
         "retrieved_chunks": [],
         "reranked_chunks": [],
         "graded_evidence": [],
@@ -723,6 +724,7 @@ def main() -> int:
             "query_ticker_raw": result.get("query_ticker_raw"),
             "ticker_consistent": result.get("ticker_consistent"),
             "market_session_valid": result.get("market_session_valid"),
+            "magnitude_plausible": result.get("magnitude_plausible"),
         },
         "case": case,
         "database": db_stats,
@@ -753,6 +755,7 @@ def main() -> int:
             "query_ticker_raw": result.get("query_ticker_raw"),
             "ticker_consistent": result.get("ticker_consistent"),
             "market_session_valid": result.get("market_session_valid"),
+            "magnitude_plausible": result.get("magnitude_plausible"),
         },
         "judge": {
             "output_status": _status_name(result.get("output_status")),
