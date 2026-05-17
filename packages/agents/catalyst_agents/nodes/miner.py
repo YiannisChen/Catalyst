@@ -61,11 +61,31 @@ def _build_query(state: AttributionState) -> str:
     return f"Why did {state['ticker']} move on {state['trade_date']}?"
 
 
-def _extract_query_ticker_raw(query: str | None) -> str | None:
-    if not query:
+def _extract_query_ticker(query_text: str | None, known_tickers: set[str]) -> str | None:
+    if not query_text:
         return None
-    match = re.search(r"\b[A-Z]{2,5}\b", query)
-    return match.group(0) if match else None
+    ticker_alias = {
+        "APPLE": "AAPL",
+        "MICROSOFT": "MSFT",
+        "TESLA": "TSLA",
+        "GOOGLE": "GOOGL",
+        "ALPHABET": "GOOGL",
+        "NVIDIA": "NVDA",
+        "META": "META",
+        "AMAZON": "AMZN",
+        "JPMORGAN": "JPM",
+    }
+    tokens = re.findall(r"\b[A-Za-z]{1,12}\b", query_text)
+    upper_tokens = [t.upper() for t in tokens]
+
+    for token in upper_tokens:
+        if token in known_tickers:
+            return token
+    for token in upper_tokens:
+        mapped = ticker_alias.get(token)
+        if mapped and mapped in known_tickers:
+            return mapped
+    return None
 
 
 def _is_ticker_consistent(query_ticker_raw: str | None, resolved_ticker: str) -> bool:
@@ -184,7 +204,19 @@ def miner(
     from catalyst_data.storage.lancedb_store import _apply_reranker
 
     query = _build_query(state)
-    query_ticker_raw = _extract_query_ticker_raw(query)
+    known_tickers = {
+        state["ticker"],
+        "AAPL",
+        "MSFT",
+        "TSLA",
+        "GOOGL",
+        "NVDA",
+        "META",
+        "AMZN",
+        "JPM",
+        "MRNA",
+    }
+    query_ticker_raw = _extract_query_ticker(query, known_tickers)
     ticker_consistent = _is_ticker_consistent(query_ticker_raw, state["ticker"])
     layer = _resolve_layer(state)
     db_path = _resolve_db_path(state)

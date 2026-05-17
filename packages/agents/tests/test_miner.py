@@ -265,11 +265,11 @@ def test_miner_sets_ticker_consistent_false_on_query_ticker_mismatch(monkeypatch
     state = {
         "ticker": "AAPL",
         "trade_date": "2026-01-15",
-        "query": "APPL dropped about 3% on June 12, 2025. Why?",
+        "query": "TSLA dropped about 3% on June 12, 2025. Why?",
         "price_move_pct": None,
     }
     out = miner(state, table=None, embedding_fn=None, reranker=None)
-    assert out["query_ticker_raw"] == "APPL"
+    assert out["query_ticker_raw"] == "TSLA"
     assert out["ticker_consistent"] is False
 
 
@@ -286,3 +286,27 @@ def test_miner_short_circuits_when_market_session_invalid(monkeypatch):
     assert out["market_session_valid"] is False
     assert out["retrieved_chunks"] == []
     assert out["reranked_chunks"] == []
+
+
+def test_extract_query_ticker_uses_known_ticker_not_acronym():
+    from catalyst_agents.nodes.miner import _extract_query_ticker
+
+    known = {"AAPL", "MSFT", "TSLA", "MRNA"}
+    q = "On March 18, 2025, Microsoft CEO resigned unexpectedly"
+    assert _extract_query_ticker(q, known) == "MSFT"
+
+
+def test_extract_query_ticker_ignores_fda_and_keeps_symbol():
+    from catalyst_agents.nodes.miner import _extract_query_ticker
+
+    known = {"MRNA", "AAPL"}
+    q = "FDA approved MRNA vaccine update"
+    assert _extract_query_ticker(q, known) == "MRNA"
+
+
+def test_extract_query_ticker_returns_none_for_typo_not_in_whitelist():
+    from catalyst_agents.nodes.miner import _extract_query_ticker
+
+    known = {"AAPL", "TSLA"}
+    q = "APPL dropped 3% today"
+    assert _extract_query_ticker(q, known) is None
