@@ -515,6 +515,12 @@ def test_insufficient_handler_includes_router_guard_reason():
     assert "No trading session" in out["summary_md"]
 
 
+def test_insufficient_handler_includes_magnitude_guard_reason():
+    state = {"ticker": "TSLA", "trade_date": "2025-10-22", "router_reason": "magnitude_guard"}
+    out = insufficient_handler(state)
+    assert "Claimed price move is inconsistent with OHLCV data" in out["summary_md"]
+
+
 # ---------------------------------------------------------------------------
 # System error handler tests (BUG-005)
 # ---------------------------------------------------------------------------

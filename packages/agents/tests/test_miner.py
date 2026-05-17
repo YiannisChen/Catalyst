@@ -317,3 +317,15 @@ def test_ticker_consistent_none_when_query_has_no_ticker(monkeypatch):
     state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": "why did it drop?", "price_move_pct": None}
     out = miner(state, table=None, embedding_fn=None, reranker=None)
     assert out["ticker_consistent"] is None
+
+
+def test_check_magnitude_plausible_extreme():
+    from catalyst_agents.nodes.miner import _check_magnitude_plausible
+
+    assert _check_magnitude_plausible(actual_pct=1.5, claimed_pct=34.0, tolerance=10.0) is False
+
+
+def test_check_magnitude_plausible_normal():
+    from catalyst_agents.nodes.miner import _check_magnitude_plausible
+
+    assert _check_magnitude_plausible(actual_pct=2.8, claimed_pct=3.2, tolerance=10.0) is True

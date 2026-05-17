@@ -47,6 +47,7 @@ class AttributionState(TypedDict):
     query_ticker_raw: str | None
     ticker_consistent: bool | None
     market_session_valid: bool | None
+    magnitude_plausible: bool | None
 
     # ------------------------------------------------------------------
     # Miner output

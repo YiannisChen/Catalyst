@@ -399,6 +399,7 @@ def insufficient_handler(state: AttributionState) -> dict:
     reason_map = {
         "ticker_mismatch_guard": "Query ticker does not match resolved ticker.",
         "market_session_guard": "No trading session on requested date for this ticker.",
+        "magnitude_guard": "Claimed price move is inconsistent with OHLCV data.",
     }
     guard_reason = reason_map.get(state.get("router_reason"))
     reason_prefix = f"{guard_reason} " if guard_reason else ""

@@ -169,6 +169,36 @@ def _has_ohlcv_session(ticker: str, trade_date: str, db_path: str | None) -> boo
         conn.close()
 
 
+def _extract_query_claimed_pct(query_text: str | None) -> float | None:
+    if not query_text:
+        return None
+    match = re.search(r"(-?\d+(?:\.\d+)?)\s*%", query_text)
+    return float(match.group(1)) if match else None
+
+
+def _check_magnitude_plausible(actual_pct: float, claimed_pct: float, tolerance: float = 10.0) -> bool:
+    return abs(claimed_pct - actual_pct) <= tolerance
+
+
+def _get_ohlcv_move_pct(ticker: str, trade_date: str, db_path: str | None) -> float | None:
+    if not db_path:
+        return None
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT open, close FROM ohlcv WHERE symbol = ? AND date = ? LIMIT 1",
+            (ticker, trade_date),
+        ).fetchone()
+        if not row:
+            return None
+        open_px, close_px = row
+        if open_px in (None, 0) or close_px is None:
+            return None
+        return ((float(close_px) - float(open_px)) / float(open_px)) * 100.0
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Public node
 # ---------------------------------------------------------------------------
@@ -224,6 +254,7 @@ def miner(
     ticker_consistent = _is_ticker_consistent(query_ticker_raw, state["ticker"])
     layer = _resolve_layer(state)
     db_path = _resolve_db_path(state)
+    claimed_pct = _extract_query_claimed_pct(query)
     market_session_valid: bool | None
     if db_path is None:
         market_session_valid = None
@@ -232,12 +263,21 @@ def miner(
             market_session_valid = _has_ohlcv_session(state["ticker"], state["trade_date"], db_path)
         except Exception:
             market_session_valid = None
+    magnitude_plausible: bool | None = None
+    if claimed_pct is not None and db_path is not None:
+        try:
+            actual_pct = _get_ohlcv_move_pct(state["ticker"], state["trade_date"], db_path)
+            if actual_pct is not None:
+                magnitude_plausible = _check_magnitude_plausible(actual_pct=actual_pct, claimed_pct=claimed_pct)
+        except Exception:
+            magnitude_plausible = None
 
     if market_session_valid is False:
         return {
             "query_ticker_raw": query_ticker_raw,
             "ticker_consistent": ticker_consistent,
             "market_session_valid": False,
+            "magnitude_plausible": magnitude_plausible,
             "retrieved_chunks": [],
             "reranked_chunks": [],
             "current_layer": layer,
@@ -275,6 +315,7 @@ def miner(
         "query_ticker_raw": query_ticker_raw,
         "ticker_consistent": ticker_consistent,
         "market_session_valid": market_session_valid,
+        "magnitude_plausible": magnitude_plausible,
         "retrieved_chunks": all_retrieved,
         "reranked_chunks": reranked,
         "retrieval_metadata": metadata,

@@ -26,6 +26,12 @@ def decision_router(state: AttributionState) -> dict:
             "router_reason": "market_session_guard",
             "phase": Phase.ROUTER,
         }
+    if state.get("magnitude_plausible") is False:
+        return {
+            "router_edge": "insufficient",
+            "router_reason": "magnitude_guard",
+            "phase": Phase.ROUTER,
+        }
 
     decision = state.get("critic_decision")
     if decision is None:

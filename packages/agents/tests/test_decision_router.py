@@ -144,3 +144,10 @@ def test_decision_router_does_not_block_when_ticker_consistent_none():
     state = {**_base_state(), "ticker_consistent": None}
     result = decision_router(state)
     assert result["router_edge"] == "judge"
+
+
+def test_decision_router_magnitude_guard_routes_insufficient():
+    state = {**_base_state(), "magnitude_plausible": False}
+    result = decision_router(state)
+    assert result["router_edge"] == "insufficient"
+    assert result["router_reason"] == "magnitude_guard"
