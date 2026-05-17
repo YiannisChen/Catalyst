@@ -44,6 +44,9 @@ class AttributionState(TypedDict):
     trade_date: str
     query: str | None          # None for candle-click, string for NLP entry
     price_move_pct: float | None
+    query_ticker_raw: str | None
+    ticker_consistent: bool | None
+    market_session_valid: bool | None
 
     # ------------------------------------------------------------------
     # Miner output
