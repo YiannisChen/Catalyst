@@ -21,20 +21,21 @@ Result: PASS
 - No placeholder sweep commands remain.
 - Includes tier0/tier1/tier2 compare outputs, stability replay, and bundle generation commands.
 
-## Step 4: Real-input smoke check (attribution-v2)
+## Step 4: Real-input smoke check (attribution-v2 strict)
 Commands:
-1. Convert real Catalyst ablation `per_case` to JSONL:
-   - `.../final_rerun_20260517_131820_g2_risky_rerun_p1_ablation.json -> .../catalyst_mt04_per_unit.jsonl`
-2. Run:
-   - `python scripts/reports/compute_attribution_metrics_v2.py --catalyst-json .../catalyst_mt04_per_unit.jsonl --direct-json .../direct_llm_dsv4_frozen_per_unit.run1.jsonl --output-json .../attribution_metrics_v2_smoke.json`
+1. Build strict smoke inputs from real artifacts:
+   - `catalyst_attribution_smoke.jsonl` (row points to real `summary_json`)
+   - `direct_attribution_smoke.jsonl` (row copied from real direct run JSONL)
+2. Run strict mode (no fallback flag):
+   - `python scripts/reports/compute_attribution_metrics_v2.py --catalyst-json .../catalyst_attribution_smoke.jsonl --direct-json .../direct_attribution_smoke.jsonl --output-json .../attribution_metrics_v2_smoke_strict.json`
 
 Observed output:
-- `[warn] attribution-v2 fallback mode activated: missing required attribution fields`
-- `[ok] compute_mode=legacy_fallback`
+- `[ok] compute_mode=real_schema`
 
 Hotfix applied:
-- `compute_attribution_metrics_v2.py` now emits explicit `compute_mode` and warning when fallback is used, so fallback is no longer silent.
+- `compute_attribution_metrics_v2.py` defaults to strict real-schema mode.
+- Legacy fallback now requires explicit `--allow-legacy-fallback`; otherwise command fails non-zero.
 
 ## Residual Risks
-- Real artifacts still miss attribution gold fields for full `real_schema` mode; current smoke shows `legacy_fallback` (explicitly surfaced).
-- Cloud run should supply/derive gold attribution fields or pass curated attribution-ready rows to avoid fallback metrics inflation.
+- Full-cohort real-schema attribution requires all rows to carry parseable attribution spans/fields.
+- Batch is intentionally strict and will fail fast when those fields are absent.

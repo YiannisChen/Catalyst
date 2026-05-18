@@ -17,3 +17,4 @@ def test_batch_script_generates_stability_before_bundle():
     assert "CATALYST_M_THRESHOLD=0.40" in text and "p1_ablation.py" in text
     assert "CATALYST_M_THRESHOLD=0.45" in text
     assert "CATALYST_M_THRESHOLD=0.60" in text
+    assert "--allow-legacy-fallback" not in text
