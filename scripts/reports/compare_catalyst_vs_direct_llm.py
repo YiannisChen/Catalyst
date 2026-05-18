@@ -235,6 +235,25 @@ def main() -> int:
         "delta": deltas,
         "delta_definition": "Catalyst - DirectLLM; rate metrics are percentage points",
     }
+    result["error_taxonomy"] = {
+        "catalyst_system_error": catalyst_metrics.get("system_error_count", 0),
+        "direct_system_error": direct_metrics.get("system_error_count", 0),
+    }
+    profile_breakdown: dict[str, dict[str, Any]] = {}
+    for profile in sorted({p for _, p in keys}):
+        pkeys = [k for k in keys if k[1] == profile]
+        c_rows = [catalyst_map[k] for k in pkeys]
+        d_rows = [direct_map[k] for k in pkeys]
+        profile_breakdown[profile] = {
+            "n": len(pkeys),
+            "catalyst_status_accuracy": _compute_metrics(c_rows, has_refusal_flag=False, has_grounding=True)["status_accuracy"],
+            "direct_status_accuracy": _compute_metrics(d_rows, has_refusal_flag=True, has_grounding=False)["status_accuracy"],
+        }
+    result["profile_breakdown"] = profile_breakdown
+    result["fairness_notes"] = [
+        "Identical (case_id, profile) universe enforced between Catalyst and Direct baseline.",
+        "Direct prompt excludes expected label to avoid leakage.",
+    ]
 
     out_json.parent.mkdir(parents=True, exist_ok=True)
     out_json.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
