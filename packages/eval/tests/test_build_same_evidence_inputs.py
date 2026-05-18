@@ -44,6 +44,7 @@ def test_build_same_evidence_reads_summary_paths_and_extracts_reranked_chunks(tm
     rows, meta = mod.build_same_evidence_inputs(manifest_path=manifest, repo_root=tmp_path)
     assert rows[0]["case_id"] == "g001"
     assert rows[0]["evidence_chunks_count"] > 0
+    assert meta["tier2_eligible_n"] > 0
 
 
 def test_build_same_evidence_excludes_cases_with_no_reranked_chunks(tmp_path: Path):
