@@ -1,6 +1,7 @@
 """Validator node — enforce output grounding and schema checks before finalization."""
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from typing import Any
 
@@ -12,6 +13,16 @@ from catalyst_agents.nodes.critic import M_THRESHOLD
 from catalyst_agents.nodes.judge import _parse_judge_response
 from catalyst_agents.nodes.miner import DATE_WINDOW_DAYS, _compute_date_range
 from catalyst_agents.state import AttributionState, OutputStatus, Phase
+
+
+def _effective_m_threshold(default: float = M_THRESHOLD) -> float:
+    raw = os.getenv("CATALYST_M_THRESHOLD")
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 class ValidatedCause(BaseModel):
@@ -85,7 +96,7 @@ def _validation_failure(state: AttributionState) -> str | None:
         return "schema_invalid"
 
     decision = state.get("critic_decision")
-    if decision and _status_from_state(state) == OutputStatus.SUFFICIENT and decision.magnitude_coverage < M_THRESHOLD:
+    if decision and _status_from_state(state) == OutputStatus.SUFFICIENT and decision.magnitude_coverage < _effective_m_threshold():
         return "magnitude_sanity_failed"
 
     return None

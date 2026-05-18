@@ -25,7 +25,7 @@ from catalyst_agents.backoff import invoke_with_retries, MAX_RETRIES
 RELEVANCE_THRESHOLD = 0.5
 K_SUFFICIENT = 2
 K_PARTIAL = 2
-M_THRESHOLD = 0.6
+M_THRESHOLD = 0.45
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "critic.md"
 _VALID_CATEGORIES = {
     "earnings", "macro", "geopolitical", "sector", "technical", "regulatory", "other",
