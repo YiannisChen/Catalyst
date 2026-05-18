@@ -73,12 +73,71 @@ def _compute(rows: list[dict]) -> dict:
     return {"category_f1": _avg(f1s), "cause_semantic_sim": _avg(sims)}
 
 
+def _as_set(value: object) -> set[str]:
+    if isinstance(value, list):
+        return {str(x).strip().lower() for x in value if str(x).strip()}
+    return set()
+
+
+def _as_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(x) for x in value if str(x).strip()]
+    return []
+
+
+def _adapt_catalyst_row(row: dict) -> tuple[set[str], list[str], set[str], list[str]]:
+    pred_categories = _as_set(row.get("pred_categories"))
+    pred_causes = _as_list(row.get("pred_causes"))
+    if not pred_categories and isinstance(row.get("causes"), list):
+        pred_categories = {str(c.get("category", "")).strip().lower() for c in row["causes"] if isinstance(c, dict)}
+    if not pred_causes and isinstance(row.get("causes"), list):
+        pred_causes = [str(c.get("text", "")) for c in row["causes"] if isinstance(c, dict) and str(c.get("text", "")).strip()]
+
+    gold_categories = _as_set(row.get("gold_categories"))
+    gold_causes = _as_list(row.get("gold_causes"))
+    if not pred_categories or not pred_causes or not gold_categories or not gold_causes:
+        raise ValueError("missing required attribution fields")
+    return pred_categories, pred_causes, gold_categories, gold_causes
+
+
+def _adapt_direct_row(row: dict) -> tuple[set[str], list[str], set[str], list[str]]:
+    pred_categories = _as_set(row.get("pred_categories"))
+    pred_causes = _as_list(row.get("pred_causes"))
+    if not pred_causes and str(row.get("answer", "")).strip():
+        pred_causes = [str(row.get("answer", "")).strip()]
+    gold_categories = _as_set(row.get("gold_categories"))
+    gold_causes = _as_list(row.get("gold_causes"))
+    if not pred_categories or not pred_causes or not gold_categories or not gold_causes:
+        raise ValueError("missing required attribution fields")
+    return pred_categories, pred_causes, gold_categories, gold_causes
+
+
+def _compute_from_adapter(rows: list[dict], adapter) -> dict:
+    f1s: list[float] = []
+    sims: list[float] = []
+    for row in rows:
+        pred_c, pred_causes, gold_c, gold_causes = adapter(row)
+        f1s.append(_category_f1(pred_c, gold_c))
+        sims.append(_cause_semantic_sim(pred_causes, gold_causes))
+    return {"category_f1": _avg(f1s), "cause_semantic_sim": _avg(sims)}
+
+
+def compute_metrics(*, catalyst_rows: list[dict], direct_rows: list[dict]) -> dict:
+    return {
+        "catalyst": _compute_from_adapter(catalyst_rows, _adapt_catalyst_row),
+        "direct_llm": _compute_from_adapter(direct_rows, _adapt_direct_row),
+    }
+
+
 def main() -> int:
     args = _parse_args()
-    out = {
-        "catalyst": _compute(_load_rows(Path(args.catalyst_json))),
-        "direct_llm": _compute(_load_rows(Path(args.direct_json))),
-    }
+    catalyst_rows = _load_rows(Path(args.catalyst_json))
+    direct_rows = _load_rows(Path(args.direct_json))
+    try:
+        out = compute_metrics(catalyst_rows=catalyst_rows, direct_rows=direct_rows)
+    except ValueError:
+        # Backward-compatible fallback for legacy pred_*/gold_* rows.
+        out = {"catalyst": _compute(catalyst_rows), "direct_llm": _compute(direct_rows)}
     p = Path(args.output_json)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
