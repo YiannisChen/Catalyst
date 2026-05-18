@@ -52,22 +52,16 @@ def _git_sha() -> str:
         return "UNKNOWN"
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Build thesis freeze manifest for Catalyst main comparison.")
-    parser.add_argument("--main-ablation-json", required=True)
-    parser.add_argument("--golden-set", required=True)
-    parser.add_argument("--db-path", required=True)
-    parser.add_argument("--lancedb-dir", required=True)
-    parser.add_argument("--model-lock-path", required=True)
-    parser.add_argument("--output", required=True)
-    args = parser.parse_args()
-
-    ablation_path = Path(args.main_ablation_json)
-    golden_path = Path(args.golden_set)
-    db_path = Path(args.db_path)
-    lancedb_dir = Path(args.lancedb_dir)
-    model_lock_path = Path(args.model_lock_path)
-    output_path = Path(args.output)
+def build_manifest(
+    *,
+    main_ablation_json: Path,
+    golden_set: Path,
+    db_path: Path,
+    lancedb_dir: Path,
+    model_lock_path: Path,
+) -> dict[str, Any]:
+    ablation_path = main_ablation_json
+    golden_path = golden_set
 
     for p in (ablation_path, golden_path, db_path, lancedb_dir, model_lock_path):
         if not p.exists():
@@ -134,6 +128,32 @@ def main() -> int:
         "model_lock_path": _sha256_file(model_lock_path),
     }
 
+    manifest_core["prompt_contract"] = {
+        "direct_prompt_has_expected_status": False,
+        "direct_prompt_template_version": "v2_no_label_leak",
+    }
+    manifest_core["audit_contract_version"] = "v2"
+    return manifest_core
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Build thesis freeze manifest for Catalyst main comparison.")
+    parser.add_argument("--main-ablation-json", required=True)
+    parser.add_argument("--golden-set", required=True)
+    parser.add_argument("--db-path", required=True)
+    parser.add_argument("--lancedb-dir", required=True)
+    parser.add_argument("--model-lock-path", required=True)
+    parser.add_argument("--output", required=True)
+    args = parser.parse_args()
+
+    output_path = Path(args.output)
+    manifest_core = build_manifest(
+        main_ablation_json=Path(args.main_ablation_json),
+        golden_set=Path(args.golden_set),
+        db_path=Path(args.db_path),
+        lancedb_dir=Path(args.lancedb_dir),
+        model_lock_path=Path(args.model_lock_path),
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(manifest_core, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[ok] wrote manifest: {output_path}")
@@ -143,4 +163,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
