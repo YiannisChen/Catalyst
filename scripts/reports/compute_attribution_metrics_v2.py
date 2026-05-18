@@ -133,15 +133,20 @@ def main() -> int:
     args = _parse_args()
     catalyst_rows = _load_rows(Path(args.catalyst_json))
     direct_rows = _load_rows(Path(args.direct_json))
+    compute_mode = "real_schema"
     try:
         out = compute_metrics(catalyst_rows=catalyst_rows, direct_rows=direct_rows)
-    except ValueError:
+    except ValueError as exc:
         # Backward-compatible fallback for legacy pred_*/gold_* rows.
+        compute_mode = "legacy_fallback"
         out = {"catalyst": _compute(catalyst_rows), "direct_llm": _compute(direct_rows)}
+        print(f"[warn] attribution-v2 fallback mode activated: {exc}")
+    out["compute_mode"] = compute_mode
     p = Path(args.output_json)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"[ok] wrote attribution v2 metrics: {p}")
+    print(f"[ok] compute_mode={compute_mode}")
     return 0
 
 
