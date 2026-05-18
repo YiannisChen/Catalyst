@@ -54,3 +54,25 @@ def test_tier1_candidates_stable_order(tmp_path: Path):
     r1 = mod.build_tier1_search_corpus(_manifest(tmp_path))
     r2 = mod.build_tier1_search_corpus(_manifest(tmp_path))
     assert r1 == r2
+
+
+def test_tier1_corpus_can_use_explicit_repo_root_and_avoid_seed_when_real_summary_exists(tmp_path: Path):
+    mod = _load_module()
+    repo_root = tmp_path / "repo"
+    (repo_root / "data" / "eval_reports").mkdir(parents=True)
+    (repo_root / "scripts" / "reports").mkdir(parents=True)
+    summary = {
+        "retrieval": {
+            "reranked_chunks": [
+                {
+                    "chunk_id": "real:polygon:1",
+                    "source": "polygon_news",
+                    "content_md": "TSLA moved after deliveries miss and tariff concerns on 2025-01-03.",
+                }
+            ]
+        }
+    }
+    (repo_root / "data" / "eval_reports" / "x_p1_trace.summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    rows = mod.build_tier1_search_corpus(_manifest(tmp_path), repo_root=repo_root)
+    assert rows and rows[0]["search_candidates"]
+    assert all(not c["chunk_id"].startswith("seed:") for r in rows for c in r["search_candidates"])

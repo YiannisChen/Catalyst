@@ -61,10 +61,18 @@ def _score_candidate(unit: dict[str, Any], cand: dict[str, Any]) -> float:
     return float(overlap + ticker_bonus)
 
 
-def build_tier1_search_corpus(manifest_path: Path) -> list[dict[str, Any]]:
+def _infer_repo_root(manifest_path: Path) -> Path:
+    cwd = Path.cwd().resolve()
+    for p in [cwd, *cwd.parents]:
+        if (p / ".git").exists() or (p / "scripts" / "reports").exists():
+            return p
+    return manifest_path.resolve().parents[2] if len(manifest_path.resolve().parents) >= 3 else cwd
+
+
+def build_tier1_search_corpus(manifest_path: Path, repo_root: Path | None = None) -> list[dict[str, Any]]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    repo_root = manifest_path.resolve().parents[2] if len(manifest_path.resolve().parents) >= 3 else Path.cwd()
-    corpus = _load_repo_corpus(repo_root)
+    resolved_repo_root = repo_root.resolve() if repo_root is not None else _infer_repo_root(manifest_path)
+    corpus = _load_repo_corpus(resolved_repo_root)
     units = manifest.get("frozen_units") or []
     rows: list[dict[str, Any]] = []
     for u in units:
@@ -94,12 +102,16 @@ def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Build deterministic tier1 search corpus from freeze manifest")
     p.add_argument("--freeze-manifest", required=True)
     p.add_argument("--output", required=True)
+    p.add_argument("--repo-root", default=None)
     return p.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
-    rows = build_tier1_search_corpus(Path(args.freeze_manifest))
+    rows = build_tier1_search_corpus(
+        Path(args.freeze_manifest),
+        repo_root=Path(args.repo_root).resolve() if args.repo_root else None,
+    )
     out = Path(args.output)
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8") as f:
