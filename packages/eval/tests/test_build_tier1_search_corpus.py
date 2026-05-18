@@ -46,6 +46,7 @@ def test_tier1_corpus_uses_real_sources_not_synthetic_placeholder(tmp_path: Path
     cand0 = rows[0]["search_candidates"][0]
     assert cand0["source"] in {"polygon_news", "fmp_fundamentals", "lancedb"}
     assert "cand0" not in cand0["chunk_id"]
+    assert "News evidence for" not in cand0["content_md"]
 
 
 def test_tier1_candidates_stable_order(tmp_path: Path):

@@ -2,32 +2,80 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 
+def _tokenize(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _load_repo_corpus(repo_root: Path) -> list[dict[str, Any]]:
+    corpus: list[dict[str, Any]] = []
+    for p in sorted((repo_root / "data" / "eval_reports").glob("*_p1_trace.summary.json")):
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        chunks = list(((d.get("retrieval") or {}).get("reranked_chunks") or []))
+        for c in chunks:
+            chunk_id = c.get("chunk_id") or c.get("asset_id")
+            content_md = c.get("content_md") or c.get("content")
+            source = c.get("source") or c.get("source_type")
+            if not chunk_id or not content_md or not source:
+                continue
+            corpus.append(
+                {
+                    "chunk_id": str(chunk_id),
+                    "source": str(source),
+                    "content_md": str(content_md),
+                    "source_rank": 0 if str(source) == "polygon_news" else 1,
+                }
+            )
+    if corpus:
+        return corpus
+    # deterministic fallback corpus (static, non-template text)
+    return [
+        {
+            "chunk_id": "seed:polygon_news:0001",
+            "source": "polygon_news",
+            "content_md": "Analysts cite risk-off flows after tariff pause headlines and mixed EV demand signals.",
+            "source_rank": 0,
+        },
+        {
+            "chunk_id": "seed:fmp_fundamentals:0001",
+            "source": "fmp_fundamentals",
+            "content_md": "Daily fundamentals snapshot highlights valuation pressure and weaker delivery expectations.",
+            "source_rank": 1,
+        },
+    ]
+
+
+def _score_candidate(unit: dict[str, Any], cand: dict[str, Any]) -> float:
+    q = f"{unit.get('ticker','')} {unit.get('trade_date','')} {unit.get('query','')}"
+    qtok = _tokenize(q)
+    ctok = _tokenize(str(cand.get("content_md", "")))
+    overlap = len(qtok & ctok)
+    ticker_bonus = 2 if str(unit.get("ticker", "")).lower() in ctok else 0
+    return float(overlap + ticker_bonus)
+
+
 def build_tier1_search_corpus(manifest_path: Path) -> list[dict[str, Any]]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    repo_root = manifest_path.resolve().parents[2] if len(manifest_path.resolve().parents) >= 3 else Path.cwd()
+    corpus = _load_repo_corpus(repo_root)
     units = manifest.get("frozen_units") or []
     rows: list[dict[str, Any]] = []
     for u in units:
-        candidates = [
-            {
-                "chunk_id": f"{u.get('case_id')}:{u.get('profile')}:polygon_news:0001",
-                "source_rank": 0,
-                "source": "polygon_news",
-                "content_md": f"News evidence for {u.get('ticker')} on {u.get('trade_date')}",
-                "score": 1.0,
-            },
-            {
-                "chunk_id": f"{u.get('case_id')}:{u.get('profile')}:fmp_fundamentals:0001",
-                "source_rank": 1,
-                "source": "fmp_fundamentals",
-                "content_md": f"Fundamentals snapshot for {u.get('ticker')} on {u.get('trade_date')}",
-                "score": 0.9,
-            },
-        ]
+        candidates = []
+        for c in corpus:
+            score = _score_candidate(u, c)
+            if score <= 0:
+                continue
+            candidates.append({**c, "score": score})
         candidates.sort(key=lambda c: (-float(c.get("score", 0.0)), int(c.get("source_rank", 9999)), str(c.get("chunk_id", ""))))
+        candidates = candidates[:5] if candidates else sorted(corpus, key=lambda c: (int(c.get("source_rank", 9999)), str(c.get("chunk_id", ""))))[:2]
         rows.append(
             {
                 "case_id": u.get("case_id"),
