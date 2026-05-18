@@ -189,6 +189,10 @@ def compute_comparison(
     if missing_direct:
         raise ValueError(f"direct baseline missing {len(missing_direct)} frozen units, sample={missing_direct[:5]}")
 
+    if baseline_tier == "tier2_same_evidence":
+        eligible_keys = {k for k in keys if int(direct_map[k].get("evidence_chunks_count", 0) or 0) > 0}
+        keys = [k for k in keys if k in eligible_keys]
+
     catalyst_rows = [catalyst_map[k] for k in keys]
     direct_rows_aligned = [direct_map[k] for k in keys]
 
@@ -241,6 +245,8 @@ def compute_comparison(
         "tier2_eligible_n": int((tier2_meta or {}).get("tier2_eligible_n", len(keys))),
         "tier2_excluded_n": int((tier2_meta or {}).get("tier2_excluded_n", 0)),
         "tier2_exclusion_reason_counts": dict((tier2_meta or {}).get("tier2_exclusion_reason_counts", {})),
+        "subset_eval": baseline_tier == "tier2_same_evidence",
+        "cohort_n_eval": len(keys),
     }
     return result
 

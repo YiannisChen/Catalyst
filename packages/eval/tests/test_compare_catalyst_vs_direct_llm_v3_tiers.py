@@ -32,3 +32,33 @@ def test_comparator_outputs_tier_name_and_attribution_columns(tmp_path: Path):
     assert "tier2_eligible_n" in out
     assert "tier2_excluded_n" in out
     assert "tier2_exclusion_reason_counts" in out
+
+
+def test_tier2_uses_eligible_subset_only():
+    mod = _load_module()
+    freeze = {
+        "freeze_id": "f1",
+        "frozen_units": [
+            {"case_id": "g001", "profile": "full", "expected_status": "INSUFFICIENT", "should_refuse": True},
+            {"case_id": "g002", "profile": "full", "expected_status": "SUFFICIENT", "should_refuse": False},
+        ],
+    }
+    catalyst = {
+        "per_case": [
+            {"case_id": "g001", "profile": "full", "output_status": "INSUFFICIENT", "grounding_rate": 1.0},
+            {"case_id": "g002", "profile": "full", "output_status": "PARTIAL", "grounding_rate": 1.0},
+        ]
+    }
+    direct_rows = [
+        {"case_id": "g001", "profile": "full", "output_status": "INSUFFICIENT", "refusal_flag": True, "evidence_chunks_count": 2},
+        {"case_id": "g002", "profile": "full", "output_status": "SUFFICIENT", "refusal_flag": False, "evidence_chunks_count": 0},
+    ]
+    out = mod.compute_comparison(
+        freeze,
+        catalyst,
+        direct_rows,
+        baseline_tier="tier2_same_evidence",
+        tier2_meta={"tier2_eligible_n": 1, "tier2_excluded_n": 1, "tier2_exclusion_reason_counts": {"no_reranked_chunks": 1}},
+    )
+    assert out["subset_eval"] is True
+    assert out["cohort_n_eval"] == 1
