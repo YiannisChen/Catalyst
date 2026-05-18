@@ -115,6 +115,47 @@ def _build_prompt(unit: dict[str, Any]) -> str:
     )
 
 
+def _search_local_corpus(unit: dict[str, Any], corpus_rows: list[dict[str, Any]], top_k: int = 5) -> list[dict[str, Any]]:
+    case_id = unit.get("case_id")
+    profile = unit.get("profile")
+    for row in corpus_rows:
+        if row.get("case_id") == case_id and row.get("profile") == profile:
+            cands = list(row.get("search_candidates") or [])
+            cands.sort(key=lambda x: (int(x.get("source_rank", 9999)), str(x.get("chunk_id", ""))))
+            return cands[:top_k]
+    return []
+
+
+def _build_prompt_with_context(
+    unit: dict[str, Any],
+    *,
+    baseline_mode: str,
+    search_rows: list[dict[str, Any]] | None = None,
+    same_evidence_rows: list[dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, int]]:
+    prompt = _build_prompt(unit)
+    meta = {"search_hits_count": 0, "evidence_chunks_count": 0}
+    if baseline_mode == "search_augmented":
+        hits = _search_local_corpus(unit, search_rows or [])
+        meta["search_hits_count"] = len(hits)
+        if hits:
+            prompt += "\nSearch Evidence:\n"
+            for h in hits:
+                prompt += f"- [{h.get('chunk_id')}] {h.get('content', '')}\n"
+    if baseline_mode == "same_evidence":
+        rows = same_evidence_rows or []
+        case_id = unit.get("case_id")
+        profile = unit.get("profile")
+        row = next((r for r in rows if r.get("case_id") == case_id and r.get("profile") == profile), None)
+        chunks = list((row or {}).get("evidence_chunks") or [])
+        meta["evidence_chunks_count"] = len(chunks)
+        if chunks:
+            prompt += "\nEvidence Chunks:\n"
+            for c in chunks:
+                prompt += f"- [{c.get('chunk_id')}] {c.get('content_md', '')}\n"
+    return prompt, meta
+
+
 def _run_one_unit(
     *,
     unit: dict[str, Any],
@@ -123,6 +164,8 @@ def _run_one_unit(
     baseline_mode: str,
     client: Any,
     pricing: dict[str, dict[str, float]],
+    search_rows: list[dict[str, Any]] | None = None,
+    same_evidence_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "case_id": unit.get("case_id"),
@@ -150,9 +193,17 @@ def _run_one_unit(
     }
     start = time.perf_counter()
     try:
+        prompt, prompt_meta = _build_prompt_with_context(
+            unit,
+            baseline_mode=baseline_mode,
+            search_rows=search_rows,
+            same_evidence_rows=same_evidence_rows,
+        )
+        record["search_hits_count"] = int(prompt_meta.get("search_hits_count", 0))
+        record["evidence_chunks_count"] = int(prompt_meta.get("evidence_chunks_count", 0))
         resp = client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": _build_prompt(unit)}],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=700,
         )
@@ -205,9 +256,15 @@ def main() -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     pricing = _load_pricing_lock(Path(args.pricing_lock))
     units = manifest.get("frozen_units", [])
+    search_rows: list[dict[str, Any]] = []
+    same_evidence_rows: list[dict[str, Any]] = []
     if not isinstance(units, list) or not units:
         print("[fail] freeze manifest has no frozen_units")
         return 2
+    if args.search_corpus_jsonl:
+        search_rows = [json.loads(line) for line in Path(args.search_corpus_jsonl).read_text(encoding="utf-8").splitlines() if line.strip()]
+    if args.same_evidence_jsonl:
+        same_evidence_rows = [json.loads(line) for line in Path(args.same_evidence_jsonl).read_text(encoding="utf-8").splitlines() if line.strip()]
 
     api_key = Path("/dev/null")
     del api_key
@@ -237,6 +294,8 @@ def main() -> int:
                 baseline_mode=args.baseline_mode,
                 client=client,
                 pricing=pricing,
+                search_rows=search_rows,
+                same_evidence_rows=same_evidence_rows,
             )
             if record.get("error_type"):
                 stats["n_error"] += 1
