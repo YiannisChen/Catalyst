@@ -38,4 +38,5 @@ def test_scheme_c_artifact_set_and_schema():
 
 
 def test_runbook_references_existing_scripts_and_outputs():
-    assert Path("scripts/reports/run_scheme_c_batch.sh").exists()
+    p = Path(__file__).resolve().parents[3] / "scripts" / "reports" / "run_scheme_c_batch.sh"
+    assert p.exists()
