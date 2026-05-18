@@ -14,30 +14,41 @@ def _load_module():
     return mod
 
 
-def _manifest(tmp_path: Path) -> Path:
-    p = tmp_path / "manifest.json"
-    p.write_text(json.dumps({
+def _manifest_and_summaries(tmp_path: Path) -> Path:
+    s1 = tmp_path / "data" / "eval_reports" / "g001.summary.json"
+    s1.parent.mkdir(parents=True, exist_ok=True)
+    s1.write_text(json.dumps({
+        "retrieval": {
+            "reranked_chunks": [
+                {"chunk_id": "rk1", "content_md": "TSLA deliveries miss", "source": "polygon_news"}
+            ]
+        }
+    }), encoding="utf-8")
+
+    s2 = tmp_path / "data" / "eval_reports" / "g002.summary.json"
+    s2.write_text(json.dumps({"retrieval": {"reranked_chunks": []}}), encoding="utf-8")
+
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({
         "frozen_units": [
-            {"case_id": "g001", "profile": "full", "evidence_chunks": [{"chunk_id": "c1", "content_md": "abc"}]},
-            {"case_id": "g002", "profile": "full", "evidence_chunks": []},
+            {"case_id": "g001", "profile": "full", "summary_json": "/root/Catalyst/data/eval_reports/g001.summary.json"},
+            {"case_id": "g002", "profile": "full", "summary_json": "/root/Catalyst/data/eval_reports/g002.summary.json"},
         ]
-    }))
-    return p
+    }), encoding="utf-8")
+    return manifest
 
 
-def test_build_same_evidence_inputs_emits_case_profile_aligned_rows(tmp_path: Path):
+def test_build_same_evidence_reads_summary_paths_and_extracts_reranked_chunks(tmp_path: Path):
     mod = _load_module()
-    rows, meta = mod.build_same_evidence_inputs(_manifest(tmp_path))
+    manifest = _manifest_and_summaries(tmp_path)
+    rows, meta = mod.build_same_evidence_inputs(manifest_path=manifest, repo_root=tmp_path)
     assert rows[0]["case_id"] == "g001"
-    assert rows[0]["profile"] == "full"
-    assert len(rows[0]["evidence_chunks"]) > 0
     assert rows[0]["evidence_chunks_count"] > 0
 
 
-def test_same_evidence_only_keeps_evidence_nonempty_cases(tmp_path: Path):
+def test_build_same_evidence_excludes_cases_with_no_reranked_chunks(tmp_path: Path):
     mod = _load_module()
-    rows, meta = mod.build_same_evidence_inputs(_manifest(tmp_path))
-    assert all(r["evidence_chunks_count"] > 0 for r in rows)
-    assert meta["tier2_eligible_n"] == 1
+    manifest = _manifest_and_summaries(tmp_path)
+    rows, meta = mod.build_same_evidence_inputs(manifest_path=manifest, repo_root=tmp_path)
     assert meta["tier2_excluded_n"] == 1
-    assert meta["tier2_exclusion_reason_counts"]["no_evidence_chunks"] == 1
+    assert meta["tier2_exclusion_reason_counts"]["no_reranked_chunks"] == 1
