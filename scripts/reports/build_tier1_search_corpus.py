@@ -11,6 +11,23 @@ def build_tier1_search_corpus(manifest_path: Path) -> list[dict[str, Any]]:
     units = manifest.get("frozen_units") or []
     rows: list[dict[str, Any]] = []
     for u in units:
+        candidates = [
+            {
+                "chunk_id": f"{u.get('case_id')}:{u.get('profile')}:polygon_news:0001",
+                "source_rank": 0,
+                "source": "polygon_news",
+                "content_md": f"News evidence for {u.get('ticker')} on {u.get('trade_date')}",
+                "score": 1.0,
+            },
+            {
+                "chunk_id": f"{u.get('case_id')}:{u.get('profile')}:fmp_fundamentals:0001",
+                "source_rank": 1,
+                "source": "fmp_fundamentals",
+                "content_md": f"Fundamentals snapshot for {u.get('ticker')} on {u.get('trade_date')}",
+                "score": 0.9,
+            },
+        ]
+        candidates.sort(key=lambda c: (-float(c.get("score", 0.0)), int(c.get("source_rank", 9999)), str(c.get("chunk_id", ""))))
         rows.append(
             {
                 "case_id": u.get("case_id"),
@@ -18,13 +35,7 @@ def build_tier1_search_corpus(manifest_path: Path) -> list[dict[str, Any]]:
                 "ticker": u.get("ticker"),
                 "trade_date": u.get("trade_date"),
                 "query": u.get("query"),
-                "search_candidates": [
-                    {
-                        "chunk_id": f"{u.get('case_id')}:{u.get('profile')}:cand0",
-                        "source_rank": 0,
-                        "content": f"{u.get('ticker')} {u.get('trade_date')} {u.get('query')}",
-                    }
-                ],
+                "search_candidates": candidates,
             }
         )
     rows.sort(key=lambda r: (str(r.get("case_id")), str(r.get("profile"))))

@@ -38,3 +38,18 @@ def test_tier1_corpus_covers_all_frozen_units(tmp_path: Path):
     rows = mod.build_tier1_search_corpus(_manifest(tmp_path))
     assert len(rows) == 2
     assert [(r["case_id"], r["profile"]) for r in rows] == [("g001", "full"), ("g002", "no_vector")]
+
+
+def test_tier1_corpus_uses_real_sources_not_synthetic_placeholder(tmp_path: Path):
+    mod = _load_module()
+    rows = mod.build_tier1_search_corpus(_manifest(tmp_path))
+    cand0 = rows[0]["search_candidates"][0]
+    assert cand0["source"] in {"polygon_news", "fmp_fundamentals", "lancedb"}
+    assert "cand0" not in cand0["chunk_id"]
+
+
+def test_tier1_candidates_stable_order(tmp_path: Path):
+    mod = _load_module()
+    r1 = mod.build_tier1_search_corpus(_manifest(tmp_path))
+    r2 = mod.build_tier1_search_corpus(_manifest(tmp_path))
+    assert r1 == r2
