@@ -29,3 +29,31 @@ def test_search_mode_injects_topk_context():
     prompt, meta = mod._build_prompt_with_context(unit, baseline_mode="search_augmented", search_rows=rows)
     assert "Search Evidence" in prompt
     assert meta["search_hits_count"] > 0
+
+
+def test_search_mode_prefers_content_md_and_fallbacks_to_content():
+    mod = _load_module()
+    unit = {"case_id": "g001", "profile": "full", "ticker": "TSLA", "trade_date": "2025-01-02", "query": "why"}
+    rows = [
+        {
+            "case_id": "g001",
+            "profile": "full",
+            "search_candidates": [
+                {
+                    "chunk_id": "c_md_first",
+                    "source_rank": 0,
+                    "content_md": "REAL_MD_TEXT",
+                    "content": "LEGACY_CONTENT_TEXT",
+                },
+                {
+                    "chunk_id": "c_fallback",
+                    "source_rank": 1,
+                    "content": "ONLY_LEGACY_CONTENT",
+                },
+            ],
+        }
+    ]
+    prompt, _ = mod._build_prompt_with_context(unit, baseline_mode="search_augmented", search_rows=rows)
+    assert "REAL_MD_TEXT" in prompt
+    assert "ONLY_LEGACY_CONTENT" in prompt
+    assert "LEGACY_CONTENT_TEXT" not in prompt

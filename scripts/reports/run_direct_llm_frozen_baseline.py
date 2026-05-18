@@ -141,7 +141,8 @@ def _build_prompt_with_context(
         if hits:
             prompt += "\nSearch Evidence:\n"
             for h in hits:
-                prompt += f"- [{h.get('chunk_id')}] {h.get('content', '')}\n"
+                text = h.get("content_md") or h.get("content") or ""
+                prompt += f"- [{h.get('chunk_id')}] {text}\n"
     if baseline_mode == "same_evidence":
         rows = same_evidence_rows or []
         case_id = unit.get("case_id")
