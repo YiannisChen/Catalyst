@@ -14,13 +14,12 @@ def extract_trace_node_usage(trace_payload: dict[str, Any]) -> list[dict[str, An
         "output_tokens_sum": 0.0,
         "cost_usd_sum": 0.0,
     })
-    for step in trace_payload.get("steps", []):
-        node = str(step.get("node", "unknown"))
-        usage = step.get("usage", {}) or {}
-        agg[node]["latency_ms_sum"] += float(step.get("latency_ms", 0.0) or 0.0)
-        agg[node]["input_tokens_sum"] += float(usage.get("input_tokens", 0.0) or 0.0)
-        agg[node]["output_tokens_sum"] += float(usage.get("output_tokens", 0.0) or 0.0)
-        agg[node]["cost_usd_sum"] += float(usage.get("cost_usd", 0.0) or 0.0)
+    for event in trace_payload.get("events", []):
+        node = str(event.get("node", "unknown"))
+        agg[node]["latency_ms_sum"] += float(event.get("latency_ms", 0.0) or 0.0)
+        agg[node]["input_tokens_sum"] += float(event.get("input_tokens", 0.0) or 0.0)
+        agg[node]["output_tokens_sum"] += float(event.get("output_tokens", 0.0) or 0.0)
+        agg[node]["cost_usd_sum"] += float(event.get("cost_usd", 0.0) or 0.0)
 
     rows: list[dict[str, Any]] = []
     for node, d in sorted(agg.items()):

@@ -15,8 +15,14 @@ def _load_module():
 
 def test_bundle_contains_required_artifacts(tmp_path: Path):
     mod = _load_module()
-    for name in ("metrics.json", "per_case.jsonl", "stability.json", "adjudication.md"):
+    (tmp_path / "metrics.json").write_text(
+        '{"catalyst":{"system_error_count":0},"direct_llm":{"system_error_count":0}}',
+        encoding="utf-8",
+    )
+    (tmp_path / "stability.json").write_text('{"status_consistency_rate":1.0}', encoding="utf-8")
+    for name in ("per_case.jsonl", "adjudication.md"):
         (tmp_path / name).write_text("x", encoding="utf-8")
+
     bundle = mod.build_bundle(
         freeze_id="f1",
         metrics_json=tmp_path / "metrics.json",
@@ -28,3 +34,4 @@ def test_bundle_contains_required_artifacts(tmp_path: Path):
     assert bundle["artifacts"]["per_case_jsonl"]
     assert bundle["artifacts"]["stability_json"]
     assert bundle["artifacts"]["adjudication_md"]
+    assert bundle["quality_gates"]["system_error_zero"] is True

@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Any
 
 
+def _safe_load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def build_bundle(
     *,
     freeze_id: str,
@@ -14,6 +18,12 @@ def build_bundle(
     stability_json: Path,
     adjudication_md: Path,
 ) -> dict[str, Any]:
+    metrics = _safe_load_json(metrics_json)
+    stability = _safe_load_json(stability_json)
+    c_err = int((metrics.get("catalyst") or {}).get("system_error_count", 0) or 0)
+    d_err = int((metrics.get("direct_llm") or {}).get("system_error_count", 0) or 0)
+    status_consistency_rate = float(stability.get("status_consistency_rate", 0.0) or 0.0)
+
     return {
         "audit_version": "v2",
         "freeze_id": freeze_id,
@@ -25,7 +35,8 @@ def build_bundle(
         },
         "quality_gates": {
             "cohort_aligned": True,
-            "system_error_zero": None,
+            "system_error_zero": (c_err == 0 and d_err == 0),
+            "stability_status_consistency_ge_0_95": status_consistency_rate >= 0.95,
         },
     }
 
