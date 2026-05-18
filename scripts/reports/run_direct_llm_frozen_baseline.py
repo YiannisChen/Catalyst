@@ -17,7 +17,19 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--provider", default="aihubmix")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--pricing-lock", default=str(Path(__file__).resolve().parents[2] / "configs" / "eval_pricing.lock.json"))
     return parser.parse_args()
+
+
+def _load_pricing_lock(path: Path) -> dict[str, dict[str, float]]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _compute_cost(model: str, in_tok: int, out_tok: int, pricing: dict[str, dict[str, float]]) -> float:
+    model_pricing = pricing.get(model, {"input": 0.0, "output": 0.0})
+    in_rate = float(model_pricing.get("input", 0.0))
+    out_rate = float(model_pricing.get("output", 0.0))
+    return ((in_tok / 1_000_000.0) * in_rate) + ((out_tok / 1_000_000.0) * out_rate)
 
 
 def _raw_answer_hash(text: str) -> str:
@@ -96,8 +108,74 @@ def _build_prompt(unit: dict[str, Any]) -> str:
         f"Ticker: {unit.get('ticker')}\n"
         f"Trade date: {unit.get('trade_date')}\n"
         f"User query: {unit.get('query')}\n"
-        f"Expected status (for reference only, do NOT copy blindly): {unit.get('expected_status')}\n"
     )
+
+
+def _run_one_unit(
+    *,
+    unit: dict[str, Any],
+    model: str,
+    client: Any,
+    pricing: dict[str, dict[str, float]],
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "case_id": unit.get("case_id"),
+        "profile": unit.get("profile"),
+        "expected_status": unit.get("expected_status"),
+        "should_refuse": bool(unit.get("should_refuse", False)),
+        "output_status": "SYSTEM_ERROR",
+        "refusal_flag": False,
+        "latency_ms": None,
+        "tokens_in": 0,
+        "tokens_out": 0,
+        "total_tokens": 0,
+        "total_cost_usd": 0.0,
+        "error_type": None,
+        "raw_answer_hash": None,
+        "raw_answer_text": "",
+        "parse_strategy": "failed",
+        "status_decision_trace": "",
+        "request_id": None,
+        "pricing_version": "eval_pricing.lock.v1",
+    }
+    start = time.perf_counter()
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": _build_prompt(unit)}],
+            temperature=0.0,
+            max_tokens=700,
+        )
+        latency_ms = (time.perf_counter() - start) * 1000.0
+        text = _extract_text(resp)
+        status, refusal_flag, answer = _parse_output_status(text)
+        usage = resp.usage
+        tokens_in = int(getattr(usage, "prompt_tokens", 0) or 0)
+        tokens_out = int(getattr(usage, "completion_tokens", 0) or 0)
+        total_tokens = int(getattr(usage, "total_tokens", tokens_in + tokens_out) or (tokens_in + tokens_out))
+        parse_strategy = "json" if text.strip().startswith("{") else "heuristic"
+        decision_trace = f"status={status};refusal={bool(refusal_flag)}"
+        record.update(
+            {
+                "output_status": status,
+                "refusal_flag": bool(refusal_flag),
+                "latency_ms": round(latency_ms, 3),
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "total_tokens": total_tokens,
+                "total_cost_usd": _compute_cost(model, tokens_in, tokens_out, pricing),
+                "raw_answer_hash": _raw_answer_hash(answer),
+                "raw_answer_text": text,
+                "parse_strategy": parse_strategy,
+                "status_decision_trace": decision_trace,
+                "request_id": getattr(resp, "id", None),
+            }
+        )
+    except Exception as exc:
+        latency_ms = (time.perf_counter() - start) * 1000.0
+        record["latency_ms"] = round(latency_ms, 3)
+        record["error_type"] = type(exc).__name__
+    return record
 
 
 def main() -> int:
@@ -109,6 +187,7 @@ def main() -> int:
     summary_path = out_dir / "direct_llm_dsv4_frozen_summary.json"
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    pricing = _load_pricing_lock(Path(args.pricing_lock))
     units = manifest.get("frozen_units", [])
     if not isinstance(units, list) or not units:
         print("[fail] freeze manifest has no frozen_units")
@@ -135,53 +214,8 @@ def main() -> int:
     with per_unit_path.open("w", encoding="utf-8") as f:
         for unit in units:
             stats["n_total"] += 1
-            record: dict[str, Any] = {
-                "case_id": unit.get("case_id"),
-                "profile": unit.get("profile"),
-                "expected_status": unit.get("expected_status"),
-                "should_refuse": bool(unit.get("should_refuse", False)),
-                "output_status": "SYSTEM_ERROR",
-                "refusal_flag": False,
-                "latency_ms": None,
-                "tokens_in": 0,
-                "tokens_out": 0,
-                "total_tokens": 0,
-                "total_cost_usd": 0.0,
-                "error_type": None,
-                "raw_answer_hash": None,
-            }
-            start = time.perf_counter()
-            try:
-                resp = client.chat.completions.create(
-                    model=args.model,
-                    messages=[{"role": "user", "content": _build_prompt(unit)}],
-                    temperature=0.0,
-                    max_tokens=700,
-                )
-                latency_ms = (time.perf_counter() - start) * 1000.0
-                text = _extract_text(resp)
-                status, refusal_flag, answer = _parse_output_status(text)
-                usage = resp.usage
-                tokens_in = int(getattr(usage, "prompt_tokens", 0) or 0)
-                tokens_out = int(getattr(usage, "completion_tokens", 0) or 0)
-                total_tokens = int(getattr(usage, "total_tokens", tokens_in + tokens_out) or (tokens_in + tokens_out))
-
-                record.update(
-                    {
-                        "output_status": status,
-                        "refusal_flag": bool(refusal_flag),
-                        "latency_ms": round(latency_ms, 3),
-                        "tokens_in": tokens_in,
-                        "tokens_out": tokens_out,
-                        "total_tokens": total_tokens,
-                        "total_cost_usd": 0.0,  # pricing not locked for deepseek-v4-flash in current repo
-                        "raw_answer_hash": _raw_answer_hash(answer),
-                    }
-                )
-            except Exception as exc:
-                latency_ms = (time.perf_counter() - start) * 1000.0
-                record["latency_ms"] = round(latency_ms, 3)
-                record["error_type"] = type(exc).__name__
+            record = _run_one_unit(unit=unit, model=args.model, client=client, pricing=pricing)
+            if record.get("error_type"):
                 stats["n_error"] += 1
 
             stats["status_counts"][record["output_status"]] = stats["status_counts"].get(record["output_status"], 0) + 1
@@ -213,4 +247,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
