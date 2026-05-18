@@ -10,15 +10,19 @@ from typing import Any
 from openai import OpenAI
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Direct-LLM baseline on thesis freeze units.")
     parser.add_argument("--freeze-manifest", required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--catalyst-model", required=True)
+    parser.add_argument("--baseline-mode", choices=["closed_book", "search_augmented", "same_evidence"], default="closed_book")
+    parser.add_argument("--search-corpus-jsonl")
+    parser.add_argument("--same-evidence-jsonl")
     parser.add_argument("--provider", default="aihubmix")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--pricing-lock", default=str(Path(__file__).resolve().parents[2] / "configs" / "eval_pricing.lock.json"))
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _load_pricing_lock(path: Path) -> dict[str, dict[str, float]]:
@@ -115,6 +119,8 @@ def _run_one_unit(
     *,
     unit: dict[str, Any],
     model: str,
+    catalyst_model: str,
+    baseline_mode: str,
     client: Any,
     pricing: dict[str, dict[str, float]],
 ) -> dict[str, Any]:
@@ -131,6 +137,10 @@ def _run_one_unit(
         "total_tokens": 0,
         "total_cost_usd": 0.0,
         "error_type": None,
+        "baseline_mode": baseline_mode,
+        "model": model,
+        "search_hits_count": 0,
+        "evidence_chunks_count": 0,
         "raw_answer_hash": None,
         "raw_answer_text": "",
         "parse_strategy": "failed",
@@ -180,6 +190,12 @@ def _run_one_unit(
 
 def main() -> int:
     args = _parse_args()
+    if args.baseline_mode == "closed_book" and args.model != args.catalyst_model:
+        raise ValueError("Tier0 fairness violation: direct model must equal catalyst model")
+    if args.baseline_mode == "search_augmented" and not args.search_corpus_jsonl:
+        raise ValueError("search_augmented mode requires --search-corpus-jsonl")
+    if args.baseline_mode == "same_evidence" and not args.same_evidence_jsonl:
+        raise ValueError("same_evidence mode requires --same-evidence-jsonl")
     manifest_path = Path(args.freeze_manifest)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -214,7 +230,14 @@ def main() -> int:
     with per_unit_path.open("w", encoding="utf-8") as f:
         for unit in units:
             stats["n_total"] += 1
-            record = _run_one_unit(unit=unit, model=args.model, client=client, pricing=pricing)
+            record = _run_one_unit(
+                unit=unit,
+                model=args.model,
+                catalyst_model=args.catalyst_model,
+                baseline_mode=args.baseline_mode,
+                client=client,
+                pricing=pricing,
+            )
             if record.get("error_type"):
                 stats["n_error"] += 1
 
