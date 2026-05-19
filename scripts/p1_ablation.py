@@ -94,6 +94,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-output-tokens", type=int, default=4096)
     parser.add_argument("--window-days", type=int, default=3)
+    parser.add_argument(
+        "--use-critic",
+        choices=["on", "off"],
+        default="on",
+        help="on: Miner->Critic->Judge; off: Miner->Judge baseline.",
+    )
     parser.add_argument("--tag", default=None)
     parser.add_argument("--continue-on-error", action="store_true")
     parser.add_argument("--resume-from", default=None, help="Path to existing *_p1_ablation.json for resume.")
@@ -176,6 +182,8 @@ def _build_trace_command(
         str(args.max_output_tokens),
         "--window-days",
         str(args.window_days),
+        "--use-critic",
+        args.use_critic,
         "--out-dir",
         str(out_dir),
         "--tag",

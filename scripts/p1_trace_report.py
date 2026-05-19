@@ -154,6 +154,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--window-days", type=int, default=3)
     parser.add_argument("--reranker-mode", choices=["off", "auto", "deterministic"], default="auto")
     parser.add_argument(
+        "--use-critic",
+        choices=["on", "off"],
+        default="on",
+        help="on: Miner->Critic->Judge; off: Miner->Judge baseline.",
+    )
+    parser.add_argument(
         "--query-embedder-mode",
         choices=["bge", "deterministic"],
         default="bge",
@@ -665,7 +671,7 @@ def main() -> int:
     reranker = _resolve_reranker(args.reranker_mode)
 
     graph = build_attribution_graph(
-        use_critic=True,
+        use_critic=(args.use_critic == "on"),
         table=table,
         embedding_fn=embedding_fn,
         reranker=reranker,
@@ -709,6 +715,7 @@ def main() -> int:
             "model": args.model,
             "pricing_model_id": _resolve_pricing_model_id(args.model),
             "reranker_mode": args.reranker_mode,
+            "use_critic": args.use_critic,
             "query_embedder_mode": args.query_embedder_mode,
             "run_id": result.get("run_id"),
             "trace_id": result.get("trace_id"),
