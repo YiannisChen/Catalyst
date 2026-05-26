@@ -1,51 +1,49 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
+import { ContextBar } from './components/context/ContextBar'
+import { useBootstrapData } from './hooks/useBootstrapData'
 import './styles.css'
 
-function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10)
-}
-
 export default function App() {
-  const [ticker, setTicker] = useState('AAPL')
-  const [tradeDate, setTradeDate] = useState(todayIsoDate())
+  const bootstrap = useBootstrapData()
+  const [ticker, setTicker] = useState('')
+  const [tradeDate, setTradeDate] = useState('')
   const [query, setQuery] = useState('')
 
-  const shellTitle = useMemo(() => `${ticker} · ${tradeDate}`, [ticker, tradeDate])
+  useEffect(() => {
+    if (bootstrap.status !== 'ready' && bootstrap.status !== 'empty') return
+
+    const { range, tickers } = bootstrap.data
+    const nextTicker = tickers.symbols.includes(ticker) ? ticker : (tickers.symbols[0] ?? '')
+    const nextTradeDate =
+      tradeDate &&
+      (!range.min_date || tradeDate >= range.min_date) &&
+      (!range.max_date || tradeDate <= range.max_date)
+        ? tradeDate
+        : (range.max_date ?? range.min_date ?? '')
+
+    if (nextTicker !== ticker) setTicker(nextTicker)
+    if (nextTradeDate !== tradeDate) setTradeDate(nextTradeDate)
+  }, [bootstrap, ticker, tradeDate])
+
+  const shellTitle = useMemo(() => {
+    const selectedTicker = ticker || 'No ticker'
+    const selectedDate = tradeDate || 'No date'
+
+    return `${selectedTicker} · ${selectedDate}`
+  }, [ticker, tradeDate])
 
   return (
     <div className="app-shell">
-      <header className="toolbar">
-        <div className="field">
-          <label htmlFor="ticker">Ticker</label>
-          <select id="ticker" value={ticker} onChange={(event) => setTicker(event.target.value)}>
-            <option value="AAPL">AAPL</option>
-            <option value="MSFT">MSFT</option>
-            <option value="NVDA">NVDA</option>
-          </select>
-        </div>
-
-        <div className="field">
-          <label htmlFor="trade-date">Date</label>
-          <input
-            id="trade-date"
-            type="date"
-            value={tradeDate}
-            onChange={(event) => setTradeDate(event.target.value)}
-          />
-        </div>
-
-        <div className="field">
-          <label htmlFor="query">Query</label>
-          <input
-            id="query"
-            type="text"
-            placeholder="Explain the market move"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
-      </header>
+      <ContextBar
+        bootstrap={bootstrap}
+        ticker={ticker}
+        tradeDate={tradeDate}
+        query={query}
+        onTickerChange={setTicker}
+        onTradeDateChange={setTradeDate}
+        onQueryChange={setQuery}
+      />
 
       <main className="content-grid">
         <section className="panel" aria-label="chart-panel">
