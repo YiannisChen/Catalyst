@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
+import { KLinePanel } from './components/chart/KLinePanel'
 import { ContextBar } from './components/context/ContextBar'
 import { useBootstrapData } from './hooks/useBootstrapData'
 import './styles.css'
@@ -33,6 +34,14 @@ export default function App() {
     return `${selectedTicker} · ${selectedDate}`
   }, [ticker, tradeDate])
 
+  const chartRange =
+    bootstrap.status === 'ready' || bootstrap.status === 'empty'
+      ? {
+          startDate: bootstrap.data.range.min_date,
+          endDate: bootstrap.data.range.max_date,
+        }
+      : { startDate: null, endDate: null }
+
   return (
     <div className="app-shell">
       <ContextBar
@@ -46,10 +55,10 @@ export default function App() {
       />
 
       <main className="content-grid">
-        <section className="panel" aria-label="chart-panel">
-          <h2>Workbench Chart · {shellTitle}</h2>
-          <div className="placeholder">K-line panel placeholder</div>
-        </section>
+        <div>
+          <KLinePanel ticker={ticker} startDate={chartRange.startDate} endDate={chartRange.endDate} />
+          <p className="chart-context-title">Workbench Chart · {shellTitle}</p>
+        </div>
 
         <aside className="panel" aria-label="runtime-console-panel">
           <h2>Runtime Console Placeholder</h2>

@@ -76,6 +76,24 @@ body {
   background: #f8fafc;
 }
 
+.chart-frame {
+  min-height: 360px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #64748b;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.chart-summary,
+.chart-context-title {
+  margin: 8px 0 0;
+  color: #475569;
+  font-size: 13px;
+}
+
 .console-block {
   margin-bottom: 12px;
 }
