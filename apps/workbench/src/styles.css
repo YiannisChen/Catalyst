@@ -94,6 +94,80 @@ body {
   font-size: 13px;
 }
 
+.selected-day-context {
+  margin-top: 12px;
+}
+
+.selected-day-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.selected-day-header p,
+.selected-day-query,
+.inline-feedback {
+  margin: 6px 0 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.primary-action {
+  min-height: 44px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 16px;
+  background: #2563eb;
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary-action:disabled {
+  background: #94a3b8;
+  cursor: not-allowed;
+}
+
+.selected-day-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.selected-day-grid div {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.selected-day-grid dt {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.selected-day-grid dd {
+  margin: 4px 0 0;
+  font-weight: 700;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border-radius: 8px;
+  padding: 2px 8px;
+  background: #e2e8f0;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.inline-feedback-error {
+  color: #b91c1c;
+}
+
 .console-block {
   margin-bottom: 12px;
 }
