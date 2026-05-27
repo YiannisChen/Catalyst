@@ -1,4 +1,4 @@
-import { http, HttpResponse } from 'msw';
+import { delay, http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
 
 import App from '../../App';
@@ -30,8 +30,9 @@ describe('KLinePanel', () => {
           errors: [],
         }),
       ),
-      http.get('/api/ohlcv/:ticker', ({ params, request }) => {
+      http.get('/api/ohlcv/:ticker', async ({ params, request }) => {
         requestedUrls.push(new URL(request.url));
+        await delay(100);
 
         return HttpResponse.json({
           symbol: params.ticker,
