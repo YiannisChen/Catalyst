@@ -155,3 +155,14 @@ export interface RangeLocalResponse {
   ticker_count: number
   row_count: number
 }
+
+export interface ModelOption {
+  model_id: string
+  label: string
+  is_default: boolean
+}
+
+export interface ModelsResponse {
+  models: ModelOption[]
+  default_model_id: string
+}

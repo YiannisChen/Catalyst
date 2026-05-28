@@ -3,6 +3,7 @@ import type {
   ArtifactType,
   CreateRunRequest,
   CreateRunResponse,
+  ModelsResponse,
   OhlcvResponse,
   RangeLocalResponse,
   RetryRunRequest,
@@ -51,6 +52,10 @@ export function getRangeLocal(): Promise<RangeLocalResponse> {
   return request<RangeLocalResponse>('/range-local')
 }
 
+export function getModels(): Promise<ModelsResponse> {
+  return request<ModelsResponse>('/models')
+}
+
 export function createLiveRun(payload: CreateRunRequest): Promise<CreateRunResponse> {
   return request<CreateRunResponse>('/live-runs', {
     method: 'POST',
@@ -87,4 +92,44 @@ export function retryLiveRun(runId: string, payload: RetryRunRequest): Promise<R
 
 export function getRuntimeHealth(): Promise<RuntimeHealthResponse> {
   return request<RuntimeHealthResponse>('/health/runtime')
+}
+
+export interface NewsItem {
+  asset_id: string
+  ticker: string
+  reference_date: string
+  published_utc: string | null
+  title: string
+  source_line: string
+  snippet: string
+}
+
+export interface NewsResponse {
+  ticker: string
+  trade_date: string
+  items: NewsItem[]
+  count: number
+}
+
+export interface FundamentalsResponse {
+  ticker: string
+  reference_date: string | null
+  metrics: Record<string, string>
+}
+
+export function getNews(
+  ticker: string,
+  tradeDate: string,
+  windowDays = 3,
+): Promise<NewsResponse> {
+  const q = new URLSearchParams({ trade_date: tradeDate, window_days: String(windowDays) })
+  return request<NewsResponse>(`/news/${encodeURIComponent(ticker)}?${q}`)
+}
+
+export function getFundamentals(
+  ticker: string,
+  tradeDate: string,
+): Promise<FundamentalsResponse> {
+  const q = new URLSearchParams({ trade_date: tradeDate })
+  return request<FundamentalsResponse>(`/fundamentals/${encodeURIComponent(ticker)}?${q}`)
 }
