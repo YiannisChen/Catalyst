@@ -27,6 +27,7 @@ venv/
 /DemoUI/
 
 # macOS
+.DS_Store
 docs/.DS_Store
 
 # Package: data-core scripts & references
@@ -36,3 +37,10 @@ docs/.DS_Store
 
 # local pullback artifacts
 .local/
+
+# Python packaging
+*.egg-info/
+
+# Frontend build output
+dist/
+node_modules/
