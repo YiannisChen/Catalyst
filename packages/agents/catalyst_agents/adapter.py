@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Callable
 
 from catalyst_eval.schema.result import AttributionResult, PredictedCause, RetrievedEvidence
+from catalyst_agents.retrieval.policy import Layer
 
 
 def make_catalyst_predict(
@@ -41,9 +42,20 @@ def make_catalyst_predict(
             "reranked_chunks": [],
             "graded_evidence": [],
             "critic_reasoning": "",
+            "critic_decision": None,
             "causes": [],
             "summary_md": "",
             "grounding_rate": None,
+            "output_status": None,
+            "validation_error": None,
+            "validator_attempts": 0,
+            "phase": None,
+            "router_edge": None,
+            "router_reason": None,
+            "expansions_used": 0,
+            "max_expansions": 2,
+            "current_layer": Layer.DIRECT,
+            "retrieval_metadata": None,
             "cost_breakdown": [],
             "total_cost_usd": 0.0,
             "total_tokens": 0,
@@ -81,3 +93,16 @@ def make_catalyst_predict(
         )
 
     return predict
+
+
+def make_rag_only_predict(
+    graph,
+    model_id: str = "claude-sonnet-4-20250514",
+) -> Callable[[str, str], AttributionResult]:
+    """Alias for the P1 rag_only pipeline route.
+
+    rag_only reuses the same Miner→Critic→Judge graph output contract as
+    make_catalyst_predict while allowing callers to register an explicit
+    pipeline-mode name.
+    """
+    return make_catalyst_predict(graph, model_id=model_id)

@@ -15,6 +15,7 @@ Concurrency model (BUG-003 / BUG-004):
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import json
 import logging
 import sqlite3
@@ -22,20 +23,101 @@ from pathlib import Path
 from typing import Any, Callable, Awaitable
 
 from catalyst_data.connectors.base import FetchResult
+from catalyst_data.config import (
+    FALLBACK_PRICE_MOVE_THRESHOLD,
+    FALLBACK_RETRY_THRESHOLD,
+)
+from catalyst_data.dedup.cross_source import AssetCandidate as NormalizedAsset
 from catalyst_data.pipeline.clean import run_clean
 from catalyst_data.pipeline.ingest import run_ingest
 from catalyst_data.pipeline.transform import run_transform
+from catalyst_data.quality import assess_quality_fields, normalize_title
 from catalyst_data.source_mapping import map_logical_source
 from catalyst_data.storage.sqlite import (
     compute_asset_id,
     init_db,
     upsert_clean_asset,
+    upsert_ohlcv,
     upsert_raw_asset,
 )
 
 logger = logging.getLogger(__name__)
 
 FetchFn = Callable[..., Awaitable[FetchResult]]
+
+
+@dataclass(frozen=True)
+class PrimaryFetchResult:
+    articles: list[NormalizedAsset]
+    connectivity_failure_count: int
+    price_move_pct: float | None
+
+
+def _extract_ohlcv_bar(validated_data: dict[str, Any]) -> dict[str, float | str] | None:
+    payload = validated_data.get("ohlcv")
+    if not isinstance(payload, dict):
+        return None
+
+    results = payload.get("results")
+    if not isinstance(results, list) or not results:
+        return None
+
+    first_bar = results[0]
+    if not isinstance(first_bar, dict):
+        return None
+
+    try:
+        return {
+            "open": float(first_bar["o"]),
+            "high": float(first_bar["h"]),
+            "low": float(first_bar["l"]),
+            "close": float(first_bar["c"]),
+            "volume": float(first_bar["v"]),
+        }
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def should_trigger_fallback(
+    ticker: str,
+    date: str,
+    primary_result: PrimaryFetchResult,
+) -> tuple[bool, str | None]:
+    """Return whether fallback should run, plus the first matching trigger reason."""
+    del ticker, date
+
+    if (
+        len(primary_result.articles) == 0
+        and primary_result.price_move_pct is not None
+        and abs(primary_result.price_move_pct) >= FALLBACK_PRICE_MOVE_THRESHOLD
+    ):
+        return True, "empty_primary_with_big_move"
+
+    if primary_result.connectivity_failure_count >= FALLBACK_RETRY_THRESHOLD:
+        return True, "primary_connectivity_failures"
+
+    if primary_result.articles:
+        title_counts: dict[str, int] = {}
+        for article in primary_result.articles:
+            normalized = normalize_title(article.title)
+            if normalized is None:
+                continue
+            title_counts[normalized] = title_counts.get(normalized, 0) + 1
+
+        assessments = [
+            assess_quality_fields(
+                title=article.title,
+                source=article.source_type,
+                published_utc=article.published_utc.isoformat(),
+                body_md=article.body_md,
+                title_counts=title_counts,
+            )
+            for article in primary_result.articles
+        ]
+        if assessments and all(not assessment.is_rag_eligible for assessment in assessments):
+            return True, "primary_all_fails_quality"
+
+    return False, None
 
 
 async def _fetch_endpoints(
@@ -71,6 +153,7 @@ def _store_bronze_and_silver(
     http_status: int | None,
     endpoints: list[str],
     content_md: str,
+    ohlcv_bar: dict[str, float | str] | None = None,
 ) -> str | None:
     """Synchronous helper that writes Bronze + Silver in one thread-safe call.
 
@@ -100,6 +183,18 @@ def _store_bronze_and_silver(
             reference_date=date,
             content_md=content_md,
         )
+        if ohlcv_bar is not None:
+            upsert_ohlcv(
+                conn,
+                symbol=ticker,
+                date=date,
+                open=float(ohlcv_bar["open"]),
+                high=float(ohlcv_bar["high"]),
+                low=float(ohlcv_bar["low"]),
+                close=float(ohlcv_bar["close"]),
+                volume=float(ohlcv_bar["volume"]),
+                source="polygon",
+            )
         return None
     except Exception as exc:  # noqa: BLE001
         logger.error("Storage failed for %s: %s", asset_id, exc)
@@ -123,6 +218,8 @@ async def _process_source(
     summary: dict[str, Any] = {
         "source": source,
         "ok": False,
+        "skipped": False,
+        "skip_reason": None,
         "asset_id": None,
         "error": None,
         "endpoint_statuses": {},
@@ -181,6 +278,10 @@ async def _process_source(
         return summary
 
     cleaned_data = clean_result.data
+    if "news" in source and isinstance(cleaned_data, list) and len(cleaned_data) == 0:
+        summary["skipped"] = True
+        summary["skip_reason"] = "no_articles"
+        return summary
 
     # 6. Transform to Markdown
     transform_result = run_transform(cleaned_data, source, ticker)
@@ -194,6 +295,12 @@ async def _process_source(
 
     # 7. Store Bronze + Silver (offloaded to thread pool to avoid blocking loop)
     summary["asset_id"] = asset_id
+    ohlcv_bar = _extract_ohlcv_bar(validated_data) if source == "polygon_ohlcv" else None
+    if source == "polygon_ohlcv" and ohlcv_bar is None:
+        summary["asset_id"] = None
+        summary["skipped"] = True
+        summary["skip_reason"] = "no_ohlcv_bar"
+        return summary
     storage_err = await asyncio.to_thread(
         _store_bronze_and_silver,
         db_path,
@@ -205,6 +312,7 @@ async def _process_source(
         http_status=first_status,
         endpoints=endpoints,
         content_md=content_md,
+        ohlcv_bar=ohlcv_bar,
     )
     if storage_err:
         summary["error"] = f"storage: {storage_err}"

@@ -7,32 +7,17 @@ TDD: tests written before implementation.
 from __future__ import annotations
 
 import json
+import sqlite3
 from unittest.mock import patch, MagicMock
 
-from catalyst_agents.graph import build_attribution_graph, route_after_critic
+from catalyst_agents.graph import build_attribution_graph
+from catalyst_agents.trace.artifacts import read_node_artifacts
+from catalyst_agents.state import OutputStatus
+from catalyst_agents.retrieval.policy import Layer
 
 
 # ---------------------------------------------------------------------------
-# Route function unit tests
-# ---------------------------------------------------------------------------
-
-def test_route_after_critic_with_evidence():
-    state = {"graded_evidence": [{"chunk_id": "c1", "relevance": 0.8}]}
-    assert route_after_critic(state) == "judge"
-
-
-def test_route_after_critic_without_evidence():
-    state = {"graded_evidence": []}
-    assert route_after_critic(state) == "insufficient"
-
-
-def test_route_after_critic_missing_key():
-    state = {}
-    assert route_after_critic(state) == "insufficient"
-
-
-# ---------------------------------------------------------------------------
-# Mock infrastructure
+# Integration fixture data
 # ---------------------------------------------------------------------------
 
 MOCK_CHUNKS = [
@@ -113,6 +98,10 @@ def mock_hybrid_search(table, query, ticker=None, date_range=None, top_k=20, emb
     return MOCK_CHUNKS * min(top_k, 8)
 
 
+def mock_retrieve(query, layer, metadata, *, rerank=None):
+    return MOCK_CHUNKS[: metadata.top_k]
+
+
 # ---------------------------------------------------------------------------
 # Integration tests
 # ---------------------------------------------------------------------------
@@ -139,8 +128,7 @@ def _base_state() -> dict:
 
 def test_mcj_graph_full_pipeline(monkeypatch):
     """Full MCJ path: miner → critic → judge produces valid attribution."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
 
@@ -150,12 +138,11 @@ def test_mcj_graph_full_pipeline(monkeypatch):
     assert result["summary_md"] != ""
     assert result["grounding_rate"] is not None
     assert result["grounding_rate"] >= 0.0
+    assert result["output_status"] in {OutputStatus.SUFFICIENT, OutputStatus.PARTIAL}
 
 
 def test_mcj_graph_accumulates_total_costs(monkeypatch):
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
     result = graph.invoke(_base_state())
@@ -167,8 +154,7 @@ def test_mcj_graph_accumulates_total_costs(monkeypatch):
 
 def test_baseline_graph_skips_critic(monkeypatch):
     """With use_critic=False, critic node is bypassed and no critic cost is recorded."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     llm = MockLLM()
     llm._responses = [JUDGE_RESPONSE]  # Only judge response — critic never called
@@ -184,9 +170,7 @@ def test_baseline_graph_skips_critic(monkeypatch):
 
 def test_baseline_graph_passes_usable_evidence_to_judge(monkeypatch):
     """Baseline Miner->Judge must still expose evidence IDs for grounding and citations."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     llm = MockLLM()
     llm._responses = [JUDGE_RESPONSE]  # Judge only in baseline mode
@@ -200,8 +184,7 @@ def test_baseline_graph_passes_usable_evidence_to_judge(monkeypatch):
 
 def test_mcj_insufficient_evidence_path(monkeypatch):
     """When all chunks have relevance <= 0.5, routing goes to insufficient_handler."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     all_low = json.dumps({
         "graded_chunks": [
@@ -229,9 +212,7 @@ def test_mcj_insufficient_evidence_path(monkeypatch):
 
 def test_mcj_graph_critic_failure_routes_to_system_error(monkeypatch):
     """LLM failure must route to system_error_handler, not insufficient_handler (BUG-005)."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
     monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", lambda _: None)
 
     graph = build_attribution_graph(use_critic=True, llm=FailingLLM())
@@ -242,10 +223,46 @@ def test_mcj_graph_critic_failure_routes_to_system_error(monkeypatch):
     assert result["grounding_rate"] is None
 
 
-def test_baseline_graph_judge_failure_falls_back_instead_of_crashing(monkeypatch):
-    import catalyst_data.storage.lancedb_store as lancedb_mod
+def test_mcj_graph_expand_macro_loops_back_through_miner(monkeypatch):
+    captured_layers = []
 
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    def fake_retrieve(query, layer, metadata, *, rerank=None):
+        captured_layers.append(layer)
+        return MOCK_CHUNKS
+
+    decisions = iter(
+        [
+            ("partial", "expand_macro", 0.45, "Need macro expansion."),
+            ("partial", "proceed", 0.65, "Macro evidence is enough to judge."),
+        ]
+    )
+
+    def fake_decision(filtered, reasoning):
+        sufficiency, next_action, magnitude_coverage, reason = next(decisions)
+        from catalyst_agents.state import CriticDecision
+
+        return CriticDecision(
+            sufficiency=sufficiency,
+            next_action=next_action,
+            magnitude_coverage=magnitude_coverage,
+            reasoning=reason,
+        )
+
+    llm = MockLLM()
+    llm._responses = [CRITIC_RESPONSE, CRITIC_RESPONSE, JUDGE_RESPONSE]
+
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", fake_retrieve)
+    monkeypatch.setattr("catalyst_agents.nodes.critic._build_critic_decision", fake_decision)
+
+    graph = build_attribution_graph(use_critic=True, llm=llm)
+    result = graph.invoke(_base_state())
+
+    assert captured_layers == [Layer.DIRECT, Layer.MACRO]
+    assert result["summary_md"] != ""
+
+
+def test_baseline_graph_judge_failure_falls_back_instead_of_crashing(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
     monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", lambda _: None)
 
     graph = build_attribution_graph(use_critic=False, llm=FailingLLM())
@@ -265,3 +282,59 @@ def test_build_graph_no_critic_returns_invokable_object():
     """build_attribution_graph(use_critic=False) must return an object with .invoke()."""
     graph = build_attribution_graph(use_critic=False)
     assert callable(getattr(graph, "invoke", None))
+
+
+def test_graph_invoke_uses_provided_run_id_and_persists_artifacts(tmp_path, monkeypatch):
+    db_path = tmp_path / "trace_graph.db"
+    monkeypatch.setenv("CATALYST_DB_PATH", str(db_path))
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
+    run_id = "external-run-1"
+
+    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    result = graph.invoke(_base_state(), run_id=run_id)
+
+    conn = sqlite3.connect(db_path)
+    run = conn.execute("SELECT run_id FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
+    artifacts = read_node_artifacts(conn, run_id=run_id)
+    conn.close()
+    types_by_node = {}
+    for artifact in artifacts:
+        types_by_node.setdefault(artifact["node"], set()).add(artifact["artifact_type"])
+
+    assert result["run_id"] == run_id
+    assert run is not None
+    assert "retrieved_chunks" in types_by_node.get("miner", set())
+    assert "graded_evidence" in types_by_node.get("critic", set())
+    assert "retrieved_chunks" not in types_by_node.get("critic", set())
+
+
+def test_graph_persists_raw_llm_response_artifacts(tmp_path, monkeypatch):
+    db_path = tmp_path / "trace_graph.db"
+    monkeypatch.setenv("CATALYST_DB_PATH", str(db_path))
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
+    run_id = "external-run-2"
+
+    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    graph.invoke(_base_state(), run_id=run_id)
+
+    conn = sqlite3.connect(db_path)
+    critic_rows = read_node_artifacts(conn, run_id=run_id, artifact_type="raw_llm_response")
+    conn.close()
+    nodes = {row["node"] for row in critic_rows}
+
+    assert "critic" in nodes
+    assert "judge" in nodes
+
+
+def test_graph_ignores_artifact_write_failure_and_keeps_mcj_result(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
+
+    def _boom(*args, **kwargs):
+        raise TypeError("artifact write failed")
+
+    monkeypatch.setattr("catalyst_agents.graph.write_node_artifact", _boom)
+    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    result = graph.invoke(_base_state())
+
+    assert len(result["causes"]) > 0
+    assert result["summary_md"] != ""

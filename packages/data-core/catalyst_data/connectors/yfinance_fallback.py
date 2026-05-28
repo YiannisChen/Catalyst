@@ -5,6 +5,7 @@ import time
 from typing import Callable, Awaitable, TYPE_CHECKING
 
 from catalyst_data.connectors.base import FetchResult
+from catalyst_data.retry import with_retry
 
 if TYPE_CHECKING:
     from catalyst_data.rate_limiter import TokenBucketLimiter
@@ -14,6 +15,15 @@ YF_STATEMENT_MAP = {
     "balance_sheet": "balance_sheet",
     "cash_flow": "cashflow",
 }
+
+
+def _status_for_yfinance_exception(exc: Exception) -> int:
+    message = str(exc).lower()
+    if "429" in message or "too many requests" in message or "rate limit" in message:
+        return 429
+    if "timeout" in message:
+        return 0
+    return 0
 
 
 def _fetch_yf_sync(ticker: str, attr_name: str) -> dict | None:
@@ -65,10 +75,10 @@ def create_yfinance_fetcher(
         except Exception as e:
             latency = (time.monotonic() - start) * 1000
             return FetchResult(
-                status=0,
+                status=_status_for_yfinance_exception(e),
                 error=str(e),
                 latency_ms=latency,
                 source_label=f"yfinance:{endpoint}",
             )
 
-    return fetch
+    return with_retry(fetch, provider="yfinance")

@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "catalyst-app"
+version = "0.1.0"
+description = "Catalyst runtime application package"
+requires-python = ">=3.11"
+dependencies = [
+  "catalyst-agents>=0.1.0",
+  "catalyst-data>=0.1.0",
+  "fastapi",
+  "pydantic>=2.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["catalyst_app*"]

@@ -23,6 +23,10 @@ logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
 BASE_BACKOFF_SECONDS = 0.1
+_JSON_REPAIR_HINT = (
+    "\n\nIMPORTANT: Previous response had invalid JSON. "
+    "Return ONLY the JSON object, keep reasoning brief (max 15 words per chunk)."
+)
 
 
 def _safe_sleep(seconds: float) -> None:
@@ -52,6 +56,7 @@ def invoke_with_retries(
     *,
     parse_fn: Callable[[str], dict],
     node_name: str = "node",
+    retry_prompt_fn: Callable[[str, int], str] | None = None,
 ) -> tuple[Any, dict]:
     """Invoke *llm* with retries, parsing the response on each attempt.
 
@@ -70,8 +75,13 @@ def invoke_with_retries(
     """
     last_error: Exception | None = None
     for attempt in range(MAX_RETRIES):
+        effective_prompt = prompt
+        if attempt > 0 and retry_prompt_fn is not None:
+            effective_prompt = retry_prompt_fn(prompt, attempt)
+        elif attempt > 0 and _is_jsonish_error(last_error):
+            effective_prompt = prompt + _JSON_REPAIR_HINT
         try:
-            response = llm.invoke(prompt)
+            response = llm.invoke(effective_prompt)
             parsed = parse_fn(response.content)
             return response, parsed
         except Exception as exc:
@@ -86,3 +96,17 @@ def invoke_with_retries(
     raise RuntimeError(
         f"{node_name} failed after {MAX_RETRIES} attempts: {last_error}"
     ) from last_error
+
+
+def _is_jsonish_error(exc: Exception | None) -> bool:
+    if exc is None:
+        return False
+    name = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    return (
+        "json" in name
+        or "decode" in name
+        or "validationerror" in name
+        or "invalid json" in msg
+        or "unterminated string" in msg
+    )

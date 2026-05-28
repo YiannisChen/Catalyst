@@ -2,6 +2,7 @@
 
 Written before implementation per TDD discipline.
 """
+from dataclasses import fields
 import pytest
 from typing import get_type_hints
 
@@ -121,6 +122,10 @@ def test_attribution_state_required_fields():
         "trade_date",
         "query",
         "price_move_pct",
+        "query_ticker_raw",
+        "ticker_consistent",
+        "market_session_valid",
+        "magnitude_plausible",
         "retrieved_chunks",
         "reranked_chunks",
         "graded_evidence",
@@ -146,6 +151,10 @@ def test_attribution_state_instantiation():
         "trade_date": "2025-01-15",
         "query": None,
         "price_move_pct": -2.4,
+        "query_ticker_raw": None,
+        "ticker_consistent": None,
+        "market_session_valid": None,
+        "magnitude_plausible": None,
         "retrieved_chunks": [],
         "reranked_chunks": [],
         "graded_evidence": [],
@@ -160,3 +169,22 @@ def test_attribution_state_instantiation():
     }
     assert instance["ticker"] == "AAPL"
     assert instance["model_id"] == "claude-sonnet-4-20250514"
+
+
+def test_output_status_enum_has_expected_names():
+    from catalyst_agents.state import OutputStatus
+
+    assert {"SUFFICIENT", "PARTIAL", "INSUFFICIENT", "SYSTEM_ERROR"} == {
+        status.name for status in OutputStatus
+    }
+
+
+def test_critic_decision_dataclass_has_required_fields():
+    from catalyst_agents.state import CriticDecision
+
+    assert [field.name for field in fields(CriticDecision)] == [
+        "sufficiency",
+        "next_action",
+        "magnitude_coverage",
+        "reasoning",
+    ]

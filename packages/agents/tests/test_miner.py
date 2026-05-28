@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from catalyst_agents.nodes.miner import miner, _build_query, _compute_date_range
+from catalyst_agents.retrieval.policy import Layer
 
 
 # ---------------------------------------------------------------------------
@@ -76,14 +77,14 @@ class MockReranker:
         return [20 - i for i in range(len(pairs))]
 
 
-def _make_hybrid_search_mock(chunks=None):
+def _make_retrieve_mock(chunks=None):
     if chunks is None:
         chunks = MOCK_CHUNKS
 
-    def mock_hybrid_search(table, query, ticker=None, date_range=None, top_k=20, embedding_fn=None):
-        return chunks[:top_k]
+    def mock_retrieve(query, layer, metadata, *, rerank=None):
+        return chunks[: metadata.top_k]
 
-    return mock_hybrid_search
+    return mock_retrieve
 
 
 # ---------------------------------------------------------------------------
@@ -91,8 +92,7 @@ def _make_hybrid_search_mock(chunks=None):
 # ---------------------------------------------------------------------------
 
 def test_miner_returns_retrieved_and_reranked(monkeypatch):
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", _make_hybrid_search_mock())
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
 
     state = {
         "ticker": "AAPL",
@@ -107,8 +107,7 @@ def test_miner_returns_retrieved_and_reranked(monkeypatch):
 
 
 def test_miner_without_reranker_uses_rrf_order(monkeypatch):
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", _make_hybrid_search_mock())
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
 
     state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
     result = miner(state, table=None, embedding_fn=None, reranker=None)
@@ -120,8 +119,7 @@ def test_miner_without_reranker_uses_rrf_order(monkeypatch):
 
 def test_miner_with_reranker_reorders(monkeypatch):
     """MockReranker returns [20, 19, 18, ...] — first chunk keeps highest score."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", _make_hybrid_search_mock())
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
 
     state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
     result = miner(state, table=None, embedding_fn=None, reranker=MockReranker())
@@ -131,8 +129,7 @@ def test_miner_with_reranker_reorders(monkeypatch):
 
 def test_miner_reranker_assigns_scores(monkeypatch):
     """Each chunk in retrieved_chunks must have a rerank_score after reranking."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", _make_hybrid_search_mock())
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
 
     state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
     result = miner(state, table=None, embedding_fn=None, reranker=MockReranker())
@@ -142,8 +139,7 @@ def test_miner_reranker_assigns_scores(monkeypatch):
 
 
 def test_miner_empty_retrieval(monkeypatch):
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", lambda table, query, **kw: [])
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", lambda query, layer, metadata, *, rerank=None: [])
 
     state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
     result = miner(state, table=None, embedding_fn=None, reranker=None)
@@ -154,8 +150,7 @@ def test_miner_empty_retrieval(monkeypatch):
 
 def test_miner_empty_retrieval_with_reranker_skipped(monkeypatch):
     """With an empty result set, reranker should never be called."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", lambda table, query, **kw: [])
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", lambda query, layer, metadata, *, rerank=None: [])
 
     class FailingReranker:
         def compute_score(self, pairs):
@@ -170,9 +165,8 @@ def test_miner_empty_retrieval_with_reranker_skipped(monkeypatch):
 
 def test_miner_fewer_than_top_k_results(monkeypatch):
     """If retrieval returns fewer than TOP_K_RERANKED chunks, reranked list is capped at len."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
     small_chunks = MOCK_CHUNKS[:3]
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", _make_hybrid_search_mock(small_chunks))
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock(small_chunks))
 
     state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
     result = miner(state, table=None, embedding_fn=None, reranker=None)
@@ -182,16 +176,15 @@ def test_miner_fewer_than_top_k_results(monkeypatch):
 
 
 def test_miner_uses_nlp_query_for_search(monkeypatch):
-    """The query passed to hybrid_search should match the NLP query from state."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
+    """The query passed to retrieve should match the NLP query from state."""
 
     captured_query = {}
 
-    def capturing_search(table, query, ticker=None, date_range=None, top_k=20, embedding_fn=None):
+    def capturing_search(query, layer, metadata, *, rerank=None):
         captured_query["value"] = query
-        return MOCK_CHUNKS[:top_k]
+        return MOCK_CHUNKS[: metadata.top_k]
 
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", capturing_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", capturing_search)
 
     state = {
         "ticker": "AAPL",
@@ -205,17 +198,16 @@ def test_miner_uses_nlp_query_for_search(monkeypatch):
 
 
 def test_miner_date_range_passed_to_search(monkeypatch):
-    """The ±3-day date_range must be forwarded to hybrid_search."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
+    """The ±3-day date_range must be forwarded to retrieval metadata."""
 
     captured = {}
 
-    def capturing_search(table, query, ticker=None, date_range=None, top_k=20, embedding_fn=None):
-        captured["date_range"] = date_range
-        captured["ticker"] = ticker
-        return MOCK_CHUNKS[:top_k]
+    def capturing_search(query, layer, metadata, *, rerank=None):
+        captured["date_range"] = metadata.date_range
+        captured["ticker"] = metadata.ticker
+        return MOCK_CHUNKS[: metadata.top_k]
 
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", capturing_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", capturing_search)
 
     state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
     miner(state, table=None, embedding_fn=None, reranker=None)
@@ -226,10 +218,8 @@ def test_miner_date_range_passed_to_search(monkeypatch):
 
 def test_miner_reranker_scalar_score_handled(monkeypatch):
     """If reranker.compute_score returns a scalar (single pair), it must be wrapped."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-
     single_chunk = [MOCK_CHUNKS[0]]
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", _make_hybrid_search_mock(single_chunk))
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock(single_chunk))
 
     class ScalarReranker:
         def compute_score(self, pairs):
@@ -242,3 +232,100 @@ def test_miner_reranker_scalar_score_handled(monkeypatch):
 
     assert len(result["reranked_chunks"]) == 1
     assert result["reranked_chunks"][0]["rerank_score"] == pytest.approx(0.95)
+
+
+def test_miner_uses_macro_layer_when_requested(monkeypatch):
+    captured = {}
+
+    def fake_retrieve(query, layer, metadata, *, rerank=None):
+        captured["query"] = query
+        captured["layer"] = layer
+        captured["ticker"] = metadata.ticker
+        return MOCK_CHUNKS[:4]
+
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", fake_retrieve)
+
+    state = {
+        "ticker": "AAPL",
+        "trade_date": "2026-01-15",
+        "query": "What macro factors moved Apple?",
+        "price_move_pct": -4.2,
+        "current_layer": Layer.MACRO,
+    }
+    result = miner(state, table=None, embedding_fn=None, reranker=None)
+
+    assert captured["query"] == "What macro factors moved Apple?"
+    assert captured["layer"] == Layer.MACRO
+    assert captured["ticker"] == "AAPL"
+    assert len(result["retrieved_chunks"]) == 4
+
+
+def test_miner_sets_ticker_consistent_false_on_query_ticker_mismatch(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
+    state = {
+        "ticker": "AAPL",
+        "trade_date": "2026-01-15",
+        "query": "TSLA dropped about 3% on June 12, 2025. Why?",
+        "price_move_pct": None,
+    }
+    out = miner(state, table=None, embedding_fn=None, reranker=None)
+    assert out["query_ticker_raw"] == "TSLA"
+    assert out["ticker_consistent"] is False
+
+
+def test_miner_short_circuits_when_market_session_invalid(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner._has_ohlcv_session", lambda *args, **kwargs: False)
+    state = {
+        "ticker": "AAPL",
+        "trade_date": "2025-04-19",
+        "query": "AAPL down 2%",
+        "price_move_pct": None,
+        "retrieval_metadata": {"db_path": "/tmp/mock.db"},
+    }
+    out = miner(state, table=None, embedding_fn=None, reranker=None)
+    assert out["market_session_valid"] is False
+    assert out["retrieved_chunks"] == []
+    assert out["reranked_chunks"] == []
+
+
+def test_extract_query_ticker_uses_known_ticker_not_acronym():
+    from catalyst_agents.nodes.miner import _extract_query_ticker
+
+    known = {"AAPL", "MSFT", "TSLA", "MRNA"}
+    q = "On March 18, 2025, Microsoft CEO resigned unexpectedly"
+    assert _extract_query_ticker(q, known) == "MSFT"
+
+
+def test_extract_query_ticker_ignores_fda_and_keeps_symbol():
+    from catalyst_agents.nodes.miner import _extract_query_ticker
+
+    known = {"MRNA", "AAPL"}
+    q = "FDA approved MRNA vaccine update"
+    assert _extract_query_ticker(q, known) == "MRNA"
+
+
+def test_extract_query_ticker_returns_none_for_typo_not_in_whitelist():
+    from catalyst_agents.nodes.miner import _extract_query_ticker
+
+    known = {"AAPL", "TSLA"}
+    q = "APPL dropped 3% today"
+    assert _extract_query_ticker(q, known) is None
+
+
+def test_ticker_consistent_none_when_query_has_no_ticker(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
+    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": "why did it drop?", "price_move_pct": None}
+    out = miner(state, table=None, embedding_fn=None, reranker=None)
+    assert out["ticker_consistent"] is None
+
+
+def test_check_magnitude_plausible_extreme():
+    from catalyst_agents.nodes.miner import _check_magnitude_plausible
+
+    assert _check_magnitude_plausible(actual_pct=1.5, claimed_pct=34.0, tolerance=10.0) is False
+
+
+def test_check_magnitude_plausible_normal():
+    from catalyst_agents.nodes.miner import _check_magnitude_plausible
+
+    assert _check_magnitude_plausible(actual_pct=2.8, claimed_pct=3.2, tolerance=10.0) is True

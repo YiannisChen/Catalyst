@@ -2,11 +2,29 @@
 
 **Last updated:** 2026-04-13  
 **Purpose:** 快速让新会话了解当前状态，并在此基础上给出改进建议。  
-**Important framing:** 当前是中期冻结后的研究原型，不是完整产品形态。
+**Important framing:** 当前对外定位是“以金融事件解释为载体的 agent engineering showcase”，不是金融归因产品。
 
 ---
 
-## 1. Midterm version 现状（已实现与边界）
+## 1. Midterm -> Defense -> Roadmap（状态分层）
+
+### 1.1 Midterm freeze（历史基线）
+- 中期版本是 script-driven research prototype。
+- 能力边界：`packages/data-core`、`packages/eval`、`packages/agents` 可跑通，但不宣称 API/MCP/前端产品化。
+- 结论：midterm 证明链路可跑，不代表系统已具备可审计、可拒答、可回放的控制平面能力。
+
+### 1.2 Defense now（当前建设目标）
+- 防守目标不是“比 Claude 答得更聪明”，而是把高不确定问题做成可治理系统。
+- P0 核心增量：`Validator + 四态输出 + trace 持久化 + direct_llm baseline + gate 化评测`。
+- 关键可见信号：每条 claim 可追溯 evidence，证据不足时显式 `PARTIAL/INSUFFICIENT`，失败沉淀为 taxonomy + regression tests。
+
+### 1.3 Roadmap（答辩后）
+- 延伸方向：Layer 3 retrieval、budget circuit breaker、LangSmith 对齐、更完整 eval matrix。
+- 对外叙事：金融是高噪声测试域，不是产品商业方向；工程能力才是资产。
+
+---
+
+## 2. Midterm version 现状（已实现与边界）
 
 ### 1.1 Midterm 的准确定位
 - 当前中期版本是 **script-driven research prototype**。
@@ -125,4 +143,3 @@ DY 提供的是工程化审查视角，核心是在问：这是“可持续系�
 1. 先输出“问题-改进映射表”（每个问题对应可实施设计改动）。
 2. 再给出“4 周可落地路线图”（每周有可验收产物和指标）。
 3. 最后给“答辩话术模板”（强调中期边界 + full version 价值 + 非 toy 证据）。
-

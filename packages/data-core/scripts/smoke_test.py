@@ -27,7 +27,7 @@ from pathlib import Path
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PACKAGE_ROOT))
 
-from catalyst_data.config import RATE_POLICIES, RatePolicy
+from catalyst_data.config import RATE_POLICIES, provider_api_key
 from catalyst_data.connectors.base import FetchResult
 from catalyst_data.orchestrator import process_request
 from catalyst_data.rate_limiter import TokenBucketLimiter
@@ -55,11 +55,11 @@ def _load_dotenv(env_path: Path) -> None:
 def get_available_sources() -> list[str]:
     """Determine which logical sources have API keys configured."""
     sources: list[str] = []
-    if os.environ.get("POLYGON_API_KEY"):
+    if provider_api_key("polygon"):
         sources.extend(["polygon_news", "polygon_ohlcv"])
-    if os.environ.get("FMP_API_KEY"):
+    if provider_api_key("fmp"):
         sources.append("fmp_fundamentals")
-    if os.environ.get("FRED_API_KEY"):
+    if provider_api_key("fred"):
         sources.append("fred_macro")
     if not sources:
         print("WARNING: No API keys found. Set POLYGON_API_KEY, FMP_API_KEY, or FRED_API_KEY.")
@@ -123,7 +123,7 @@ async def _build_fetch_fn():
 
     # -- Polygon --
     _polygon_fetch = None
-    polygon_key = os.environ.get("POLYGON_API_KEY")
+    polygon_key = provider_api_key("polygon")
     if polygon_key:
         from catalyst_data.connectors.polygon import create_polygon_fetcher
 
@@ -135,7 +135,7 @@ async def _build_fetch_fn():
 
     # -- FMP --
     _fmp_fetch = None
-    fmp_key = os.environ.get("FMP_API_KEY")
+    fmp_key = provider_api_key("fmp")
     if fmp_key:
         from catalyst_data.connectors.fmp import create_fmp_fetcher
 
@@ -147,7 +147,7 @@ async def _build_fetch_fn():
 
     # -- FRED --
     _fred_fetch = None
-    fred_key = os.environ.get("FRED_API_KEY")
+    fred_key = provider_api_key("fred")
     if fred_key:
         from catalyst_data.connectors.fred import create_fred_fetcher
 

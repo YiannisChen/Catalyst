@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 
-from catalyst_agents.adapter import make_catalyst_predict
+from catalyst_agents.adapter import make_catalyst_predict, make_rag_only_predict
 from catalyst_agents.graph import build_attribution_graph
 from catalyst_eval.schema.result import AttributionResult
+from catalyst_agents.state import OutputStatus
 
 
 # ---------------------------------------------------------------------------
@@ -91,14 +92,17 @@ def mock_hybrid_search(table, query, ticker=None, date_range=None, top_k=20, emb
     return MOCK_CHUNKS * min(top_k, 8)
 
 
+def mock_retrieve(query, layer, metadata, *, rerank=None):
+    return MOCK_CHUNKS[: metadata.top_k]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 def test_adapter_returns_attribution_result(monkeypatch):
     """make_catalyst_predict must return an AttributionResult for a valid ticker/date."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
     predict = make_catalyst_predict(graph)
@@ -111,8 +115,7 @@ def test_adapter_returns_attribution_result(monkeypatch):
 
 def test_adapter_maps_causes_correctly(monkeypatch):
     """Adapter must translate graph causes dicts into PredictedCause instances."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
     predict = make_catalyst_predict(graph)
@@ -128,8 +131,7 @@ def test_adapter_maps_causes_correctly(monkeypatch):
 
 def test_adapter_tracks_cost(monkeypatch):
     """Adapter must propagate cost tracking fields from graph state."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
     predict = make_catalyst_predict(graph)
@@ -142,8 +144,7 @@ def test_adapter_tracks_cost(monkeypatch):
 
 def test_adapter_includes_retrieved_evidence(monkeypatch):
     """Adapter must expose reranked chunks as RetrievedEvidence with asset_id and content_md."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
     predict = make_catalyst_predict(graph)
@@ -157,8 +158,7 @@ def test_adapter_includes_retrieved_evidence(monkeypatch):
 
 def test_adapter_works_with_eval_harness(monkeypatch):
     """predict_fn produced by make_catalyst_predict must be compatible with evaluate()."""
-    import catalyst_data.storage.lancedb_store as lancedb_mod
-    monkeypatch.setattr(lancedb_mod, "hybrid_search", mock_hybrid_search)
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     from catalyst_eval.harness.runner import evaluate
     from catalyst_eval.metrics.attribution_f1 import AttributionF1
@@ -188,3 +188,45 @@ def test_adapter_works_with_eval_harness(monkeypatch):
     report = evaluate(predict_fn=predict, golden_set=golden_set, metrics=[AttributionF1()])
     assert "attribution_f1" in report.scores
     assert report.scores["attribution_f1"] > 0
+
+
+def test_rag_only_predict_uses_retrieval_outputs(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
+
+    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    predict = make_rag_only_predict(graph)
+    result = predict("AAPL", "2026-01-15")
+
+    assert len(result.retrieved_evidence) > 0
+    assert result.retrieved_evidence[0].asset_id == "c1"
+
+
+def test_rag_only_predict_preserves_insufficient_status_mapping():
+    class StubGraph:
+        def invoke(self, state):
+            return {
+                **state,
+                "ticker": state["ticker"],
+                "trade_date": state["trade_date"],
+                "causes": [
+                    {
+                        "text": "Insufficient evidence in available data sources",
+                        "category": "unknown",
+                        "confidence": 1.0,
+                        "evidence_ids": [],
+                        "direction": "unknown",
+                    }
+                ],
+                "summary_md": "No evidence meeting relevance threshold.",
+                "reranked_chunks": [],
+                "output_status": OutputStatus.INSUFFICIENT,
+                "cost_breakdown": [],
+                "total_cost_usd": 0.0,
+                "total_tokens": 0,
+            }
+
+    predict = make_rag_only_predict(StubGraph())
+    result = predict("AAPL", "2026-01-15")
+
+    assert result.causes[0].category == "unknown"
+    assert result.retrieved_evidence == []

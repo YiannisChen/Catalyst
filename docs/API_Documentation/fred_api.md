@@ -1,3 +1,5 @@
+> Supporting reference; canonical source: `docs/superpowers/specs/2026-04-27-catalyst-fullversion-strategy.md` (strategy), `docs/full-version-execution-spec.md` (technical), `docs/current_situation.md` (status).
+
 # FRED® API — Catalyst Data-Core
 
 > **Scope:** REST usage for macro series. Authoritative reference: [FRED API documentation](https://fred.stlouisfed.org/docs/api/fred/). **Connector:** `fred.py` calls **`series/observations`** for the IDs in `FRED_SERIES_MAP`. **Convention:** [README](./README.md).

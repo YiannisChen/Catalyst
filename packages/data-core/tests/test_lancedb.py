@@ -10,9 +10,12 @@ import pytest
 from catalyst_data.storage.lancedb_store import (
     reciprocal_rank_fusion,
     _apply_reranker,
+    _build_chunk_records,
+    _split_l2_sentences,
     load_reranker,
     RRF_K,
     DEFAULT_RERANK_TOP_K,
+    hybrid_search,
 )
 
 
@@ -209,3 +212,125 @@ def test_load_reranker_returns_none_when_import_fails(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", mock_import)
     result = load_reranker("some-model")
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# L2 chunking helpers
+# ---------------------------------------------------------------------------
+
+
+class _MockSentenceTokenizer:
+    def __init__(self, sentences):
+        self._sentences = sentences
+
+    def tokenize(self, _text):
+        return list(self._sentences)
+
+
+def test_split_l2_sentences_filters_and_caps():
+    tokenizer = _MockSentenceTokenizer(
+        [
+            "short",
+            "This sentence should stay because it is long enough.",
+            "Another qualifying sentence that should be kept.",
+            "Third qualifying sentence should be removed by cap.",
+        ]
+    )
+    chunks = _split_l2_sentences(
+        "ignored input",
+        tokenizer=tokenizer,
+        max_sentences_per_asset=2,
+        min_sentence_length=12,
+    )
+    assert chunks == [
+        "This sentence should stay because it is long enough.",
+        "Another qualifying sentence that should be kept.",
+    ]
+
+
+def test_build_chunk_records_adds_l2_only_for_polygon_news():
+    rows = [
+        ("asset-pn", "NVDA", "polygon_news", "2026-01-01", "First. Second qualifying sentence."),
+        ("asset-fred", "SPY", "fred_macro", "2026-01-01", "Macro content."),
+    ]
+    tokenizer = _MockSentenceTokenizer(["First sentence is long enough.", "Second sentence is long enough."])
+    records = _build_chunk_records(
+        rows,
+        tokenizer=tokenizer,
+        max_sentences_per_asset=30,
+        min_sentence_length=12,
+    )
+    l1_records = [r for r in records if r["chunk_level"] == "l1"]
+    l2_records = [r for r in records if r["chunk_level"] == "l2"]
+
+    assert len(l1_records) == 2
+    assert all(r["parent_asset_id"] in {"asset-pn", "asset-fred"} for r in l1_records)
+    assert len(l2_records) == 2
+    assert all(r["parent_asset_id"] == "asset-pn" for r in l2_records)
+    assert [r["asset_id"] for r in l2_records] == [
+        "asset-pn::l2s0001",
+        "asset-pn::l2s0002",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# hybrid_search guardrail
+# ---------------------------------------------------------------------------
+
+
+class _FakeDataFrame:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def iterrows(self):
+        for idx, row in enumerate(self._rows):
+            yield idx, row
+
+
+class _FakeQueryBuilder:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def limit(self, _n):
+        return self
+
+    def where(self, _clause, prefilter=True):  # noqa: ARG002
+        return self
+
+    def to_pandas(self):
+        return _FakeDataFrame(self._rows)
+
+
+class _FakeTable:
+    def __init__(self, vector_rows, fts_rows):
+        self._vector_rows = vector_rows
+        self._fts_rows = fts_rows
+
+    def search(self, _query, query_type="vector"):
+        if query_type == "vector":
+            return _FakeQueryBuilder(self._vector_rows)
+        return _FakeQueryBuilder(self._fts_rows)
+
+
+def test_hybrid_search_applies_guardrail_and_logs(caplog):
+    table = _FakeTable(
+        vector_rows=[
+            {"asset_id": "a1", "ticker": "AAPL", "source_type": "polygon_news", "reference_date": "2026-01-01", "content_md": "v1"},
+            {"asset_id": "a2", "ticker": "AAPL", "source_type": "polygon_news", "reference_date": "2026-01-01", "content_md": "v2"},
+        ],
+        fts_rows=[
+            {"asset_id": "a2", "ticker": "AAPL", "source_type": "polygon_news", "reference_date": "2026-01-01", "content_md": "f2"},
+            {"asset_id": "a3", "ticker": "AAPL", "source_type": "polygon_news", "reference_date": "2026-01-01", "content_md": "f3"},
+        ],
+    )
+    caplog.set_level("WARNING")
+    results = hybrid_search(
+        table=table,
+        query="why move",
+        top_k=20,
+        embedding_fn=lambda _text: [0.1, 0.2],
+    )
+
+    assert len(results) == 3
+    assert all("rrf_score" in row for row in results)
+    assert "RRF guardrail fallback" in caplog.text

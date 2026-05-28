@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch, MagicMock
+from unittest.mock import AsyncMock
 
 from catalyst_data.connectors.yfinance_fallback import create_yfinance_fetcher
 
@@ -22,11 +23,11 @@ class TestYfinanceFetcher(unittest.IsolatedAsyncioTestCase):
 
     @patch("catalyst_data.connectors.yfinance_fallback._fetch_yf_sync")
     async def test_exception_returns_error(self, mock_sync):
-        mock_sync.side_effect = Exception("rate limit reached")
+        mock_sync.side_effect = Exception("unexpected parser failure")
         fetch = create_yfinance_fetcher()
         result = await fetch("NVDA", "income_statement", "2025-01-01")
         self.assertEqual(result.status, 0)
-        self.assertIn("rate limit", result.error)
+        self.assertIn("unexpected parser failure", result.error)
 
     async def test_unsupported_endpoint_returns_error(self):
         fetch = create_yfinance_fetcher()
@@ -63,6 +64,19 @@ class TestYfinanceFetcher(unittest.IsolatedAsyncioTestCase):
         fetch = create_yfinance_fetcher()
         result = await fetch("NVDA", "income_statement", "2025-01-01")
         self.assertEqual(result.status, 200)
+
+    @patch("catalyst_data.retry.asyncio.sleep", new_callable=AsyncMock)
+    @patch("catalyst_data.connectors.yfinance_fallback._fetch_yf_sync")
+    async def test_rate_limit_error_is_retried_then_succeeds(self, mock_sync, _mock_sleep):
+        mock_sync.side_effect = [
+            Exception("Too Many Requests: yfinance rate limit"),
+            {"revenue": [26044000000]},
+        ]
+        fetch = create_yfinance_fetcher()
+        result = await fetch("NVDA", "income_statement", "2025-01-01")
+
+        self.assertEqual(result.status, 200)
+        self.assertEqual(mock_sync.call_count, 2)
 
 
 if __name__ == "__main__":

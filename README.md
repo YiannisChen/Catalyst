@@ -1,10 +1,15 @@
 # Catalyst
 
-> **Why did this stock move?** — AI-powered causal attribution for US equity price movements.
+> **From prompt-driven attribution demo to evidence-bounded agent system.**
+>
+> Catalyst manages uncertainty under evidence constraints, demonstrated on financial event explanation as a high-noise, low-ground-truth testbed.
 
-Catalyst retrieves multi-source financial evidence (SEC filings, news, macro indicators, OHLCV prices), filters and grades it through a Miner-Critic-Judge agent pipeline, and produces structured attribution reports with confidence scores and source citations.
+Catalyst is an agent engineering showcase focused on evidence validity, refusal quality, replayability, and failure governance. It does not optimize for one-shot answer fluency and does not claim to prove true economic causality.
 
-**Midterm status note (April 2026):** the current frozen midterm scope is a package-level, script-driven prototype centered on `packages/data-core`, `packages/eval`, and `packages/agents`. This repo does **not** currently claim full API, frontend, or MCP completion for the midterm version.
+**Current scope (Defense P0):**
+- Evidence-bounded outputs with validator-enforced evidence references.
+- Explicit output states: `SUFFICIENT / PARTIAL / INSUFFICIENT / SYSTEM_ERROR`.
+- Traceable runs with reproducible eval artifacts and baseline comparison.
 
 ## Architecture
 
@@ -30,6 +35,7 @@ Bronze (raw JSON/HTML) → Silver (cleaned Markdown + dedup) → Gold (LanceDB e
 - **SQLite (WAL mode)** over PostgreSQL — zero-config, portable as single file ([ADR-001](docs/ADR/ADR-001-sqlite-over-postgresql.md))
 - **Hybrid RAG** (BM25 + vector + cross-encoder reranking) — neither keyword nor semantic search alone is sufficient for financial text ([ADR-002](docs/ADR/ADR-002-hybrid-rag-retrieval.md))
 - **Miner-Critic-Judge** over single-agent or debate — bounded token cost, Critic prevents evidence pollution ([ADR-003](docs/ADR/ADR-003-miner-critic-judge-workflow.md))
+- **P1-facing ADRs (Proposed drafts):** [ADR-004](docs/ADR/ADR-004-adaptive-three-layer-retrieval-ordering.md) retrieval ordering • [ADR-005](docs/ADR/ADR-005-output-status-contract-and-downgrade-policy.md) statuses • [ADR-006](docs/ADR/ADR-006-trace-schema-and-langsmith-alignment.md) trace + LangSmith • [ADR-007](docs/ADR/ADR-007-budget-breaker-and-model-routing-policy.md) budget/routing stub • [ADR-008](docs/ADR/ADR-008-embedding-batch-gpu-strategy.md) embeddings • [ADR-009](docs/ADR/ADR-009-two-level-chunking-and-reranker.md) chunking • [ADR-010](docs/ADR/ADR-010-golden-set-expansion-and-statistical-power.md) golden-set protocol • [ADR-011](docs/ADR/ADR-011-g5-eval-package-extraction-disposition.md) G5 extraction
 
 ## Data Sources
 

@@ -13,9 +13,11 @@ from catalyst_agents.nodes.critic import (
     system_error_handler,
     _format_chunks,
     _parse_critic_response,
+    K_SUFFICIENT,
     RELEVANCE_THRESHOLD,
 )
-from catalyst_agents.graph import route_after_critic
+from catalyst_agents.nodes.decision_router import decision_router
+from catalyst_agents.state import AttributionState, CriticDecision
 
 
 # ---------------------------------------------------------------------------
@@ -184,14 +186,60 @@ def test_parse_critic_response_with_plain_fences():
     assert result["reasoning"] == "fenced"
 
 
+def test_parse_critic_response_accepts_single_item_list_wrapper():
+    payload = '[{"graded_chunks":[{"chunk_id":"c1","relevance":0.9,"category":"earnings","temporal_match":true,"reasoning":"ok"}],"reasoning":"wrapped"}]'
+    result = _parse_critic_response(payload)
+    assert result["reasoning"] == "wrapped"
+    assert result["graded_chunks"][0]["chunk_id"] == "c1"
+
+
+def test_parse_critic_response_accepts_other_category():
+    payload = '{"graded_chunks":[{"chunk_id":"c1","relevance":0.8,"category":"other","temporal_match":true,"reasoning":"misc"}],"reasoning":"ok"}'
+    result = _parse_critic_response(payload)
+    assert result["graded_chunks"][0]["category"] == "other"
+
+
+def test_parse_critic_response_normalizes_none_to_other():
+    payload = '{"graded_chunks":[{"chunk_id":"c1","relevance":0.8,"category":"None","temporal_match":true,"reasoning":"misc"}],"reasoning":"ok"}'
+    result = _parse_critic_response(payload)
+    assert result["graded_chunks"][0]["category"] == "other"
+
+
+def test_parse_critic_response_normalizes_unknown_category_to_other():
+    payload = '{"graded_chunks":[{"chunk_id":"c1","relevance":0.8,"category":"news","temporal_match":true,"reasoning":"misc"}],"reasoning":"ok"}'
+    result = _parse_critic_response(payload)
+    assert result["graded_chunks"][0]["category"] == "other"
+
+
+def test_parse_critic_response_accepts_direct_graded_chunks_list():
+    payload = '[{"chunk_id":"c1","relevance":0.9,"category":"earnings","temporal_match":true,"reasoning":"ok"},{"chunk_id":"c2","relevance":0.8,"category":"None","temporal_match":true,"reasoning":"ok2"}]'
+    result = _parse_critic_response(payload)
+    assert result["graded_chunks"][0]["chunk_id"] == "c1"
+    assert result["graded_chunks"][1]["category"] == "other"
+
+
+def test_parse_critic_response_rejects_multi_item_wrapper_list():
+    payload = '[{"graded_chunks":[],"reasoning":"a"},{"graded_chunks":[],"reasoning":"b"}]'
+    with pytest.raises(ValueError, match="invalid"):
+        _parse_critic_response(payload)
+
+
 def test_relevance_threshold_value():
     """Threshold must be 0.5 per spec Section 4.3."""
     assert RELEVANCE_THRESHOLD == 0.5
 
 
+def test_k_sufficient_value():
+    assert K_SUFFICIENT == 2
+
+
 # ---------------------------------------------------------------------------
 # Critic node integration tests
 # ---------------------------------------------------------------------------
+
+def test_state_declares_all_graded_chunks_field():
+    assert "all_graded_chunks" in AttributionState.__annotations__
+
 
 def test_critic_filters_by_relevance():
     """Only chunks with relevance > 0.5 survive; c1=0.8 passes, c2=0.3 is dropped."""
@@ -213,6 +261,14 @@ def test_critic_returns_reasoning():
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     result = critic(state, llm=MockLLM(GOOD_LLM_RESPONSE))
     assert result["critic_reasoning"] == "Strong earnings evidence available"
+
+
+def test_critic_persists_all_graded_chunks():
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    result = critic(state, llm=MockLLM(GOOD_LLM_RESPONSE))
+    assert len(result["all_graded_chunks"]) == 2
+    ids = {c["chunk_id"] for c in result["all_graded_chunks"]}
+    assert {"c1", "c2"} <= ids
 
 
 def test_critic_tracks_cost():
@@ -277,6 +333,52 @@ def test_critic_threshold_boundary_included():
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     result = critic(state, llm=MockLLM(just_above_response))
     assert len(result["graded_evidence"]) == 1
+
+
+def test_critic_k3_marks_sufficient_with_three_high_relevance_chunks():
+    payload = json.dumps({
+        "graded_chunks": [
+            {"chunk_id": "c1", "relevance": 0.9, "category": "earnings", "temporal_match": True, "reasoning": "r1"},
+            {"chunk_id": "c2", "relevance": 0.8, "category": "earnings", "temporal_match": True, "reasoning": "r2"},
+            {"chunk_id": "c3", "relevance": 0.7, "category": "sector", "temporal_match": True, "reasoning": "r3"},
+        ],
+        "reasoning": "enough",
+    })
+    state = {**BASE_STATE, "reranked_chunks": [
+        {"asset_id": "c1", "source_type": "polygon_news", "reference_date": "2026-01-15", "content_md": "a"},
+        {"asset_id": "c2", "source_type": "polygon_news", "reference_date": "2026-01-15", "content_md": "b"},
+        {"asset_id": "c3", "source_type": "polygon_news", "reference_date": "2026-01-15", "content_md": "c"},
+    ]}
+    result = critic(state, llm=MockLLM(payload))
+    assert result["critic_decision"].sufficiency == "sufficient"
+
+
+def test_critic_one_chunk_relevant_can_be_sufficient_when_high_confidence():
+    payload = json.dumps({
+        "graded_chunks": [
+            {"chunk_id": "c1", "relevance": 0.9, "category": "earnings", "temporal_match": True, "reasoning": "single"},
+        ],
+        "reasoning": "single",
+    })
+    state = {**BASE_STATE, "reranked_chunks": [{"asset_id": "c1", "source_type": "polygon_news", "reference_date": "2026-01-15", "content_md": "a"}]}
+    result = critic(state, llm=MockLLM(payload))
+    assert result["critic_decision"].sufficiency == "sufficient"
+
+
+def test_critic_recoverable_payload_does_not_set_system_error():
+    payload = '[{"graded_chunks":[{"chunk_id":"c1","relevance":0.9,"category":"other","temporal_match":true,"reasoning":"ok"}],"reasoning":"wrapped"}]'
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    result = critic(state, llm=MockLLM(payload))
+    assert result["critic_decision"] is not None
+    assert result.get("error_type") is None
+
+
+def test_critic_all_graded_empty_on_error(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", sleeps.append)
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    result = critic(state, llm=FlakyLLM(failures=3))
+    assert result["all_graded_chunks"] == []
 
 
 def test_critic_retries_invoke_exception_then_succeeds(monkeypatch):
@@ -407,6 +509,18 @@ def test_insufficient_handler_no_llm_call():
     assert state["cost_breakdown"] == []
 
 
+def test_insufficient_handler_includes_router_guard_reason():
+    state = {"ticker": "AAPL", "trade_date": "2025-04-19", "router_reason": "market_session_guard"}
+    out = insufficient_handler(state)
+    assert "No trading session" in out["summary_md"]
+
+
+def test_insufficient_handler_includes_magnitude_guard_reason():
+    state = {"ticker": "TSLA", "trade_date": "2025-10-22", "router_reason": "magnitude_guard"}
+    out = insufficient_handler(state)
+    assert "Claimed price move is inconsistent with OHLCV data" in out["summary_md"]
+
+
 # ---------------------------------------------------------------------------
 # System error handler tests (BUG-005)
 # ---------------------------------------------------------------------------
@@ -442,25 +556,60 @@ def test_system_error_handler_includes_reasoning():
 
 def test_route_system_error_takes_priority():
     """system_error route must be chosen even if graded_evidence is also empty."""
-    state = {"graded_evidence": [], "error_type": "system_error"}
-    assert route_after_critic(state) == "system_error"
+    state = {
+        "graded_evidence": [],
+        "critic_decision": CriticDecision(
+            sufficiency="insufficient",
+            next_action="refuse",
+            magnitude_coverage=0.0,
+            reasoning="No evidence.",
+        ),
+        "error_type": "system_error",
+    }
+    assert decision_router(state)["router_edge"] == "system_error"
 
 
 def test_route_insufficient_when_no_error():
-    """Empty evidence without error_type routes to insufficient."""
-    state = {"graded_evidence": [], "error_type": None}
-    assert route_after_critic(state) == "insufficient"
+    """Critic refusal without error routes to insufficient."""
+    state = {
+        "graded_evidence": [],
+        "critic_decision": CriticDecision(
+            sufficiency="insufficient",
+            next_action="refuse",
+            magnitude_coverage=0.1,
+            reasoning="No evidence.",
+        ),
+        "error_type": None,
+    }
+    assert decision_router(state)["router_edge"] == "insufficient"
 
 
 def test_route_insufficient_when_error_type_absent():
-    """Missing error_type key also routes to insufficient (backward compat)."""
-    state = {"graded_evidence": []}
-    assert route_after_critic(state) == "insufficient"
+    """Missing error_type key still routes refusal to insufficient."""
+    state = {
+        "graded_evidence": [],
+        "critic_decision": CriticDecision(
+            sufficiency="insufficient",
+            next_action="refuse",
+            magnitude_coverage=0.1,
+            reasoning="No evidence.",
+        ),
+    }
+    assert decision_router(state)["router_edge"] == "insufficient"
 
 
 def test_route_judge_when_evidence_present():
-    state = {"graded_evidence": [{"chunk_id": "c1"}], "error_type": None}
-    assert route_after_critic(state) == "judge"
+    state = {
+        "graded_evidence": [{"chunk_id": "c1"}],
+        "critic_decision": CriticDecision(
+            sufficiency="partial",
+            next_action="proceed",
+            magnitude_coverage=0.7,
+            reasoning="Judge should synthesize.",
+        ),
+        "error_type": None,
+    }
+    assert decision_router(state)["router_edge"] == "judge"
 
 
 def test_critic_failure_sets_error_type(monkeypatch):
@@ -482,3 +631,20 @@ def test_critic_success_does_not_set_error_type():
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     result = critic(state, llm=MockLLM(GOOD_LLM_RESPONSE))
     assert "error_type" not in result
+
+
+def test_critic_emits_critic_decision_contract():
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+
+    result = critic(state, llm=MockLLM(GOOD_LLM_RESPONSE))
+
+    assert isinstance(result["critic_decision"], CriticDecision)
+    assert result["critic_decision"].sufficiency in {"sufficient", "partial", "insufficient"}
+    assert result["critic_decision"].next_action in {"proceed", "expand_macro", "expand_related", "refuse"}
+    assert 0.0 <= result["critic_decision"].magnitude_coverage <= 1.0
+
+
+def test_critic_returns_raw_llm_response():
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    result = critic(state, llm=MockLLM(GOOD_LLM_RESPONSE))
+    assert result["critic_raw_llm_response"] == GOOD_LLM_RESPONSE
