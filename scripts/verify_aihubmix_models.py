@@ -5,7 +5,7 @@ Sends a minimal prompt to each supported model and reports
 success/failure with latency. Reads AIHUBMIX_API_KEY from env.
 
 Usage:
-    export AIHUBMIX_API_KEY="sk-..."
+    export AIHUBMIX_API_KEY="<your-key>"
     python scripts/verify_aihubmix_models.py
 """
 from __future__ import annotations

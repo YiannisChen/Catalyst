@@ -239,7 +239,7 @@ def run_e2e():
         llm_mode = "DETERMINISTIC"
         llm = DeterministicLLM(chunks)
         log(f"- LLM: **DeterministicLLM** (mock — no API key: {exc})")
-        log("  *To run with real LLM: export OPENAI_API_KEY=sk-...*")
+        log("  *To run with real LLM: set OPENAI_API_KEY in .env*")
 
     graph = build_attribution_graph(use_critic=True, llm=llm)
 

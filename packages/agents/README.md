@@ -1,42 +1,35 @@
 # catalyst-agents
 
-Miner-Critic-Judge attribution workflow for Catalyst.
-# catalyst-agents
-
 The agent control plane for Catalyst — an **evidence-bounded** explanation system.
-This package implements the policy-driven graph (Parser -> RetrievalPolicy -> Miner ->
-Critic -> DecisionRouter -> Validator -> Finalizer) that enforces evidence validity,
+
+Implements the policy-driven graph (Parser → RetrievalPolicy → Miner →
+Critic → DecisionRouter → Validator → Finalizer) that enforces evidence validity,
 explicit refusal states (SUFFICIENT / PARTIAL / INSUFFICIENT / SYSTEM_ERROR),
 single-trace replayability, and failure-taxonomy governance over one-shot LLM answers.
 
 ## Local Dev Setup
 
-This package depends on the sibling monorepo packages:
-
-- `../data-core`
-- `../eval`
-
-Use the shared project virtualenv, then install the local packages in editable mode:
+This package depends on the sibling monorepo packages (`data-core`, `eval`).
 
 ```bash
-cd /Users/yiannischen/Desktop/Catalyst/packages/agents
-/Users/yiannischen/Desktop/Catalyst/packages/data-core/.venv/bin/python -m pip install -e ../data-core -e ../eval -e '.[dev]'
+cd Catalyst
+pip install -e packages/data-core -e packages/eval -e packages/agents
 ```
 
-## No-PYTHONPATH Verification
-
-For a normal monorepo checkout, the test suite bootstraps sibling package paths via `tests/conftest.py`, so you can verify from `packages/agents` without setting `PYTHONPATH`.
-
-After the editable installs above, or directly inside the repo checkout, run:
+## Running Tests
 
 ```bash
-cd /Users/yiannischen/Desktop/Catalyst/packages/agents
-./scripts/verify_local_pytest.sh
+cd packages/agents
+python -m pytest tests/ -q --tb=short
 ```
 
-Equivalent direct command:
+## Key Modules
 
-```bash
-cd /Users/yiannischen/Desktop/Catalyst/packages/agents
-/Users/yiannischen/Desktop/Catalyst/packages/data-core/.venv/bin/python -m pytest tests/ -q --tb=short
-```
+| Module | Purpose |
+|--------|---------|
+| `nodes/miner.py` | Evidence mining with guardrails (ticker consistency, market session) |
+| `nodes/critic.py` | Evidence quality scoring with calibrated sufficiency thresholds |
+| `nodes/validator.py` | 4-state output validation with evidence reference enforcement |
+| `retrieval/policy.py` | Adaptive 3-layer retrieval ordering (BM25 → vector → rerank) |
+| `runtime/runner.py` | Trace-instrumented graph execution with checkpoint support |
+| `trace/schema.py` | Trace event schema aligned with LangSmith conventions |

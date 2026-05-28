@@ -4,40 +4,41 @@ __pycache__/
 venv/
 .venv/
 
-# Secrets & local IDE
+# Secrets & local config
 .env
 .cursor/
+.claude/
+.local/
+.pytest_cache/
 
-# Databases (root-level patterns)
+# AI tool config
+CLAUDE.md
+
+# Databases
 *.db
 *.sqlite
+*.db-wal
+*.db-shm
 
 # Generated / local data under data/
-/data/e2e_strict/
+/data/embeddings/
 /data/lancedb_gold/
+/data/e2e_strict/
 /data/case_studies/
 /data/eval_reports/
-/data/eval_frozen/
-/data/eval_frozen_lancedb.tgz
-/data/eval_frozen_lancedb.tgz.sha256
 /data/traces/
 /data/.fuse_hidden*
-/data/*.db-wal
 
-/DemoUI/
+# Archive
 /archive.tar.gz
 
 # macOS
 .DS_Store
-docs/.DS_Store
 
-# Package: data-core scripts & references
+# Package: data-core local artifacts
 /packages/data-core/scripts/debug_output/
 /packages/data-core/scripts/smoke_test_assets.db
 /packages/data-core/core_references
-
-# local pullback artifacts
-.local/
 
 # Python packaging
 *.egg-info/
