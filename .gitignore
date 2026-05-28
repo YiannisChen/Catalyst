@@ -25,6 +25,7 @@ venv/
 /data/*.db-wal
 
 /DemoUI/
+/archive.tar.gz
 
 # macOS
 .DS_Store
