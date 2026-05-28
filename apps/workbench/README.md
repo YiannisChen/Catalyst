@@ -1,6 +1,11 @@
-# Catalyst Attribution Workbench (P1)
+# Catalyst Attribution Workbench
 
-Single-page React/Vite workbench for financial event attribution analysis.
+React/TypeScript frontend for interactive financial event attribution analysis.
+
+Connects to the `catalyst-app` backend to display live attribution runs,
+evidence previews, node-level pipeline traces, and OHLCV charts.
+
+---
 
 ## Quick Start
 
@@ -8,52 +13,94 @@ Single-page React/Vite workbench for financial event attribution analysis.
 cd apps/workbench
 npm install
 npm run dev
+# → http://localhost:5173
 ```
+
+Requires the backend running on `http://localhost:8000`:
+
+```bash
+# In a separate terminal, from the repo root:
+uvicorn catalyst_app.main:app --reload --port 8000
+```
+
+---
 
 ## Scripts
 
 | Command | Description |
-| --- | --- |
-| `npm run dev` | Start dev server |
-| `npm run build` | Production build (typecheck + bundle) |
-| `npm run typecheck` | TypeScript strict check |
-| `npm run test` | Run Vitest in watch mode |
-| `npm run test -- --run` | Run all tests once |
+|---------|-------------|
+| `npm run dev` | Start Vite dev server with HMR |
+| `npm run build` | TypeScript check + production bundle |
+| `npm run preview` | Preview production build locally |
 
-## P1 Scope
-
-The workbench consumes 9 backend API endpoints:
-
-- `GET /api/tickers` — available ticker symbols
-- `GET /api/range-local` — local OHLCV date range
-- `GET /api/ohlcv/{ticker}` — candlestick data
-- `POST /api/live-runs` — create attribution run
-- `GET /api/live-runs/{run_id}` — run summary/status
-- `GET /api/live-runs/{run_id}/events` — node-level events
-- `GET /api/live-runs/{run_id}/artifacts` — run artifacts
-- `POST /api/live-runs/{run_id}/retry` — retry failed run
-- `GET /api/health/runtime` — runtime health check
-
-## Non-Goals (P1)
-
-- No news feed or article filtering (`/api/news*` endpoints)
-- No fundamentals, categories, or sentiment endpoints
-- No price prediction or trading advice features
-- No user authentication or multi-tenancy
-
-## Architecture
-
-Three-zone layout at desktop (1440px+):
-
-- **Left**: K-line chart + selected day context + Run Attribution CTA
-- **Middle**: Attribution summary + evidence preview
-- **Right**: Runtime console (node timeline, node cards, artifact tabs)
-
-Responsive breakpoints: 1440 / 1024 / 768 / 375.
+---
 
 ## Tech Stack
 
-- React 18 + TypeScript + Vite
-- TradingView Lightweight Charts (stub in P1)
-- Vitest + React Testing Library + MSW
-- CSS custom properties (finance dark theme)
+| Layer | Choice |
+|-------|--------|
+| Framework | React 19 + TypeScript |
+| Bundler | Vite 7 |
+| Charts | D3.js (custom candlestick rendering) |
+| Styling | CSS custom properties (dark finance theme) |
+
+---
+
+## Layout
+
+Three-zone layout at desktop (≥1440px):
+
+```
+┌──────────────┬──────────────────┬─────────────────┐
+│  K-Line      │  Attribution     │  Runtime        │
+│  Chart       │  Summary         │  Console        │
+│              │                  │                 │
+│  Date picker │  Evidence        │  Node timeline  │
+│  Context bar │  preview tabs    │  Artifact viewer│
+│              │                  │                 │
+│  [Run →]     │                  │                 │
+└──────────────┴──────────────────┴─────────────────┘
+```
+
+Responsive breakpoints: 1440 / 1024 / 768 / 375px.
+
+---
+
+## Backend API Contract
+
+```
+GET  /api/tickers
+GET  /api/range-local
+GET  /api/ohlcv/{ticker}
+POST /api/live-runs
+GET  /api/live-runs/{run_id}
+GET  /api/live-runs/{run_id}/events
+GET  /api/live-runs/{run_id}/artifacts
+POST /api/live-runs/{run_id}/retry
+GET  /api/health/runtime
+```
+
+Mock data for offline development: `src/dev/mockRunData.ts`
+
+---
+
+## Project Structure
+
+```
+src/
+├── api/
+│   ├── client.ts               # Typed fetch wrappers
+│   └── types.ts                # Shared API response types
+├── components/
+│   ├── chart/                  # CandlestickChart (D3)
+│   ├── context/                # StockSelector, ModelSelector, FundamentalsCard
+│   ├── attribution/            # AttributionSummary
+│   ├── artifacts/              # ArtifactTabs, EvidencePreview, RawResponseViewer
+│   └── runtime/                # NodeTimeline, NodeCard, PipelinePanel
+├── hooks/
+│   └── useLiveRunPolling.ts    # Polling for live run state
+├── state/
+│   └── workbench-state.ts      # Global workbench state
+└── dev/
+    └── mockRunData.ts          # Offline mock fixtures
+```
