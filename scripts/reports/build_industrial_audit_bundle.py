@@ -37,6 +37,8 @@ def build_bundle(
             "cohort_aligned": True,
             "system_error_zero": (c_err == 0 and d_err == 0),
             "stability_status_consistency_ge_0_95": status_consistency_rate >= 0.95,
+            "attribution_v2_nonzero": float((metrics.get("catalyst") or {}).get("cause_semantic_sim", 0.0) or 0.0) > 0.0,
+            "tier2_same_evidence_available": metrics.get("baseline_tier") == "tier2_same_evidence",
         },
     }
 

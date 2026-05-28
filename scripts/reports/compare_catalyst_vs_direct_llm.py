@@ -21,6 +21,10 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--freeze-manifest", required=True)
     p.add_argument("--catalyst-ablation-json", required=True)
     p.add_argument("--direct-per-unit-jsonl", required=True)
+    p.add_argument("--baseline-tier", default="tier0_closed_book")
+    p.add_argument("--attribution-v2-json")
+    p.add_argument("--tier2-meta-json")
+    p.add_argument("--catalyst-runtime-json")
     p.add_argument("--output-json", required=True)
     p.add_argument("--output-csv", required=True)
     p.add_argument("--output-md", required=True)
@@ -146,30 +150,21 @@ def _to_pp(v: float | None) -> float | None:
     return v * 100.0
 
 
-def main() -> int:
-    args = _parse_args()
-    freeze_path = Path(args.freeze_manifest)
-    catalyst_path = Path(args.catalyst_ablation_json)
-    direct_path = Path(args.direct_per_unit_jsonl)
-    out_json = Path(args.output_json)
-    out_csv = Path(args.output_csv)
-    out_md = Path(args.output_md)
-
-    for p in (freeze_path, catalyst_path, direct_path):
-        if not p.exists():
-            raise FileNotFoundError(f"required input not found: {p}")
-
-    freeze = _load_json(freeze_path)
-    catalyst = _load_json(catalyst_path)
-    direct_rows = _load_jsonl(direct_path)
-
+def compute_comparison(
+    freeze: dict[str, Any],
+    catalyst: dict[str, Any],
+    direct_rows: list[dict[str, Any]],
+    *,
+    baseline_tier: str,
+    attribution_v2: dict[str, Any] | None = None,
+    tier2_meta: dict[str, Any] | None = None,
+    catalyst_runtime: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     units = freeze.get("frozen_units", [])
     if not isinstance(units, list) or not units:
         raise ValueError("freeze manifest missing frozen_units")
 
-    expected_map: dict[tuple[str, str], dict[str, Any]] = {
-        (str(u["case_id"]), str(u["profile"])): u for u in units
-    }
+    expected_map: dict[tuple[str, str], dict[str, Any]] = {(str(u["case_id"]), str(u["profile"])): u for u in units}
 
     catalyst_map: dict[tuple[str, str], dict[str, Any]] = {}
     for row in catalyst.get("per_case", []):
@@ -187,7 +182,6 @@ def main() -> int:
             direct_map[key] = row
 
     keys = sorted(expected_map.keys())
-
     missing_catalyst = [k for k in keys if k not in catalyst_map]
     missing_direct = [k for k in keys if k not in direct_map]
     if missing_catalyst:
@@ -195,11 +189,99 @@ def main() -> int:
     if missing_direct:
         raise ValueError(f"direct baseline missing {len(missing_direct)} frozen units, sample={missing_direct[:5]}")
 
+    if baseline_tier == "tier2_same_evidence":
+        eligible_keys = {k for k in keys if int(direct_map[k].get("evidence_chunks_count", 0) or 0) > 0}
+        keys = [k for k in keys if k in eligible_keys]
+
     catalyst_rows = [catalyst_map[k] for k in keys]
     direct_rows_aligned = [direct_map[k] for k in keys]
 
     catalyst_metrics = _compute_metrics(catalyst_rows, has_refusal_flag=False, has_grounding=True)
     direct_metrics = _compute_metrics(direct_rows_aligned, has_refusal_flag=True, has_grounding=False)
+
+    if attribution_v2:
+        catalyst_metrics["category_f1"] = float(attribution_v2.get("catalyst", {}).get("category_f1", 0.0))
+        catalyst_metrics["cause_semantic_sim"] = float(attribution_v2.get("catalyst", {}).get("cause_semantic_sim", 0.0))
+        direct_metrics["category_f1"] = float(attribution_v2.get("direct_llm", {}).get("category_f1", 0.0))
+        direct_metrics["cause_semantic_sim"] = float(attribution_v2.get("direct_llm", {}).get("cause_semantic_sim", 0.0))
+
+    if catalyst_runtime:
+        for k in ("avg_latency_ms", "avg_total_tokens", "avg_total_cost_usd"):
+            if catalyst_runtime.get(k) is not None:
+                catalyst_metrics[k] = catalyst_runtime.get(k)
+
+    metric_names = [
+        "status_accuracy",
+        "should_refuse_hit_rate",
+        "refusal_precision",
+        "refusal_recall",
+        "system_error_rate",
+        "avg_grounding_rate",
+        "avg_latency_ms",
+        "avg_total_tokens",
+        "avg_total_cost_usd",
+    ]
+    deltas: dict[str, Any] = {}
+    for name in metric_names:
+        c = catalyst_metrics.get(name)
+        d = direct_metrics.get(name)
+        if c is None or d is None:
+            deltas[name] = None
+        elif name in RATE_METRICS:
+            deltas[name] = (float(c) - float(d)) * 100.0
+        else:
+            deltas[name] = float(c) - float(d)
+
+    result = {
+        "freeze_id": freeze.get("freeze_id"),
+        "main_run_tag": freeze.get("main_run_tag"),
+        "baseline_tier": baseline_tier,
+        "cohort_n": len(keys),
+        "cohort_profiles": sorted({p for _, p in keys}),
+        "catalyst": catalyst_metrics,
+        "direct_llm": direct_metrics,
+        "delta": deltas,
+        "delta_definition": "Catalyst - DirectLLM; rate metrics are percentage points",
+        "tier2_eligible_n": int((tier2_meta or {}).get("tier2_eligible_n", len(keys))),
+        "tier2_excluded_n": int((tier2_meta or {}).get("tier2_excluded_n", 0)),
+        "tier2_exclusion_reason_counts": dict((tier2_meta or {}).get("tier2_exclusion_reason_counts", {})),
+        "subset_eval": baseline_tier == "tier2_same_evidence",
+        "cohort_n_eval": len(keys),
+    }
+    return result
+
+
+def main() -> int:
+    args = _parse_args()
+    freeze_path = Path(args.freeze_manifest)
+    catalyst_path = Path(args.catalyst_ablation_json)
+    direct_path = Path(args.direct_per_unit_jsonl)
+    out_json = Path(args.output_json)
+    out_csv = Path(args.output_csv)
+    out_md = Path(args.output_md)
+
+    for p in (freeze_path, catalyst_path, direct_path):
+        if not p.exists():
+            raise FileNotFoundError(f"required input not found: {p}")
+
+    freeze = _load_json(freeze_path)
+    catalyst = _load_json(catalyst_path)
+    direct_rows = _load_jsonl(direct_path)
+    attribution_v2 = _load_json(Path(args.attribution_v2_json)) if args.attribution_v2_json else None
+    tier2_meta = _load_json(Path(args.tier2_meta_json)) if args.tier2_meta_json else None
+    catalyst_runtime = _load_json(Path(args.catalyst_runtime_json)) if args.catalyst_runtime_json else None
+
+    result = compute_comparison(
+        freeze,
+        catalyst,
+        direct_rows,
+        baseline_tier=args.baseline_tier,
+        attribution_v2=attribution_v2,
+        tier2_meta=tier2_meta,
+        catalyst_runtime=catalyst_runtime,
+    )
+    catalyst_metrics = result["catalyst"]
+    direct_metrics = result["direct_llm"]
 
     metric_names = [
         "status_accuracy",
@@ -225,31 +307,13 @@ def main() -> int:
         else:
             deltas[name] = float(c) - float(d)
 
-    result = {
-        "freeze_id": freeze.get("freeze_id"),
-        "main_run_tag": freeze.get("main_run_tag"),
-        "cohort_n": len(keys),
-        "cohort_profiles": sorted({p for _, p in keys}),
-        "catalyst": catalyst_metrics,
-        "direct_llm": direct_metrics,
-        "delta": deltas,
-        "delta_definition": "Catalyst - DirectLLM; rate metrics are percentage points",
-    }
+    result["delta"] = deltas
+    result["delta_definition"] = "Catalyst - DirectLLM; rate metrics are percentage points"
     result["error_taxonomy"] = {
         "catalyst_system_error": catalyst_metrics.get("system_error_count", 0),
         "direct_system_error": direct_metrics.get("system_error_count", 0),
     }
-    profile_breakdown: dict[str, dict[str, Any]] = {}
-    for profile in sorted({p for _, p in keys}):
-        pkeys = [k for k in keys if k[1] == profile]
-        c_rows = [catalyst_map[k] for k in pkeys]
-        d_rows = [direct_map[k] for k in pkeys]
-        profile_breakdown[profile] = {
-            "n": len(pkeys),
-            "catalyst_status_accuracy": _compute_metrics(c_rows, has_refusal_flag=False, has_grounding=True)["status_accuracy"],
-            "direct_status_accuracy": _compute_metrics(d_rows, has_refusal_flag=True, has_grounding=False)["status_accuracy"],
-        }
-    result["profile_breakdown"] = profile_breakdown
+    result["profile_breakdown"] = {}
     result["fairness_notes"] = [
         "Identical (case_id, profile) universe enforced between Catalyst and Direct baseline.",
         "Direct prompt excludes expected label to avoid leakage.",
@@ -278,8 +342,8 @@ def main() -> int:
         "",
         f"- Freeze ID: `{freeze.get('freeze_id')}`",
         f"- Main run: `{freeze.get('main_run_tag')}`",
-        f"- Cohort N: `{len(keys)}`",
-        f"- Profiles: `{', '.join(sorted({p for _, p in keys}))}`",
+        f"- Cohort N: `{result.get('cohort_n')}`",
+        f"- Profiles: `{', '.join(result.get('cohort_profiles', []))}`",
         "",
         "## Main Table",
         "",
@@ -304,7 +368,7 @@ def main() -> int:
     print(f"[ok] wrote metrics json: {out_json}")
     print(f"[ok] wrote main table csv: {out_csv}")
     print(f"[ok] wrote markdown report: {out_md}")
-    print(f"[ok] cohort_n={len(keys)}")
+    print(f"[ok] cohort_n={result.get('cohort_n')}")
     print(
         "[ok] key metrics "
         f"status_acc catalyst={catalyst_metrics['status_accuracy']:.4f} direct={direct_metrics['status_accuracy']:.4f} "

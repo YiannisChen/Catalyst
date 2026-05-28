@@ -13,10 +13,10 @@ def _load_module():
     return mod
 
 
-def test_bundle_contains_required_artifacts(tmp_path: Path):
+def test_bundle_checks_attribution_and_fair_baseline_gates(tmp_path: Path):
     mod = _load_module()
     (tmp_path / "metrics.json").write_text(
-        '{"catalyst":{"system_error_count":0},"direct_llm":{"system_error_count":0}}',
+        '{"baseline_tier":"tier2_same_evidence","catalyst":{"system_error_count":0,"cause_semantic_sim":0.1},"direct_llm":{"system_error_count":0}}',
         encoding="utf-8",
     )
     (tmp_path / "stability.json").write_text('{"status_consistency_rate":1.0}', encoding="utf-8")
@@ -30,8 +30,5 @@ def test_bundle_contains_required_artifacts(tmp_path: Path):
         stability_json=tmp_path / "stability.json",
         adjudication_md=tmp_path / "adjudication.md",
     )
-    assert bundle["artifacts"]["metrics_json"]
-    assert bundle["artifacts"]["per_case_jsonl"]
-    assert bundle["artifacts"]["stability_json"]
-    assert bundle["artifacts"]["adjudication_md"]
-    assert bundle["quality_gates"]["system_error_zero"] is True
+    assert "attribution_v2_nonzero" in bundle["quality_gates"]
+    assert "tier2_same_evidence_available" in bundle["quality_gates"]

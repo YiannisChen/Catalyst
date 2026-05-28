@@ -92,6 +92,8 @@ def build_manifest(
                 "ticker": g.get("ticker"),
                 "trade_date": g.get("trade_date"),
                 "query": query,
+                "summary_json": row.get("summary_json"),
+                "evidence_chunks_count": len(list((row.get("evidence_chunks") or []))),
             }
         )
 

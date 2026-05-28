@@ -10,15 +10,19 @@ from typing import Any
 from openai import OpenAI
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Direct-LLM baseline on thesis freeze units.")
     parser.add_argument("--freeze-manifest", required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument("--catalyst-model", required=True)
+    parser.add_argument("--baseline-mode", choices=["closed_book", "search_augmented", "same_evidence"], default="closed_book")
+    parser.add_argument("--search-corpus-jsonl")
+    parser.add_argument("--same-evidence-jsonl")
     parser.add_argument("--provider", default="aihubmix")
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--pricing-lock", default=str(Path(__file__).resolve().parents[2] / "configs" / "eval_pricing.lock.json"))
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def _load_pricing_lock(path: Path) -> dict[str, dict[str, float]]:
@@ -111,12 +115,58 @@ def _build_prompt(unit: dict[str, Any]) -> str:
     )
 
 
+def _search_local_corpus(unit: dict[str, Any], corpus_rows: list[dict[str, Any]], top_k: int = 5) -> list[dict[str, Any]]:
+    case_id = unit.get("case_id")
+    profile = unit.get("profile")
+    for row in corpus_rows:
+        if row.get("case_id") == case_id and row.get("profile") == profile:
+            cands = list(row.get("search_candidates") or [])
+            cands.sort(key=lambda x: (int(x.get("source_rank", 9999)), str(x.get("chunk_id", ""))))
+            return cands[:top_k]
+    return []
+
+
+def _build_prompt_with_context(
+    unit: dict[str, Any],
+    *,
+    baseline_mode: str,
+    search_rows: list[dict[str, Any]] | None = None,
+    same_evidence_rows: list[dict[str, Any]] | None = None,
+) -> tuple[str, dict[str, int]]:
+    prompt = _build_prompt(unit)
+    meta = {"search_hits_count": 0, "evidence_chunks_count": 0}
+    if baseline_mode == "search_augmented":
+        hits = _search_local_corpus(unit, search_rows or [])
+        meta["search_hits_count"] = len(hits)
+        if hits:
+            prompt += "\nSearch Evidence:\n"
+            for h in hits:
+                text = h.get("content_md") or h.get("content") or ""
+                prompt += f"- [{h.get('chunk_id')}] {text}\n"
+    if baseline_mode == "same_evidence":
+        rows = same_evidence_rows or []
+        case_id = unit.get("case_id")
+        profile = unit.get("profile")
+        row = next((r for r in rows if r.get("case_id") == case_id and r.get("profile") == profile), None)
+        chunks = list((row or {}).get("evidence_chunks") or [])
+        meta["evidence_chunks_count"] = len(chunks)
+        if chunks:
+            prompt += "\nEvidence Chunks:\n"
+            for c in chunks:
+                prompt += f"- [{c.get('chunk_id')}] {c.get('content_md', '')}\n"
+    return prompt, meta
+
+
 def _run_one_unit(
     *,
     unit: dict[str, Any],
     model: str,
+    catalyst_model: str | None = None,
+    baseline_mode: str = "closed_book",
     client: Any,
     pricing: dict[str, dict[str, float]],
+    search_rows: list[dict[str, Any]] | None = None,
+    same_evidence_rows: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     record: dict[str, Any] = {
         "case_id": unit.get("case_id"),
@@ -131,6 +181,10 @@ def _run_one_unit(
         "total_tokens": 0,
         "total_cost_usd": 0.0,
         "error_type": None,
+        "baseline_mode": baseline_mode,
+        "model": model,
+        "search_hits_count": 0,
+        "evidence_chunks_count": 0,
         "raw_answer_hash": None,
         "raw_answer_text": "",
         "parse_strategy": "failed",
@@ -140,9 +194,17 @@ def _run_one_unit(
     }
     start = time.perf_counter()
     try:
+        prompt, prompt_meta = _build_prompt_with_context(
+            unit,
+            baseline_mode=baseline_mode,
+            search_rows=search_rows,
+            same_evidence_rows=same_evidence_rows,
+        )
+        record["search_hits_count"] = int(prompt_meta.get("search_hits_count", 0))
+        record["evidence_chunks_count"] = int(prompt_meta.get("evidence_chunks_count", 0))
         resp = client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": _build_prompt(unit)}],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
             max_tokens=700,
         )
@@ -180,6 +242,12 @@ def _run_one_unit(
 
 def main() -> int:
     args = _parse_args()
+    if args.baseline_mode == "closed_book" and args.model != args.catalyst_model:
+        raise ValueError("Tier0 fairness violation: direct model must equal catalyst model")
+    if args.baseline_mode == "search_augmented" and not args.search_corpus_jsonl:
+        raise ValueError("search_augmented mode requires --search-corpus-jsonl")
+    if args.baseline_mode == "same_evidence" and not args.same_evidence_jsonl:
+        raise ValueError("same_evidence mode requires --same-evidence-jsonl")
     manifest_path = Path(args.freeze_manifest)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -189,9 +257,15 @@ def main() -> int:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     pricing = _load_pricing_lock(Path(args.pricing_lock))
     units = manifest.get("frozen_units", [])
+    search_rows: list[dict[str, Any]] = []
+    same_evidence_rows: list[dict[str, Any]] = []
     if not isinstance(units, list) or not units:
         print("[fail] freeze manifest has no frozen_units")
         return 2
+    if args.search_corpus_jsonl:
+        search_rows = [json.loads(line) for line in Path(args.search_corpus_jsonl).read_text(encoding="utf-8").splitlines() if line.strip()]
+    if args.same_evidence_jsonl:
+        same_evidence_rows = [json.loads(line) for line in Path(args.same_evidence_jsonl).read_text(encoding="utf-8").splitlines() if line.strip()]
 
     api_key = Path("/dev/null")
     del api_key
@@ -214,7 +288,16 @@ def main() -> int:
     with per_unit_path.open("w", encoding="utf-8") as f:
         for unit in units:
             stats["n_total"] += 1
-            record = _run_one_unit(unit=unit, model=args.model, client=client, pricing=pricing)
+            record = _run_one_unit(
+                unit=unit,
+                model=args.model,
+                catalyst_model=args.catalyst_model,
+                baseline_mode=args.baseline_mode,
+                client=client,
+                pricing=pricing,
+                search_rows=search_rows,
+                same_evidence_rows=same_evidence_rows,
+            )
             if record.get("error_type"):
                 stats["n_error"] += 1
 

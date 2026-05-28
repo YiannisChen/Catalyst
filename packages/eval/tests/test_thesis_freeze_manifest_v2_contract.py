@@ -30,6 +30,7 @@ def test_manifest_v2_has_audit_fields(tmp_path: Path):
                     "profile": profile,
                     "expected_status": "SUFFICIENT",
                     "output_status": "SUFFICIENT",
+                    "summary_json": f"/root/Catalyst/data/eval_reports/{cid}_{profile}.summary.json",
                 }
             )
         golden_lines.append(
@@ -74,3 +75,16 @@ def test_manifest_v2_has_audit_fields(tmp_path: Path):
     assert "input_sha256" in payload
     assert "prompt_contract" in payload
     assert payload["prompt_contract"]["direct_prompt_has_expected_status"] is False
+    first = payload["frozen_units"][0]
+    required = {
+        "case_id",
+        "profile",
+        "expected_status",
+        "should_refuse",
+        "ticker",
+        "trade_date",
+        "query",
+        "summary_json",
+    }
+    assert required <= set(first.keys())
+    assert str(first["summary_json"]).startswith("/root/Catalyst/data/eval_reports/")
