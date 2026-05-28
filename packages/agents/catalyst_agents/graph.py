@@ -24,6 +24,8 @@ from catalyst_agents.nodes.judge import judge
 from catalyst_agents.nodes.validator import validator
 from catalyst_agents.nodes.finalizer import finalizer
 from catalyst_agents.retrieval.policy import Layer
+from catalyst_agents.trace.artifacts import write_node_artifact
+from catalyst_agents.trace.projection import project_node_artifacts
 from catalyst_agents.trace.writer import TraceWriter, activate_writer, get_current_writer
 
 
@@ -146,7 +148,7 @@ def _trace_node(node_name: str, fn):
 
         merged_state = {**state, **result}
         new_breakdown = (merged_state.get("cost_breakdown", []) or [])[before_breakdown_len:]
-        writer.event(
+        event_seq = writer.event(
             node=node_name,
             started_at=started_at,
             ended_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -161,6 +163,19 @@ def _trace_node(node_name: str, fn):
             status_before=before_status,
             status_after=_status_name(merged_state.get("output_status")),
         )
+        try:
+            for artifact in project_node_artifacts(node_name, merged_state, result):
+                write_node_artifact(
+                    writer.conn,
+                    run_id=writer.run_id,
+                    event_seq=event_seq,
+                    node=node_name,
+                    artifact_type=artifact["artifact_type"],
+                    payload=artifact["payload_json"],
+                )
+        except Exception:
+            # Artifact persistence is observability-only and must not override MCJ node success.
+            pass
         return result
 
     return wrapped
@@ -173,8 +188,9 @@ class _TracedCompiledGraph:
         self._compiled_graph = compiled_graph
         self._config_name = config_name
 
-    def invoke(self, state: dict) -> dict:
+    def invoke(self, state: dict, run_id: str | None = None) -> dict:
         with TraceWriter(
+            run_id=run_id,
             ticker=state.get("ticker"),
             trade_date=state.get("trade_date"),
             config=self._config_name,

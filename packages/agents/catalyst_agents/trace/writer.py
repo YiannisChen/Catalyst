@@ -63,14 +63,36 @@ class TraceWriter:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path))
         init_trace_db(self._conn)
-        self._conn.execute(
-            """
-            INSERT OR REPLACE INTO agent_runs
-                (run_id, trace_id, ticker, trade_date, status, started_at, config)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (self.run_id, self.trace_id, self.ticker, self.trade_date, "RUNNING", self.started_at, self.config),
-        )
+        existing = self._conn.execute(
+            "SELECT status, trace_id FROM agent_runs WHERE run_id = ?",
+            (self.run_id,),
+        ).fetchone()
+        if existing is not None and existing[0] == "QUEUED":
+            existing_trace_id = existing[1]
+            if existing_trace_id:
+                self.trace_id = existing_trace_id
+            self._conn.execute(
+                """
+                UPDATE agent_runs
+                SET status = ?,
+                    started_at = ?,
+                    trace_id = COALESCE(trace_id, ?),
+                    ticker = COALESCE(ticker, ?),
+                    trade_date = COALESCE(trade_date, ?),
+                    config = COALESCE(config, ?)
+                WHERE run_id = ?
+                """,
+                ("RUNNING", self.started_at, self.trace_id, self.ticker, self.trade_date, self.config, self.run_id),
+            )
+        else:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO agent_runs
+                    (run_id, trace_id, ticker, trade_date, status, started_at, config)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (self.run_id, self.trace_id, self.ticker, self.trade_date, "RUNNING", self.started_at, self.config),
+            )
         self._conn.commit()
         return self
 
@@ -110,7 +132,7 @@ class TraceWriter:
         error_message: str | None,
         status_before: str | None,
         status_after: str | None,
-    ) -> None:
+    ) -> int:
         self._event_seq += 1
         self.conn.execute(
             """
@@ -140,6 +162,7 @@ class TraceWriter:
             ),
         )
         self.conn.commit()
+        return self._event_seq
 
     def complete(self, final_state: dict[str, Any]) -> None:
         breakdown = final_state.get("cost_breakdown", []) or []
@@ -197,4 +220,3 @@ def _status_name(value: Any) -> str | None:
     if value is None:
         return None
     return getattr(value, "name", None) or str(value)
-

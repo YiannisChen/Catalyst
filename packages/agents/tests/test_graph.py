@@ -7,9 +7,11 @@ TDD: tests written before implementation.
 from __future__ import annotations
 
 import json
+import sqlite3
 from unittest.mock import patch, MagicMock
 
 from catalyst_agents.graph import build_attribution_graph
+from catalyst_agents.trace.artifacts import read_node_artifacts
 from catalyst_agents.state import OutputStatus
 from catalyst_agents.retrieval.policy import Layer
 
@@ -280,3 +282,59 @@ def test_build_graph_no_critic_returns_invokable_object():
     """build_attribution_graph(use_critic=False) must return an object with .invoke()."""
     graph = build_attribution_graph(use_critic=False)
     assert callable(getattr(graph, "invoke", None))
+
+
+def test_graph_invoke_uses_provided_run_id_and_persists_artifacts(tmp_path, monkeypatch):
+    db_path = tmp_path / "trace_graph.db"
+    monkeypatch.setenv("CATALYST_DB_PATH", str(db_path))
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
+    run_id = "external-run-1"
+
+    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    result = graph.invoke(_base_state(), run_id=run_id)
+
+    conn = sqlite3.connect(db_path)
+    run = conn.execute("SELECT run_id FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
+    artifacts = read_node_artifacts(conn, run_id=run_id)
+    conn.close()
+    types_by_node = {}
+    for artifact in artifacts:
+        types_by_node.setdefault(artifact["node"], set()).add(artifact["artifact_type"])
+
+    assert result["run_id"] == run_id
+    assert run is not None
+    assert "retrieved_chunks" in types_by_node.get("miner", set())
+    assert "graded_evidence" in types_by_node.get("critic", set())
+    assert "retrieved_chunks" not in types_by_node.get("critic", set())
+
+
+def test_graph_persists_raw_llm_response_artifacts(tmp_path, monkeypatch):
+    db_path = tmp_path / "trace_graph.db"
+    monkeypatch.setenv("CATALYST_DB_PATH", str(db_path))
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
+    run_id = "external-run-2"
+
+    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    graph.invoke(_base_state(), run_id=run_id)
+
+    conn = sqlite3.connect(db_path)
+    critic_rows = read_node_artifacts(conn, run_id=run_id, artifact_type="raw_llm_response")
+    conn.close()
+    nodes = {row["node"] for row in critic_rows}
+
+    assert "critic" in nodes
+    assert "judge" in nodes
+
+
+def test_graph_ignores_artifact_write_failure_and_keeps_mcj_result(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
+
+    def _boom(*args, **kwargs):
+        raise TypeError("artifact write failed")
+
+    monkeypatch.setattr("catalyst_agents.graph.write_node_artifact", _boom)
+    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    result = graph.invoke(_base_state())
+
+    assert len(result["causes"]) > 0
+    assert result["summary_md"] != ""

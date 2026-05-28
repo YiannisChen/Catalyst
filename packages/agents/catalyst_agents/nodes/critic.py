@@ -326,6 +326,7 @@ def critic(state: AttributionState, *, llm: Any = None) -> dict:
             "all_graded_chunks": graded,
             "critic_reasoning": parsed.get("reasoning", ""),
             "critic_decision": decision,
+            "critic_raw_llm_response": str(response.content),
             "cost_breakdown": state.get("cost_breakdown", []),
             "total_cost_usd": state.get("total_cost_usd", 0.0),
             "total_tokens": state.get("total_tokens", 0),

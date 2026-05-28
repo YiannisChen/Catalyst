@@ -437,3 +437,9 @@ def test_judge_bad_json_returns_fallback(monkeypatch):
     assert result["grounding_rate"] is None
     assert llm.calls == 3
     assert sleeps == [0.1, 0.2]
+
+
+def test_judge_returns_raw_llm_response():
+    state = _fresh_state()
+    result = judge(state, llm=MockLLM(JUDGE_RESPONSE))
+    assert result["judge_raw_llm_response"] == JUDGE_RESPONSE

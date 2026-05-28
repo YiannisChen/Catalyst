@@ -642,3 +642,9 @@ def test_critic_emits_critic_decision_contract():
     assert result["critic_decision"].sufficiency in {"sufficient", "partial", "insufficient"}
     assert result["critic_decision"].next_action in {"proceed", "expand_macro", "expand_related", "refuse"}
     assert 0.0 <= result["critic_decision"].magnitude_coverage <= 1.0
+
+
+def test_critic_returns_raw_llm_response():
+    state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
+    result = critic(state, llm=MockLLM(GOOD_LLM_RESPONSE))
+    assert result["critic_raw_llm_response"] == GOOD_LLM_RESPONSE

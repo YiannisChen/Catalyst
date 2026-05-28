@@ -204,3 +204,27 @@ def test_validator_returns_system_error_when_correction_call_fails():
     assert result["output_status"] == OutputStatus.SYSTEM_ERROR
     assert result["validation_error"] == "model_timeout"
     assert result["validator_attempts"] == 1
+
+
+def test_validator_returns_raw_llm_response_on_successful_correction():
+    state = _base_state()
+    state["causes"][0]["evidence_ids"] = ["missing-id"]
+    corrected = json.dumps(
+        {
+            "causes": [
+                {
+                    "text": "China export restrictions hurt sentiment",
+                    "category": "geopolitical",
+                    "confidence": 0.8,
+                    "evidence_ids": ["c1"],
+                    "direction": "negative",
+                }
+            ],
+            "summary_md": "AAPL fell after [c1] export restrictions tightened.",
+            "self_grounding_check": {"total_claims": 1, "grounded_claims": 1, "ungrounded_claims": 0},
+        }
+    )
+
+    result = validator(state, llm=SequenceLLM([corrected]))
+
+    assert result["validator_raw_llm_response"] == corrected

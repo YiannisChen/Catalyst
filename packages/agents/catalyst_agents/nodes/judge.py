@@ -161,6 +161,7 @@ def judge(state: AttributionState, *, llm: Any = None) -> dict:
             "causes": causes,
             "summary_md": parsed.get("summary_md", ""),
             "grounding_rate": grounding,
+            "judge_raw_llm_response": str(response.content),
             "cost_breakdown": state.get("cost_breakdown", []),
             "total_cost_usd": state.get("total_cost_usd", 0.0),
             "total_tokens": state.get("total_tokens", 0),
