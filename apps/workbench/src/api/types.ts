@@ -6,6 +6,7 @@ export type RuntimeStatus =
   | 'INSUFFICIENT'
   | 'FAILED_SYSTEM'
   | 'FAILED_REQUEST'
+  | 'CANCELLED'
 
 export type TraceStatus = RuntimeStatus | 'SUFFICIENT' | 'SYSTEM_ERROR'
 

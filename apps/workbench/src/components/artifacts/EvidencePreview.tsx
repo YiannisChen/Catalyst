@@ -42,25 +42,69 @@ export default function AttributionResult({ artifacts }: Props) {
     const judgeCausesArt = artifacts.find((a) => a.artifact_type === 'judge_causes');
     const validatorArt = artifacts.find((a) => a.artifact_type === 'validator_decision');
 
-    /* Build chunk lookup from retrieved + reranked */
+    /* Build chunk lookup from retrieved + reranked — multi-layer index
+       so we can match LLM shorthand IDs (e.g. "1", "chunk_1", partial IDs) */
     const chunkMap = new Map<string, any>();
+    const allChunks: any[] = [];
     for (const a of artifacts) {
       if (a.artifact_type === 'retrieved_chunks' || a.artifact_type === 'reranked_chunks') {
         const chunks: any[] = (a.payload as any)?.chunks || (a.payload as any)?.items || [];
         for (const c of chunks) {
+          allChunks.push(c);
           if (c.asset_id) chunkMap.set(c.asset_id, c);
         }
       }
     }
 
+    /* Also index graded evidence chunk_ids → chunk data */
+    const gradedArt = artifacts.find((a) => a.artifact_type === 'graded_evidence' || a.artifact_type === 'all_graded_chunks');
+    const gradedItems: any[] = gradedArt ? ((gradedArt.payload as any)?.items || []) : [];
+    for (const item of gradedItems) {
+      if (item.chunk_id && !chunkMap.has(item.chunk_id)) {
+        /* If graded chunk_id matches an asset_id, map it */
+        const match = allChunks.find((c) => c.asset_id === item.chunk_id);
+        if (match) chunkMap.set(item.chunk_id, match);
+      }
+    }
+
+    /* Build index-based lookup: "1" → first graded chunk, "2" → second, etc. */
+    const indexMap = new Map<string, any>();
+    gradedItems.forEach((item, idx) => {
+      const chunk = chunkMap.get(item.chunk_id) || allChunks.find((c) => c.asset_id === item.chunk_id);
+      if (chunk) {
+        indexMap.set(String(idx + 1), chunk);
+        indexMap.set(`chunk_${idx + 1}`, chunk);
+        indexMap.set(`evidence_${idx + 1}`, chunk);
+      }
+    });
+    /* Also map by reranked order */
+    allChunks.forEach((c, idx) => {
+      if (!indexMap.has(String(idx + 1))) indexMap.set(String(idx + 1), c);
+    });
+
+    /* Flexible lookup function: exact → index → partial substring match */
+    const findChunk = (eid: string): any | null => {
+      if (chunkMap.has(eid)) return chunkMap.get(eid);
+      const lower = eid.toLowerCase().replace(/[^a-z0-9_]/g, '');
+      if (indexMap.has(lower)) return indexMap.get(lower);
+      /* Try stripping common prefixes the LLM might use */
+      const numMatch = eid.match(/(\d+)/);
+      if (numMatch && indexMap.has(numMatch[1])) return indexMap.get(numMatch[1]);
+      /* Partial substring match on asset_id */
+      for (const c of allChunks) {
+        if (c.asset_id && c.asset_id.includes(eid)) return c;
+      }
+      return null;
+    };
+
     const summaryPayload = judgeSummaryArt ? (judgeSummaryArt.payload as any) : null;
     const causes: any[] = judgeCausesArt ? ((judgeCausesArt.payload as any)?.causes || []) : [];
     const validatorPayload = validatorArt ? (validatorArt.payload as any) : null;
 
-    return { summaryPayload, causes, chunkMap, validatorPayload };
+    return { summaryPayload, causes, findChunk, validatorPayload };
   }, [artifacts]);
 
-  const { summaryPayload, causes, chunkMap, validatorPayload } = data;
+  const { summaryPayload, causes, findChunk, validatorPayload } = data;
 
   /* No judge artifacts yet */
   if (!summaryPayload && causes.length === 0) {
@@ -90,27 +134,30 @@ export default function AttributionResult({ artifacts }: Props) {
       {causes.length > 0 && (
         <div className="attr-causes">
           <div className="attr-section-title">Causes Breakdown</div>
-          {causes.map((cause: any, idx: number) => (
+          {causes.map((cause: any, idx: number) => {
+            const weight = cause.weight ?? cause.confidence ?? 0;
+            const label = cause.title || cause.text || cause.category || '—';
+            return (
             <div key={idx} className="attr-cause-card">
               <div className="cause-top">
-                <span className="cause-title">{cause.title}</span>
+                <span className="cause-title">{label}</span>
                 <span className={`cause-dir ${cause.direction}`}>{cause.direction}</span>
-                <span className="cause-weight">{(cause.weight * 100).toFixed(0)}%</span>
+                <span className="cause-weight">{(weight * 100).toFixed(0)}%</span>
               </div>
               <div className="cause-bar-bg">
                 <div
                   className={`cause-bar-fill ${cause.direction}`}
-                  style={{ width: `${Math.min(cause.weight * 100, 100)}%` }}
+                  style={{ width: `${Math.min(weight * 100, 100)}%` }}
                 />
               </div>
-              {cause.summary && <p className="cause-summary">{cause.summary}</p>}
+              {(cause.summary || cause.text) && <p className="cause-summary">{cause.summary || cause.text}</p>}
 
               {/* Referenced Evidence */}
               {cause.evidence_ids?.length > 0 && (
                 <div className="attr-evidence-ref">
                   <div className="attr-ref-label">Referenced Evidence</div>
                   {cause.evidence_ids.map((eid: string, i: number) => {
-                    const chunk = chunkMap.get(eid);
+                    const chunk = findChunk(eid);
                     if (!chunk) {
                       return (
                         <div key={i} className="attr-ref-row">
@@ -143,7 +190,8 @@ export default function AttributionResult({ artifacts }: Props) {
                 </div>
               )}
             </div>
-          ))}
+          );
+          })}
         </div>
       )}
 

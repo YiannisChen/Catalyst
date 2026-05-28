@@ -70,9 +70,12 @@ export default function NodeTimeline({ events, summary }: Props) {
         totalOutputTokens += e.output_tokens || 0;
         totalCost += e.cost_usd || 0;
         if (e.model_id) modelId = e.model_id;
-        const before = e.status_before || '?';
-        const after = e.status_after || '?';
-        transitions.push(`${before} -> ${after}`);
+        const before = e.status_before;
+        const after = e.status_after;
+        /* Only show transitions where at least one side has a real value */
+        if (before || after) {
+          transitions.push(`${before || '—'} → ${after || '—'}`);
+        }
       }
 
       return {

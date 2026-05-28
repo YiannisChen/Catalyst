@@ -12,7 +12,7 @@ from catalyst_data.storage.lancedb_store import DEFAULT_RERANK_TOP_K, hybrid_sea
 
 MAX_LAYERS_P0 = 2
 MAX_EXPANSIONS = 2
-DEFAULT_TOP_K = 20
+DEFAULT_TOP_K = 12
 DEFAULT_GEO_CORPUS_TIER = 2
 DEFAULT_LANCEDB_DIR = Path(__file__).resolve().parents[4] / "data" / "lancedb_gold" / "eval_frozen"
 

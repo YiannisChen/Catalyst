@@ -90,6 +90,18 @@ export function retryLiveRun(runId: string, payload: RetryRunRequest): Promise<R
   })
 }
 
+export function cancelLiveRun(runId: string): Promise<{ ok: boolean }> {
+  return request<{ ok: boolean }>(`/live-runs/${encodeURIComponent(runId)}/cancel`, {
+    method: 'POST',
+  })
+}
+
+export function cancelAllRuns(): Promise<{ ok: boolean; cancelled: number }> {
+  return request<{ ok: boolean; cancelled: number }>('/live-runs/cancel-all', {
+    method: 'POST',
+  })
+}
+
 export function getRuntimeHealth(): Promise<RuntimeHealthResponse> {
   return request<RuntimeHealthResponse>('/health/runtime')
 }

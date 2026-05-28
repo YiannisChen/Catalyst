@@ -6,6 +6,7 @@ export const TERMINAL_STATUSES = [
   'INSUFFICIENT',
   'FAILED_SYSTEM',
   'FAILED_REQUEST',
+  'CANCELLED',
 ] as const satisfies readonly RuntimeStatus[];
 
 export type TerminalStatus = (typeof TERMINAL_STATUSES)[number];

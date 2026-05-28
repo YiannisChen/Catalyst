@@ -23,7 +23,7 @@ interface HoverData {
 interface Props {
   symbol: string;
   onHover: (date: string | null, ohlc?: HoverData) => void;
-  onDayClick?: (date: string) => void;
+  onDayClick?: (date: string, ohlc?: HoverData) => void;
 }
 
 export default function CandlestickChart({
@@ -305,7 +305,14 @@ export default function CandlestickChart({
       .on('click', function (event) {
         const [mx] = d3.pointer(event);
         const d = snapToData(mx);
-        onDayClick?.(d.dateStr);
+        onDayClick?.(d.dateStr, {
+          date: d.dateStr,
+          open: d.open,
+          high: d.high,
+          low: d.low,
+          close: d.close,
+          change: d.change,
+        });
       });
 
     // Zoom + Pan behavior — applied to overlay

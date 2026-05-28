@@ -22,6 +22,7 @@ _TERMINAL_STATUSES = {
     "SYSTEM_ERROR",
     "FAILED_SYSTEM",
     "FAILED_REQUEST",
+    "CANCELLED",
 }
 _NEXT_NODE = {
     "miner": "critic",
@@ -245,6 +246,34 @@ class LiveRunService:
             conn.close()
             return {"ok": True, "run_id": created["run_id"]}
         return {"ok": False, "failure": created.get("failure")}
+
+    def cancel_run(self, run_id: str) -> dict[str, Any]:
+        conn = self._connect()
+        row = conn.execute("SELECT run_id, status FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            conn.close()
+            return {"ok": False, "reason": "not_found"}
+        if row["status"] not in ("QUEUED", "RUNNING"):
+            conn.close()
+            return {"ok": True, "reason": "already_terminal", "status": row["status"]}
+        conn.execute(
+            "UPDATE agent_runs SET status = ?, ended_at = ?, error_type = ?, error_message = ? WHERE run_id = ?",
+            ("CANCELLED", _utc_now(), "user_cancelled", "Cancelled by user", run_id),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True, "reason": "cancelled"}
+
+    def cancel_active_runs(self) -> int:
+        conn = self._connect()
+        cursor = conn.execute(
+            "UPDATE agent_runs SET status = ?, ended_at = ?, error_type = ?, error_message = ? WHERE status IN ('QUEUED', 'RUNNING')",
+            ("CANCELLED", _utc_now(), "user_cancelled", "Cancelled by user"),
+        )
+        count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return count
 
     def _connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)

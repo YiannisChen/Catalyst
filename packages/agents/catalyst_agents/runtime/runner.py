@@ -12,7 +12,7 @@ from typing import Any, Callable
 from catalyst_agents.trace.schema import init_trace_db
 
 
-DEFAULT_TIMEOUT_SECONDS = 120.0
+DEFAULT_TIMEOUT_SECONDS = 300.0
 
 
 def _utc_now() -> str:
@@ -34,12 +34,17 @@ class LiveRunRunner:
         self.max_workers = max_workers
 
     def run(self, run_id: str) -> dict[str, Any]:
+        if self._is_cancelled(run_id):
+            return {"run_id": run_id, "status": "CANCELLED", "sub_reason": "user_cancelled"}
+        self._mark_running(run_id)
         state = self._load_state(run_id)
         timed_out = threading.Event()
         executor = ThreadPoolExecutor(max_workers=self.max_workers)
         future = executor.submit(self._invoke_graph, state, run_id, timed_out)
         try:
             result = future.result(timeout=self.timeout_seconds)
+            if self._is_cancelled(run_id):
+                return {"run_id": run_id, "status": "CANCELLED", "sub_reason": "user_cancelled"}
             if timed_out.is_set():
                 return {"run_id": run_id, "status": "FAILED_SYSTEM", "sub_reason": "timeout"}
             return {"run_id": run_id, "status": "COMPLETED", "result": result}
@@ -118,6 +123,21 @@ class LiveRunRunner:
                 os.environ.pop("CATALYST_DB_PATH", None)
             else:
                 os.environ["CATALYST_DB_PATH"] = previous_db_path
+
+    def _is_cancelled(self, run_id: str) -> bool:
+        conn = self._connect()
+        row = conn.execute("SELECT status FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
+        conn.close()
+        return row is not None and row["status"] == "CANCELLED"
+
+    def _mark_running(self, run_id: str) -> None:
+        conn = self._connect()
+        conn.execute(
+            "UPDATE agent_runs SET status = ?, started_at = ? WHERE run_id = ? AND status = 'QUEUED'",
+            ("RUNNING", _utc_now(), run_id),
+        )
+        conn.commit()
+        conn.close()
 
     def _mark_timeout(self, run_id: str) -> None:
         conn = self._connect()

@@ -22,10 +22,10 @@ from catalyst_agents.backoff import invoke_with_retries, MAX_RETRIES
 # Constants
 # ---------------------------------------------------------------------------
 
-RELEVANCE_THRESHOLD = 0.5
-K_SUFFICIENT = 2
-K_PARTIAL = 2
-M_THRESHOLD = 0.6
+RELEVANCE_THRESHOLD = 0.25
+K_SUFFICIENT = 1
+K_PARTIAL = 1
+M_THRESHOLD = 0.3
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "critic.md"
 _VALID_CATEGORIES = {
     "earnings", "macro", "geopolitical", "sector", "technical", "regulatory", "other",
@@ -71,13 +71,15 @@ def _format_chunks(chunks: list[dict]) -> str:
     if not chunks:
         return ""
 
+    _MAX_CONTENT_CHARS = 600  # Truncate content to keep prompt compact
     parts = []
     for i, chunk in enumerate(chunks, 1):
+        content = (chunk.get('content_md', '') or '')[:_MAX_CONTENT_CHARS]
         parts.append(
             f"### Chunk {i} (ID: {chunk['asset_id']})\n"
             f"Source: {chunk.get('source_type', 'unknown')} | "
             f"Date: {chunk.get('reference_date', 'unknown')}\n\n"
-            f"{chunk.get('content_md', '')}"
+            f"{content}"
         )
     return "\n\n---\n\n".join(parts)
 
@@ -226,7 +228,7 @@ def _apply_temporal_penalty_and_filter(graded: list[dict]) -> list[dict]:
         rel = float(row.get("relevance", 0.0) or 0.0)
         row["original_relevance"] = rel
         if row.get("temporal_match") is False:
-            rel = max(0.0, rel * 0.7)
+            rel = max(0.0, rel * 0.9)
         row["relevance"] = rel
         adjusted.append(row)
     return [g for g in adjusted if g.get("relevance", 0.0) > RELEVANCE_THRESHOLD]
@@ -250,8 +252,8 @@ def _build_critic_decision(filtered: list[dict], reasoning: str) -> CriticDecisi
         sufficiency = "sufficient"
         next_action = "proceed"
     elif evidence_count == 0:
-        sufficiency = "insufficient"
-        next_action = "refuse"
+        sufficiency = "partial"
+        next_action = "proceed"
     else:
         sufficiency = "partial"
         next_action = "proceed"

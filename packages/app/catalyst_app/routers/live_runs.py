@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import threading
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from catalyst_app.dependencies import get_live_run_service, get_runtime_dependency_loader
 from catalyst_app.llm_factory import SUPPORTED_MODELS, DEFAULT_MODEL
@@ -54,7 +55,6 @@ def _as_retry_response(payload: dict[str, Any]) -> RetryRunResponse:
 @router.post("/live-runs", response_model=CreateRunResponse)
 def create_live_run(
     request: CreateRunRequest,
-    background_tasks: BackgroundTasks,
     service=Depends(get_live_run_service),
 ) -> CreateRunResponse:
     result = service.create_run(
@@ -65,7 +65,8 @@ def create_live_run(
         config=request.config,
     )
     if result.get("status") == "QUEUED" and result.get("run_id"):
-        background_tasks.add_task(service.run_one, result["run_id"])
+        t = threading.Thread(target=service.run_one, args=(result["run_id"],), daemon=True)
+        t.start()
     return _as_create_run_response(result, model_id=request.model_id)
 
 
@@ -110,13 +111,24 @@ def get_live_run_artifacts(
 def retry_live_run(
     run_id: str,
     request: RetryRunRequest,
-    background_tasks: BackgroundTasks,
     service=Depends(get_live_run_service),
 ) -> RetryRunResponse:
     result = service.retry_run(run_id, model=request.model_id)
     if result.get("ok") is True and result.get("run_id"):
-        background_tasks.add_task(service.run_one, result["run_id"])
+        t = threading.Thread(target=service.run_one, args=(result["run_id"],), daemon=True)
+        t.start()
     return _as_retry_response(result)
+
+
+@router.post("/live-runs/{run_id}/cancel")
+def cancel_live_run(run_id: str, service=Depends(get_live_run_service)) -> dict:
+    return service.cancel_run(run_id)
+
+
+@router.post("/live-runs/cancel-all")
+def cancel_all_runs(service=Depends(get_live_run_service)) -> dict:
+    count = service.cancel_active_runs()
+    return {"ok": True, "cancelled": count}
 
 
 @router.get("/health/runtime", response_model=RuntimeHealthResponse)

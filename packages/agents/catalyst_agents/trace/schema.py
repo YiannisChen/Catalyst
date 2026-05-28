@@ -75,6 +75,8 @@ CREATE INDEX IF NOT EXISTS idx_run_links_parent ON run_links(parent_run_id);
 
 def init_trace_db(conn: sqlite3.Connection) -> None:
     """Create trace tables and indexes if they do not already exist."""
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_DDL)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_runs)").fetchall()}
     if "queued_at" not in columns:

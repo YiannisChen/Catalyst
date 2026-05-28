@@ -6,7 +6,7 @@ import PipelinePanel from './components/runtime/PipelinePanel';
 import AttributionSummary from './components/attribution/AttributionSummary';
 import NewsPanel from './components/context/NewsPanel';
 import FundamentalsCard from './components/context/FundamentalsCard';
-import { getTickers, getRangeLocal, createLiveRun, getLiveRun, getLiveRunArtifacts } from './api/client';
+import { getTickers, createLiveRun, getLiveRun, getLiveRunArtifacts, cancelLiveRun, cancelAllRuns } from './api/client';
 import { useLiveRunPolling } from './hooks/useLiveRunPolling';
 import {
   createInitialState,
@@ -45,7 +45,7 @@ function App() {
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [events, setEvents] = useState<RunEventResponse[]>([]);
   const [artifacts, setArtifacts] = useState<ArtifactResponse[]>([]);
-  const [hoveredData, setHoveredData] = useState<any>(null);
+  const [clickedData, setClickedData] = useState<any>(null);
   const [creatingRun, setCreatingRun] = useState(false);
   const [runSummary, setRunSummary] = useState<any>(null);
   const [marketContextOpen, setMarketContextOpen] = useState(true);
@@ -67,22 +67,28 @@ function App() {
         console.error('Failed to fetch tickers:', err);
       });
 
-    // Set default trade date from data range
+    // Set default trade date
     if (!state.selected.tradeDate) {
-      getRangeLocal()
-        .then((range) => {
-          if (range.max_date) {
-            dispatch({
-              type: 'SELECT_MARKET',
-              payload: { tradeDate: range.max_date },
-            });
-          }
-        })
-        .catch((err) => {
-          console.error('Failed to fetch date range:', err);
-        });
+      dispatch({
+        type: 'SELECT_MARKET',
+        payload: { tradeDate: '2026-05-01' },
+      });
     }
   }, []);
+
+  // Cancel stale runs on page load; cancel active run on tab close/refresh
+  useEffect(() => {
+    cancelAllRuns().catch(() => {});
+    const handleUnload = () => {
+      if (state.activeRunId) {
+        navigator.sendBeacon(
+          `${import.meta.env.VITE_API_BASE_URL ?? '/api'}/live-runs/${state.activeRunId}/cancel`,
+        );
+      }
+    };
+    window.addEventListener('beforeunload', handleUnload);
+    return () => window.removeEventListener('beforeunload', handleUnload);
+  }, [state.activeRunId]);
 
   // Dev mock injection: Ctrl+Shift+M = success, Ctrl+Shift+F = failure, Ctrl+Shift+C = clear
   useEffect(() => {
@@ -148,6 +154,11 @@ function App() {
     setEvents([]);
     setArtifacts([]);
     setMarketContextOpen(false);
+
+    // Cancel any previous run before starting a new one
+    if (state.activeRunId) {
+      await cancelLiveRun(state.activeRunId).catch(() => {});
+    }
 
     try {
       const response = await createLiveRun({
@@ -243,15 +254,14 @@ function App() {
           <div className="chart-section">
             <CandlestickChart
               symbol={state.selected.ticker || ''}
-              onHover={(_date, data) => {
-                setHoveredData(data || null);
-              }}
-              onDayClick={(date) =>
+              onHover={() => {}}
+              onDayClick={(date, ohlc) => {
                 dispatch({
                   type: 'SELECT_MARKET',
                   payload: { tradeDate: date },
-                })
-              }
+                });
+                if (ohlc) setClickedData(ohlc);
+              }}
             />
           </div>
 
@@ -268,39 +278,39 @@ function App() {
               )}
             </div>
 
-            {hoveredData ? (
+            {clickedData ? (
               <div className="context-ohlc">
                 <div className="ohlc-grid">
                   <div className="ohlc-cell">
                     <span className="ohlc-label">Date</span>
-                    <span className="ohlc-value">{hoveredData.date}</span>
+                    <span className="ohlc-value">{clickedData.date}</span>
                   </div>
                   <div className="ohlc-cell">
                     <span className="ohlc-label">Open</span>
-                    <span className="ohlc-value">${hoveredData.open.toFixed(2)}</span>
+                    <span className="ohlc-value">${clickedData.open.toFixed(2)}</span>
                   </div>
                   <div className="ohlc-cell">
                     <span className="ohlc-label">High</span>
-                    <span className="ohlc-value">${hoveredData.high.toFixed(2)}</span>
+                    <span className="ohlc-value">${clickedData.high.toFixed(2)}</span>
                   </div>
                   <div className="ohlc-cell">
                     <span className="ohlc-label">Low</span>
-                    <span className="ohlc-value">${hoveredData.low.toFixed(2)}</span>
+                    <span className="ohlc-value">${clickedData.low.toFixed(2)}</span>
                   </div>
                   <div className="ohlc-cell">
                     <span className="ohlc-label">Close</span>
-                    <span className="ohlc-value">${hoveredData.close.toFixed(2)}</span>
+                    <span className="ohlc-value">${clickedData.close.toFixed(2)}</span>
                   </div>
                   <div className="ohlc-cell">
                     <span className="ohlc-label">Change</span>
-                    <span className={`ohlc-value ${hoveredData.change >= 0 ? 'up' : 'down'}`}>
-                      {hoveredData.change >= 0 ? '+' : ''}{hoveredData.change.toFixed(2)}%
+                    <span className={`ohlc-value ${clickedData.change >= 0 ? 'up' : 'down'}`}>
+                      {clickedData.change >= 0 ? '+' : ''}{clickedData.change.toFixed(2)}%
                     </span>
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="context-hint">Hover over chart to see price data</div>
+              <div className="context-hint">Click a candle to see price data</div>
             )}
           </div>
         </div>

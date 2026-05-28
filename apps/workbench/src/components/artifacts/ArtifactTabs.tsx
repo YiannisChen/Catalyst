@@ -101,8 +101,9 @@ function ChunkCard({ chunk, showRerank }: { chunk: any; showRerank: boolean }) {
 function GradedEvidenceViewer({ items }: { items: any[] }) {
   if (!items.length) return <div className="av-empty">No graded evidence</div>;
 
-  const relevanceClass = (r: string) => {
-    const lower = (r || '').toLowerCase();
+  const relevanceClass = (r: unknown) => {
+    const s = typeof r === 'string' ? r : '';
+    const lower = s.toLowerCase();
     if (lower === 'high') return 'rel-high';
     if (lower === 'medium') return 'rel-med';
     return 'rel-low';
@@ -114,7 +115,7 @@ function GradedEvidenceViewer({ items }: { items: any[] }) {
         <div key={idx} className="graded-card">
           <div className="graded-top">
             <span className={`graded-rel ${relevanceClass(item.relevance)}`}>
-              {item.relevance || '—'}
+              {typeof item.relevance === 'string' ? item.relevance : '—'}
             </span>
             {item.category && <span className="graded-cat">{item.category}</span>}
             {item.temporal_alignment && (
@@ -122,7 +123,7 @@ function GradedEvidenceViewer({ items }: { items: any[] }) {
             )}
             {item.temporal_match && <span className="graded-time-ok">temporal</span>}
           </div>
-          {item.reasoning && <p className="graded-reasoning">{item.reasoning}</p>}
+          {item.reasoning && <p className="graded-reasoning">{typeof item.reasoning === 'string' ? item.reasoning : JSON.stringify(item.reasoning)}</p>}
           <div className="graded-meta">
             <span className="graded-id" title="chunk_id">{item.chunk_id || '—'}</span>
             {item.event_specificity && (
@@ -145,12 +146,24 @@ function CriticDecisionViewer({ decision }: { decision: any }) {
   if (!decision) return <div className="av-empty">No critic decision</div>;
   const d = typeof decision === 'object' ? decision : { verdict: decision };
 
+  /* Handle both formats: {verdict} and {sufficiency, next_action} */
+  const rawVerdict = d.verdict || d.sufficiency || d.decision || '—';
+  const verdict = typeof rawVerdict === 'string' ? rawVerdict : JSON.stringify(rawVerdict);
+  const rawAction = d.next_action;
+  const action = typeof rawAction === 'string' ? rawAction : null;
+
   return (
     <div className="critic-card">
       <div className="critic-verdict-row">
-        <span className={`critic-verdict ${(d.verdict || '').toLowerCase()}`}>
-          {d.verdict || d.decision || '—'}
+        <span className={`critic-verdict ${verdict.toLowerCase()}`}>
+          {verdict}
         </span>
+        {action && (
+          <span className={`critic-action ${action}`}>→ {action}</span>
+        )}
+        {d.magnitude_coverage != null && (
+          <span className="critic-count">coverage: {(d.magnitude_coverage * 100).toFixed(0)}%</span>
+        )}
         {d.high_relevance_count != null && (
           <span className="critic-count high">H:{d.high_relevance_count}</span>
         )}
@@ -161,7 +174,7 @@ function CriticDecisionViewer({ decision }: { decision: any }) {
           <span className="critic-count low">L:{d.low_relevance_count}</span>
         )}
       </div>
-      {d.reasoning && <p className="critic-reasoning">{d.reasoning}</p>}
+      {d.reasoning && <p className="critic-reasoning">{typeof d.reasoning === 'string' ? d.reasoning : JSON.stringify(d.reasoning)}</p>}
     </div>
   );
 }
@@ -174,21 +187,24 @@ function JudgeCausesViewer({ causes }: { causes: any[] }) {
 
   return (
     <div className="causes-list">
-      {causes.map((cause, idx) => (
+      {causes.map((cause, idx) => {
+        const weight = cause.weight ?? cause.confidence ?? 0;
+        const label = cause.title || cause.text || cause.category || '—';
+        return (
         <div key={idx} className="cause-card">
           <div className="cause-top">
-            <span className="cause-title">{cause.title}</span>
+            <span className="cause-title">{label}</span>
             <span className={`cause-dir ${cause.direction}`}>{cause.direction}</span>
-            <span className="cause-weight">{(cause.weight * 100).toFixed(0)}%</span>
+            <span className="cause-weight">{(weight * 100).toFixed(0)}%</span>
           </div>
           {/* Weight bar */}
           <div className="cause-bar-bg">
             <div
               className={`cause-bar-fill ${cause.direction}`}
-              style={{ width: `${Math.min(cause.weight * 100, 100)}%` }}
+              style={{ width: `${Math.min(weight * 100, 100)}%` }}
             />
           </div>
-          {cause.summary && <p className="cause-summary">{cause.summary}</p>}
+          {(cause.summary || cause.text) && <p className="cause-summary">{cause.summary || cause.text}</p>}
           {cause.evidence_ids?.length > 0 && (
             <div className="cause-evidence-ids">
               {cause.evidence_ids.map((eid: string, i: number) => (
@@ -197,7 +213,8 @@ function JudgeCausesViewer({ causes }: { causes: any[] }) {
             </div>
           )}
         </div>
-      ))}
+      );
+      })}
     </div>
   );
 }
@@ -232,8 +249,8 @@ function ValidatorViewer({ payload }: { payload: any }) {
   return (
     <div className="validator-card">
       <div className="validator-top">
-        <span className={`validator-status ${(status || '').toLowerCase()}`}>
-          {status || '—'}
+        <span className={`validator-status ${typeof status === 'string' ? status.toLowerCase() : ''}`}>
+          {typeof status === 'string' ? status : '—'}
         </span>
         {attempts != null && (
           <span className="validator-attempts">Attempts: {attempts}</span>
@@ -266,6 +283,22 @@ function ArtifactContent({ artifacts }: { artifacts: ArtifactResponse[] }) {
       {artifacts.map((a, idx) => {
         const p = a.payload as any;
         const key = `${a.node}-${a.artifact_type}-${idx}`;
+
+        /* Safety: catch any render-time errors per artifact */
+        try { return renderArtifact(a, p, key); } catch (err) {
+          return (
+            <div key={key} className="av-section">
+              <div className="av-section-header">{a.artifact_type} (render error)</div>
+              <RawViewer payload={p} />
+            </div>
+          );
+        }
+      })}
+    </div>
+  );
+}
+
+function renderArtifact(a: ArtifactResponse, p: any, key: string) {
 
         switch (a.artifact_type) {
           case 'retrieved_chunks':
@@ -341,9 +374,6 @@ function ArtifactContent({ artifacts }: { artifacts: ArtifactResponse[] }) {
               </div>
             );
         }
-      })}
-    </div>
-  );
 }
 
 /* ------------------------------------------------------------------ */

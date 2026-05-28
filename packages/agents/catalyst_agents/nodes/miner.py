@@ -7,6 +7,7 @@ Spec reference: Section 4.3 — Miner Node.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import os
 import re
 import sqlite3
 from typing import Any
@@ -152,7 +153,10 @@ def _resolve_db_path(state: AttributionState) -> str | None:
         if isinstance(db_path, str) and db_path:
             return db_path
     db_path = state.get("db_path")
-    return db_path if isinstance(db_path, str) and db_path else None
+    if isinstance(db_path, str) and db_path:
+        return db_path
+    env_path = os.environ.get("CATALYST_DB_PATH")
+    return env_path if env_path else None
 
 
 def _has_ohlcv_session(ticker: str, trade_date: str, db_path: str | None) -> bool:
@@ -263,14 +267,15 @@ def miner(
             market_session_valid = _has_ohlcv_session(state["ticker"], state["trade_date"], db_path)
         except Exception:
             market_session_valid = None
+    actual_pct: float | None = None
     magnitude_plausible: bool | None = None
-    if claimed_pct is not None and db_path is not None:
+    if db_path is not None:
         try:
             actual_pct = _get_ohlcv_move_pct(state["ticker"], state["trade_date"], db_path)
-            if actual_pct is not None:
-                magnitude_plausible = _check_magnitude_plausible(actual_pct=actual_pct, claimed_pct=claimed_pct)
         except Exception:
-            magnitude_plausible = None
+            actual_pct = None
+    if claimed_pct is not None and actual_pct is not None:
+        magnitude_plausible = _check_magnitude_plausible(actual_pct=actual_pct, claimed_pct=claimed_pct)
 
     if market_session_valid is False:
         return {
@@ -278,6 +283,7 @@ def miner(
             "ticker_consistent": ticker_consistent,
             "market_session_valid": False,
             "magnitude_plausible": magnitude_plausible,
+            "price_move_pct": actual_pct,
             "retrieved_chunks": [],
             "reranked_chunks": [],
             "current_layer": layer,
@@ -316,6 +322,7 @@ def miner(
         "ticker_consistent": ticker_consistent,
         "market_session_valid": market_session_valid,
         "magnitude_plausible": magnitude_plausible,
+        "price_move_pct": actual_pct,
         "retrieved_chunks": all_retrieved,
         "reranked_chunks": reranked,
         "retrieval_metadata": metadata,
