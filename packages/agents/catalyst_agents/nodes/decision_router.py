@@ -42,6 +42,12 @@ def decision_router(state: AttributionState) -> dict:
         }
 
     if decision.next_action == "proceed":
+        if not state.get("graded_evidence", []):
+            return {
+                "router_edge": "insufficient",
+                "router_reason": "empty_graded_evidence_guard",
+                "phase": Phase.ROUTER,
+            }
         return {
             "router_edge": "judge",
             "router_reason": "critic_proceed",

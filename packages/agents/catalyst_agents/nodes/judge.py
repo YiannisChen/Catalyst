@@ -137,6 +137,10 @@ def judge(state: AttributionState, *, llm: Any = None) -> dict:
     """
     graded = state.get("graded_evidence", [])
     reranked = state.get("reranked_chunks", [])
+    if not graded:
+        fallback = insufficient_handler(state)
+        fallback["phase"] = Phase.JUDGE
+        return fallback
 
     prompt_template = _load_prompt()
     prompt = prompt_template.format(

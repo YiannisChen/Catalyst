@@ -254,6 +254,8 @@ def test_critic_returns_empty_when_all_low():
     state = {**BASE_STATE, "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     result = critic(state, llm=MockLLM(ALL_LOW_RESPONSE))
     assert len(result["graded_evidence"]) == 0
+    assert result["critic_decision"].sufficiency == "insufficient"
+    assert result["critic_decision"].next_action == "refuse"
 
 
 def test_critic_returns_reasoning():
@@ -294,6 +296,8 @@ def test_critic_empty_chunks_skips_llm():
     state = {**BASE_STATE, "reranked_chunks": [], "cost_breakdown": [], "total_cost_usd": 0.0, "total_tokens": 0}
     result = critic(state, llm=MockLLM("{}"))
     assert result["graded_evidence"] == []
+    assert result["critic_decision"].sufficiency == "insufficient"
+    assert result["critic_decision"].next_action == "refuse"
     assert state["total_cost_usd"] == 0.0
     assert state["total_tokens"] == 0
 

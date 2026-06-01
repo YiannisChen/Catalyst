@@ -11,6 +11,7 @@ from catalyst_agents.nodes.decision_router import (
 
 def _base_state() -> dict:
     return {
+        "graded_evidence": [{"chunk_id": "c1"}],
         "critic_decision": CriticDecision(
             sufficiency="partial",
             next_action="proceed",
@@ -40,6 +41,15 @@ def test_decision_router_proceed_routes_to_judge():
 
     assert result["router_edge"] == "judge"
     assert result["router_reason"] == "critic_proceed"
+
+
+def test_decision_router_refuses_proceed_with_empty_graded_evidence():
+    state = {**_base_state(), "graded_evidence": []}
+
+    result = decision_router(state)
+
+    assert result["router_edge"] == "insufficient"
+    assert result["router_reason"] == "empty_graded_evidence_guard"
 
 
 def test_decision_router_expand_macro_with_budget_routes_expand_macro():

@@ -252,8 +252,8 @@ def _build_critic_decision(filtered: list[dict], reasoning: str) -> CriticDecisi
         sufficiency = "sufficient"
         next_action = "proceed"
     elif evidence_count == 0:
-        sufficiency = "partial"
-        next_action = "proceed"
+        sufficiency = "insufficient"
+        next_action = "refuse"
     else:
         sufficiency = "partial"
         next_action = "proceed"

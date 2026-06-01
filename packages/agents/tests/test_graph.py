@@ -88,6 +88,10 @@ class MockLLM:
         self._call_count += 1
         return MockResponse(self._responses[idx])
 
+    @property
+    def call_count(self) -> int:
+        return self._call_count
+
 
 class FailingLLM:
     def invoke(self, prompt: str) -> MockResponse:
@@ -100,6 +104,10 @@ def mock_hybrid_search(table, query, ticker=None, date_range=None, top_k=20, emb
 
 def mock_retrieve(query, layer, metadata, *, rerank=None):
     return MOCK_CHUNKS[: metadata.top_k]
+
+
+def mock_retrieve_empty(query, layer, metadata, *, rerank=None):
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +216,46 @@ def test_mcj_insufficient_evidence_path(monkeypatch):
     assert result["causes"][0]["category"] == "unknown"
     assert "Insufficient evidence" in result["causes"][0]["text"]
     assert result["grounding_rate"] is None
+
+
+def test_mcj_zero_retrieved_evidence_does_not_call_judge(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve_empty)
+
+    llm = MockLLM()
+    graph = build_attribution_graph(use_critic=True, llm=llm)
+
+    result = graph.invoke(_base_state())
+
+    assert result["output_status"] == OutputStatus.INSUFFICIENT
+    assert "Insufficient evidence" in result["causes"][0]["text"]
+    assert llm.call_count == 0
+
+
+def test_mcj_all_rejected_evidence_does_not_call_judge(monkeypatch):
+    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
+
+    all_low = json.dumps({
+        "graded_chunks": [
+            {
+                "chunk_id": "c1",
+                "relevance": 0.1,
+                "category": "technical",
+                "temporal_match": False,
+                "reasoning": "Tangential reference, not directly relevant.",
+            }
+        ],
+        "reasoning": "No evidence above the threshold.",
+    })
+
+    llm = MockLLM()
+    llm._responses = [all_low, JUDGE_RESPONSE]
+    graph = build_attribution_graph(use_critic=True, llm=llm)
+
+    result = graph.invoke(_base_state())
+
+    assert result["output_status"] == OutputStatus.INSUFFICIENT
+    assert "Insufficient evidence" in result["causes"][0]["text"]
+    assert llm.call_count == 1
 
 
 def test_mcj_graph_critic_failure_routes_to_system_error(monkeypatch):

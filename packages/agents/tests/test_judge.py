@@ -16,6 +16,7 @@ from catalyst_agents.nodes.judge import (
     _compute_grounding_rate,
     MAX_CAUSES,
 )
+from catalyst_agents.state import OutputStatus
 
 
 # ---------------------------------------------------------------------------
@@ -38,8 +39,10 @@ class MockResponse:
 class MockLLM:
     def __init__(self, response_content):
         self._content = response_content
+        self.calls = 0
 
     def invoke(self, prompt):
+        self.calls += 1
         return MockResponse(self._content)
 
 
@@ -297,6 +300,18 @@ def test_judge_returns_causes_and_summary():
     assert "summary_md" in result
     assert len(result["causes"]) == 2
     assert "AAPL" in result["summary_md"]
+
+
+def test_judge_empty_evidence_returns_insufficient_without_llm_call():
+    state = {**_fresh_state(), "graded_evidence": []}
+    llm = MockLLM(JUDGE_RESPONSE)
+
+    result = judge(state, llm=llm)
+
+    assert result["output_status"] == OutputStatus.INSUFFICIENT
+    assert result["grounding_rate"] is None
+    assert "Insufficient evidence" in result["causes"][0]["text"]
+    assert llm.calls == 0
 
 
 def test_judge_limits_to_max_causes():
