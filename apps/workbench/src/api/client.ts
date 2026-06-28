@@ -145,3 +145,19 @@ export function getFundamentals(
   const q = new URLSearchParams({ trade_date: tradeDate })
   return request<FundamentalsResponse>(`/fundamentals/${encodeURIComponent(ticker)}?${q}`)
 }
+
+export function validateModel(
+  payload: import('./types').ModelValidateRequest,
+): Promise<import('./types').ModelValidateResponse> {
+  return request<import('./types').ModelValidateResponse>('/models/validate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export function getWorkspace(runId: string): Promise<import('./types').WorkspaceResponse> {
+  return request<import('./types').WorkspaceResponse>(`/live-runs/${encodeURIComponent(runId)}/workspace`)
+}
+export function getCatalog(): Promise<import('./types').ModelCatalogResponse> {
+  return request<import('./types').ModelCatalogResponse>('/models/catalog')
+}

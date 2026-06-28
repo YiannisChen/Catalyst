@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import * as d3 from 'd3';
 import { getOhlcv } from '../../api/client';
 
@@ -24,87 +24,80 @@ interface Props {
   symbol: string;
   onHover: (date: string | null, ohlc?: HoverData) => void;
   onDayClick?: (date: string, ohlc?: HoverData) => void;
+  selectedDate?: string;
 }
 
 export default function CandlestickChart({
   symbol,
   onHover,
   onDayClick,
+  selectedDate,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [loading, setLoading] = useState(false);
-  const marginRef = useRef({ top: 16, right: 48, bottom: 28, left: 56 });
+  const [error, setError] = useState<string | null>(null);
+  const [chartData, setChartData] = useState<OHLCRow[]>([]);
+  const clipId = `chart-clip-${useId().replace(/:/g, '')}`;
 
   useEffect(() => {
     if (!symbol) return;
+
+    let active = true;
     setLoading(true);
+    setError(null);
+    setChartData([]);
 
     getOhlcv(symbol)
       .then((res) => {
         const validCandles = res.candles.filter(
           (c) => c.date && c.open != null && c.high != null && c.low != null && c.close != null
         );
-        if (validCandles.length > 0) {
-          const data = validCandles.map((c) => ({
-            date: c.date,
-            open: c.open!,
-            high: c.high!,
-            low: c.low!,
-            close: c.close!,
-            volume: c.volume ?? 0,
-          }));
-          drawChart(data);
-        } else {
-          drawChart(buildMockOhlc(symbol));
+        if (!active) return;
+        if (validCandles.length === 0) {
+          setError(`No OHLCV data is available for ${symbol}.`);
+          return;
         }
+
+        setChartData(validCandles.map((c) => ({
+          date: c.date,
+          open: c.open!,
+          high: c.high!,
+          low: c.low!,
+          close: c.close!,
+          volume: c.volume ?? 0,
+        })));
       })
-      .catch(() => {
-        drawChart(buildMockOhlc(symbol));
+      .catch((requestError) => {
+        if (!active) return;
+        setError(requestError instanceof Error
+          ? requestError.message
+          : `Unable to load OHLCV data for ${symbol}.`);
       })
-      .finally(() => setLoading(false));
-  }, [symbol]);
-
-  function buildMockOhlc(seedText: string): OHLCRow[] {
-    const out: OHLCRow[] = [];
-    const end = new Date();
-    const start = new Date(end);
-    start.setDate(end.getDate() - 140);
-
-    let seed = 0;
-    for (let i = 0; i < seedText.length; i++) {
-      seed = (seed * 31 + seedText.charCodeAt(i)) >>> 0;
-    }
-    const rand = () => {
-      seed = (seed * 1664525 + 1013904223) >>> 0;
-      return seed / 4294967296;
-    };
-
-    let price = 100 + rand() * 300;
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const day = d.getDay();
-      if (day === 0 || day === 6) continue;
-
-      const drift = (rand() - 0.5) * 0.04;
-      const open = price;
-      const close = open * (1 + drift);
-      const high = Math.max(open, close) * (1 + rand() * 0.012);
-      const low = Math.min(open, close) * (1 - rand() * 0.012);
-      const volume = 1_000_000 + Math.floor(rand() * 40_000_000);
-
-      out.push({
-        date: d.toISOString().slice(0, 10),
-        open: Number(open.toFixed(2)),
-        high: Number(high.toFixed(2)),
-        low: Number(low.toFixed(2)),
-        close: Number(close.toFixed(2)),
-        volume,
+      .finally(() => {
+        if (active) setLoading(false);
       });
 
-      price = close;
+    return () => {
+      active = false;
+    };
+  }, [symbol]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (chartData.length === 0) {
+      d3.select(svgRef.current).selectAll('*').remove();
+      return;
     }
-    return out;
-  }
+
+    const redraw = () => drawChart(chartData);
+    redraw();
+
+    const observer = new ResizeObserver(redraw);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [chartData, selectedDate]);
 
   function drawChart(rawData: OHLCRow[]) {
     const svg = d3.select(svgRef.current);
@@ -115,11 +108,19 @@ export default function CandlestickChart({
 
     const fullWidth = container.clientWidth;
     const fullHeight = container.clientHeight || 600;
-    const margin = marginRef.current;
+    const compact = fullWidth < 520;
+    const margin = compact
+      ? { top: 14, right: 12, bottom: 26, left: 44 }
+      : { top: 16, right: 24, bottom: 28, left: 52 };
     const width = fullWidth - margin.left - margin.right;
     const height = fullHeight - margin.top - margin.bottom;
 
-    svg.attr('width', fullWidth).attr('height', fullHeight);
+    if (width <= 0 || height <= 0) return;
+
+    svg
+      .attr('width', fullWidth)
+      .attr('height', fullHeight)
+      .attr('viewBox', `0 0 ${fullWidth} ${fullHeight}`);
 
     const g = svg.append('g').attr('transform', `translate(${margin.left},${margin.top})`);
 
@@ -138,25 +139,31 @@ export default function CandlestickChart({
       .domain(d3.extent(data, (d) => d.date) as [Date, Date])
       .range([0, width]);
 
+    const targetTickCount = compact ? 4 : 5;
+    const tickStep = Math.max(1, Math.ceil((data.length - 1) / targetTickCount));
+    const axisTickValues = data
+      .filter((_, index) => index === 0 || index === data.length - 1 || index % tickStep === 0)
+      .map((datum) => datum.date);
+
     const y = d3.scaleLinear()
       .domain([d3.min(data, (d) => d.low)! * 0.92, d3.max(data, (d) => d.high)! * 1.03])
       .range([height, 0]);
 
     // Clip path so candles don't overflow
     svg.append('defs').append('clipPath')
-      .attr('id', 'chart-clip')
+      .attr('id', clipId)
       .append('rect')
       .attr('width', width)
       .attr('height', height);
 
-    const chartArea = g.append('g').attr('clip-path', 'url(#chart-clip)');
+    const chartArea = g.append('g').attr('clip-path', `url(#${clipId})`);
 
     // Grid lines
     g.append('g')
       .attr('class', 'grid-y')
       .call(
         d3.axisLeft(y)
-          .ticks(8)
+          .ticks(compact ? 4 : 7)
           .tickSize(-width)
           .tickFormat(() => '')
       )
@@ -168,12 +175,12 @@ export default function CandlestickChart({
     const xAxisGroup = g.append('g')
       .attr('class', 'x-axis')
       .attr('transform', `translate(0,${height})`)
-      .call(d3.axisBottom(xBase).ticks(8).tickFormat(d3.timeFormat('%b %y') as any));
+      .call(d3.axisBottom(xBase).tickValues(axisTickValues).tickFormat(d3.timeFormat('%b %d') as any));
 
     xAxisGroup.selectAll('text').style('font-size', '11px').style('fill', '#64748b');
 
     g.append('g')
-      .call(d3.axisLeft(y).ticks(6).tickFormat((d) => `$${Number(d).toFixed(0)}`))
+      .call(d3.axisLeft(y).ticks(compact ? 4 : 6).tickFormat((d) => `$${Number(d).toFixed(0)}`))
       .selectAll('text')
       .style('font-size', '11px')
       .style('fill', '#64748b');
@@ -198,7 +205,44 @@ export default function CandlestickChart({
       .attr('y', (d) => y(Math.max(d.open, d.close)))
       .attr('width', candleWidthBase)
       .attr('height', (d) => Math.max(1, Math.abs(y(d.open) - y(d.close))))
-      .attr('fill', (d) => (d.close >= d.open ? '#22c55e' : '#ef4444'));
+      .attr('fill', (d) => (d.close >= d.open ? '#22c55e' : '#ef4444'))
+      .attr('stroke', (d) => d.dateStr === selectedDate ? '#79a9ff' : 'none')
+      .attr('stroke-width', (d) => d.dateStr === selectedDate ? 2 : 0);
+
+    if (selectedDate) {
+      const selected = data.find((datum) => datum.dateStr === selectedDate);
+      if (selected) {
+        const selectedX = xBase(selected.date);
+        chartArea.append('line')
+          .attr('class', 'event-date-line')
+          .attr('x1', selectedX)
+          .attr('x2', selectedX)
+          .attr('y1', 0)
+          .attr('y2', height)
+          .attr('stroke', '#79a9ff')
+          .attr('stroke-width', 1)
+          .attr('stroke-dasharray', '4,4');
+
+        const markerX = Math.min(Math.max(selectedX - 42, 0), width - 84);
+        const marker = g.append('g')
+          .attr('class', 'event-date-label')
+          .attr('transform', `translate(${markerX},0)`)
+          .style('pointer-events', 'none');
+        marker.append('rect')
+          .attr('width', 84)
+          .attr('height', 20)
+          .attr('rx', 4)
+          .attr('fill', '#1e293b')
+          .attr('stroke', '#79a9ff');
+        marker.append('text')
+          .attr('x', 42)
+          .attr('y', 14)
+          .attr('text-anchor', 'middle')
+          .attr('fill', '#e2e8f0')
+          .attr('font-size', '11px')
+          .text(selectedDate);
+      }
+    }
 
     // Crosshairs
     const crossV = g.append('line')
@@ -331,7 +375,11 @@ export default function CandlestickChart({
         const xCurrent = currentTransform.rescaleX(xBase);
         const scaledCandleWidth = Math.max(1, Math.min(36, candleWidthBase * currentTransform.k));
 
-        xAxisGroup.call(d3.axisBottom(xCurrent).ticks(8).tickFormat(d3.timeFormat('%b %y') as any));
+        const visibleTicks = axisTickValues.filter((date) => {
+          const position = xCurrent(date);
+          return position >= 0 && position <= width;
+        });
+        xAxisGroup.call(d3.axisBottom(xCurrent).tickValues(visibleTicks).tickFormat(d3.timeFormat('%b %d') as any));
         xAxisGroup.selectAll('text').style('font-size', '11px').style('fill', '#64748b');
 
         wicks
@@ -341,6 +389,18 @@ export default function CandlestickChart({
         bodies
           .attr('x', (d) => xCurrent(d.date) - scaledCandleWidth / 2)
           .attr('width', scaledCandleWidth);
+
+        if (selectedDate) {
+          const selected = data.find((datum) => datum.dateStr === selectedDate);
+          if (selected) {
+            const selectedX = xCurrent(selected.date);
+            chartArea.select('.event-date-line')
+              .attr('x1', selectedX)
+              .attr('x2', selectedX);
+            const markerX = Math.min(Math.max(selectedX - 42, 0), width - 84);
+            g.select('.event-date-label').attr('transform', `translate(${markerX},0)`);
+          }
+        }
       });
 
     overlay.call(zoom as any).on('dblclick.zoom', null);
@@ -349,7 +409,8 @@ export default function CandlestickChart({
   return (
     <div ref={containerRef} className="chart-container">
       {loading && <div className="chart-loading">Loading...</div>}
-      <svg ref={svgRef}></svg>
+      {error && <div className="chart-error" role="alert">{error}</div>}
+      <svg ref={svgRef} role="img" aria-label={`${symbol} candlestick price chart`}></svg>
     </div>
   );
 }
