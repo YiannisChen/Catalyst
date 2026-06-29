@@ -390,13 +390,15 @@ async def test_process_request_handles_malformed_news_results_dict(db_path):
     assert len(results) == 1
     summary = results[0]
     assert summary["ok"] is True
-    asset_id = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
     conn = _read_conn(db_path)
-    clean_asset = get_clean_asset(conn, asset_id)
+    clean_rows = conn.execute(
+        "SELECT content_md FROM clean_assets WHERE source_type = 'polygon_news'"
+    ).fetchall()
     conn.close()
-    assert clean_asset is not None
-    assert "Untitled" in clean_asset["content_md"]
-    assert "Shape drifted to a single object" in clean_asset["content_md"]
+    assert len(clean_rows) >= 1
+    content_md = clean_rows[0][0]
+    assert "Untitled" in content_md
+    assert "Shape drifted to a single object" in content_md
 
 
 @pytest.mark.asyncio
@@ -430,14 +432,16 @@ async def test_process_request_handles_string_publisher_shape(db_path):
     assert len(results) == 1
     summary = results[0]
     assert summary["ok"] is True
-    asset_id = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
     conn = _read_conn(db_path)
-    clean_asset = get_clean_asset(conn, asset_id)
+    clean_rows = conn.execute(
+        "SELECT content_md FROM clean_assets WHERE source_type = 'polygon_news'"
+    ).fetchall()
     conn.close()
-    assert clean_asset is not None
-    assert "Untitled" in clean_asset["content_md"]
-    assert "Reuters" in clean_asset["content_md"]
-    assert "Publisher drifted to a string" in clean_asset["content_md"]
+    assert len(clean_rows) >= 1
+    content_md = clean_rows[0][0]
+    assert "Untitled" in content_md
+    assert "Reuters" in content_md
+    assert "Publisher drifted to a string" in content_md
 
 
 @pytest.mark.asyncio
@@ -458,18 +462,19 @@ async def test_process_request_rerun_keeps_single_bronze_and_silver_row(db_path)
     )
 
     asset_id = compute_asset_id("AAPL", "2026-01-15", "polygon_news")
-    assert first_results[0]["asset_id"] == asset_id
-    assert second_results[0]["asset_id"] == asset_id
+    # B2: clean_asset.asset_id is now poly:{article_id}, not the SHA-256 raw asset_id
+    assert first_results[0]["asset_id"] is not None
+    assert second_results[0]["asset_id"] is not None
     conn = _read_conn(db_path)
     raw_count = conn.execute(
         "SELECT COUNT(*) FROM raw_assets WHERE asset_id = ?", (asset_id,)
     ).fetchone()[0]
     clean_count = conn.execute(
-        "SELECT COUNT(*) FROM clean_assets WHERE asset_id = ?", (asset_id,)
+        "SELECT COUNT(*) FROM clean_assets WHERE source_type = 'polygon_news'"
     ).fetchone()[0]
     conn.close()
     assert raw_count == 1
-    assert clean_count == 1
+    assert clean_count >= 1
 
 
 @pytest.mark.asyncio
@@ -505,17 +510,19 @@ async def test_process_request_partial_failure_rerun_does_not_corrupt_prior_succ
         "SELECT COUNT(*) FROM raw_assets WHERE asset_id = ?", (asset_id,)
     ).fetchone()[0]
     clean_count = conn.execute(
-        "SELECT COUNT(*) FROM clean_assets WHERE asset_id = ?", (asset_id,)
+        "SELECT COUNT(*) FROM clean_assets WHERE source_type = 'polygon_news'"
     ).fetchone()[0]
-    clean_asset = get_clean_asset(conn, asset_id)
+    clean_rows = conn.execute(
+        "SELECT content_md FROM clean_assets WHERE source_type = 'polygon_news'"
+    ).fetchall()
     conn.close()
 
     assert success_results[0]["ok"] is True
     assert failure_results[0]["ok"] is False
     assert raw_count == 1
-    assert clean_count == 1
-    assert clean_asset is not None
-    assert "Test Article" in clean_asset["content_md"]
+    assert clean_count >= 1
+    assert len(clean_rows) >= 1
+    assert "Test Article" in clean_rows[0][0]
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,8 @@ import sqlite3
 import zlib
 from datetime import datetime, timezone
 
+from catalyst_data.articles import ensure_articles_table
+
 # ---------------------------------------------------------------------------
 # Schema DDL
 # ---------------------------------------------------------------------------
@@ -56,8 +58,10 @@ CREATE TABLE IF NOT EXISTS clean_assets (
     is_duplicate    INTEGER DEFAULT 0,
     FOREIGN KEY (asset_id) REFERENCES raw_assets(asset_id)
 );
+-- Additive: provenance column (applied via ensure_clean_provenance)
 CREATE INDEX IF NOT EXISTS idx_clean_ticker_date ON clean_assets(ticker, reference_date);
 CREATE INDEX IF NOT EXISTS idx_clean_title_hash ON clean_assets(title_hash);
+
 
 -- OHLCV price data
 CREATE TABLE IF NOT EXISTS ohlcv (
@@ -138,11 +142,25 @@ def _now_iso() -> str:
 # ---------------------------------------------------------------------------
 
 
+
+def ensure_clean_provenance(conn: sqlite3.Connection) -> None:
+    """Add raw_asset_id provenance column and index to clean_assets (idempotent)."""
+    try:
+        conn.execute("ALTER TABLE clean_assets ADD COLUMN raw_asset_id TEXT")
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_clean_raw_asset ON clean_assets(raw_asset_id)"
+    )
+    conn.commit()
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Set pragmas, create all tables and indexes."""
     for pragma in _PRAGMAS:
         conn.execute(pragma)
     conn.executescript(_DDL)
+    ensure_clean_provenance(conn)
+    ensure_articles_table(conn)
     conn.commit()
 
 
@@ -237,14 +255,15 @@ def upsert_clean_asset(
     content_md: str,
     title_hash: str | None = None,
     is_duplicate: int = 0,
+    raw_asset_id: str | None = None,
 ) -> None:
     """Insert or replace a cleaned (Silver) asset."""
     conn.execute(
         """
         INSERT OR REPLACE INTO clean_assets
             (asset_id, ticker, source_type, reference_date, cleaned_at,
-             content_md, title_hash, is_duplicate)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             content_md, title_hash, is_duplicate, raw_asset_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             asset_id,
@@ -255,6 +274,7 @@ def upsert_clean_asset(
             content_md,
             title_hash,
             is_duplicate,
+            raw_asset_id,
         ),
     )
     conn.commit()
@@ -265,7 +285,7 @@ def get_clean_asset(conn: sqlite3.Connection, asset_id: str) -> dict | None:
     row = conn.execute(
         """
         SELECT asset_id, ticker, source_type, reference_date, cleaned_at,
-               content_md, title_hash, is_duplicate
+               content_md, title_hash, is_duplicate, raw_asset_id
         FROM clean_assets WHERE asset_id = ?
         """,
         (asset_id,),
@@ -283,6 +303,7 @@ def get_clean_asset(conn: sqlite3.Connection, asset_id: str) -> dict | None:
         "content_md": row[5],
         "title_hash": row[6],
         "is_duplicate": row[7],
+        "raw_asset_id": row[8],
     }
 
 

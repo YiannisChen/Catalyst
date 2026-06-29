@@ -31,6 +31,7 @@ from catalyst_data.dedup.cross_source import AssetCandidate as NormalizedAsset
 from catalyst_data.pipeline.clean import run_clean
 from catalyst_data.pipeline.ingest import run_ingest
 from catalyst_data.pipeline.transform import run_transform
+from catalyst_data.pipeline.transform_v2 import run_transform_v2
 from catalyst_data.quality import assess_quality_fields, normalize_title
 from catalyst_data.source_mapping import map_logical_source
 from catalyst_data.storage.sqlite import (
@@ -152,7 +153,7 @@ def _store_bronze_and_silver(
     raw_bytes: bytes,
     http_status: int | None,
     endpoints: list[str],
-    content_md: str,
+    clean_rows: list[dict],
     ohlcv_bar: dict[str, float | str] | None = None,
 ) -> str | None:
     """Synchronous helper that writes Bronze + Silver in one thread-safe call.
@@ -164,6 +165,11 @@ def _store_bronze_and_silver(
     """
     conn = sqlite3.connect(str(db_path))
     init_db(conn)
+    # Legacy FK on clean_assets.asset_id expects raw_assets-compatible ids,
+    # but polygon_news now uses poly:{article_id} format. Disable FK for that scope.
+    # Must be set AFTER init_db (which sets foreign_keys=ON).
+    if source == "polygon_news":
+        conn.execute("PRAGMA foreign_keys=OFF")
     try:
         upsert_raw_asset(
             conn,
@@ -175,14 +181,17 @@ def _store_bronze_and_silver(
             http_status=http_status,
             metadata={"endpoints": endpoints},
         )
-        upsert_clean_asset(
-            conn,
-            asset_id=asset_id,
-            ticker=ticker,
-            source_type=source,
-            reference_date=date,
-            content_md=content_md,
-        )
+        for row in clean_rows:
+            upsert_clean_asset(
+                conn,
+                asset_id=row["asset_id"],
+                ticker=ticker,
+                source_type=source,
+                reference_date=date,
+                content_md=row["content_md"],
+                title_hash=row.get("title_hash"),
+                raw_asset_id=asset_id,
+            )
         if ohlcv_bar is not None:
             upsert_ohlcv(
                 conn,
@@ -284,14 +293,23 @@ async def _process_source(
         return summary
 
     # 6. Transform to Markdown
-    transform_result = run_transform(cleaned_data, source, ticker)
-    summary["stage_latencies"]["transform"] = transform_result.latency_ms
-
-    if not transform_result.ok:
-        summary["error"] = f"transform: {transform_result.error}"
-        return summary
-
-    content_md = transform_result.data
+    if source == "polygon_news":
+        # Per-article transform (no merge) — each article becomes its own clean_asset
+        transform_results = run_transform_v2(cleaned_data, source, ticker)
+        total_latency = sum(r.latency_ms for r in transform_results)
+        summary["stage_latencies"]["transform"] = total_latency
+        ok_results = [r for r in transform_results if r.ok]
+        if not ok_results:
+            summary["error"] = "transform: all articles failed"
+            return summary
+        clean_rows = [r.data for r in ok_results]
+    else:
+        transform_result = run_transform(cleaned_data, source, ticker)
+        summary["stage_latencies"]["transform"] = transform_result.latency_ms
+        if not transform_result.ok:
+            summary["error"] = f"transform: {transform_result.error}"
+            return summary
+        clean_rows = [{"asset_id": asset_id, "content_md": transform_result.data, "title_hash": None}]
 
     # 7. Store Bronze + Silver (offloaded to thread pool to avoid blocking loop)
     summary["asset_id"] = asset_id
@@ -311,7 +329,7 @@ async def _process_source(
         raw_bytes=raw_bytes,
         http_status=first_status,
         endpoints=endpoints,
-        content_md=content_md,
+        clean_rows=clean_rows,
         ohlcv_bar=ohlcv_bar,
     )
     if storage_err:
