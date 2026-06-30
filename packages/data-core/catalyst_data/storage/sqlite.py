@@ -118,6 +118,38 @@ CREATE TABLE IF NOT EXISTS golden_events (
     annotator       TEXT DEFAULT 'manual',
     created_at      TEXT NOT NULL
 );
+
+-- Index build manifest: one row per real embedding build
+CREATE TABLE IF NOT EXISTS index_manifests (
+    build_id              TEXT PRIMARY KEY,
+    created_at            TEXT NOT NULL,
+    model                 TEXT NOT NULL,
+    model_hash            TEXT NOT NULL,
+    lancedb_path          TEXT NOT NULL,
+    l1_count              INTEGER NOT NULL,
+    l2_count              INTEGER NOT NULL,
+    article_count         INTEGER NOT NULL,
+    indexed_through_date  TEXT NOT NULL,
+    corpus_hash           TEXT NOT NULL,
+    status                TEXT NOT NULL DEFAULT 'pending'
+);
+
+-- Per-item index state: polymorphic across article/filing sources
+-- corpus_item_id = article_id for articles; "sec:{cik}:{accession}" for filings
+-- source_kind = 'article' | 'filing'
+-- NO foreign key — the column is polymorphic
+CREATE TABLE IF NOT EXISTS index_state (
+    corpus_item_id  TEXT NOT NULL,
+    source_kind     TEXT NOT NULL,
+    content_hash    TEXT NOT NULL,
+    source_tier     INTEGER,
+    dedup_group_id  TEXT,
+    indexed_build_id TEXT,
+    indexed_at      TEXT,
+    PRIMARY KEY (corpus_item_id, source_kind)
+);
+CREATE INDEX IF NOT EXISTS idx_index_state_build ON index_state(indexed_build_id);
+
 """
 
 # ---------------------------------------------------------------------------
