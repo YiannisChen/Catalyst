@@ -1,8 +1,14 @@
-"""CLI for index status reporting and dry-run record building.
+"""CLI for index status, freshness, and update/backfill operations.
 
 Usage:
-    python -m catalyst_data.cli_index status
-    python -m catalyst_data.cli_index rebuild-index --mode dry-run
+    python -m catalyst_data.cli_index status [--freshness] [--db PATH]
+    python -m catalyst_data.cli_index rebuild-index --mode dry-run [--db PATH]
+    python -m catalyst_data.cli_index update-news [--from DATE] [--to DATE]
+              [--tickers T,...] [--sources S,...] [--limit N] [--dry-run]
+              [--db PATH]
+    python -m catalyst_data.cli_index backfill [--from DATE] [--to DATE]
+              [--tickers T,...] [--sources S,...] [--chunk-days N]
+              [--dry-run] [--db PATH]
 
 Never imports lancedb, FlagEmbedding, or any GPU library.
 """
@@ -10,12 +16,14 @@ Never imports lancedb, FlagEmbedding, or any GPU library.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import sqlite3
 import sys
 from pathlib import Path
 
 from catalyst_data.storage.sqlite import init_db
+from catalyst_data.quality import ensure_ingestion_quality_tables
 from catalyst_data.source_tier import classify_articles, tier_distribution, tier_label
 from catalyst_data.index_builder import build_index_records, index_summary
 
@@ -24,17 +32,81 @@ logger = logging.getLogger(__name__)
 DEFAULT_DB = Path("data/catalyst_dev_ws4b.db")
 
 
+def _ensure_db(db_path: str) -> str:
+    """Validate DB path exists.  Exits with clean error if missing."""
+    p = Path(db_path)
+    if not p.exists():
+        print(f"ERROR: Database not found: {db_path}", file=sys.stderr)
+        print(f"  Expected dev DB at data/catalyst_dev_ws4b.db", file=sys.stderr)
+        sys.exit(1)
+    return str(p.resolve())
+
+
 def _open_db(db_path: str) -> sqlite3.Connection:
+    db_path = _ensure_db(db_path)
     conn = sqlite3.connect(db_path)
     init_db(conn)
+    ensure_ingestion_quality_tables(conn)
     return conn
 
 
-def cmd_status(db_path: str) -> None:
-    """Print index freshness summary."""
+# ---------------------------------------------------------------------------
+# status
+# ---------------------------------------------------------------------------
+
+def cmd_status(db_path: str, freshness: bool = False) -> None:
+    """Print index/build status, optionally with freshness."""
     conn = _open_db(db_path)
 
-    # Latest build
+    if freshness:
+        from catalyst_data.freshness import freshness_report
+
+        report = freshness_report(conn)
+        wm = report["local_ohlcv_date"]
+        news = report["news"]
+        idx = report["index"]
+
+        print(f"=== Freshness Report ===")
+        print(f"  Local OHLCV watermark:  {wm}")
+        print(f"  Generated at:           {report['generated_at']}")
+        print()
+
+        print(f"=== Index ===")
+        print(f"  Status:         {idx['status']}")
+        print(f"  Total articles: {idx['total_articles']}")
+        print(f"  Stale count:    {idx['stale_count']}")
+        if idx.get("latest_build_id"):
+            print(f"  Latest build:   {idx['latest_build_id']}")
+            print(f"  Last built at:  {idx['last_built_at']}")
+            print(f"  Model:          {idx['model']}")
+        print()
+
+        print(f"=== News Freshness ===")
+        for source_type, tickers in sorted(news.items()):
+            stales = sum(
+                1 for t in tickers.values() if t["status"] == "STALE"
+            )
+            freshes = sum(
+                1 for t in tickers.values() if t["status"] == "FRESH"
+            )
+            nodata = sum(
+                1 for t in tickers.values() if t["status"] == "NO_DATA"
+            )
+            print(f"  {source_type}: {freshes} FRESH, {stales} STALE, "
+                  f"{nodata} NO_DATA")
+            for ticker, info in sorted(tickers.items()):
+                if info["status"] != "FRESH":
+                    db_str = (
+                        f" ({info['days_behind']}d behind)"
+                        if info["days_behind"] > 0 else ""
+                    )
+                    print(f"    {ticker}: {info['status']}{db_str}  "
+                          f"latest={info['latest_date']}")
+
+        conn.close()
+        return
+
+    # Original status output
     build_row = conn.execute(
         """SELECT build_id, created_at, status, l1_count, l2_count, article_count,
                   model, indexed_through_date
@@ -55,7 +127,6 @@ def cmd_status(db_path: str) -> None:
         print("=== Latest Build ===")
         print("  No builds — run rebuild-index on cloud/GPU (Step 4).")
 
-    # Index state counts
     state_total = conn.execute("SELECT COUNT(*) FROM index_state").fetchone()[0]
     state_article = conn.execute(
         "SELECT COUNT(*) FROM index_state WHERE source_kind = 'article'"
@@ -64,7 +135,6 @@ def cmd_status(db_path: str) -> None:
     print(f"  Total indexed:   {state_total}")
     print(f"  Articles:        {state_article}")
 
-    # Per-tier distribution from articles
     dist = tier_distribution(conn)
     print(f"\n=== Article Tier Distribution ===")
     for tier in sorted(dist):
@@ -76,12 +146,12 @@ def cmd_status(db_path: str) -> None:
     conn.close()
 
 
-def cmd_rebuild_index(db_path: str, mode: str = "dry-run") -> None:
-    """Rebuild index records — dry-run only on Mac (no embedding).
+# ---------------------------------------------------------------------------
+# rebuild-index
+# ---------------------------------------------------------------------------
 
-    Populates source_tier (idempotent), builds L1+L2 records, prints summary.
-    Does NOT write index_state or index_manifests.
-    """
+def cmd_rebuild_index(db_path: str, mode: str = "dry-run") -> None:
+    """Rebuild index records — dry-run only on Mac (no embedding)."""
     if mode != "dry-run":
         print("ERROR: Only --mode dry-run is supported on Mac.")
         print("       Full rebuild requires cloud/GPU (Step 4).")
@@ -89,17 +159,14 @@ def cmd_rebuild_index(db_path: str, mode: str = "dry-run") -> None:
 
     conn = _open_db(db_path)
 
-    # 1. Classify articles (idempotent)
     print("Classifying articles...")
     classified = classify_articles(conn)
     print(f"  Classified: {classified} articles (newly assigned tier)")
 
-    # 2. Build index records (no embedding)
     print("Building index records (dry-run, no embedding)...")
     records = build_index_records(conn, min_l2_chars=800)
     summary = index_summary(records)
 
-    # 3. Guards — enforced inside build_index_records (protects all callers)
     article_count = conn.execute(
         "SELECT COUNT(*) FROM articles"
     ).fetchone()[0]
@@ -109,7 +176,6 @@ def cmd_rebuild_index(db_path: str, mode: str = "dry-run") -> None:
     l1_records = [r for r in records if r["chunk_level"] == "l1"]
     ticker_refs = sum(len(r["tickers"]) for r in l1_records)
 
-    # 4. Report
     print(f"\n=== Dry-Run Summary ===")
     print(f"  L1 records:              {summary['l1_count']}")
     print(f"  L2 records:              {summary['l2_count']}")
@@ -130,14 +196,152 @@ def cmd_rebuild_index(db_path: str, mode: str = "dry-run") -> None:
     conn.close()
 
 
+# ---------------------------------------------------------------------------
+# update-news
+# ---------------------------------------------------------------------------
+
+def cmd_update_news(
+    db_path: str,
+    from_date: str | None,
+    to_date: str | None,
+    tickers: str | None,
+    sources: str | None,
+    limit: int | None,
+    dry_run: bool = False,
+) -> None:
+    """Run the update pipeline (dry-run only on Mac in Step 2)."""
+    _ensure_db(db_path)
+
+    ticker_list = (
+        [t.strip() for t in tickers.split(",") if t.strip()]
+        if tickers else None
+    )
+    source_list = (
+        [s.strip() for s in sources.split(",") if s.strip()]
+        if sources else None
+    )
+
+    if not dry_run:
+        print("ERROR: Only --dry-run is supported on Mac (Step 2).")
+        print("       Real network calls are gated to a separate step.")
+        sys.exit(1)
+
+    async def _run():
+        from catalyst_data.update_pipeline import run_update_batch
+
+        report = await run_update_batch(
+            db_path,
+            tickers=ticker_list,
+            sources=source_list,
+            from_date=from_date,
+            to_date=to_date,
+            fetch_fn=None,
+            limit=limit,
+            dry_run=True,
+        )
+        return report
+
+    report = asyncio.run(_run())
+
+    print(f"\n=== Update-News Dry-Run ===")
+    print(f"  Mode:           dry-run")
+    print(f"  Date window:    {from_date or '(auto)'} → {to_date or '(auto)'}")
+    print(f"  Tickers:        {ticker_list or '(all 10 universe)'}")
+    print(f"  Sources:        {source_list or 'polygon_news'}")
+    print(f"  Missing cells:  {report['cells_total']}")
+    if report["missing_cells"]:
+        print(f"\n  First 10 missing cells:")
+        for cell in report["missing_cells"][:10]:
+            print(f"    {cell[0]}  {cell[1]}  {cell[2]}")
+        if report["cells_total"] > 10:
+            print(f"    ... and {report['cells_total'] - 10} more")
+
+    print(f"\n  ZERO network calls made.  ZERO DB writes.")
+
+
+# ---------------------------------------------------------------------------
+# backfill
+# ---------------------------------------------------------------------------
+
+def cmd_backfill(
+    db_path: str,
+    from_date: str,
+    to_date: str,
+    tickers: str | None,
+    sources: str | None,
+    chunk_days: int,
+    dry_run: bool = False,
+) -> None:
+    """Run the backfill pipeline (dry-run only on Mac in Step 2)."""
+    _ensure_db(db_path)
+
+    if not from_date or not to_date:
+        print("ERROR: --from and --to are required for backfill.", file=sys.stderr)
+        sys.exit(1)
+
+    ticker_list = (
+        [t.strip() for t in tickers.split(",") if t.strip()]
+        if tickers else None
+    )
+    source_list = (
+        [s.strip() for s in sources.split(",") if s.strip()]
+        if sources else None
+    )
+
+    if not dry_run:
+        print("ERROR: Only --dry-run is supported on Mac (Step 2).")
+        print("       Real backfill execution is gated to a separate step.")
+        sys.exit(1)
+
+    async def _run():
+        from catalyst_data.backfill_pipeline import run_backfill
+
+        results = await run_backfill(
+            db_path,
+            tickers=ticker_list,
+            sources=source_list,
+            from_date=from_date,
+            to_date=to_date,
+            fetch_fn=None,
+            chunk_days=chunk_days,
+            dry_run=True,
+        )
+        return results
+
+    results = asyncio.run(_run())
+
+    total_cells = sum(r["cells_total"] for r in results)
+    print(f"\n=== Backfill Dry-Run ===")
+    print(f"  Chunks:         {len(results)}")
+    print(f"  Chunk size:     {chunk_days} days")
+    print(f"  Total cells:    {total_cells}")
+    for i, r in enumerate(results[:5]):
+        print(f"  Chunk {i}: {r['chunk_from']} → {r['chunk_to']}  "
+              f"({r['cells_total']} cells)")
+    if len(results) > 5:
+        print(f"  ... and {len(results) - 5} more chunks")
+
+    print(f"\n  ZERO network calls made.  ZERO DB writes.")
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Index CLI — status and dry-run rebuild"
+        description="Index CLI — status, freshness, rebuild, update, backfill"
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("status", help="Print index freshness summary")
+    # status
+    status_p = sub.add_parser("status", help="Print index/freshness summary")
+    status_p.add_argument("--freshness", action="store_true",
+                          help="Include news + index freshness report")
+    status_p.add_argument("--db", default=str(DEFAULT_DB),
+                          help=f"Path to dev DB (default: {DEFAULT_DB})")
 
+    # rebuild-index
     rebuild = sub.add_parser("rebuild-index", help="Rebuild index records")
     rebuild.add_argument(
         "--mode", choices=["dry-run"], default="dry-run",
@@ -148,13 +352,70 @@ def main() -> None:
         help=f"Path to dev DB (default: {DEFAULT_DB})"
     )
 
+    # update-news
+    update_p = sub.add_parser("update-news", help="Run update pipeline")
+    update_p.add_argument("--from", dest="from_date", default=None,
+                          help="Start date YYYY-MM-DD (default: latest OHLCV)")
+    update_p.add_argument("--to", dest="to_date", default=None,
+                          help="End date YYYY-MM-DD (default: latest OHLCV)")
+    update_p.add_argument("--tickers", default=None,
+                          help="Comma-separated tickers (default: all 10)")
+    update_p.add_argument("--sources", default="polygon_news",
+                          help="Comma-separated sources (default: polygon_news)")
+    update_p.add_argument("--limit", type=int, default=None,
+                          help="Cap number of cells to process")
+    update_p.add_argument("--dry-run", action="store_true", default=True,
+                          help="Compute missing cells only, no network/DB writes")
+    update_p.add_argument("--db", default=str(DEFAULT_DB),
+                          help=f"Path to dev DB (default: {DEFAULT_DB})")
+
+    # backfill
+    backfill_p = sub.add_parser("backfill", help="Run backfill pipeline")
+    backfill_p.add_argument("--from", dest="from_date", required=True,
+                            help="Start date YYYY-MM-DD")
+    backfill_p.add_argument("--to", dest="to_date", required=True,
+                            help="End date YYYY-MM-DD")
+    backfill_p.add_argument("--tickers", default=None,
+                            help="Comma-separated tickers (default: all 10)")
+    backfill_p.add_argument("--sources", default="polygon_news",
+                            help="Comma-separated sources (default: polygon_news)")
+    backfill_p.add_argument("--chunk-days", type=int, default=7,
+                            help="Days per chunk (default: 7)")
+    backfill_p.add_argument("--dry-run", action="store_true", default=True,
+                            help="Compute chunked cells only, no network/DB writes")
+    backfill_p.add_argument("--db", default=str(DEFAULT_DB),
+                            help=f"Path to dev DB (default: {DEFAULT_DB})")
+
     args = parser.parse_args()
 
     if args.command == "status":
-        cmd_status(str(DEFAULT_DB))
+        db_path = getattr(args, "db", str(DEFAULT_DB))
+        cmd_status(db_path, freshness=args.freshness)
     elif args.command == "rebuild-index":
         db_path = getattr(args, "db", str(DEFAULT_DB))
         cmd_rebuild_index(db_path, mode=args.mode)
+    elif args.command == "update-news":
+        db_path = getattr(args, "db", str(DEFAULT_DB))
+        cmd_update_news(
+            db_path,
+            from_date=getattr(args, "from_date", None),
+            to_date=getattr(args, "to_date", None),
+            tickers=getattr(args, "tickers", None),
+            sources=getattr(args, "sources", None),
+            limit=getattr(args, "limit", None),
+            dry_run=getattr(args, "dry_run", False),
+        )
+    elif args.command == "backfill":
+        db_path = getattr(args, "db", str(DEFAULT_DB))
+        cmd_backfill(
+            db_path,
+            from_date=getattr(args, "from_date", None),
+            to_date=getattr(args, "to_date", None),
+            tickers=getattr(args, "tickers", None),
+            sources=getattr(args, "sources", None),
+            chunk_days=getattr(args, "chunk_days", 7),
+            dry_run=getattr(args, "dry_run", False),
+        )
 
 
 if __name__ == "__main__":

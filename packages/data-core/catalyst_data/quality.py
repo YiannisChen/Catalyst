@@ -324,3 +324,126 @@ def migrate_database(db_path: Path) -> MigrationReport:
 
 def migrate_databases(db_paths: list[Path]) -> list[MigrationReport]:
     return [migrate_database(path) for path in db_paths]
+
+
+# ---------------------------------------------------------------------------
+# Ingestion Run & Checkpoint Write Helpers (Step 2)
+# ---------------------------------------------------------------------------
+
+import json
+import uuid
+
+
+def _run_timestamp() -> str:
+    """Return a compact timestamp for run_id construction."""
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+
+
+def open_ingestion_run(
+    conn: sqlite3.Connection,
+    *,
+    tickers: list[str],
+    sources: list[str],
+    mode: str = "update",
+    notes: str | None = None,
+) -> str:
+    """Create a new ingestion_runs row with status='running'.
+
+    Returns the generated run_id.
+    """
+    ts = _run_timestamp()
+    short = uuid.uuid4().hex[:8]
+    run_id = f"run_{ts}_{short}"
+
+    full_notes = json.dumps({"mode": mode, **(json.loads(notes) if notes else {})})
+
+    conn.execute(
+        """INSERT INTO ingestion_runs
+           (run_id, started_at, ticker_list_json, source_list_json,
+            status, notes)
+           VALUES (?, ?, ?, ?, 'running', ?)""",
+        (
+            run_id,
+            datetime.now(timezone.utc).isoformat(),
+            json.dumps(tickers),
+            json.dumps(sources),
+            full_notes,
+        ),
+    )
+    conn.commit()
+    return run_id
+
+
+def close_ingestion_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    success_count: int,
+    fail_count: int,
+    status: str = "completed",
+) -> None:
+    """Update an ingestion_runs row with final counts and ended_at."""
+    conn.execute(
+        """UPDATE ingestion_runs
+           SET ended_at = ?, success_count = ?, fail_count = ?, status = ?
+           WHERE run_id = ?""",
+        (
+            datetime.now(timezone.utc).isoformat(),
+            success_count,
+            fail_count,
+            status,
+            run_id,
+        ),
+    )
+    conn.commit()
+
+
+def write_source_checkpoint(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    source_type: str,
+    ticker: str,
+    date: str,
+    status: str,
+    error_class: str | None = None,
+    retries: int = 0,
+) -> None:
+    """INSERT OR REPLACE a source_checkpoints row.
+
+    Idempotent — re-running the same cell overwrites the previous checkpoint
+    (same PRIMARY KEY of run_id, source_type, ticker, date).
+    """
+    conn.execute(
+        """INSERT OR REPLACE INTO source_checkpoints
+           (run_id, source_type, ticker, date, status, error_class, retries)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (run_id, source_type, ticker, date, status, error_class, retries),
+    )
+    conn.commit()
+
+
+def close_stale_runs(
+    conn: sqlite3.Connection, *, max_age_hours: float = 24.0
+) -> int:
+    """Mark any ingestion_runs with status='running' older than max_age_hours
+    as 'interrupted'.  Returns the count of runs marked."""
+    cutoff = datetime.now(timezone.utc).isoformat()
+    # Simple approach: all running runs older than max_age_hours
+    # For correctness we compute cutoff as a datetime string and compare.
+    from datetime import timedelta
+
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    rows = conn.execute(
+        """SELECT run_id FROM ingestion_runs
+           WHERE status = 'running' AND started_at < ?""",
+        (cutoff_dt.isoformat(),),
+    ).fetchall()
+    for (run_id,) in rows:
+        conn.execute(
+            "UPDATE ingestion_runs SET status = 'interrupted', ended_at = ? "
+            "WHERE run_id = ?",
+            (datetime.now(timezone.utc).isoformat(), run_id),
+        )
+    conn.commit()
+    return len(rows)

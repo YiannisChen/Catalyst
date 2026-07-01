@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from catalyst_data.storage.sqlite import init_db
 from catalyst_data.articles import ensure_articles_table, upsert_article, upsert_article_ticker
 from catalyst_data.source_tier import classify_articles
@@ -172,3 +174,168 @@ class TestCLIRebuildIndex:
                 cmd_rebuild_index(db_path, mode="dry-run")
             finally:
                 sys.stdout = old_stdout
+
+
+# ============================================================
+# Step 2 CLI extensions
+# ============================================================
+
+class TestCLIStatusFreshness:
+    def test_status_freshness_exits_zero(self, tmp_path: Path):
+        """status --freshness exits 0 and shows NO_INDEX when no live build."""
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        conn = sqlite3.connect(db_path)
+        # Add ohlcv for freshness
+        conn.execute(
+            "INSERT OR REPLACE INTO ohlcv (symbol, date, close) VALUES ('AAPL', '2025-01-01', 100.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        import io
+        from contextlib import redirect_stdout
+        from catalyst_data.cli_index import cmd_status
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cmd_status(db_path, freshness=True)
+        output = f.getvalue()
+
+        assert "Freshness Report" in output
+        assert "NO_INDEX" in output
+
+    def test_freshness_shows_news_staleness(self, tmp_path: Path):
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT OR REPLACE INTO ohlcv (symbol, date, close) VALUES ('AAPL', '2025-01-10', 100.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        import io
+        from contextlib import redirect_stdout
+        from catalyst_data.cli_index import cmd_status
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cmd_status(db_path, freshness=True)
+        output = f.getvalue()
+
+        # Articles are at 2025-01-01, ohlcv watermark is 2025-01-10 → STALE
+        assert "News Freshness" in output
+
+
+class TestCLIUpdateNews:
+    def test_update_news_dry_run_exits_zero(self, tmp_path: Path):
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "INSERT OR REPLACE INTO ohlcv (symbol, date, close) VALUES ('AAPL', '2025-01-01', 100.0)"
+        )
+        conn.commit()
+        conn.close()
+
+        import io
+        from contextlib import redirect_stdout
+        from catalyst_data.cli_index import cmd_update_news
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cmd_update_news(
+                db_path,
+                from_date="2025-01-01",
+                to_date="2025-01-01",
+                tickers="AAPL",
+                sources="polygon_news",
+                limit=None,
+                dry_run=True,
+            )
+        output = f.getvalue()
+
+        assert "Update-News Dry-Run" in output
+        assert "ZERO network calls made" in output
+        assert "ZERO DB writes" in output
+
+
+class TestCLIBackfill:
+    def test_backfill_dry_run_exits_zero(self, tmp_path: Path):
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        conn = sqlite3.connect(db_path)
+        for dt in ("2025-01-01", "2025-01-02", "2025-01-03"):
+            conn.execute(
+                "INSERT OR REPLACE INTO ohlcv (symbol, date, close) VALUES ('AAPL', ?, 100.0)",
+                (dt,),
+            )
+        conn.commit()
+        conn.close()
+
+        import io
+        from contextlib import redirect_stdout
+        from catalyst_data.cli_index import cmd_backfill
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cmd_backfill(
+                db_path,
+                from_date="2025-01-01",
+                to_date="2025-01-03",
+                tickers="AAPL",
+                sources="polygon_news",
+                chunk_days=2,
+                dry_run=True,
+            )
+        output = f.getvalue()
+
+        assert "Backfill Dry-Run" in output
+        assert "ZERO network calls made" in output
+
+    def test_backfill_requires_dates(self, tmp_path: Path):
+        """backfill with missing --from/--to fails."""
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        with pytest.raises(SystemExit) as exc_info:
+            from catalyst_data.cli_index import cmd_backfill
+            cmd_backfill(
+                db_path,
+                from_date="",
+                to_date="",
+                tickers="AAPL",
+                sources="polygon_news",
+                chunk_days=2,
+                dry_run=True,
+            )
+        assert exc_info.value.code == 1
+
+
+class TestCLIDBFlag:
+    def test_missing_db_clean_error(self, capsys):
+        """--db pointing to nonexistent file produces clean error, not traceback."""
+        with pytest.raises(SystemExit) as exc_info:
+            from catalyst_data.cli_index import _ensure_db
+            _ensure_db("/nonexistent/path/db.sqlite")
+        assert exc_info.value.code == 1
+
+    def test_db_flag_passed_through(self, tmp_path: Path):
+        """status accepts --db flag and uses the right path."""
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        import io
+        from contextlib import redirect_stdout
+        from catalyst_data.cli_index import cmd_status
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cmd_status(db_path)
+        output = f.getvalue()
+        assert "Latest Build" in output or "No builds" in output

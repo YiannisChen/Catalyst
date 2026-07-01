@@ -236,3 +236,177 @@ def _split_sentences(text: str) -> list[str]:
     # Fallback: split on sentence-ending punctuation + whitespace
     parts = _SENTENCE_END_RE.split(text)
     return [p.strip() for p in parts if p.strip()]
+
+
+# ---------------------------------------------------------------------------
+# Incremental indexer (dry-run, delta-only — Step 2)
+# ---------------------------------------------------------------------------
+
+def build_incremental_records(
+    conn: sqlite3.Connection, *, min_l2_chars: int = 800
+) -> dict[str, Any]:
+    """Diff articles vs polymorphic index_state, build delta records only.
+
+    Uses corpus_item_id (= article_id) with source_kind='article' for the join
+    (R1).  Recomputes content_hash per article via compute_content_hash (R3).
+
+    Returns a dict — NEVER writes index_state or index_manifests.  Those
+    are populated exclusively by real embedding runs (Step 4).
+
+    Returns:
+        { new_article_count: int,
+          changed_article_count: int,
+          total_delta_articles: int,
+          l1_count: int,
+          l2_count: int,
+          l2_eligible_count: int,
+          would_embed_count: int,
+          delta_article_ids: list[str] }
+    """
+    # All articles
+    all_rows = conn.execute("""
+        SELECT a.article_id, a.title, a.description
+        FROM articles a
+        ORDER BY a.article_id
+    """).fetchall()
+
+    # Indexed articles with content_hash (polymorphic join)
+    indexed_rows = conn.execute("""
+        SELECT s.corpus_item_id, s.content_hash
+        FROM index_state s
+        WHERE s.source_kind = 'article'
+        ORDER BY s.corpus_item_id
+    """).fetchall()
+    indexed: dict[str, str] = {r[0]: r[1] for r in indexed_rows}
+
+    # Determine delta: new articles + articles with changed content_hash
+    new_ids: list[str] = []
+    changed_ids: list[str] = []
+
+    for article_id, title, desc in all_rows:
+        current_hash = compute_content_hash(title, desc)
+        if article_id not in indexed:
+            new_ids.append(article_id)
+        elif indexed[article_id] != current_hash:
+            changed_ids.append(article_id)
+
+    delta_ids = new_ids + changed_ids
+
+    if not delta_ids:
+        return {
+            "new_article_count": 0,
+            "changed_article_count": 0,
+            "total_delta_articles": 0,
+            "l1_count": 0,
+            "l2_count": 0,
+            "l2_eligible_count": 0,
+            "would_embed_count": 0,
+            "delta_article_ids": [],
+        }
+
+    # Fetch full article data for delta ids only
+    placeholders = ",".join("?" for _ in delta_ids)
+    rows = conn.execute(
+        f"""SELECT
+                a.article_id, a.provider, a.source_type, a.ticker,
+                a.reference_date, a.published_utc,
+                a.title, a.description,
+                a.article_url, a.image_url, a.author,
+                a.publisher_name, a.publisher_logo_url,
+                a.source_tier, a.dedup_group_id,
+                GROUP_CONCAT(at.ticker, ',') AS tickers_csv
+            FROM articles a
+            LEFT JOIN article_tickers at ON a.article_id = at.article_id
+            WHERE a.article_id IN ({placeholders})
+            GROUP BY a.article_id
+            ORDER BY a.article_id""",
+        delta_ids,
+    ).fetchall()
+
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        (
+            article_id, provider, source_type, scalar_ticker,
+            reference_date, published_utc,
+            title, description,
+            article_url, image_url, author,
+            publisher_name, publisher_logo_url,
+            source_tier, dedup_group_id,
+            tickers_csv,
+        ) = row
+
+        tickers = (
+            sorted(set(t for t in (tickers_csv or "").split(",") if t))
+            if tickers_csv
+            else [scalar_ticker] if scalar_ticker else []
+        )
+
+        body = description or ""
+
+        # L1
+        content_hash = compute_content_hash(title, description)
+        content_text = f"{title}\n{body}"
+
+        l1_record = {
+            "chunk_id": f"{article_id}::l1",
+            "chunk_level": "l1",
+            "article_id": article_id,
+            "parent_article_id": article_id,
+            "content_hash": content_hash,
+            "content_text": content_text,
+            "provider": provider,
+            "source_type": source_type,
+            "publisher_name": publisher_name,
+            "publisher_logo_url": publisher_logo_url,
+            "article_url": article_url,
+            "image_url": image_url,
+            "author": author,
+            "published_utc": published_utc,
+            "reference_date": reference_date,
+            "source_tier": source_tier or 4,
+            "dedup_group_id": dedup_group_id,
+            "tickers": tickers,
+        }
+        records.append(l1_record)
+
+        # L2
+        if len(body) >= min_l2_chars:
+            sentences = _split_sentences(body)
+            for idx, sent in enumerate(sentences):
+                if not sent.strip():
+                    continue
+                l2_record = {
+                    "chunk_id": f"{article_id}::l2s{idx:04d}",
+                    "chunk_level": "l2",
+                    "article_id": article_id,
+                    "parent_article_id": article_id,
+                    "content_hash": compute_content_hash(sent, None),
+                    "content_text": sent,
+                    "provider": provider,
+                    "source_type": source_type,
+                    "publisher_name": publisher_name,
+                    "publisher_logo_url": publisher_logo_url,
+                    "article_url": article_url,
+                    "image_url": image_url,
+                    "author": author,
+                    "published_utc": published_utc,
+                    "reference_date": reference_date,
+                    "source_tier": source_tier or 4,
+                    "dedup_group_id": dedup_group_id,
+                    "tickers": tickers,
+                }
+                records.append(l2_record)
+
+    l1 = [r for r in records if r["chunk_level"] == "l1"]
+    l2 = [r for r in records if r["chunk_level"] == "l2"]
+
+    return {
+        "new_article_count": len(new_ids),
+        "changed_article_count": len(changed_ids),
+        "total_delta_articles": len(delta_ids),
+        "l1_count": len(l1),
+        "l2_count": len(l2),
+        "l2_eligible_count": len({r["article_id"] for r in l2}),
+        "would_embed_count": len(l1) + len(l2),
+        "delta_article_ids": delta_ids,
+    }

@@ -290,3 +290,144 @@ class TestIndexSummary:
         assert summary["l2_eligible_count"] == 1
         assert summary["l2_eligible_pct"] == 20.0
         conn.close()
+
+
+# ============================================================
+# build_incremental_records tests (Step 2)
+# ============================================================
+
+class TestBuildIncrementalRecords:
+    def test_all_articles_in_delta_when_index_empty(self, tmp_path):
+        """When index_state is empty, all articles appear in delta."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_db(db_path)
+
+        from catalyst_data.index_builder import build_incremental_records
+        result = build_incremental_records(conn, min_l2_chars=800)
+
+        assert result["new_article_count"] == 5
+        assert result["changed_article_count"] == 0
+        assert result["total_delta_articles"] == 5
+        assert result["l1_count"] == 5
+        assert len(result["delta_article_ids"]) == 5
+        conn.close()
+
+    def test_empty_delta_when_all_indexed(self, tmp_path):
+        """When index_state covers all articles with correct hash, delta is empty."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_db(db_path)
+
+        from catalyst_data.index_builder import (
+            build_incremental_records,
+            compute_content_hash,
+        )
+
+        # Pre-populate index_state for all 5 articles
+        for article_id, title, desc in [
+            ("poly:a1", "Short title", "Brief desc"),
+            ("poly:a2", "Another title", "Medium description here."),
+            ("poly:a3", "Tesla news", "A longer description " + "x" * 900),
+            ("poly:a4", "MSFT earnings", None),
+            ("poly:a5", "JPM update", "Quick note."),
+        ]:
+            h = compute_content_hash(title, desc)
+            conn.execute(
+                "INSERT OR REPLACE INTO index_state "
+                "(corpus_item_id, source_kind, content_hash, source_tier, "
+                " indexed_build_id, indexed_at) "
+                "VALUES (?, 'article', ?, 5, 'build-1', datetime('now'))",
+                (article_id, h),
+            )
+        conn.commit()
+
+        result = build_incremental_records(conn, min_l2_chars=800)
+        assert result["total_delta_articles"] == 0
+        assert result["would_embed_count"] == 0
+        assert result["delta_article_ids"] == []
+        conn.close()
+
+    def test_detects_changed_article(self, tmp_path):
+        """When one article's description changes, only it appears in delta."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_db(db_path)
+
+        from catalyst_data.index_builder import (
+            build_incremental_records,
+            compute_content_hash,
+        )
+
+        # Index 4 of 5 articles with their current hashes
+        for article_id, title, desc in [
+            ("poly:a1", "Short title", "Brief desc"),
+            ("poly:a2", "Another title", "Medium description here."),
+            ("poly:a4", "MSFT earnings", None),
+            ("poly:a5", "JPM update", "Quick note."),
+        ]:
+            h = compute_content_hash(title, desc)
+            conn.execute(
+                "INSERT OR REPLACE INTO index_state "
+                "(corpus_item_id, source_kind, content_hash, source_tier, indexed_build_id, indexed_at) "
+                "VALUES (?, 'article', ?, 5, 'build-1', datetime('now'))",
+                (article_id, h),
+            )
+
+        # Index a3 with a STALE hash (wrong description)
+        conn.execute(
+            "INSERT OR REPLACE INTO index_state "
+            "(corpus_item_id, source_kind, content_hash, source_tier, indexed_build_id, indexed_at) "
+            "VALUES ('poly:a3', 'article', 'deadbeef', 3, 'build-1', datetime('now'))",
+        )
+        conn.commit()
+
+        result = build_incremental_records(conn, min_l2_chars=800)
+        # a3 is changed, no new articles
+        assert result["changed_article_count"] == 1
+        assert result["new_article_count"] == 0
+        assert result["total_delta_articles"] == 1
+        assert "poly:a3" in result["delta_article_ids"]
+        conn.close()
+
+    def test_no_writes_to_index_state(self, tmp_path):
+        """build_incremental_records does NOT write index_state or index_manifests."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_db(db_path)
+
+        from catalyst_data.index_builder import build_incremental_records
+
+        before_is = conn.execute("SELECT COUNT(*) FROM index_state").fetchone()[0]
+        before_im = conn.execute("SELECT COUNT(*) FROM index_manifests").fetchone()[0]
+
+        build_incremental_records(conn, min_l2_chars=800)
+
+        after_is = conn.execute("SELECT COUNT(*) FROM index_state").fetchone()[0]
+        after_im = conn.execute("SELECT COUNT(*) FROM index_manifests").fetchone()[0]
+
+        assert after_is == before_is
+        assert after_im == before_im
+        conn.close()
+
+    def test_polymorphic_join_uses_source_kind(self, tmp_path):
+        """Verifies join uses corpus_item_id + source_kind='article'."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_db(db_path)
+
+        from catalyst_data.index_builder import (
+            build_incremental_records,
+            compute_content_hash,
+        )
+
+        # Insert a row with source_kind='filing' for one article_id
+        # This should NOT satisfy the join (different source_kind)
+        conn.execute(
+            "INSERT OR REPLACE INTO index_state "
+            "(corpus_item_id, source_kind, content_hash, source_tier, indexed_build_id, indexed_at) "
+            "VALUES ('poly:a1', 'filing', 'deadbeef', 1, 'build-1', datetime('now'))",
+        )
+        conn.commit()
+
+        result = build_incremental_records(conn, min_l2_chars=800)
+        # poly:a1 has index_state with source_kind='filing' only —
+        # the article join (source_kind='article') should NOT match,
+        # so a1 should appear as a NEW article
+        assert "poly:a1" in result["delta_article_ids"]
+        conn.close()
