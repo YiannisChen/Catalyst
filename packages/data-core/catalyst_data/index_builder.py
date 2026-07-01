@@ -41,7 +41,7 @@ def compute_content_hash(title: str, description: str | None) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def build_index_records(
+def build_article_records(
     conn: sqlite3.Connection, *, min_l2_chars: int = 800
 ) -> list[dict[str, Any]]:
     """Build L1 + L2 chunk records from articles JOIN article_tickers.
@@ -178,6 +178,14 @@ def _assert_guards(
     )
 
 
+def build_index_records(
+    conn, *, min_l2_chars: int = 800
+) -> list[dict[str, Any]]:
+    """Backward-compatible wrapper: article + filing records combined."""
+    article_records = build_article_records(conn, min_l2_chars=min_l2_chars)
+    filing_records = build_filing_records(conn, min_l2_chars=min_l2_chars)
+    return article_records + filing_records
+
 def index_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Return aggregate summary of built index records."""
     l1 = [r for r in records if r["chunk_level"] == "l1"]
@@ -211,6 +219,116 @@ def index_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
         "per_tier": per_tier,
     }
 
+
+# ---------------------------------------------------------------------------
+# Filing record builder (Step 3C)
+# ---------------------------------------------------------------------------
+
+def build_filing_records(
+    conn, *, min_l2_chars: int = 800
+) -> list[dict[str, Any]]:
+    """Build L1 + L2 index records from filings LEFT JOIN filing_documents.
+
+    Emits EXACTLY ONE L1 per rag-eligible filing.  When a filing has multiple
+    successful document rows, picks the BEST one: exhibit_99_1 preferred over
+    primary_doc.  Body text and L2 sentences come from the chosen document.
+    Done in Python (not SQL GROUP BY — SQLite GROUP BY doesn't guarantee
+    row selection order).
+    """
+    rows = conn.execute("""
+        SELECT
+            f.filing_id, f.cik, f.ticker, f.form_type, f.filed_at,
+            f.accession_number, f.url, f.source_tier,
+            fd.text AS doc_text, fd.extraction_status, fd.document_type
+        FROM filings f
+        LEFT JOIN filing_documents fd
+            ON f.filing_id = fd.filing_id
+            AND fd.extraction_status = 'success'
+        WHERE f.is_rag_eligible = 1
+        ORDER BY f.filing_id, fd.document_type ASC
+    """).fetchall()
+
+    # Deduplicate: one row per filing_id.  ORDER BY document_type ASC
+    # puts exhibit_99_1 before primary_doc (e < p).  For each filing_id,
+    # pick the first row that has real document text.  If no document row
+    # exists, fall back to the NULL LEFT JOIN row (metadata-only filing).
+    best_doc: dict[str, tuple] = {}
+    null_rows: dict[str, tuple] = {}
+    for row in rows:
+        fid = row[0]
+        if row[9] is not None:  # has document text
+            if fid not in best_doc:
+                best_doc[fid] = row  # exhibit comes first, never overwrite
+        else:
+            if fid not in null_rows:
+                null_rows[fid] = row  # save NULL row as fallback
+    # Fill gaps: filings with no documents get the NULL row
+    for fid, null_row in null_rows.items():
+        if fid not in best_doc:
+            best_doc[fid] = null_row
+
+    records: list[dict[str, Any]] = []
+
+    for fid, row in best_doc.items():
+        (filing_id, cik, ticker, form_type, filed_at,
+         accession_number, url, source_tier, doc_text, extraction_status, doc_type) = row
+
+        title = f"{form_type} filed {filed_at}"
+        body = doc_text or ""
+        content_hash = compute_content_hash(title, body)
+
+        content_text = f"{title}\n{body}" if body else title
+        l1_record = {
+            "chunk_id": f"{filing_id}::l1",
+            "chunk_level": "l1",
+            "corpus_item_id": filing_id,
+            "source_kind": "filing",
+            "content_hash": content_hash,
+            "content_text": content_text,
+            "provider": "sec",
+            "source_type": "sec_filing",
+            "tickers": [ticker],
+            "source_tier": source_tier or 1,
+            "filed_at": filed_at,
+            "form_type": form_type,
+            "accession_number": accession_number,
+            "filing_url": url,
+        }
+        records.append(l1_record)
+
+        if extraction_status == "success" and len(body) >= min_l2_chars:
+            sentences = _split_sentences(body)
+            for idx, sent in enumerate(sentences):
+                if not sent.strip():
+                    continue
+                l2_record = {
+                    "chunk_id": f"{filing_id}::l2s{idx:04d}",
+                    "chunk_level": "l2",
+                    "corpus_item_id": filing_id,
+                    "source_kind": "filing",
+                    "content_hash": compute_content_hash(sent, ""),
+                    "content_text": sent,
+                    "provider": "sec",
+                    "source_type": "sec_filing",
+                    "tickers": [ticker],
+                    "source_tier": source_tier or 1,
+                    "filed_at": filed_at,
+                    "form_type": form_type,
+                    "accession_number": accession_number,
+                    "filing_url": url,
+                }
+                records.append(l2_record)
+
+    # Guard: L1 count == COUNT rag-eligible filings
+    rag_count = conn.execute(
+        "SELECT COUNT(*) FROM filings WHERE is_rag_eligible = 1"
+    ).fetchone()[0]
+    l1_count = sum(1 for r in records if r["chunk_level"] == "l1")
+    assert l1_count == rag_count, (
+        f"Filing dedup guard FAILED: L1={l1_count}, rag_eligible_filings={rag_count}"
+    )
+
+    return records
 
 # ---------------------------------------------------------------------------
 # Internal: sentence splitting (no heavy deps)

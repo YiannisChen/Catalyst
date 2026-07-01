@@ -369,6 +369,11 @@ def main() -> None:
     update_p.add_argument("--db", default=str(DEFAULT_DB),
                           help=f"Path to dev DB (default: {DEFAULT_DB})")
 
+    # refresh-cik-map
+    cik_p = sub.add_parser("refresh-cik-map", help="Refresh CIK ticker map from SEC")
+    cik_p.add_argument("--output", default=None,
+                       help="Output CSV path (default: data/cik_map/cik_ticker_map.csv)")
+
     # backfill
     backfill_p = sub.add_parser("backfill", help="Run backfill pipeline")
     backfill_p.add_argument("--from", dest="from_date", required=True,
@@ -405,6 +410,12 @@ def main() -> None:
             limit=getattr(args, "limit", None),
             dry_run=getattr(args, "dry_run", False),
         )
+    elif args.command == "refresh-cik-map":
+        result = refresh_cik_map(getattr(args, "output", None))
+        print(f"CIK map refreshed: {len(result)} tickers written")
+        for t, c in sorted(result.items()):
+            print(f"  {t}: {c}")
+
     elif args.command == "backfill":
         db_path = getattr(args, "db", str(DEFAULT_DB))
         cmd_backfill(

@@ -19,4 +19,6 @@ def map_logical_source(source: str) -> list[str]:
     if source == "fred_macro":
         # Common FRED series used in the system design spec.
         return ["DFF", "DGS10", "VIXCLS", "UNRATE", "CPIAUCSL"]
+    if source == "sec_filings":
+        return ["sec_submissions"]
     return [source]

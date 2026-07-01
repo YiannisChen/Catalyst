@@ -93,6 +93,26 @@ RETRY_POLICIES = {
             jitter=False,
         ),
     ),
+    "sec": RetryPolicy(
+        rate_limit=RetryRule(
+            base_seconds=5.0,
+            max_seconds=30.0,
+            max_retries=3,
+            jitter=False,
+        ),
+        server_error=RetryRule(
+            base_seconds=10.0,
+            max_seconds=60.0,
+            max_retries=3,
+            jitter=False,
+        ),
+        timeout=RetryRule(
+            base_seconds=10.0,
+            max_seconds=40.0,
+            max_retries=2,
+            jitter=False,
+        ),
+    ),
     "yfinance": RetryPolicy(
         rate_limit=RetryRule(
             base_seconds=10.0,

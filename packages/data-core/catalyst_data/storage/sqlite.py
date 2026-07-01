@@ -2,12 +2,12 @@
 
 Tables
 ------
-- raw_assets     (Bronze) – immutable fetched payloads, zlib-compressed.
-- clean_assets   (Silver) – cleaned Markdown, deduplicated.
-- ohlcv          – daily price bars.
-- news_alignment – maps articles to trading days with forward returns.
-- attributions   – agent attribution results.
-- golden_events  – evaluation golden set.
+- raw_assets     (Bronze) - immutable fetched payloads, zlib-compressed.
+- clean_assets   (Silver) - cleaned Markdown, deduplicated.
+- ohlcv          - daily price bars.
+- news_alignment - maps articles to trading days with forward returns.
+- attributions   - agent attribution results.
+- golden_events  - evaluation golden set.
 """
 
 from __future__ import annotations
@@ -137,7 +137,7 @@ CREATE TABLE IF NOT EXISTS index_manifests (
 -- Per-item index state: polymorphic across article/filing sources
 -- corpus_item_id = article_id for articles; "sec:{cik}:{accession}" for filings
 -- source_kind = 'article' | 'filing'
--- NO foreign key — the column is polymorphic
+-- NO foreign key -- the column is polymorphic
 CREATE TABLE IF NOT EXISTS index_state (
     corpus_item_id  TEXT NOT NULL,
     source_kind     TEXT NOT NULL,
@@ -186,6 +186,91 @@ def ensure_clean_provenance(conn: sqlite3.Connection) -> None:
     )
     conn.commit()
 
+
+def ensure_filings_tables(conn):
+    """Create filings and filing_documents tables (idempotent)."""
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS filings (
+            filing_id         TEXT PRIMARY KEY,
+            cik               TEXT NOT NULL,
+            ticker            TEXT NOT NULL,
+            form_type         TEXT NOT NULL,
+            filed_at          TEXT NOT NULL,
+            period            TEXT,
+            accession_number  TEXT NOT NULL,
+            primary_document  TEXT,
+            url               TEXT NOT NULL,
+            items_json        TEXT,
+            source_tier       INTEGER NOT NULL DEFAULT 1,
+            dedup_group_id    TEXT,
+            is_canonical      INTEGER DEFAULT 1,
+            is_rag_eligible   INTEGER DEFAULT 1,
+            quality_score     REAL DEFAULT 1.0,
+            raw_asset_id      TEXT,
+            created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_filings_cik ON filings(cik);
+        CREATE INDEX IF NOT EXISTS idx_filings_ticker_date ON filings(ticker, filed_at);
+        CREATE INDEX IF NOT EXISTS idx_filings_form ON filings(form_type);
+        CREATE INDEX IF NOT EXISTS idx_filings_accession ON filings(accession_number);
+
+        CREATE TABLE IF NOT EXISTS filing_documents (
+            filing_id         TEXT NOT NULL,
+            document_url      TEXT NOT NULL,
+            document_type     TEXT NOT NULL DEFAULT 'primary_doc',
+            text              TEXT,
+            char_len          INTEGER,
+            content_type      TEXT,
+            byte_size         INTEGER,
+            extraction_status TEXT NOT NULL
+                CHECK (extraction_status IN (
+                    'success', 'empty', 'pdf_skipped', 'fetch_failed', 'timeout'
+                )),
+            extracted_at      TEXT,
+            PRIMARY KEY (filing_id, document_url),
+            FOREIGN KEY (filing_id) REFERENCES filings(filing_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_filing_docs_filing ON filing_documents(filing_id);
+    """)
+    conn.commit()
+
+
+def upsert_filing(conn, *, filing_id, cik, ticker, form_type, filed_at,
+                  accession_number, url, period=None, primary_document=None,
+                  items_json=None, source_tier=1, dedup_group_id=None,
+                  is_canonical=1, is_rag_eligible=1, quality_score=1.0,
+                  raw_asset_id=None):
+    """Insert or replace a filing row."""
+    from catalyst_data.storage.sqlite import _now_iso
+    conn.execute("""
+        INSERT OR REPLACE INTO filings
+            (filing_id, cik, ticker, form_type, filed_at, period,
+             accession_number, primary_document, url, items_json,
+             source_tier, dedup_group_id, is_canonical, is_rag_eligible,
+             quality_score, raw_asset_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (filing_id, cik, ticker, form_type, filed_at, period,
+          accession_number, primary_document, url, items_json,
+          source_tier, dedup_group_id, is_canonical, is_rag_eligible,
+          quality_score, raw_asset_id, _now_iso()))
+    conn.commit()
+
+
+def upsert_filing_document(conn, *, filing_id, document_url, document_type='primary_doc',
+                           text=None, char_len=None, content_type=None,
+                           byte_size=None, extraction_status='success'):
+    """Insert or replace a filing_documents row."""
+    from datetime import datetime, timezone
+    extracted_at = datetime.now(timezone.utc).isoformat()
+    conn.execute("""
+        INSERT OR REPLACE INTO filing_documents
+            (filing_id, document_url, document_type, text, char_len,
+             content_type, byte_size, extraction_status, extracted_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (filing_id, document_url, document_type, text, char_len,
+          content_type, byte_size, extraction_status, extracted_at))
+    conn.commit()
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Set pragmas, create all tables and indexes."""
     for pragma in _PRAGMAS:
@@ -193,6 +278,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(_DDL)
     ensure_clean_provenance(conn)
     ensure_articles_table(conn)
+    ensure_filings_tables(conn)
     conn.commit()
 
 
