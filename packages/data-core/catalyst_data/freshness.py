@@ -184,8 +184,9 @@ def index_freshness(conn: sqlite3.Connection) -> dict[str, Any]:
         FROM articles a
         LEFT JOIN index_state s
             ON s.corpus_item_id = a.article_id AND s.source_kind = 'article'
+               AND s.indexed_build_id = ?
         WHERE s.corpus_item_id IS NULL
-    """).fetchall()
+    """, (build_id,)).fetchall()
     stale_count += len(missing_rows)
 
     # articles whose content_hash doesn't match the latest live build

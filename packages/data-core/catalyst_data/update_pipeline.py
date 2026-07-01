@@ -161,13 +161,12 @@ async def _fetch_cell(
             result = results[0] if results else {"ok": False, "error": "no_result"}
             ok = result.get("ok", False)
             error = result.get("error")
-            articles_count = len(
-                conn.execute(
-                    "SELECT COUNT(*) FROM articles WHERE source_type = ? "
-                    "AND ticker = ? AND reference_date = ?",
-                    (source, ticker, date),
-                ).fetchall()
-            )
+            row = conn.execute(
+                "SELECT COUNT(*) FROM articles WHERE source_type = ? "
+                "AND ticker = ? AND reference_date = ?",
+                (source, ticker, date),
+            ).fetchone()
+            articles_count = row[0] if row else 0
 
             if ok:
                 write_source_checkpoint(

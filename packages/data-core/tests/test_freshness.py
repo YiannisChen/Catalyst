@@ -178,6 +178,65 @@ class TestIndexFreshness:
         assert result["stale_count"] > 0
 
 
+    def test_stale_when_articles_have_old_build_rows(self, tmp_path):
+        """Articles with index_state rows from an OLD build are STALE.
+        
+        Bug regression: the old LEFT JOIN didn't filter on indexed_build_id,
+        so rows from a prior build masked as 'present' and articles appeared
+        falsely FRESH when only the old build rows existed.
+        """
+        import json
+        from catalyst_data.index_builder import compute_content_hash
+        
+        db_path = str(tmp_path / "test.db")
+        conn = _make_db(db_path)
+
+        # Get actual article data for hash computation
+        articles = conn.execute(
+            "SELECT article_id, title, description FROM articles"
+        ).fetchall()
+
+        # Insert an OLD live manifest and index_state for all articles
+        old_build_id = "build-old"
+        conn.execute("""
+            INSERT INTO index_manifests
+            (build_id, created_at, model, model_hash, lancedb_path,
+             l1_count, l2_count, article_count, indexed_through_date,
+             corpus_hash, status)
+            VALUES (?, datetime('now', '-2 days'), 'bge-m3', 'oldhash', '/tmp/test',
+                    2, 0, 2, '2026-04-30', 'x', 'live')
+        """, (old_build_id,))
+
+        for art_id, title, desc in articles:
+            h = compute_content_hash(title, desc)
+            conn.execute("""
+                INSERT INTO index_state
+                (corpus_item_id, source_kind, content_hash, source_tier,
+                 dedup_group_id, indexed_build_id, indexed_at)
+                VALUES (?, 'article', ?, 5, NULL, ?, datetime('now'))
+            """, (art_id, h, old_build_id))
+
+        # Now insert a NEW live manifest (build-live-new) — but do NOT
+        # re-index the articles. They still only have old-build rows.
+        new_build_id = "build-live-new"
+        conn.execute("""
+            INSERT INTO index_manifests
+            (build_id, created_at, model, model_hash, lancedb_path,
+             l1_count, l2_count, article_count, indexed_through_date,
+             corpus_hash, status)
+            VALUES (?, datetime('now'), 'bge-m3', 'newhash', '/tmp/test',
+                    2, 0, 2, '2026-05-01', 'y', 'live')
+        """, (new_build_id,))
+        conn.commit()
+
+        result = index_freshness(conn)
+        conn.close()
+
+        # All articles should be STALE — they have no rows with build-live-new
+        assert result["status"] == "STALE"
+        assert result["stale_count"] == len(articles)
+
+
 class TestFreshnessReport:
     def test_is_read_only(self, tmp_path):
         db_path = str(tmp_path / "test.db")
