@@ -220,11 +220,103 @@ def index_freshness(conn: sqlite3.Connection) -> dict[str, Any]:
 # Combined report
 # ---------------------------------------------------------------------------
 
+def filings_freshness(
+    conn: sqlite3.Connection,
+    *,
+    watermark: str | None = None,
+) -> dict[str, Any]:
+    """Return per-ticker SEC filings freshness.
+
+    SEC filings are sparse by nature — no STALE/FRESH binary.
+    Reports latest_filing_date, latest_checked_date, filings_30d_count.
+    """
+    wm = watermark or latest_local_ohlcv_date(conn)
+    wm_date = date.fromisoformat(wm)
+
+    # Check if filings table exists
+    try:
+        conn.execute("SELECT 1 FROM filings LIMIT 0")
+    except sqlite3.OperationalError:
+        return {"per_ticker": {}, "overall": {"total_filings": 0, "checked_tickers": 0, "never_checked_tickers": 0}}
+
+    # Universe tickers from ohlcv
+    ticker_rows = conn.execute(
+        "SELECT DISTINCT symbol FROM ohlcv ORDER BY symbol"
+    ).fetchall()
+    all_tickers = [r[0] for r in ticker_rows]
+
+    # Latest filing per ticker
+    filing_rows = conn.execute("""
+        SELECT ticker, MAX(filed_at), COUNT(*)
+        FROM filings
+        WHERE filed_at >= date(?, '-30 days')
+        GROUP BY ticker
+        ORDER BY ticker
+    """, (wm,)).fetchall()
+    filing_map: dict[str, dict] = {}
+    for ticker, latest_fd, count_30d in filing_rows:
+        filing_map[ticker] = {
+            "latest_filing_date": latest_fd,
+            "filings_30d_count": count_30d,
+        }
+
+    # Latest checked date per ticker from source_checkpoints
+    checked_map: dict[str, str] = {}
+    try:
+        conn.execute("SELECT 1 FROM source_checkpoints LIMIT 0")
+    except sqlite3.OperationalError:
+        pass
+    else:
+        checkpoint_rows = conn.execute("""
+            SELECT ticker, MAX(date)
+            FROM source_checkpoints
+            WHERE source_type = 'sec_filings' AND status = 'success'
+            GROUP BY ticker
+            ORDER BY ticker
+        """).fetchall()
+        checked_map = {r[0]: r[1] for r in checkpoint_rows}
+
+    # Build per-ticker report
+    per_ticker: dict[str, dict] = {}
+    for ticker in all_tickers:
+        entry = filing_map.get(ticker, {})
+        latest_filing_date = entry.get("latest_filing_date")
+        filings_30d_count = entry.get("filings_30d_count", 0)
+        latest_checked_date = checked_map.get(ticker)
+
+        if latest_checked_date is None:
+            status = "never_checked"
+        elif latest_checked_date == wm:
+            status = "current"
+        else:
+            checked_dt = date.fromisoformat(latest_checked_date)
+            status = "stale_check" if checked_dt < wm_date else "current"
+
+        per_ticker[ticker] = {
+            "latest_filing_date": latest_filing_date,
+            "latest_checked_date": latest_checked_date,
+            "filings_30d_count": filings_30d_count,
+            "status": status,
+        }
+
+    return {
+        "per_ticker": per_ticker,
+        "overall": {
+            "total_filings": sum(
+                t["filings_30d_count"] for t in per_ticker.values()
+            ),
+            "checked_tickers": len(checked_map),
+            "never_checked_tickers": len(all_tickers) - len(checked_map),
+        },
+    }
+
+
 def freshness_report(conn: sqlite3.Connection) -> dict[str, Any]:
-    """Return combined news + index freshness report (read-only)."""
+    """Return combined news + index + SEC filings freshness report (read-only)."""
     return {
         "local_ohlcv_date": latest_local_ohlcv_date(conn),
         "news": news_freshness(conn),
         "index": index_freshness(conn),
+        "sec_filings": filings_freshness(conn),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }

@@ -103,6 +103,25 @@ def cmd_status(db_path: str, freshness: bool = False) -> None:
                     print(f"    {ticker}: {info['status']}{db_str}  "
                           f"latest={info['latest_date']}")
 
+
+        # SEC filings section
+        sec = report.get("sec_filings", {})
+        if sec:
+            ov = sec.get("overall", {})
+            pt = sec.get("per_ticker", {})
+            print()
+            print("=== SEC Filings ===")
+            print(f"  Total (30d):          {ov.get('total_filings', 0)}")
+            print(f"  Checked tickers:      {ov.get('checked_tickers', 0)}")
+            print(f"  Never checked:        {ov.get('never_checked_tickers', 0)}")
+            if pt:
+                for ticker, info in sorted(pt.items()):
+                    lfd = info.get("latest_filing_date") or "-"
+                    lcd = info.get("latest_checked_date") or "-"
+                    st = info.get("status", "?")
+                    c30 = info.get("filings_30d_count", 0)
+                    print(f"    {ticker}: {st:15s}  latest_filing={lfd:10s}  checked={lcd:10s}  30d={c30}")
+
         conn.close()
         return
 

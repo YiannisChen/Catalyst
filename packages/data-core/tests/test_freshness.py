@@ -267,3 +267,217 @@ class TestFreshnessReport:
         assert "news" in report
         assert "index" in report
         assert "generated_at" in report
+
+
+# ============================================================================
+# SEC filings freshness tests (Step 3C2)
+# ============================================================================
+
+import pytest
+from catalyst_data.freshness import filings_freshness, freshness_report
+from catalyst_data.storage.sqlite import init_db, ensure_filings_tables
+from catalyst_data.quality import ensure_ingestion_quality_tables
+
+
+def _make_filings_db(db_path: str) -> sqlite3.Connection:
+    """Create a minimal DB with ohlcv + filings tables."""
+    conn = sqlite3.connect(db_path)
+    init_db(conn)
+    ensure_ingestion_quality_tables(conn)
+    ensure_filings_tables(conn)
+
+    for dt in ("2026-06-30", "2026-06-29"):
+        for sym in ("AAPL", "TSLA"):
+            conn.execute(
+                "INSERT OR REPLACE INTO ohlcv (symbol, date, close) VALUES (?, ?, 100.0)",
+                (sym, dt),
+            )
+
+    conn.commit()
+    return conn
+
+
+class TestFilingsFreshness:
+    """filings_freshness() tests."""
+
+    def test_empty_filings_table(self, tmp_path):
+        """Empty filings → all tickers never_checked, 0 counts."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_filings_db(db_path)
+
+        result = filings_freshness(conn, watermark="2026-06-30")
+        pt = result["per_ticker"]
+        ov = result["overall"]
+
+        assert ov["total_filings"] == 0
+        assert ov["checked_tickers"] == 0
+        assert ov["never_checked_tickers"] == 2
+        for ticker in ("AAPL", "TSLA"):
+            assert pt[ticker]["latest_filing_date"] is None
+            assert pt[ticker]["filings_30d_count"] == 0
+            assert pt[ticker]["status"] == "never_checked"
+        conn.close()
+
+    def test_with_filing_and_checkpoint(self, tmp_path):
+        """One filing + checkpoint → status=current, data correct."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_filings_db(db_path)
+
+        # Write a filing for AAPL
+        conn.execute("""
+            INSERT OR REPLACE INTO filings
+                (filing_id, cik, ticker, form_type, filed_at,
+                 accession_number, url, is_rag_eligible)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, ("sec:0000320193:test-001", "0000320193", "AAPL",
+              "8-K", "2026-06-30", "test-001",
+              "https://www.sec.gov/test", 1))
+
+        # Write a success checkpoint
+        conn.execute("""
+            INSERT OR REPLACE INTO source_checkpoints
+                (run_id, source_type, ticker, date, status)
+            VALUES ('run_test', 'sec_filings', 'AAPL', '2026-06-30', 'success')
+        """)
+        conn.commit()
+
+        result = filings_freshness(conn, watermark="2026-06-30")
+        pt = result["per_ticker"]
+
+        aapl = pt["AAPL"]
+        assert aapl["latest_filing_date"] == "2026-06-30"
+        assert aapl["filings_30d_count"] == 1
+        assert aapl["status"] == "current"
+        assert aapl["latest_checked_date"] == "2026-06-30"
+
+        # TSLA: never checked
+        tsla = pt["TSLA"]
+        assert tsla["latest_filing_date"] is None
+        assert tsla["status"] == "never_checked"
+        conn.close()
+
+    def test_stale_check_when_checked_before_watermark(self, tmp_path):
+        """Checkpoint older than watermark → status=stale_check."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_filings_db(db_path)
+
+        # Filing dated 2026-06-29 but checkpoint is from an older date we checked
+        conn.execute("""
+            INSERT OR REPLACE INTO filings
+                (filing_id, cik, ticker, form_type, filed_at,
+                 accession_number, url, is_rag_eligible)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, ("sec:0000320193:test-002", "0000320193", "AAPL",
+              "10-Q", "2026-06-29", "test-002",
+              "https://www.sec.gov/test", 1))
+
+        # Checkpoint is 3 days before watermark
+        conn.execute("""
+            INSERT OR REPLACE INTO source_checkpoints
+                (run_id, source_type, ticker, date, status)
+            VALUES ('run_test', 'sec_filings', 'AAPL', '2026-06-27', 'success')
+        """)
+        conn.commit()
+
+        result = filings_freshness(conn, watermark="2026-06-30")
+        pt = result["per_ticker"]
+
+        aapl = pt["AAPL"]
+        assert aapl["latest_filing_date"] == "2026-06-29"
+        assert aapl["latest_checked_date"] == "2026-06-27"
+        assert aapl["status"] == "stale_check"
+        conn.close()
+
+    def test_no_filings_table_returns_empty(self, tmp_path):
+        """DB without filings table → empty per_ticker (no ohlcv data needed)."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        # Do NOT call init_db — it auto-creates filings table
+        # No ohlcv needed — the early return path short-circuits before ohlcv access
+
+        result = filings_freshness(conn, watermark="2026-06-30")
+        assert result["per_ticker"] == {}
+        assert result["overall"]["total_filings"] == 0
+        assert result["overall"]["checked_tickers"] == 0
+        conn.close()
+
+    def test_no_source_checkpoints_table(self, tmp_path):
+        """DB without source_checkpoints → still returns filing data, checked_map empty."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_filings_tables(conn)
+
+        conn.execute(
+            "INSERT OR REPLACE INTO ohlcv (symbol, date, close) VALUES ('AAPL', '2026-06-30', 100.0)"
+        )
+        conn.execute("""
+            INSERT OR REPLACE INTO filings
+                (filing_id, cik, ticker, form_type, filed_at,
+                 accession_number, url, is_rag_eligible)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, ("sec:test:003", "0000320193", "AAPL",
+              "8-K", "2026-06-30", "test-003",
+              "https://www.sec.gov/test", 1))
+        conn.commit()
+
+        # No source_checkpoints table exists
+        result = filings_freshness(conn, watermark="2026-06-30")
+        pt = result["per_ticker"]
+
+        aapl = pt["AAPL"]
+        assert aapl["latest_filing_date"] == "2026-06-30"
+        assert aapl["latest_checked_date"] is None
+        assert aapl["status"] == "never_checked"
+        conn.close()
+
+
+class TestFreshnessReportSEC:
+    """freshness_report includes sec_filings section."""
+
+    def test_report_includes_sec_section(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        conn = _make_filings_db(db_path)
+        conn.close()
+
+        report = freshness_report(sqlite3.connect(db_path))
+        assert "sec_filings" in report
+        sec = report["sec_filings"]
+        assert "per_ticker" in sec
+        assert "overall" in sec
+
+    def test_report_sec_read_only(self, tmp_path):
+        """freshness_report with sec_filings is read-only — no writes."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_filings_db(db_path)
+        conn.close()
+
+        # Snapshot table counts
+        conn = sqlite3.connect(db_path)
+        before = {}
+        for t in ("filings", "filing_documents", "raw_assets",
+                  "source_checkpoints", "index_state", "article_tickers"):
+            try:
+                before[t] = conn.execute(
+                    f"SELECT COUNT(*) FROM {t}"
+                ).fetchone()[0]
+            except sqlite3.OperationalError:
+                before[t] = 0
+        conn.close()
+
+        report = freshness_report(sqlite3.connect(db_path))
+        assert "sec_filings" in report
+
+        conn = sqlite3.connect(db_path)
+        after = {}
+        for t in before:
+            try:
+                after[t] = conn.execute(
+                    f"SELECT COUNT(*) FROM {t}"
+                ).fetchone()[0]
+            except sqlite3.OperationalError:
+                after[t] = 0
+        conn.close()
+
+        for t in before:
+            assert after[t] == before[t], f"{t} changed during freshness_report"

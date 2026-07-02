@@ -314,3 +314,480 @@ class TestRunUpdateBatchReal:
 
         assert after_is == before_is
         assert after_im == before_im
+
+
+# ============================================================================
+# SEC filings pipeline tests (Step 3C2)
+# ============================================================================
+
+import asyncio
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from catalyst_data.update_pipeline import _fetch_cell
+from catalyst_data.storage.sqlite import ensure_filings_tables
+
+
+def _make_sec_db(db_path: str) -> sqlite3.Connection:
+    """Create minimal DB with ohlcv + filings tables."""
+    conn = sqlite3.connect(db_path)
+    init_db(conn)
+    ensure_ingestion_quality_tables(conn)
+    ensure_filings_tables(conn)
+
+    # 2 trading days, 2 tickers
+    for dt in ("2026-06-30", "2026-06-29"):
+        for sym in ("AAPL", "TSLA"):
+            conn.execute(
+                "INSERT OR REPLACE INTO ohlcv (symbol, date, close) VALUES (?, ?, 100.0)",
+                (sym, dt),
+            )
+
+    conn.commit()
+    return conn
+
+
+def _mock_sec_submissions(ticker: str = "AAPL", cik: str = "0000320193",
+                          filed_at: str = "2026-06-30",
+                          form: str = "8-K",
+                          items: str = "2.02",
+                          accession: str = "0000320193-26-000011",
+                          include_filing: bool = True) -> dict:
+    """Build a mock SEC submissions response matching real SEC shape."""
+    data = {
+        "filings": {
+            "recent": {
+                "form": [form] if include_filing else [],
+                "filingDate": [filed_at] if include_filing else [],
+                "accessionNumber": [accession] if include_filing else [],
+                "reportDate": [filed_at] if include_filing else [],
+                "primaryDocument": [
+                    "a8-kq2202503292025.htm"
+                ] if include_filing else [],
+                "items": [items] if include_filing else [],
+            }
+        }
+    }
+    return data
+
+
+class TestComputeMissingCellsSEC:
+    """compute_missing_cells with sec_filings source."""
+
+    def test_sec_filings_in_source_list(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        conn = _make_sec_db(db_path)
+
+        missing = compute_missing_cells(
+            conn,
+            tickers=["AAPL", "TSLA"],
+            sources=["sec_filings"],
+            from_date="2026-06-29",
+            to_date="2026-06-30",
+        )
+        # 2 tickers x 2 days = 4 cells, none covered yet
+        assert len(missing) == 4
+        conn.close()
+
+    def test_sec_filings_covered_when_checkpoint_exists(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        conn = _make_sec_db(db_path)
+
+        # Write a success checkpoint for AAPL on 2026-06-30
+        conn.execute(
+            "INSERT OR REPLACE INTO source_checkpoints "
+            "(run_id, source_type, ticker, date, status) "
+            "VALUES ('run_test', 'sec_filings', 'AAPL', '2026-06-30', 'success')"
+        )
+        conn.commit()
+
+        missing = compute_missing_cells(
+            conn,
+            tickers=["AAPL", "TSLA"],
+            sources=["sec_filings"],
+            from_date="2026-06-29",
+            to_date="2026-06-30",
+        )
+        # AAPL 2026-06-30 is covered; remaining 3 cells
+        assert len(missing) == 3
+        # AAPL 2026-06-30 should NOT be in the list
+        covered = ("AAPL", "2026-06-30", "sec_filings")
+        assert covered not in missing
+        conn.close()
+
+
+class TestFetchCellSEC:
+    """_fetch_cell SEC path tests with mocked fetcher namespace."""
+
+    def test_zero_filings_in_range(self, tmp_path):
+        """Submissions 200 but no filings matching date → success, counts=0."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_sec_db(db_path)
+        conn.close()
+
+        # Mock fetcher: submissions returns empty filing list for this date
+        fetcher = SimpleNamespace(
+            fetch=AsyncMock(return_value=SimpleNamespace(
+                status=200,
+                data=_mock_sec_submissions(include_filing=False),
+                error=None,
+            )),
+            fetch_document=AsyncMock(),
+        )
+
+        result = asyncio.run(_fetch_cell(
+            db_path=db_path,
+            ticker="AAPL",
+            date="2026-06-29",
+            source="sec_filings",
+            run_id="run_test_zero",
+            fetch_fn=fetcher.fetch,
+            fetcher_ns=fetcher,
+        ))
+
+        assert result["status"] == "success"
+        assert result["filings_count"] == 0
+        assert result["documents_count"] == 0
+        assert result["ticker"] == "AAPL"
+
+        # Checkpoint written
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_ingestion_quality_tables(conn)
+        cp = conn.execute(
+            "SELECT status FROM source_checkpoints "
+            "WHERE source_type='sec_filings' AND ticker='AAPL' AND date='2026-06-29'"
+        ).fetchone()
+        assert cp is not None
+        assert cp[0] == "success"
+        conn.close()
+
+    def test_one_filing_with_documents(self, tmp_path):
+        """One 8-K with EX-99.1 → filing + 2 documents stored, counts correct."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_sec_db(db_path)
+        conn.close()
+
+        # Mock submissions with a single 8-K
+        submissions_data = _mock_sec_submissions(
+            ticker="AAPL", cik="0000320193",
+            filed_at="2026-06-30", form="8-K",
+            items="2.02", accession="0000320193-26-000011",
+        )
+
+        # Mock fetch_document: returns raw_bytes for Bronze, text for Silver
+        raw_primary = b"<html><body><p>SECURITIES AND EXCHANGE COMMISSION cover page text.</p></body></html>"
+        raw_exhibit = b"<DOCUMENT><TYPE>EX-99.1<TEXT>Apple reports Q2 earnings. Net sales increased 12%.</TEXT></DOCUMENT>"
+
+        async def mock_fetch_doc(url: str):
+            if "primary" in url or "a8-k" in url.lower():
+                return SimpleNamespace(
+                    status=200,
+                    data={
+                        "url": url,
+                        "text": "SECURITIES AND EXCHANGE COMMISSION cover page text.",
+                        "raw_bytes": raw_primary,
+                        "content_type": "text/html",
+                        "byte_size": len(raw_primary),
+                        "extraction_status": "success",
+                    },
+                )
+            elif "ex99" in url.lower():
+                return SimpleNamespace(
+                    status=200,
+                    data={
+                        "url": url,
+                        "text": "Apple reports Q2 earnings. Net sales increased 12%.",
+                        "raw_bytes": raw_exhibit,
+                        "content_type": "text/html",
+                        "byte_size": len(raw_exhibit),
+                        "extraction_status": "success",
+                    },
+                )
+            return SimpleNamespace(status=404, data=None)
+
+        fetcher = SimpleNamespace(
+            fetch=AsyncMock(return_value=SimpleNamespace(
+                status=200,
+                data=submissions_data,
+                error=None,
+            )),
+            fetch_document=mock_fetch_doc,
+        )
+
+        result = asyncio.run(_fetch_cell(
+            db_path=db_path,
+            ticker="AAPL",
+            date="2026-06-30",
+            source="sec_filings",
+            run_id="run_test_one",
+            fetch_fn=fetcher.fetch,
+            fetcher_ns=fetcher,
+        ))
+
+        assert result["status"] == "success"
+        assert result["filings_count"] == 1
+        assert result["documents_count"] >= 1  # at least primary_doc
+
+        # Verify filing stored
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_ingestion_quality_tables(conn)
+        filing_row = conn.execute(
+            "SELECT filing_id, form_type, filed_at, is_rag_eligible "
+            "FROM filings WHERE ticker='AAPL'"
+        ).fetchone()
+        assert filing_row is not None
+        assert filing_row[1] == "8-K"
+        assert filing_row[2] == "2026-06-30"
+        assert filing_row[3] == 1  # is_rag_eligible
+
+        # Verify filing_documents stored
+        doc_rows = conn.execute(
+            "SELECT filing_id, document_type, extraction_status "
+            "FROM filing_documents WHERE filing_id=?", (filing_row[0],)
+        ).fetchall()
+        assert len(doc_rows) >= 1
+        doc_types = [r[1] for r in doc_rows]
+        assert any(t in doc_types for t in ("primary_doc", "exhibit_99_1"))
+
+        # Verify raw_assets stored for submissions
+        raw_count = conn.execute(
+            "SELECT COUNT(*) FROM raw_assets WHERE source_type='sec_submissions'"
+        ).fetchone()[0]
+        assert raw_count >= 1
+
+        # Verify Bronze (raw_assets) for sec_primary_doc stores RAW HTML, not extracted text
+        from catalyst_data.storage.sqlite import get_raw_asset
+        raw_doc_rows = conn.execute(
+            "SELECT asset_id FROM raw_assets WHERE source_type='sec_primary_doc'"
+        ).fetchall()
+        assert len(raw_doc_rows) >= 1, "No sec_primary_doc raw_assets stored"
+
+        raw_asset = get_raw_asset(conn, raw_doc_rows[0][0])
+        assert raw_asset is not None
+        decompressed = raw_asset["content_raw"]
+        assert decompressed is not None, "Decompressed Bronze content is None"
+        # Must contain raw HTML markers, NOT just stripped text
+        assert b"<" in decompressed, "Bronze content should contain HTML tags"
+        assert b"</html>" in decompressed or b"<DOCUMENT>" in decompressed,             "Bronze content missing expected HTML/DOCUMENT markers"
+
+        # Prove Bronze is re-derivable into Silver:
+        # extract_text_from_html(decompressed_raw) reproduces filing_documents.text
+        from catalyst_data.pipeline.sec_normalize import extract_text_from_html
+        decompressed_text = decompressed.decode("latin-1", errors="replace")
+        rederived = extract_text_from_html(decompressed_text)
+        doc_text_rows = conn.execute(
+            "SELECT text FROM filing_documents WHERE filing_id=?",
+            (filing_row[0],)
+        ).fetchall()
+        assert len(doc_text_rows) >= 1
+        stored_texts = {r[0] for r in doc_text_rows if r[0]}
+        # At least one stored text should be contained within the re-derived text,
+        # or the re-derived text should match one of the stored texts
+        text_match = any(
+            stored in rederived or rederived in stored
+            for stored in stored_texts
+        )
+        assert text_match, (
+            f"Re-derived text does not match any stored filing_documents.text. "
+            f"Rederved: {rederived[:200]!r}... Stored: {stored_texts}"
+        )
+
+        # Checkpoint written
+        cp = conn.execute(
+            "SELECT status FROM source_checkpoints "
+            "WHERE source_type='sec_filings' AND ticker='AAPL' AND date='2026-06-30'"
+        ).fetchone()
+        assert cp is not None
+        assert cp[0] == "success"
+        conn.close()
+
+    def test_fetch_document_invoked(self, tmp_path):
+        """Carry-forward E: assert fetch_document is actually called on SEC path."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_sec_db(db_path)
+        conn.close()
+
+        submissions_data = _mock_sec_submissions(
+            ticker="AAPL", cik="0000320193",
+            filed_at="2026-06-30", form="8-K",
+            items="2.02",
+        )
+
+        fetch_doc_mock = AsyncMock(return_value=SimpleNamespace(
+            status=200,
+            data={
+                "url": "https://www.sec.gov/Archives/edgar/data/320193/000032019325000055/a8-k.htm",
+                "text": "Test earnings text.",
+                "content_type": "text/html",
+                "byte_size": 100,
+                "extraction_status": "success",
+            },
+        ))
+
+        fetcher = SimpleNamespace(
+            fetch=AsyncMock(return_value=SimpleNamespace(
+                status=200, data=submissions_data, error=None,
+            )),
+            fetch_document=fetch_doc_mock,
+        )
+
+        _ = asyncio.run(_fetch_cell(
+            db_path=db_path,
+            ticker="AAPL",
+            date="2026-06-30",
+            source="sec_filings",
+            run_id="run_test_e",
+            fetch_fn=fetcher.fetch,
+            fetcher_ns=fetcher,
+        ))
+
+        # fetch_document MUST have been called at least once
+        assert fetch_doc_mock.call_count >= 1, (
+            "fetch_document was NOT invoked on the SEC path"
+        )
+
+    def test_fetcher_ns_required_for_sec(self, tmp_path):
+        """sec_filings without fetcher_ns raises ValueError."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_sec_db(db_path)
+        conn.close()
+
+        with pytest.raises(ValueError, match="fetcher_ns"):
+            asyncio.run(_fetch_cell(
+                db_path=db_path,
+                ticker="AAPL",
+                date="2026-06-30",
+                source="sec_filings",
+                run_id="run_test_ns",
+                fetch_fn=AsyncMock(),
+                fetcher_ns=None,
+            ))
+
+    def test_no_cik_for_ticker(self, tmp_path):
+        """sec_filings for ticker without CIK → failed with NoCIK."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_sec_db(db_path)
+        conn.close()
+
+        fetcher = SimpleNamespace(
+            fetch=AsyncMock(),
+            fetch_document=AsyncMock(),
+        )
+
+        result = asyncio.run(_fetch_cell(
+            db_path=db_path,
+            ticker="ZZZZZ",
+            date="2026-06-30",
+            source="sec_filings",
+            run_id="run_test_nocik",
+            fetch_fn=fetcher.fetch,
+            fetcher_ns=fetcher,
+        ))
+
+        assert result["status"] == "failed"
+        assert "No CIK" in (result.get("error") or "")
+
+    def test_submissions_http_error(self, tmp_path):
+        """Submissions fetch fails → checkpoint written as failed."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_sec_db(db_path)
+        conn.close()
+
+        fetcher = SimpleNamespace(
+            fetch=AsyncMock(return_value=SimpleNamespace(
+                status=500, data=None, error="Server error",
+            )),
+            fetch_document=AsyncMock(),
+        )
+
+        result = asyncio.run(_fetch_cell(
+            db_path=db_path,
+            ticker="AAPL",
+            date="2026-06-30",
+            source="sec_filings",
+            run_id="run_test_err",
+            fetch_fn=fetcher.fetch,
+            fetcher_ns=fetcher,
+        ))
+
+        assert result["status"] == "failed"
+
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_ingestion_quality_tables(conn)
+        cp = conn.execute(
+            "SELECT status FROM source_checkpoints "
+            "WHERE source_type='sec_filings' AND ticker='AAPL' AND date='2026-06-30'"
+        ).fetchone()
+        assert cp is not None
+        assert cp[0] == "failed"
+        conn.close()
+
+
+class TestDryRunSECNoWrites:
+    """run_update_batch dry-run with sec_filings: ZERO DB writes."""
+
+    def test_dry_run_sec_zero_db_writes(self, tmp_path):
+        db_path = str(tmp_path / "test.db")
+        conn = _make_sec_db(db_path)
+        conn.close()
+
+        # Snapshot counts
+        def _counts():
+            c = sqlite3.connect(db_path)
+            c.row_factory = lambda cur, row: row
+            tables = ["filings", "filing_documents", "raw_assets",
+                      "source_checkpoints", "index_state"]
+            counts = {}
+            for t in tables:
+                try:
+                    n = c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                except sqlite3.OperationalError:
+                    n = 0
+                counts[t] = n
+            c.close()
+            return counts
+
+        before = _counts()
+
+        report = asyncio.run(run_update_batch(
+            db_path,
+            tickers=["AAPL"],
+            sources=["sec_filings"],
+            from_date="2026-06-29",
+            to_date="2026-06-30",
+            fetch_fn=None,
+            dry_run=True,
+        ))
+
+        assert report["mode"] == "dry-run"
+        assert report["cells_total"] >= 0
+
+        after = _counts()
+        for tbl in before:
+            assert after[tbl] == before[tbl], (
+                f"Table {tbl} changed: {before[tbl]} → {after[tbl]} "
+                f"(dry-run must have ZERO DB writes)"
+            )
+
+    def test_dry_run_sec_no_network(self, tmp_path):
+        """Dry-run with sec_filings must not require fetch_fn."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_sec_db(db_path)
+        conn.close()
+
+        report = asyncio.run(run_update_batch(
+            db_path,
+            tickers=["AAPL"],
+            sources=["sec_filings"],
+            from_date="2026-06-29",
+            to_date="2026-06-30",
+            fetch_fn=None,
+            dry_run=True,
+        ))
+
+        assert report["mode"] == "dry-run"
+        # No fetch_fn needed, no network

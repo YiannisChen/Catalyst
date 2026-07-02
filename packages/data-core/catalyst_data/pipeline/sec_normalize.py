@@ -148,6 +148,7 @@ async def resolve_filing_documents(
                 "content_type": d.get("content_type", ""),
                 "byte_size": d.get("byte_size", 0),
                 "extraction_status": d.get("extraction_status", "fetch_failed"),
+                "raw_bytes": d.get("raw_bytes", b""),
             })
 
     # 2. For ALL rag-eligible 8-Ks, enumerate index-headers for EX-99.* exhibits
@@ -173,6 +174,7 @@ async def resolve_filing_documents(
                     "content_type": d.get("content_type", ""),
                     "byte_size": d.get("byte_size", 0),
                     "extraction_status": d.get("extraction_status", "fetch_failed"),
+                    "raw_bytes": d.get("raw_bytes", b""),
                 })
 
     return docs

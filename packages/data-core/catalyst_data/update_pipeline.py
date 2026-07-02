@@ -1,4 +1,4 @@
-"""Update/backfill pipeline engine — Polygon-first, checkpoint/resume.
+"""Update/backfill pipeline engine — Polygon-first, SEC filings, checkpoint/resume.
 
 Reads the universe → computes freshness/missing windows → fetches (honoring
 rate policies) → archives → normalizes → tier-classifies → regenerates
@@ -11,12 +11,15 @@ DB writes.  Real path uses an injected fetch_fn (async callable).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import sqlite3
 import time
+import zlib
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Awaitable
 
 from catalyst_data.freshness import latest_local_ohlcv_date, freshness_report
@@ -26,7 +29,11 @@ from catalyst_data.quality import (
     write_source_checkpoint,
     close_stale_runs,
 )
-from catalyst_data.storage.sqlite import init_db
+from catalyst_data.storage.sqlite import (
+    init_db,
+    compute_asset_id,
+    upsert_raw_asset,
+)
 from catalyst_data.quality import ensure_ingestion_quality_tables
 
 logger = logging.getLogger(__name__)
@@ -121,14 +128,17 @@ async def _fetch_cell(
     fetch_fn: FetchFn,
     limiter: Any | None = None,
     retry_config: dict[str, Any] | None = None,
+    fetcher_ns: Any | None = None,
+    submissions_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Fetch one (ticker, date, source) cell through the orchestrator.
+    """Fetch one (ticker, date, source) cell.
 
-    Respects limiter (TokenBucketLimiter) and retry.
-    Writes a source_checkpoint immediately after Bronze+Silver storage
-    (success or failure).
+    For polygon_news: delegates to orchestrator.process_request.
+    For sec_filings: uses SEC-specific pipeline (fetch submissions,
+    normalize, resolve documents, upsert filings/documents, Bronze archive).
 
-    Returns {ticker, date, source, status, error, articles_count}.
+    Returns {ticker, date, source, status, error, articles_count,
+             filings_count, documents_count}.
     """
     conn = sqlite3.connect(db_path)
     init_db(conn)
@@ -140,12 +150,42 @@ async def _fetch_cell(
 
     max_retries = (retry_config or {}).get("max_retries", 1)
 
+    # ── SEC filings path ──
+    if source == "sec_filings":
+        if fetcher_ns is None:
+            raise ValueError(
+                "fetcher_ns (SEC namespace from create_sec_fetcher) is "
+                "required for source='sec_filings'"
+            )
+        try:
+            result = await _fetch_cell_sec(
+                conn, ticker, date, run_id, fetcher_ns,
+                limiter=limiter, submissions_cache=submissions_cache,
+            )
+            conn.close()
+            return result
+        except Exception as exc:
+            last_error = str(exc)
+            error_class = type(exc).__name__
+            write_source_checkpoint(
+                conn, run_id=run_id, source_type=source,
+                ticker=ticker, date=date,
+                status="failed", error_class=error_class, retries=0,
+            )
+            conn.close()
+            return {
+                "ticker": ticker, "date": date, "source": source,
+                "status": "failed", "error": last_error,
+                "articles_count": 0, "filings_count": 0,
+                "documents_count": 0, "retries": 0,
+            }
+
+    # ── Polygon news path (original) ──
     for attempt in range(max_retries + 1):
         try:
             if limiter is not None:
                 await limiter.acquire()
 
-            # Call orchestrator.process_request for the single source
             from catalyst_data.orchestrator import process_request
 
             results = await process_request(
@@ -157,7 +197,6 @@ async def _fetch_cell(
                 limiter=limiter,
             )
 
-            # Inspect the result
             result = results[0] if results else {"ok": False, "error": "no_result"}
             ok = result.get("ok", False)
             error = result.get("error")
@@ -178,6 +217,7 @@ async def _fetch_cell(
                     status="success",
                     retries=retries,
                 )
+                conn.close()
                 return {
                     "ticker": ticker,
                     "date": date,
@@ -185,10 +225,11 @@ async def _fetch_cell(
                     "status": "success",
                     "error": None,
                     "articles_count": articles_count,
+                    "filings_count": 0,
+                    "documents_count": 0,
                     "retries": retries,
                 }
             else:
-                # Some sources return ok=False without an exception
                 last_error = str(error) if error else "unknown"
                 error_class = type(error).__name__ if error else "UnknownError"
                 retries = attempt
@@ -198,12 +239,10 @@ async def _fetch_cell(
             error_class = type(exc).__name__
             retries = attempt
 
-        # Wait before retry
         if attempt < max_retries:
             wait_s = (retry_config or {}).get("base_delay", 5.0) * (2 ** attempt)
             await asyncio.sleep(wait_s)
 
-    # All attempts exhausted — record failure
     write_source_checkpoint(
         conn,
         run_id=run_id,
@@ -222,7 +261,188 @@ async def _fetch_cell(
         "status": "failed",
         "error": last_error,
         "articles_count": 0,
+        "filings_count": 0,
+        "documents_count": 0,
         "retries": retries,
+    }
+
+
+async def _fetch_cell_sec(
+    conn: sqlite3.Connection,
+    ticker: str,
+    date: str,
+    run_id: str,
+    fetcher_ns: SimpleNamespace,
+    limiter: Any | None = None,
+    submissions_cache: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Handle one SEC filings cell: fetch → normalize → resolve docs → upsert → archive.
+
+    Returns {ticker, date, source, status, filings_count, documents_count}.
+    """
+    from catalyst_data.cik_map import ticker_to_cik
+    from catalyst_data.pipeline.sec_normalize import normalize_submissions, resolve_filing_documents
+    from catalyst_data.storage.sqlite import upsert_filing, upsert_filing_document
+
+    try:
+        cik = ticker_to_cik(ticker)
+    except KeyError:
+        write_source_checkpoint(
+            conn, run_id=run_id, source_type="sec_filings",
+            ticker=ticker, date=date,
+            status="failed", error_class="NoCIK",
+            retries=0,
+        )
+        return {
+            "ticker": ticker, "date": date, "source": "sec_filings",
+            "status": "failed", "error": f"No CIK for ticker {ticker}",
+            "articles_count": 0, "filings_count": 0,
+            "documents_count": 0, "retries": 0,
+        }
+
+    # 1. Fetch submissions (cached per-run per ticker)
+    cache_key = f"submissions:{ticker}"
+    submissions_result = None
+
+    if submissions_cache is not None and cache_key in submissions_cache:
+        cached = submissions_cache[cache_key]
+        submissions_result = cached
+    else:
+        if limiter is not None:
+            await limiter.acquire()
+        submissions_result = await fetcher_ns.fetch(
+            ticker, "sec_submissions", date
+        )
+        if submissions_cache is not None:
+            submissions_cache[cache_key] = submissions_result
+
+    if submissions_result.status != 200:
+        error_msg = submissions_result.error or f"HTTP {submissions_result.status}"
+        write_source_checkpoint(
+            conn, run_id=run_id, source_type="sec_filings",
+            ticker=ticker, date=date,
+            status="failed",
+            error_class=f"SEC{submissions_result.status}",
+            retries=0,
+        )
+        return {
+            "ticker": ticker, "date": date, "source": "sec_filings",
+            "status": "failed", "error": error_msg,
+            "articles_count": 0, "filings_count": 0,
+            "documents_count": 0, "retries": 0,
+        }
+
+    raw_data = submissions_result.data
+
+    # 2. Normalize submissions → filings in date range
+    filing_dicts = normalize_submissions(raw_data, ticker, cik, date, date)
+
+    # 3. Bronze archive: store submissions JSON (carry-forward C)
+    submissions_json_bytes = json.dumps(raw_data, ensure_ascii=True).encode("utf-8")
+    fetched_at_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    submissions_asset_id = compute_asset_id(
+        ticker, fetched_at_date, "sec_submissions"
+    )
+    response_hash = hashlib.sha256(submissions_json_bytes).hexdigest()[:16]
+
+    upsert_raw_asset(
+        conn,
+        asset_id=submissions_asset_id,
+        ticker=ticker,
+        source_type="sec_submissions",
+        reference_date=fetched_at_date,
+        content_raw=submissions_json_bytes,
+        http_status=200,
+        metadata={
+            "cik": cik,
+            "response_hash": response_hash,
+            "endpoints": ["sec_submissions"],
+        },
+    )
+
+    # 4. For each filing: upsert filing, resolve documents for rag-eligible 8-Ks
+    filings_count = 0
+    documents_count = 0
+
+    for fd in filing_dicts:
+        upsert_filing(
+            conn,
+            filing_id=fd["filing_id"],
+            cik=fd["cik"],
+            ticker=fd["ticker"],
+            form_type=fd["form_type"],
+            filed_at=fd["filed_at"],
+            accession_number=fd["accession_number"],
+            url=fd["url"],
+            period=fd.get("period"),
+            primary_document=fd.get("primary_document"),
+            items_json=fd.get("items_json"),
+            source_tier=fd.get("source_tier", 1),
+            dedup_group_id=fd.get("dedup_group_id"),
+            is_rag_eligible=fd.get("is_rag_eligible", 1),
+            raw_asset_id=submissions_asset_id,
+        )
+        filings_count += 1
+
+        # 4a. Resolve filing documents for rag-eligible 8-Ks
+        if fd.get("is_rag_eligible") and fd.get("form_type") == "8-K":
+            docs = await resolve_filing_documents(fetcher_ns, fd)
+            for doc_dict in docs:
+                upsert_filing_document(
+                    conn,
+                    filing_id=doc_dict["filing_id"],
+                    document_url=doc_dict["document_url"],
+                    document_type=doc_dict.get("document_type", "primary_doc"),
+                    text=doc_dict.get("text"),
+                    char_len=doc_dict.get("char_len"),
+                    content_type=doc_dict.get("content_type"),
+                    byte_size=doc_dict.get("byte_size"),
+                    extraction_status=doc_dict.get("extraction_status", "fetch_failed"),
+                )
+                documents_count += 1
+
+                # 4b. Bronze archive: store EACH document's RAW HTML (immutable, re-derivable)
+                doc_bytes = doc_dict.get("raw_bytes") or b""
+                doc_type = doc_dict.get("document_type", "primary_doc")
+                doc_asset_id = compute_asset_id(
+                    ticker,
+                    fd["filed_at"],
+                    f"sec_primary_doc:{fd['filing_id']}:{doc_type}",
+                )
+                upsert_raw_asset(
+                    conn,
+                    asset_id=doc_asset_id,
+                    ticker=ticker,
+                    source_type="sec_primary_doc",
+                    reference_date=fd["filed_at"],
+                    content_raw=doc_bytes,
+                    http_status=200,
+                    metadata={
+                        "url": doc_dict["document_url"],
+                        "filing_id": fd["filing_id"],
+                        "document_type": doc_type,
+                        "content_type": doc_dict.get("content_type", ""),
+                        "byte_size": doc_dict.get("byte_size", 0),
+                    },
+                )
+
+    # 5. Write checkpoint — status='success' even if 0 filings (T9 semantics)
+    write_source_checkpoint(
+        conn, run_id=run_id, source_type="sec_filings",
+        ticker=ticker, date=date,
+        status="success", retries=0,
+    )
+
+    return {
+        "ticker": ticker,
+        "date": date,
+        "source": "sec_filings",
+        "status": "success",
+        "error": None,
+        "articles_count": 0,
+        "filings_count": filings_count,
+        "documents_count": documents_count,
+        "retries": 0,
     }
 
 
@@ -304,6 +524,26 @@ async def run_update_batch(
     if fetch_fn is None:
         raise ValueError("fetch_fn is required for non-dry-run execution")
 
+    # ── Construct SEC fetcher namespace if sec_filings is in sources ──
+    fetcher_ns: Any | None = None
+    submissions_cache: dict[str, Any] = {}
+
+    if "sec_filings" in sources:
+        from catalyst_data.connectors.sec import create_sec_fetcher
+        import os
+
+        user_agent = os.environ.get(
+            "SEC_USER_AGENT",
+            "Catalyst/1.0 (contact@example.com)",
+        )
+        fetcher_ns = create_sec_fetcher(
+            user_agent=user_agent,
+            limiter=limiter,
+        )
+        # Use the namespace's fetch as the fetch_fn for SEC cells
+        # (polygon cells still use the original fetch_fn)
+        # We'll dispatch per-source in _fetch_cell.
+
     # Open ingestion run
     conn = sqlite3.connect(db_path)
     init_db(conn)
@@ -332,9 +572,26 @@ async def run_update_batch(
 
     # Process each missing cell sequentially
     for ticker, td, src in missing:
+        # Determine which fetch_fn to use for this source
+        cell_fetch_fn = fetch_fn
+        cell_fetcher_ns = None
+        cell_cache = None
+
+        if src == "sec_filings":
+            if fetcher_ns is None:
+                raise ValueError(
+                    "fetcher_ns not constructed; sec_filings is in sources "
+                    "but create_sec_fetcher failed?"
+                )
+            cell_fetch_fn = fetcher_ns.fetch  # base fetch callable
+            cell_fetcher_ns = fetcher_ns
+            cell_cache = submissions_cache
+
         result = await _fetch_cell(
-            db_path, ticker, td, src, run_id, fetch_fn,
+            db_path, ticker, td, src, run_id, cell_fetch_fn,
             limiter=limiter,
+            fetcher_ns=cell_fetcher_ns,
+            submissions_cache=cell_cache,
         )
         if result["status"] == "success":
             cells_success += 1
@@ -349,17 +606,23 @@ async def run_update_batch(
     init_db(conn)
     ensure_ingestion_quality_tables(conn)
 
-    # Re-derive articles
-    from catalyst_data.rederive import rederive_polygon_news
-    rederive_counts = rederive_polygon_news(db_path)
+    # Re-derive articles (polygon only)
+    articles_upserted = 0
+    clean_assets_inserted = 0
 
-    # Classify source tiers
-    from catalyst_data.source_tier import classify_articles
-    classify_articles(conn)
+    if "polygon_news" in sources:
+        from catalyst_data.rederive import rederive_polygon_news
+        rederive_counts = rederive_polygon_news(db_path)
+        articles_upserted = rederive_counts.get("articles_upserted", 0)
 
-    # Regenerate clean_assets
-    from catalyst_data.regenerate_clean import regenerate_polygon_clean_assets
-    clean_counts = regenerate_polygon_clean_assets(db_path)
+        # Classify source tiers (articles only)
+        from catalyst_data.source_tier import classify_articles
+        classify_articles(conn)
+
+        # Regenerate clean_assets
+        from catalyst_data.regenerate_clean import regenerate_polygon_clean_assets
+        clean_counts = regenerate_polygon_clean_assets(db_path)
+        clean_assets_inserted = clean_counts.get("clean_assets_inserted", 0)
 
     # Incremental index dry-run (delta-only, no writes)
     from catalyst_data.index_builder import build_incremental_records
@@ -385,8 +648,8 @@ async def run_update_batch(
         "cells_failed": cells_failed,
         "cells_skipped": 0,
         "missing_cells": [],
-        "articles_upserted": rederive_counts.get("articles_upserted", 0),
-        "clean_assets_inserted": clean_counts.get("clean_assets_inserted", 0),
+        "articles_upserted": articles_upserted,
+        "clean_assets_inserted": clean_assets_inserted,
         "index_delta_new": inc.get("new_article_count", 0),
         "index_delta_changed": inc.get("changed_article_count", 0),
         "index_would_embed": inc.get("would_embed_count", 0),

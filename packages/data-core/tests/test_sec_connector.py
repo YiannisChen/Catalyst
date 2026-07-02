@@ -116,3 +116,25 @@ async def test_unknown_endpoint_returns_error():
     assert result.status == 0
     assert "Unknown SEC endpoint" in result.error
     mock_client.get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_fetch_document_raw_bytes_preserved():
+    """data["raw_bytes"] == resp.content on a mocked 200 HTML response."""
+    html_bytes = b"<html><body><p>SEC Filing Content</p></body></html>"
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "text/html"}
+    mock_resp.content = html_bytes
+
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    fetcher = create_sec_fetcher(user_agent="Test/1.0", client=mock_client)
+    result = await fetcher.fetch_document("https://example.com/doc.htm")
+
+    assert result.status == 200
+    assert result.data is not None
+    assert result.data["raw_bytes"] == html_bytes
+    assert "<html>" in result.data["raw_bytes"].decode("latin-1")

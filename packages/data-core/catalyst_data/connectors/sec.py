@@ -149,6 +149,7 @@ def create_sec_fetcher(
                     data={
                         "url": url,
                         "text": text,
+                        "raw_bytes": raw_bytes,
                         "content_type": content_type,
                         "byte_size": byte_size,
                         "extraction_status": extraction_status,
