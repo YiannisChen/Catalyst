@@ -180,6 +180,36 @@ async def _fetch_cell(
                 "documents_count": 0, "retries": 0,
             }
 
+    # ── Finnhub company-news path ──
+    if source == "finnhub_company_news":
+        if fetcher_ns is None:
+            raise ValueError(
+                "fetcher_ns (Finnhub namespace from create_finnhub_fetcher) "
+                "is required for source='finnhub_company_news'"
+            )
+        try:
+            result = await _fetch_cell_finnhub(
+                conn, ticker, date, run_id, fetcher_ns,
+                limiter=limiter,
+            )
+            conn.close()
+            return result
+        except Exception as exc:
+            last_error = str(exc)
+            error_class = type(exc).__name__
+            write_source_checkpoint(
+                conn, run_id=run_id, source_type=source,
+                ticker=ticker, date=date,
+                status="failed", error_class=error_class, retries=0,
+            )
+            conn.close()
+            return {
+                "ticker": ticker, "date": date, "source": source,
+                "status": "failed", "error": last_error,
+                "articles_count": 0, "filings_count": 0,
+                "documents_count": 0, "retries": 0,
+            }
+
     # ── Polygon news path (original) ──
     for attempt in range(max_retries + 1):
         try:
@@ -266,6 +296,92 @@ async def _fetch_cell(
         "retries": retries,
     }
 
+
+
+async def _fetch_cell_finnhub(
+    conn: sqlite3.Connection,
+    ticker: str,
+    date: str,
+    run_id: str,
+    fetcher_ns: SimpleNamespace,
+    limiter: Any | None = None,
+) -> dict[str, Any]:
+    """Handle one Finnhub company-news cell: fetch → Bronze archive.
+
+    Returns {ticker, date, source, status, articles_count}.
+    Silver (articles/article_tickers) is derived post-batch via rederive_finnhub_news().
+    """
+    import json
+
+    try:
+        result = await fetcher_ns.fetch(ticker, "company-news", date)
+    except Exception as exc:
+        write_source_checkpoint(
+            conn, run_id=run_id, source_type="finnhub_company_news",
+            ticker=ticker, date=date,
+            status="failed", error_class=type(exc).__name__, retries=0,
+        )
+        return {
+            "ticker": ticker, "date": date, "source": "finnhub_company_news",
+            "status": "failed", "error": str(exc),
+            "articles_count": 0, "filings_count": 0,
+            "documents_count": 0, "retries": 0,
+        }
+
+    if result.status != 200:
+        error_msg = result.error or f"HTTP {result.status}"
+        write_source_checkpoint(
+            conn, run_id=run_id, source_type="finnhub_company_news",
+            ticker=ticker, date=date,
+            status="failed",
+            error_class=f"Finnhub{result.status}",
+            retries=0,
+        )
+        return {
+            "ticker": ticker, "date": date, "source": "finnhub_company_news",
+            "status": "failed", "error": error_msg,
+            "articles_count": 0, "filings_count": 0,
+            "documents_count": 0, "retries": 0,
+        }
+
+    # Bronze archive: store raw Finnhub JSON response
+    articles_data = result.data if isinstance(result.data, list) else []
+    raw_json_bytes = json.dumps(articles_data, ensure_ascii=True).encode("utf-8")
+
+    asset_id = compute_asset_id(ticker, date, "finnhub_company_news")
+
+    upsert_raw_asset(
+        conn,
+        asset_id=asset_id,
+        ticker=ticker,
+        source_type="finnhub_company_news",
+        reference_date=date,
+        content_raw=raw_json_bytes,
+        http_status=200,
+        metadata={
+            "endpoints": ["company-news"],
+            "article_count": len(articles_data),
+        },
+    )
+
+    # Write checkpoint — success even if 0 articles (cell is covered)
+    write_source_checkpoint(
+        conn, run_id=run_id, source_type="finnhub_company_news",
+        ticker=ticker, date=date,
+        status="success", retries=0,
+    )
+
+    return {
+        "ticker": ticker,
+        "date": date,
+        "source": "finnhub_company_news",
+        "status": "success",
+        "error": None,
+        "articles_count": len(articles_data),
+        "filings_count": 0,
+        "documents_count": 0,
+        "retries": 0,
+    }
 
 async def _fetch_cell_sec(
     conn: sqlite3.Connection,
@@ -526,7 +642,21 @@ async def run_update_batch(
 
     # ── Construct SEC fetcher namespace if sec_filings is in sources ──
     fetcher_ns: Any | None = None
+    finnhub_fetcher_ns: Any | None = None
     submissions_cache: dict[str, Any] = {}
+
+    if "finnhub_company_news" in sources:
+        from catalyst_data.connectors.finnhub import create_finnhub_fetcher
+
+        finnhub_api_key = os.environ.get("FINNHUB_API_KEY", "")
+        if not finnhub_api_key:
+            logger.warning(
+                "FINNHUB_API_KEY not set — finnhub_company_news cells will fail"
+            )
+        finnhub_fetcher_ns = create_finnhub_fetcher(
+            api_key=finnhub_api_key,
+            limiter=limiter,
+        )
 
     if "sec_filings" in sources:
         from catalyst_data.connectors.sec import create_sec_fetcher
@@ -577,6 +707,16 @@ async def run_update_batch(
         cell_fetcher_ns = None
         cell_cache = None
 
+        if src == "finnhub_company_news":
+            if finnhub_fetcher_ns is None:
+                raise ValueError(
+                    "finnhub_fetcher_ns not constructed; finnhub_company_news "
+                    "is in sources but create_finnhub_fetcher failed?"
+                )
+            cell_fetch_fn = finnhub_fetcher_ns.fetch
+            cell_fetcher_ns = finnhub_fetcher_ns
+            cell_cache = None
+
         if src == "sec_filings":
             if fetcher_ns is None:
                 raise ValueError(
@@ -602,6 +742,19 @@ async def run_update_batch(
     elapsed = time.monotonic() - start_time
 
     # Post-batch: re-derive, classify, regenerate, incremental index dry-run
+
+    # ── Finnhub Silver: re-derive articles from raw_assets ──
+    finnhub_articles_upserted = 0
+    if "finnhub_company_news" in sources:
+        from catalyst_data.pipeline.finnhub_normalize import rederive_finnhub_news
+        finnhub_counts = rederive_finnhub_news(db_path)
+        finnhub_articles_upserted = finnhub_counts.get("articles_upserted", 0)
+
+    # ── Cross-source dedup (Polygon + Finnhub) ──
+    dedup_groups = 0
+    if "finnhub_company_news" in sources:
+        from catalyst_data.dedup.cross_source import compute_cross_source_dedup
+        dedup_groups = compute_cross_source_dedup(conn)
     conn = sqlite3.connect(db_path)
     init_db(conn)
     ensure_ingestion_quality_tables(conn)
@@ -649,6 +802,8 @@ async def run_update_batch(
         "cells_skipped": 0,
         "missing_cells": [],
         "articles_upserted": articles_upserted,
+        "finnhub_articles_upserted": finnhub_articles_upserted,
+        "dedup_groups_resolved": dedup_groups,
         "clean_assets_inserted": clean_assets_inserted,
         "index_delta_new": inc.get("new_article_count", 0),
         "index_delta_changed": inc.get("changed_article_count", 0),

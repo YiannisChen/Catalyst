@@ -477,3 +477,12 @@ def get_ohlcv(conn: sqlite3.Connection, symbol: str, date: str) -> dict | None:
         "volume": row[6],
         "source": row[7],
     }
+
+
+def _migrate_article_tickers_dedup(conn: sqlite3.Connection) -> None:
+    """Add dedup_group_id column to article_tickers if not present (additive DDL)."""
+    try:
+        conn.execute("SELECT dedup_group_id FROM article_tickers LIMIT 0")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE article_tickers ADD COLUMN dedup_group_id TEXT")
+        conn.commit()

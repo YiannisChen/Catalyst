@@ -380,7 +380,7 @@ def main() -> None:
     update_p.add_argument("--tickers", default=None,
                           help="Comma-separated tickers (default: all 10)")
     update_p.add_argument("--sources", default="polygon_news",
-                          help="Comma-separated sources (default: polygon_news)")
+                          help="Comma-separated sources: polygon_news, finnhub_company_news, sec_filings (default: polygon_news)")
     update_p.add_argument("--limit", type=int, default=None,
                           help="Cap number of cells to process")
     update_p.add_argument("--dry-run", action="store_true", default=True,
@@ -402,7 +402,7 @@ def main() -> None:
     backfill_p.add_argument("--tickers", default=None,
                             help="Comma-separated tickers (default: all 10)")
     backfill_p.add_argument("--sources", default="polygon_news",
-                            help="Comma-separated sources (default: polygon_news)")
+                            help="Comma-separated sources: polygon_news, finnhub_company_news, sec_filings (default: polygon_news)")
     backfill_p.add_argument("--chunk-days", type=int, default=7,
                             help="Days per chunk (default: 7)")
     backfill_p.add_argument("--dry-run", action="store_true", default=True,

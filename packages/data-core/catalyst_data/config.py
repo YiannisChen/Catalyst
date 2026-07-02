@@ -62,6 +62,7 @@ _PROVIDER_KEY_ENV = {
     "polygon_backup": "POLYGON_API_KEY_BACKUP",
     "fmp": "FMP_API_KEY",
     "fred": "FRED_API_KEY",
+    "finnhub": "FINNHUB_API_KEY",
 }
 
 

@@ -1,0 +1,35 @@
+[
+  {
+    "category": "company",
+    "datetime": 1751385600,
+    "headline": "Apple Reports Record Q2 Earnings",
+    "id": 12345678,
+    "image": "https://finnhub.io/api/image?symbol=AAPL&token=[REDACTED]",
+    "related": "",
+    "source": "Yahoo",
+    "summary": "Apple Inc. reported record quarterly earnings of $2.40 per share, beating analyst estimates.",
+    "url": "https://finnhub.io/api/v1/news/12345678?token=[REDACTED]"
+  },
+  {
+    "category": "company",
+    "datetime": 1751386200,
+    "headline": "Apple Q2 Earnings: Revenue Beats, Services Growth Accelerates",
+    "id": 12345679,
+    "image": "",
+    "related": "AAPL",
+    "source": "Seeking Alpha",
+    "summary": "Apple delivered a strong Q2 with revenue of $94.8B, driven by 14% services growth.",
+    "url": "https://finnhub.io/api/v1/news/12345679?token=[REDACTED]"
+  },
+  {
+    "category": "company",
+    "datetime": 1751389200,
+    "headline": "Apple announces new share buyback program",
+    "id": 12345680,
+    "image": "",
+    "related": "",
+    "source": "Reuters",
+    "summary": "Apple authorized an additional $90 billion share buyback.",
+    "url": "https://finnhub.io/api/v1/news/12345680?token=[REDACTED]"
+  }
+]

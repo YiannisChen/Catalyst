@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS article_tickers (
     ticker        TEXT NOT NULL,
     raw_asset_id  TEXT NOT NULL,
     reference_date TEXT NOT NULL,
+    dedup_group_id TEXT,
     PRIMARY KEY (article_id, ticker),
     FOREIGN KEY (article_id) REFERENCES articles(article_id),
     FOREIGN KEY (raw_asset_id) REFERENCES raw_assets(asset_id)

@@ -37,7 +37,6 @@ RETRY_POLICIES = {
             max_seconds=300.0,
             max_retries=3,
             jitter=True,
-            min_delay_seconds=60.0,
         ),
         server_error=RetryRule(
             base_seconds=5.0,
@@ -58,7 +57,6 @@ RETRY_POLICIES = {
             max_seconds=300.0,
             max_retries=3,
             jitter=True,
-            min_delay_seconds=60.0,
         ),
         server_error=RetryRule(
             base_seconds=5.0,
@@ -109,6 +107,27 @@ RETRY_POLICIES = {
         timeout=RetryRule(
             base_seconds=10.0,
             max_seconds=40.0,
+            max_retries=2,
+            jitter=False,
+        ),
+    ),
+    "finnhub": RetryPolicy(
+        rate_limit=RetryRule(
+            base_seconds=1.0,
+            max_seconds=30.0,
+            max_retries=3,
+            jitter=False,
+            min_delay_seconds=1.0,
+        ),
+        server_error=RetryRule(
+            base_seconds=5.0,
+            max_seconds=30.0,
+            max_retries=3,
+            jitter=False,
+        ),
+        timeout=RetryRule(
+            base_seconds=5.0,
+            max_seconds=20.0,
             max_retries=2,
             jitter=False,
         ),

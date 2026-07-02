@@ -20,6 +20,11 @@ FRED = {
     "concurrency": _DEV_POLICIES["fred"].max_concurrent,
 }
 
+
+FINNHUB = {
+    "rate_per_min": int(round(60.0 / _DEV_POLICIES["finnhub"].min_interval_sec)),
+    "concurrency": _DEV_POLICIES["finnhub"].max_concurrent,
+}
 SEC = {
     "rate_per_min": int(round(60.0 / _DEV_POLICIES["sec"].min_interval_sec)),
     "concurrency": _DEV_POLICIES["sec"].max_concurrent,

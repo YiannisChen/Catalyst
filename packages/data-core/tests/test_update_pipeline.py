@@ -791,3 +791,205 @@ class TestDryRunSECNoWrites:
 
         assert report["mode"] == "dry-run"
         # No fetch_fn needed, no network
+
+
+# ============================================================================
+# Finnhub company-news pipeline tests (Step 3D)
+# ============================================================================
+
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from catalyst_data.update_pipeline import _fetch_cell
+from catalyst_data.storage.sqlite import ensure_filings_tables
+
+
+class TestFetchCellFinnhub:
+    """_fetch_cell Finnhub path tests with mocked fetcher namespace."""
+
+    def _make_finnhub_db(self, db_path: str) -> sqlite3.Connection:
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_ingestion_quality_tables(conn)
+        ensure_filings_tables(conn)
+        for dt in ("2025-07-01", "2025-06-30"):
+            conn.execute(
+                "INSERT OR REPLACE INTO ohlcv (symbol, date, close) VALUES (?, ?, 100.0)",
+                ("AAPL", dt),
+            )
+        conn.commit()
+        return conn
+
+    def test_finnhub_zero_articles(self, tmp_path):
+        """Mocked 200 with empty array → success, articles_count=0, checkpoint written."""
+        db_path = str(tmp_path / "test.db")
+        conn = self._make_finnhub_db(db_path)
+        conn.close()
+
+        fetcher = SimpleNamespace(
+            fetch=AsyncMock(return_value=SimpleNamespace(
+                status=200,
+                data=[],
+                error=None,
+            )),
+        )
+
+        result = asyncio.run(_fetch_cell(
+            db_path=db_path,
+            ticker="AAPL",
+            date="2025-07-01",
+            source="finnhub_company_news",
+            run_id="run_fh_zero",
+            fetch_fn=fetcher.fetch,
+            fetcher_ns=fetcher,
+        ))
+
+        assert result["status"] == "success"
+        assert result["articles_count"] == 0
+        assert result["ticker"] == "AAPL"
+
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_ingestion_quality_tables(conn)
+        cp = conn.execute(
+            "SELECT status FROM source_checkpoints "
+            "WHERE source_type='finnhub_company_news' AND ticker='AAPL' AND date='2025-07-01'"
+        ).fetchone()
+        assert cp is not None
+        assert cp[0] == "success"
+
+        # Raw asset stored even for 0 articles
+        ra = conn.execute(
+            "SELECT COUNT(*) FROM raw_assets WHERE source_type='finnhub_company_news'"
+        ).fetchone()[0]
+        assert ra >= 1
+        conn.close()
+
+    def test_finnhub_with_articles(self, tmp_path):
+        """Mocked 200 with 3 articles → success, articles_count=3, raw_asset stored."""
+        db_path = str(tmp_path / "test.db")
+        conn = self._make_finnhub_db(db_path)
+        conn.close()
+
+        mock_articles = [
+            {"id": 1, "headline": "News 1", "summary": "Body 1",
+             "datetime": 1751385600, "source": "Yahoo", "url": "https://x.com/1"},
+            {"id": 2, "headline": "News 2", "summary": "Body 2",
+             "datetime": 1751385600, "source": "Reuters", "url": "https://x.com/2"},
+            {"id": 3, "headline": "News 3", "summary": "Body 3",
+             "datetime": 1751385600, "source": "Bloomberg", "url": "https://x.com/3"},
+        ]
+
+        fetcher = SimpleNamespace(
+            fetch=AsyncMock(return_value=SimpleNamespace(
+                status=200,
+                data=mock_articles,
+                error=None,
+            )),
+        )
+
+        result = asyncio.run(_fetch_cell(
+            db_path=db_path,
+            ticker="AAPL",
+            date="2025-07-01",
+            source="finnhub_company_news",
+            run_id="run_fh_one",
+            fetch_fn=fetcher.fetch,
+            fetcher_ns=fetcher,
+        ))
+
+        assert result["status"] == "success"
+        assert result["articles_count"] == 3
+
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_ingestion_quality_tables(conn)
+
+        # Raw asset stored with correct metadata
+        ra = conn.execute(
+            "SELECT content_raw, metadata_json FROM raw_assets "
+            "WHERE source_type='finnhub_company_news' AND ticker='AAPL'"
+        ).fetchone()
+        assert ra is not None
+        import zlib
+        decompressed = zlib.decompress(ra[0])
+        parsed = json.loads(decompressed)
+        assert len(parsed) == 3
+        assert parsed[0]["headline"] == "News 1"
+
+        meta = json.loads(ra[1])
+        assert meta["article_count"] == 3
+
+        conn.close()
+
+    def test_finnhub_http_error(self, tmp_path):
+        """Mocked 500 → failed checkpoint."""
+        db_path = str(tmp_path / "test.db")
+        conn = self._make_finnhub_db(db_path)
+        conn.close()
+
+        fetcher = SimpleNamespace(
+            fetch=AsyncMock(return_value=SimpleNamespace(
+                status=500,
+                data=None,
+                error="Server error",
+            )),
+        )
+
+        result = asyncio.run(_fetch_cell(
+            db_path=db_path,
+            ticker="AAPL",
+            date="2025-07-01",
+            source="finnhub_company_news",
+            run_id="run_fh_err",
+            fetch_fn=fetcher.fetch,
+            fetcher_ns=fetcher,
+        ))
+
+        assert result["status"] == "failed"
+        assert "Server error" in (result.get("error") or "")
+
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_ingestion_quality_tables(conn)
+        cp = conn.execute(
+            "SELECT status FROM source_checkpoints "
+            "WHERE source_type='finnhub_company_news' AND ticker='AAPL' AND date='2025-07-01'"
+        ).fetchone()
+        assert cp is not None
+        assert cp[0] == "failed"
+        conn.close()
+
+    def test_finnhub_dry_run_zero_writes(self, tmp_path):
+        """Dry-run: zero new rows in raw_assets."""
+        db_path = str(tmp_path / "test.db")
+        conn = self._make_finnhub_db(db_path)
+
+        ra_before = conn.execute(
+            "SELECT COUNT(*) FROM raw_assets"
+        ).fetchone()[0]
+        conn.close()
+
+        # Dry-run: fetch_fn=None, _fetch_cell never called
+        from catalyst_data.update_pipeline import run_update_batch
+
+        async def _run():
+            return await run_update_batch(
+                db_path,
+                tickers=["AAPL"],
+                sources=["finnhub_company_news"],
+                from_date="2025-07-01",
+                to_date="2025-07-01",
+                fetch_fn=None,
+                dry_run=True,
+            )
+
+        report = asyncio.run(_run())
+
+        assert report["mode"] == "dry-run"
+        # No DB writes happened
+        conn = sqlite3.connect(db_path)
+        ra_after = conn.execute("SELECT COUNT(*) FROM raw_assets").fetchone()[0]
+        assert ra_after == ra_before, "Dry-run must not write to raw_assets"
+        conn.close()
