@@ -1,0 +1,138 @@
+{
+  "realtime_start": "2025-08-15",
+  "realtime_end": "9999-12-31",
+  "observation_start": "2024-11-01",
+  "observation_end": "2024-11-30",
+  "units": "Percent",
+  "output_type": 4,
+  "file_type": "json",
+  "order_by": "observation_date",
+  "sort_order": "asc",
+  "count": 20,
+  "offset": 0,
+  "limit": 100000,
+  "id": "DFF",
+  "name": "Federal Funds Effective Rate",
+  "observations": [
+    {
+      "realtime_start": "2024-11-01",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-01",
+      "value": "4.83"
+    },
+    {
+      "realtime_start": "2024-11-04",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-04",
+      "value": "4.83"
+    },
+    {
+      "realtime_start": "2024-11-05",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-05",
+      "value": "4.83"
+    },
+    {
+      "realtime_start": "2024-11-06",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-06",
+      "value": "4.83"
+    },
+    {
+      "realtime_start": "2024-11-07",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-07",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-08",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-08",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-11",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-11",
+      "value": "."
+    },
+    {
+      "realtime_start": "2024-11-12",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-12",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-13",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-13",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-14",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-14",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-15",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-15",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-18",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-18",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-19",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-19",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-20",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-20",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-21",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-21",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-22",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-22",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-25",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-25",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-26",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-26",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-27",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-27",
+      "value": "4.65"
+    },
+    {
+      "realtime_start": "2024-11-29",
+      "realtime_end": "9999-12-31",
+      "date": "2024-11-29",
+      "value": "4.65"
+    }
+  ]
+}

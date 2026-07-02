@@ -279,6 +279,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_clean_provenance(conn)
     ensure_articles_table(conn)
     ensure_filings_tables(conn)
+    ensure_macro_tables(conn)
     conn.commit()
 
 
@@ -486,3 +487,52 @@ def _migrate_article_tickers_dedup(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError:
         conn.execute("ALTER TABLE article_tickers ADD COLUMN dedup_group_id TEXT")
         conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# macro_observations (Plane-2 — structured signals, NEVER embedded)
+# ---------------------------------------------------------------------------
+
+_MACRO_DDL = """
+CREATE TABLE IF NOT EXISTS macro_observations (
+    series_id        TEXT NOT NULL,
+    observation_date TEXT NOT NULL,
+    value            REAL,
+    released_at      TEXT,
+    fetched_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    raw_asset_id     TEXT,
+    PRIMARY KEY (series_id, observation_date),
+    FOREIGN KEY (raw_asset_id) REFERENCES raw_assets(asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_macro_obs_date
+    ON macro_observations(observation_date);
+CREATE INDEX IF NOT EXISTS idx_macro_obs_series_date
+    ON macro_observations(series_id, observation_date);
+"""
+
+
+def ensure_macro_tables(conn: sqlite3.Connection) -> None:
+    """Create macro_observations table and indexes (additive DDL)."""
+    conn.executescript(_MACRO_DDL)
+    conn.commit()
+
+
+def upsert_macro_observation(
+    conn: sqlite3.Connection,
+    *,
+    series_id: str,
+    observation_date: str,
+    value: float | None,
+    released_at: str | None,
+    raw_asset_id: str | None,
+) -> None:
+    """INSERT OR REPLACE into macro_observations."""
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO macro_observations
+            (series_id, observation_date, value, released_at, fetched_at, raw_asset_id)
+        VALUES (?, ?, ?, ?, datetime('now'), ?)
+        """,
+        (series_id, observation_date, value, released_at, raw_asset_id),
+    )
+    conn.commit()

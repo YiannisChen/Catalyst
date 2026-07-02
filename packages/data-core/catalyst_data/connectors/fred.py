@@ -1,13 +1,17 @@
 """FRED (Federal Reserve Economic Data) connector for macro indicators.
 
-Supported series IDs: DFF, DGS10, VIXCLS, UNRATE, CPIAUCSL, etc.
+Supported series IDs: DFF, DGS10, DGS2, VIXCLS, UNRATE, CPIAUCSL, PCEPI, PAYEMS,
+GDP, DAAA, DBAA, plus derived T10Y2Y.
 
 URL pattern:
   https://api.stlouisfed.org/fred/series/observations
     ?series_id={endpoint}&api_key={key}&file_type=json
     &observation_start={date-30d}&observation_end={date}
+    [&output_type=4&realtime_start=...&realtime_end=...]  # for first-release
 
 FRED uses "." for missing data; these observations are filtered out.
+output_type=4 returns initial release values with per-observation realtime_start
+(first-release date) — required for no-look-ahead integrity.
 """
 from __future__ import annotations
 
@@ -37,17 +41,27 @@ def create_fred_fetcher(
         client: Optional httpx.AsyncClient for dependency injection (tests).
     """
 
-    async def fetch(ticker: str, endpoint: str, date: str) -> FetchResult:
+    async def fetch(ticker: str, endpoint: str, date: str,
+                    start_date: str | None = None,
+                    output_type: int | None = None,
+                    realtime_start: str | None = None,
+                    realtime_end: str | None = None) -> FetchResult:
         dt = datetime.strptime(date, "%Y-%m-%d")
-        start_date = (dt - timedelta(days=30)).strftime("%Y-%m-%d")
+        obs_start = start_date or (dt - timedelta(days=30)).strftime("%Y-%m-%d")
 
         params = {
             "series_id": endpoint,
             "api_key": api_key,
             "file_type": "json",
-            "observation_start": start_date,
+            "observation_start": obs_start,
             "observation_end": date,
         }
+        if output_type is not None:
+            params["output_type"] = str(output_type)
+        if realtime_start is not None:
+            params["realtime_start"] = realtime_start
+        if realtime_end is not None:
+            params["realtime_end"] = realtime_end
 
         start = time.monotonic()
         own_client = client is None
@@ -74,9 +88,10 @@ def create_fred_fetcher(
                     latency_ms=latency,
                     source_label=f"fred:{endpoint}",
                 )
+            safe_text = (resp.text or "").replace(api_key, "[REDACTED]") if resp.text else ""
             return FetchResult(
                 status=resp.status_code,
-                error=f"FRED {resp.status_code}: {resp.text}",
+                error=f"FRED {resp.status_code}: {safe_text}",
                 latency_ms=latency,
                 source_label=f"fred:{endpoint}",
             )

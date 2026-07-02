@@ -18,7 +18,7 @@ def map_logical_source(source: str) -> list[str]:
         return ["ohlcv"]
     if source == "fred_macro":
         # Common FRED series used in the system design spec.
-        return ["DFF", "DGS10", "VIXCLS", "UNRATE", "CPIAUCSL"]
+        return ["DAAA", "DBAA", "DFF", "DGS10", "DGS2", "CPIAUCSL", "GDP", "PAYEMS", "PCEPI", "UNRATE", "VIXCLS"]
     if source == "finnhub_company_news":
         return ["company-news"]
     if source == "sec_filings":

@@ -318,5 +318,74 @@ def freshness_report(conn: sqlite3.Connection) -> dict[str, Any]:
         "news": news_freshness(conn),
         "index": index_freshness(conn),
         "sec_filings": filings_freshness(conn),
+        "macro": macro_freshness(conn),
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Macro freshness (FRED — cadence-aware, per-series)
+# ---------------------------------------------------------------------------
+
+def macro_freshness(
+    conn: sqlite3.Connection,
+    *,
+    watermark: str | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Per-series macro observation freshness.
+
+    Returns dict keyed by series_id:
+        {series_id: {latest_date, cadence, stale_days, status, days_behind}}
+
+    Status: FRESH | STALE | NO_DATA | REMOVED
+    Cadence-aware: a monthly series is not STALE 20 days after last release
+    if the next release isn't expected for 30+ days.
+    """
+    from catalyst_data.pipeline.fred_manifest import CURATED_SERIES, series_by_id
+
+    wm = watermark or latest_local_ohlcv_date(conn)
+
+    # Query latest observation per series
+    try:
+        rows = conn.execute("""
+            SELECT series_id, MAX(observation_date) as latest_date
+            FROM macro_observations
+            GROUP BY series_id
+            ORDER BY series_id
+        """).fetchall()
+    except sqlite3.OperationalError:
+        # macro_observations table doesn't exist yet
+        rows = []
+
+    latest_by_series = {r[0]: r[1] for r in rows if r[1]}
+
+    result: dict[str, dict[str, Any]] = {}
+
+    for s in CURATED_SERIES:
+        latest_date = latest_by_series.get(s.series_id)
+
+        if latest_date is None:
+            result[s.series_id] = {
+                "latest_date": None,
+                "cadence": s.cadence,
+                "stale_days": s.stale_days,
+                "status": "NO_DATA",
+                "days_behind": -1,
+            }
+            continue
+
+        from datetime import date
+        ref_dt = date.fromisoformat(wm)
+        obs_dt = date.fromisoformat(latest_date)
+        days_behind = (ref_dt - obs_dt).days
+        is_stale = days_behind > s.stale_days
+
+        result[s.series_id] = {
+            "latest_date": latest_date,
+            "cadence": s.cadence,
+            "stale_days": s.stale_days,
+            "status": "STALE" if is_stale else "FRESH",
+            "days_behind": days_behind,
+        }
+
+    return result

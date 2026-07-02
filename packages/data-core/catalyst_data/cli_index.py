@@ -282,6 +282,39 @@ def cmd_update_news(
 # backfill
 # ---------------------------------------------------------------------------
 
+
+def cmd_update_macro(
+    db_path: str,
+    series: str | None,
+    from_date: str | None,
+    to_date: str | None,
+    dry_run: bool = False,
+) -> None:
+    """Run FRED macro update — fetch, archive, normalize."""
+    _ensure_db(db_path)
+
+    series_list = None
+    if series:
+        series_list = [s.strip() for s in series.split(",") if s.strip()]
+
+    if not dry_run:
+        print("ERROR: Only --dry-run is supported on Mac (Step 3E).")
+        print("       Real FRED network calls are gated to a separate step.")
+        sys.exit(1)
+
+    from catalyst_data.pipeline.fred_manifest import FETCHED_SERIES, CURATED_SERIES
+
+    resolved = series_list or FETCHED_SERIES
+    derived = [s.series_id for s in CURATED_SERIES if s.derived]
+
+    print(f"\n=== Update-Macro Dry-Run ===")
+    print(f"  Mode:           dry-run")
+    print(f"  Date window:    {from_date or '(auto: 30d from today)'} → {to_date or '(today)'}")
+    print(f"  Fetch series:   {resolved}")
+    print(f"  Derived series: {derived}")
+    print(f"  Total requests: {len(resolved)} (one per series)")
+    print(f"\n  ZERO network calls made.  ZERO DB writes.")
+
 def cmd_backfill(
     db_path: str,
     from_date: str,
@@ -394,6 +427,20 @@ def main() -> None:
                        help="Output CSV path (default: data/cik_map/cik_ticker_map.csv)")
 
     # backfill
+
+    # update-macro
+    macro_p = sub.add_parser("update-macro", help="Fetch FRED macro observations")
+    macro_p.add_argument("--series", default=None,
+                         help="Comma-separated series IDs (default: all 12 curated)")
+    macro_p.add_argument("--from", dest="from_date", default=None,
+                         help="Observation start YYYY-MM-DD (default: 30d ago)")
+    macro_p.add_argument("--to", dest="to_date", default=None,
+                         help="Observation end YYYY-MM-DD (default: today)")
+    macro_p.add_argument("--dry-run", action="store_true", default=True,
+                         help="Compute-only, zero network, zero DB writes")
+    macro_p.add_argument("--db", default=str(DEFAULT_DB),
+                         help=f"Path to dev DB (default: {DEFAULT_DB})")
+
     backfill_p = sub.add_parser("backfill", help="Run backfill pipeline")
     backfill_p.add_argument("--from", dest="from_date", required=True,
                             help="Start date YYYY-MM-DD")
@@ -435,6 +482,15 @@ def main() -> None:
         for t, c in sorted(result.items()):
             print(f"  {t}: {c}")
 
+    elif args.command == "update-macro":
+        db_path = getattr(args, "db", str(DEFAULT_DB))
+        cmd_update_macro(
+            db_path,
+            series=getattr(args, "series", None),
+            from_date=getattr(args, "from_date", None),
+            to_date=getattr(args, "to_date", None),
+            dry_run=getattr(args, "dry_run", False),
+        )
     elif args.command == "backfill":
         db_path = getattr(args, "db", str(DEFAULT_DB))
         cmd_backfill(
