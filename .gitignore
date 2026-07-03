@@ -46,3 +46,10 @@ CLAUDE.md
 # Frontend build output
 dist/
 node_modules/
+
+# Step 3F coverage audit outputs (generated artifacts)
+data/provider_discovery/*.json
+
+# Provider probe scripts (one-shot, not committed)
+scripts/provider_discovery.py
+packages/data-core/scripts/fmp_reprobe.py

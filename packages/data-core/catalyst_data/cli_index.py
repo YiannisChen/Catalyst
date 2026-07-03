@@ -227,10 +227,10 @@ def cmd_update_news(
     sources: str | None,
     limit: int | None,
     dry_run: bool = False,
+    live: bool = False,
+    confirm: bool = False,
 ) -> None:
-    """Run the update pipeline (dry-run only on Mac in Step 2)."""
-    _ensure_db(db_path)
-
+    """Run the update pipeline (dry-run default; --live --confirm for real)."""
     ticker_list = (
         [t.strip() for t in tickers.split(",") if t.strip()]
         if tickers else None
@@ -240,9 +240,62 @@ def cmd_update_news(
         if sources else None
     )
 
+    # --live path: gated runner
+    if live:
+        from catalyst_data.live_runner import run_live_guard, build_polygon_fetcher, build_finnhub_fetcher, build_sec_fetcher
+
+        run_live_guard(db_path, required_keys=None, confirm=confirm)
+
+        # Determine required keys based on --sources
+        req_keys = []
+        resolved_sources = source_list or ["polygon_news"]
+        if "polygon_news" in resolved_sources:
+            req_keys.append("POLYGON_API_KEY")
+        if "finnhub_company_news" in resolved_sources:
+            req_keys.append("FINNHUB_API_KEY")
+        if "sec_filings" in resolved_sources:
+            req_keys.append("SEC_USER_AGENT")
+
+        if req_keys:
+            from catalyst_data.live_runner import _check_env_key
+            for k in req_keys:
+                _check_env_key(k)
+
+        # Build connectors
+        fetch_fn = {}
+        if "polygon_news" in resolved_sources:
+            fn, _ = build_polygon_fetcher()
+            fetch_fn["polygon_news"] = fn
+        if "finnhub_company_news" in resolved_sources:
+            fn, _ = build_finnhub_fetcher()
+            fetch_fn["finnhub_company_news"] = fn
+        if "sec_filings" in resolved_sources:
+            ns, _ = build_sec_fetcher()
+            fetch_fn["sec_filings"] = ns
+
+        print(f"\n=== Live Run: update-news ===")
+        print(f"  Sources: {resolved_sources}")
+        print(f"  Tickers: {ticker_list or '(all 10)'}")
+
+        _ensure_db(db_path)
+
+        async def _run_live():
+            from catalyst_data.update_pipeline import run_update_batch
+            return await run_update_batch(
+                db_path, tickers=ticker_list, sources=source_list,
+                from_date=from_date, to_date=to_date, fetch_fn=fetch_fn,
+                limit=limit, dry_run=False,
+            )
+
+        report = asyncio.run(_run_live())
+        print(f"\n  Cells processed: {report.get('cells_total', '?')}")
+        return
+
+    _ensure_db(db_path)
+
     if not dry_run:
         print("ERROR: Only --dry-run is supported on Mac (Step 2).")
-        print("       Real network calls are gated to a separate step.")
+        print("       Use --live --confirm for real network calls.")
         sys.exit(1)
 
     async def _run():
@@ -283,12 +336,156 @@ def cmd_update_news(
 # ---------------------------------------------------------------------------
 
 
+
+# ---------------------------------------------------------------------------
+# reconcile-schema
+# ---------------------------------------------------------------------------
+
+def cmd_reconcile_schema(db_path: str, dry_run: bool = True) -> None:
+    """Reconcile dev DB schema with code-derived DDL.
+
+    --dry-run: builds a fresh temp DB from init_db, diffs sqlite_master.
+    --apply:   creates missing tables/columns additively.
+    """
+    import os as _os
+    resolved = _os.path.realpath(db_path)
+
+    # Refuse frozen DB
+    frozen_real = str(
+        (Path(__file__).resolve().parent.parent.parent.parent
+         / "data" / "catalyst_eval_frozen_v2.db")
+    )
+    if resolved == _os.path.realpath(frozen_real):
+        print("ERROR: Refusing to modify frozen eval DB.", file=sys.stderr)
+        print(f"  Frozen DB: {frozen_real}", file=sys.stderr)
+        sys.exit(1)
+
+    # Build code-derived schema from fresh temp DB
+    temp_conn = sqlite3.connect(":memory:")
+    try:
+        init_db(temp_conn)
+        temp_conn.commit()
+
+        # Extract schema from temp DB
+        temp_tables = {
+            r[0]: r[1]
+            for r in temp_conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        }
+        temp_indexes = {
+            r[0]
+            for r in temp_conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        }
+        temp_cols: dict[str, set[str]] = {}
+        for table_name in temp_tables:
+            cols = temp_conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            temp_cols[table_name] = {c[1] for c in cols}
+    finally:
+        temp_conn.close()
+
+    # Open dev DB
+    if not _os.path.exists(resolved):
+        print(f"ERROR: DB not found: {db_path}", file=sys.stderr)
+        sys.exit(1)
+
+    conn = sqlite3.connect(resolved)
+    try:
+        dev_tables = {
+            r[0]: r[1]
+            for r in conn.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        dev_indexes = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ).fetchall()
+        }
+        dev_cols: dict[str, set[str]] = {}
+        for table_name in dev_tables:
+            try:
+                cols = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+                dev_cols[table_name] = {c[1] for c in cols}
+            except sqlite3.OperationalError:
+                dev_cols[table_name] = set()
+
+        # Diff
+        missing_tables = set(temp_tables) - set(dev_tables)
+        missing_indexes = temp_indexes - dev_indexes
+        missing_columns: dict[str, set[str]] = {}
+        for table_name in temp_cols:
+            if table_name in dev_cols:
+                mc = temp_cols[table_name] - dev_cols[table_name]
+                if mc:
+                    missing_columns[table_name] = mc
+
+        total_missing = len(missing_tables) + len(missing_indexes) + sum(
+            len(v) for v in missing_columns.values()
+        )
+
+        if total_missing == 0:
+            print("Schema is current — 0 missing objects.")
+            if not dry_run:
+                print("Already reconciled, no changes needed.")
+            conn.close()
+            return
+
+        print(f"Schema diff: {total_missing} missing objects")
+        for t in sorted(missing_tables):
+            print(f"  MISSING TABLE:  {t}")
+        for t, cols in sorted(missing_columns.items()):
+            for c in sorted(cols):
+                print(f"  MISSING COLUMN: {t}.{c}")
+        for idx in sorted(missing_indexes):
+            print(f"  MISSING INDEX:  {idx}")
+
+        if dry_run:
+            print("\nDry-run complete — no writes. Use --apply --db <PATH> to reconcile.")
+            conn.close()
+            return
+
+        # --apply: add missing objects
+        print("\nApplying additive migration...")
+        from catalyst_data.storage.sqlite import ensure_macro_tables, _migrate_article_tickers_dedup
+
+        # Create missing tables via ensure functions
+        if "macro_observations" in missing_tables:
+            ensure_macro_tables(conn)
+            print("  Created macro_observations table + indexes")
+
+        # Add missing columns
+        if "article_tickers" in missing_columns:
+            if "dedup_group_id" in missing_columns["article_tickers"]:
+                _migrate_article_tickers_dedup(conn)
+                print("  Added article_tickers.dedup_group_id column")
+
+        # Re-diff to confirm
+        new_dev_tables = {
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        still_missing_tables = set(temp_tables) - new_dev_tables
+        if still_missing_tables:
+            print(f"WARNING: Still missing tables: {still_missing_tables}")
+
+        print("Reconciliation complete.")
+    finally:
+        conn.close()
+
 def cmd_update_macro(
     db_path: str,
     series: str | None,
     from_date: str | None,
     to_date: str | None,
     dry_run: bool = False,
+    live: bool = False,
+    confirm: bool = False,
 ) -> None:
     """Run FRED macro update — fetch, archive, normalize."""
     _ensure_db(db_path)
@@ -297,9 +494,28 @@ def cmd_update_macro(
     if series:
         series_list = [s.strip() for s in series.split(",") if s.strip()]
 
+    # --live path: gated runner
+    if live:
+        from catalyst_data.live_runner import run_live_guard, build_fred_fetcher
+
+        run_live_guard(db_path, required_keys=["FRED_API_KEY"], confirm=confirm)
+        fetch_fn, _ = build_fred_fetcher()
+
+        from catalyst_data.pipeline.fred_manifest import FETCHED_SERIES, CURATED_SERIES
+
+        resolved = series_list or FETCHED_SERIES
+        derived = [s.series_id for s in CURATED_SERIES if s.derived]
+
+        print(f"\n=== Live Run: update-macro ===")
+        print(f"  Fetch series:   {resolved}")
+        print(f"  Derived series: {derived}")
+        print(f"  (Live macro fetch not yet implemented in pipeline)")
+        print(f"  (fetch_fn available for Step 3F.2)")
+        return
+
     if not dry_run:
         print("ERROR: Only --dry-run is supported on Mac (Step 3E).")
-        print("       Real FRED network calls are gated to a separate step.")
+        print("       Use --live --confirm for real network calls.")
         sys.exit(1)
 
     from catalyst_data.pipeline.fred_manifest import FETCHED_SERIES, CURATED_SERIES
@@ -323,8 +539,10 @@ def cmd_backfill(
     sources: str | None,
     chunk_days: int,
     dry_run: bool = False,
+    live: bool = False,
+    confirm: bool = False,
 ) -> None:
-    """Run the backfill pipeline (dry-run only on Mac in Step 2)."""
+    """Run the backfill pipeline (dry-run default; --live --confirm for real)."""
     _ensure_db(db_path)
 
     if not from_date or not to_date:
@@ -340,9 +558,54 @@ def cmd_backfill(
         if sources else None
     )
 
+    # --live path: gated runner
+    if live:
+        from catalyst_data.live_runner import run_live_guard, build_polygon_fetcher, build_finnhub_fetcher
+
+        run_live_guard(db_path, required_keys=None, confirm=confirm)
+
+        resolved_sources = source_list or ["polygon_news"]
+        req_keys = []
+        if "polygon_news" in resolved_sources:
+            req_keys.append("POLYGON_API_KEY")
+        if "finnhub_company_news" in resolved_sources:
+            req_keys.append("FINNHUB_API_KEY")
+        if req_keys:
+            from catalyst_data.live_runner import _check_env_key
+            for k in req_keys:
+                _check_env_key(k)
+
+        fetch_fn = {}
+        if "polygon_news" in resolved_sources:
+            fn, _ = build_polygon_fetcher()
+            fetch_fn["polygon_news"] = fn
+        if "finnhub_company_news" in resolved_sources:
+            fn, _ = build_finnhub_fetcher()
+            fetch_fn["finnhub_company_news"] = fn
+
+        print(f"\n=== Live Run: backfill ===")
+        print(f"  Sources: {resolved_sources}")
+        print(f"  Tickers: {ticker_list or '(all 10)'}")
+        print(f"  Window:  {from_date} -> {to_date}")
+
+        _ensure_db(db_path)
+
+        async def _run_live_backfill():
+            from catalyst_data.backfill_pipeline import run_backfill
+            return await run_backfill(
+                db_path, tickers=ticker_list, sources=source_list,
+                from_date=from_date, to_date=to_date, fetch_fn=fetch_fn,
+                chunk_days=chunk_days, dry_run=False,
+            )
+
+        results = asyncio.run(_run_live_backfill())
+        total = sum(r.get("cells_total", 0) for r in results)
+        print(f"\n  Chunks: {len(results)}, Total cells: {total}")
+        return
+
     if not dry_run:
         print("ERROR: Only --dry-run is supported on Mac (Step 2).")
-        print("       Real backfill execution is gated to a separate step.")
+        print("       Use --live --confirm for real network calls.")
         sys.exit(1)
 
     async def _run():
@@ -418,9 +681,21 @@ def main() -> None:
                           help="Cap number of cells to process")
     update_p.add_argument("--dry-run", action="store_true", default=True,
                           help="Compute missing cells only, no network/DB writes")
+    update_p.add_argument("--live", action="store_true", default=False,
+                          help="Use real connectors + network (requires --confirm)")
+    update_p.add_argument("--confirm", action="store_true", default=False,
+                          help="Confirm live network execution")
     update_p.add_argument("--db", default=str(DEFAULT_DB),
                           help=f"Path to dev DB (default: {DEFAULT_DB})")
 
+    # reconcile-schema
+    rec_p = sub.add_parser("reconcile-schema", help="Reconcile dev DB schema with code-derived DDL")
+    rec_p.add_argument("--dry-run", dest="reconcile_dry_run", action="store_true", default=True,
+                       help="Diff only, zero writes (default)")
+    rec_p.add_argument("--apply", dest="reconcile_apply", action="store_true", default=False,
+                       help="Apply additive migration (requires --db)")
+    rec_p.add_argument("--db", dest="reconcile_db", default=None,
+                       help="Path to DB to reconcile")
     # refresh-cik-map
     cik_p = sub.add_parser("refresh-cik-map", help="Refresh CIK ticker map from SEC")
     cik_p.add_argument("--output", default=None,
@@ -438,6 +713,10 @@ def main() -> None:
                          help="Observation end YYYY-MM-DD (default: today)")
     macro_p.add_argument("--dry-run", action="store_true", default=True,
                          help="Compute-only, zero network, zero DB writes")
+    macro_p.add_argument("--live", action="store_true", default=False,
+                         help="Use real connectors + network (requires --confirm)")
+    macro_p.add_argument("--confirm", action="store_true", default=False,
+                         help="Confirm live network execution")
     macro_p.add_argument("--db", default=str(DEFAULT_DB),
                          help=f"Path to dev DB (default: {DEFAULT_DB})")
 
@@ -454,6 +733,10 @@ def main() -> None:
                             help="Days per chunk (default: 7)")
     backfill_p.add_argument("--dry-run", action="store_true", default=True,
                             help="Compute chunked cells only, no network/DB writes")
+    backfill_p.add_argument("--live", action="store_true", default=False,
+                            help="Use real connectors + network (requires --confirm)")
+    backfill_p.add_argument("--confirm", action="store_true", default=False,
+                            help="Confirm live network execution")
     backfill_p.add_argument("--db", default=str(DEFAULT_DB),
                             help=f"Path to dev DB (default: {DEFAULT_DB})")
 
@@ -475,12 +758,25 @@ def main() -> None:
             sources=getattr(args, "sources", None),
             limit=getattr(args, "limit", None),
             dry_run=getattr(args, "dry_run", False),
+            live=getattr(args, "live", False),
+            confirm=getattr(args, "confirm", False),
         )
     elif args.command == "refresh-cik-map":
         result = refresh_cik_map(getattr(args, "output", None))
         print(f"CIK map refreshed: {len(result)} tickers written")
         for t, c in sorted(result.items()):
             print(f"  {t}: {c}")
+
+    elif args.command == "reconcile-schema":
+        db_arg = getattr(args, "reconcile_db", None)
+        if getattr(args, "reconcile_apply", False):
+            if not db_arg:
+                print("ERROR: --apply requires --db <PATH>", file=sys.stderr)
+                sys.exit(1)
+            cmd_reconcile_schema(db_arg, dry_run=False)
+        else:
+            resolved_db = db_arg or str(DEFAULT_DB)
+            cmd_reconcile_schema(resolved_db, dry_run=True)
 
     elif args.command == "update-macro":
         db_path = getattr(args, "db", str(DEFAULT_DB))
@@ -490,6 +786,8 @@ def main() -> None:
             from_date=getattr(args, "from_date", None),
             to_date=getattr(args, "to_date", None),
             dry_run=getattr(args, "dry_run", False),
+            live=getattr(args, "live", False),
+            confirm=getattr(args, "confirm", False),
         )
     elif args.command == "backfill":
         db_path = getattr(args, "db", str(DEFAULT_DB))
@@ -501,6 +799,8 @@ def main() -> None:
             sources=getattr(args, "sources", None),
             chunk_days=getattr(args, "chunk_days", 7),
             dry_run=getattr(args, "dry_run", False),
+            live=getattr(args, "live", False),
+            confirm=getattr(args, "confirm", False),
         )
 
 
