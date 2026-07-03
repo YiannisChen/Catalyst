@@ -597,6 +597,8 @@ async def run_update_batch(
     if sources is None:
         sources = ["polygon_news"]
 
+    import os
+
     # Resolve date window
     if from_date is None or to_date is None:
         wm = latest_local_ohlcv_date(conn)
@@ -727,6 +729,11 @@ async def run_update_batch(
             cell_fetcher_ns = fetcher_ns
             cell_cache = submissions_cache
 
+        # Unwrap dict fetch_fn (CLI passes {"source_type": callable} dict)
+        if isinstance(cell_fetch_fn, dict):
+            if src in cell_fetch_fn:
+                cell_fetch_fn = cell_fetch_fn[src]
+
         result = await _fetch_cell(
             db_path, ticker, td, src, run_id, cell_fetch_fn,
             limiter=limiter,
@@ -741,43 +748,47 @@ async def run_update_batch(
 
     elapsed = time.monotonic() - start_time
 
-    # Post-batch: re-derive, classify, regenerate, incremental index dry-run
+    # Post-batch: re-derive ALL sources → classify → dedup → regenerate → index
+    # ORDER MATTERS: classify and dedup must see ALL freshly-rederived rows.
 
-    # ── Finnhub Silver: re-derive articles from raw_assets ──
-    finnhub_articles_upserted = 0
-    if "finnhub_company_news" in sources:
-        from catalyst_data.pipeline.finnhub_normalize import rederive_finnhub_news
-        finnhub_counts = rederive_finnhub_news(db_path)
-        finnhub_articles_upserted = finnhub_counts.get("articles_upserted", 0)
-
-    # ── Cross-source dedup (Polygon + Finnhub) ──
-    dedup_groups = 0
-    if "finnhub_company_news" in sources:
-        from catalyst_data.dedup.cross_source import compute_cross_source_dedup
-        dedup_groups = compute_cross_source_dedup(conn)
-    conn = sqlite3.connect(db_path)
-    init_db(conn)
-    ensure_ingestion_quality_tables(conn)
-
-    # Re-derive articles (polygon only)
     articles_upserted = 0
+    finnhub_articles_upserted = 0
     clean_assets_inserted = 0
+    dedup_groups = 0
 
+    # 1. Re-derive Polygon articles from Bronze (if polygon_news in sources)
     if "polygon_news" in sources:
         from catalyst_data.rederive import rederive_polygon_news
         rederive_counts = rederive_polygon_news(db_path)
         articles_upserted = rederive_counts.get("articles_upserted", 0)
 
-        # Classify source tiers (articles only)
-        from catalyst_data.source_tier import classify_articles
-        classify_articles(conn)
+    # 2. Re-derive Finnhub articles from Bronze (if finnhub_company_news in sources)
+    if "finnhub_company_news" in sources:
+        from catalyst_data.pipeline.finnhub_normalize import rederive_finnhub_news
+        finnhub_counts = rederive_finnhub_news(db_path)
+        finnhub_articles_upserted = finnhub_counts.get("articles_upserted", 0)
 
-        # Regenerate clean_assets
+    # Re-open connection for subsequent steps
+    conn = sqlite3.connect(db_path)
+    init_db(conn)
+    ensure_ingestion_quality_tables(conn)
+
+    # 3. Classify source tiers — run for ALL articles with NULL source_tier
+    from catalyst_data.source_tier import classify_articles
+    classify_articles(conn)
+
+    # 4. Cross-source dedup — run after both providers' rows exist
+    if "finnhub_company_news" in sources:
+        from catalyst_data.dedup.cross_source import compute_cross_source_dedup
+        dedup_groups = compute_cross_source_dedup(conn)
+
+    # 5. Regenerate clean_assets (polygon only)
+    if "polygon_news" in sources:
         from catalyst_data.regenerate_clean import regenerate_polygon_clean_assets
         clean_counts = regenerate_polygon_clean_assets(db_path)
         clean_assets_inserted = clean_counts.get("clean_assets_inserted", 0)
 
-    # Incremental index dry-run (delta-only, no writes)
+    # 6. Incremental index dry-run (delta-only, no writes)
     from catalyst_data.index_builder import build_incremental_records
     inc = build_incremental_records(conn, min_l2_chars=800)
 

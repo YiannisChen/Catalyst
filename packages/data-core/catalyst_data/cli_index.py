@@ -502,6 +502,10 @@ def cmd_update_macro(
         fetch_fn, _ = build_fred_fetcher()
 
         from catalyst_data.pipeline.fred_manifest import FETCHED_SERIES, CURATED_SERIES
+        from catalyst_data.storage.sqlite import compute_asset_id, upsert_raw_asset
+        from catalyst_data.pipeline.fred_normalize import rederive_fred_macro
+        from datetime import datetime, timezone
+        import asyncio, json
 
         resolved = series_list or FETCHED_SERIES
         derived = [s.series_id for s in CURATED_SERIES if s.derived]
@@ -509,8 +513,74 @@ def cmd_update_macro(
         print(f"\n=== Live Run: update-macro ===")
         print(f"  Fetch series:   {resolved}")
         print(f"  Derived series: {derived}")
-        print(f"  (Live macro fetch not yet implemented in pipeline)")
-        print(f"  (fetch_fn available for Step 3F.2)")
+
+        async def _run_fred_live():
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            conn = sqlite3.connect(db_path)
+            init_db(conn)
+            ensure_ingestion_quality_tables(conn)
+
+            fetched = 0
+            failed = 0
+            for series_id in resolved:
+                try:
+                    result = await fetch_fn(
+                        series_id, "observations", None,
+                        output_type=4,
+                        realtime_start="1776-07-04",
+                        realtime_end="9999-12-31",
+                    )
+                except Exception as exc:
+                    logger.warning("FRED fetch failed for %s: %s", series_id, exc)
+                    failed += 1
+                    continue
+
+                if result.status != 200:
+                    logger.warning(
+                        "FRED fetch for %s returned HTTP %s",
+                        series_id, result.status,
+                    )
+                    failed += 1
+                    continue
+
+                raw_data = result.data if isinstance(result.data, dict) else {}
+                if not raw_data.get("observations"):
+                    logger.info("FRED %s: no observations", series_id)
+                    fetched += 1
+                    continue
+
+                raw_bytes = json.dumps(raw_data, ensure_ascii=True).encode("utf-8")
+                asset_id = compute_asset_id(series_id, today, "fred_macro")
+                upsert_raw_asset(
+                    conn,
+                    asset_id=asset_id,
+                    ticker="__macro__",
+                    source_type="fred_macro",
+                    reference_date=today,
+                    content_raw=raw_bytes,
+                    http_status=result.status,
+                    metadata={
+                        "series_id": series_id,
+                        "endpoint": "observations",
+                        "output_type": 4,
+                    },
+                )
+                fetched += 1
+
+            conn.commit()
+            conn.close()
+
+            # Re-derive all fred_macro raw_assets → macro_observations
+            rederive_counts = rederive_fred_macro(db_path)
+            return fetched, failed, rederive_counts
+
+        fetched, failed, rederive_counts = asyncio.run(_run_fred_live())
+
+        print(f"\n  Series fetched:  {fetched}")
+        print(f"  Series failed:   {failed}")
+        print(f"  Observations:    {rederive_counts.get('observations_upserted', 0)}")
+        if derived:
+            print(f"  Derived:         {', '.join(derived)}")
         return
 
     if not dry_run:
