@@ -7,7 +7,7 @@ import sqlite3
 import pytest
 
 from catalyst_data.update_pipeline import compute_missing_cells, run_update_batch
-from catalyst_data.storage.sqlite import init_db
+from catalyst_data.storage.sqlite import init_db, upsert_raw_asset
 from catalyst_data.quality import ensure_ingestion_quality_tables
 from catalyst_data.articles import ensure_articles_table, upsert_article, upsert_article_ticker
 
@@ -113,6 +113,81 @@ class TestComputeMissingCells:
             from_date="2026-06-30", to_date="2026-06-29",
         )
         assert missing == []
+        conn.close()
+
+    def test_partial_ohlcv_window_includes_later_calendar_trading_days(self, tmp_path):
+        """OHLCV coverage must not truncate a requested future/backfill window."""
+        db_path = str(tmp_path / "partial_calendar.db")
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_ingestion_quality_tables(conn)
+        ensure_articles_table(conn)
+        for dt in ("2026-06-29", "2026-06-30"):
+            conn.execute(
+                "INSERT OR REPLACE INTO ohlcv (symbol, date, close) VALUES (?, ?, 100.0)",
+                ("AAPL", dt),
+            )
+        conn.commit()
+
+        missing = compute_missing_cells(
+            conn,
+            tickers=["AAPL"],
+            sources=["polygon_news"],
+            from_date="2026-06-29",
+            to_date="2026-07-07",
+        )
+        dates = [date for _, date, _ in missing]
+
+        assert "2026-07-06" in dates
+        assert "2026-07-07" in dates
+        assert "2026-07-03" not in dates
+        assert "2026-07-04" not in dates
+        assert "2026-07-05" not in dates
+        conn.close()
+
+    def test_empty_ohlcv_window_uses_calendar_trading_days(self, tmp_path):
+        db_path = str(tmp_path / "empty_calendar.db")
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_ingestion_quality_tables(conn)
+        ensure_articles_table(conn)
+        conn.commit()
+
+        missing = compute_missing_cells(
+            conn,
+            tickers=["AAPL"],
+            sources=["polygon_news"],
+            from_date="2026-07-02",
+            to_date="2026-07-06",
+        )
+        dates = [date for _, date, _ in missing]
+
+        assert dates == ["2026-07-02", "2026-07-06"]
+        conn.close()
+
+    def test_full_ohlcv_window_unchanged_but_holiday_and_weekend_excluded(self, tmp_path):
+        db_path = str(tmp_path / "full_calendar.db")
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_ingestion_quality_tables(conn)
+        ensure_articles_table(conn)
+        for dt in ("2026-07-02", "2026-07-06"):
+            conn.execute(
+                "INSERT OR REPLACE INTO ohlcv (symbol, date, close) VALUES (?, ?, 100.0)",
+                ("AAPL", dt),
+            )
+        conn.commit()
+
+        missing = compute_missing_cells(
+            conn,
+            tickers=["AAPL"],
+            sources=["polygon_news"],
+            from_date="2026-07-02",
+            to_date="2026-07-06",
+        )
+        dates = [date for _, date, _ in missing]
+
+        assert dates == ["2026-07-02", "2026-07-06"]
         conn.close()
 
 
@@ -282,6 +357,79 @@ class TestRunUpdateBatchReal:
         assert all(t == "AAPL" for t in fetched_tickers)
         fetched_dates = {f[1] for f in fetch_calls}
         assert "2026-06-30" not in fetched_dates
+
+    async def test_polygon_only_batch_dedups_existing_finnhub_corpus(self, tmp_path):
+        """Root cause: dedup must not be gated on finnhub being in current sources."""
+        db_path = str(tmp_path / "test.db")
+        conn = _make_db(db_path)
+        upsert_raw_asset(
+            conn,
+            asset_id="raw-finnhub-existing",
+            ticker="AAPL",
+            source_type="finnhub_company_news",
+            reference_date="2026-06-29",
+            content_raw=b"[]",
+            http_status=200,
+        )
+        upsert_article(conn, article={
+            "article_id": "finnhub:existing",
+            "raw_asset_id": "raw-finnhub-existing",
+            "provider": "finnhub",
+            "source_type": "finnhub_company_news",
+            "ticker": "AAPL",
+            "reference_date": "2026-06-29",
+            "published_utc": "2026-06-29T10:30:00+00:00",
+            "title": "Shared infrastructure update",
+            "description": "Finnhub body",
+            "article_url": "https://example.com/finnhub-existing",
+            "publisher_name": "Finnhub Publisher",
+            "keywords_json": "[]",
+            "insights_json": "[]",
+            "tickers_json": '["AAPL"]',
+        })
+        upsert_article_ticker(
+            conn,
+            article_id="finnhub:existing",
+            ticker="AAPL",
+            raw_asset_id="raw-finnhub-existing",
+            reference_date="2026-06-29",
+        )
+        conn.close()
+
+        async def mock_fetch(ticker, endpoint, date):
+            from catalyst_data.connectors.base import FetchResult
+            return FetchResult(
+                status=200,
+                data={"results": [{
+                    "id": "poly-existing",
+                    "title": "Shared infrastructure update",
+                    "description": "Polygon body",
+                    "published_utc": "2026-06-29T10:00:00Z",
+                    "article_url": "https://example.com/poly-existing",
+                    "publisher": {"name": "Polygon Publisher"},
+                }]},
+                source_label=endpoint,
+            )
+
+        await run_update_batch(
+            db_path, tickers=["AAPL"], sources=["polygon_news"],
+            from_date="2026-06-29", to_date="2026-06-29",
+            fetch_fn=mock_fetch, limit=1, dry_run=False,
+        )
+
+        conn = sqlite3.connect(db_path)
+        groups = conn.execute(
+            """SELECT at.dedup_group_id, COUNT(DISTINCT at.article_id), SUM(a.is_canonical)
+               FROM article_tickers at
+               JOIN articles a ON a.article_id = at.article_id
+               WHERE at.article_id IN ('finnhub:existing', 'poly:poly-existing')
+               GROUP BY at.dedup_group_id"""
+        ).fetchall()
+        conn.close()
+
+        assert len(groups) == 1
+        assert groups[0][0] is not None
+        assert groups[0][1:] == (2, 1)
 
     async def test_no_index_state_writes_from_dry_run(self, tmp_path):
         """Verify pipeline does NOT write index_state/manifests."""

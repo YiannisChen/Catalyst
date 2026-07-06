@@ -139,16 +139,30 @@ CREATE TABLE IF NOT EXISTS index_manifests (
 -- source_kind = 'article' | 'filing'
 -- NO foreign key -- the column is polymorphic
 CREATE TABLE IF NOT EXISTS index_state (
-    corpus_item_id  TEXT NOT NULL,
-    source_kind     TEXT NOT NULL,
-    content_hash    TEXT NOT NULL,
-    source_tier     INTEGER,
-    dedup_group_id  TEXT,
+    rowid            INTEGER PRIMARY KEY AUTOINCREMENT,
+            chunk_id         TEXT NOT NULL,
+    chunk_level      TEXT NOT NULL DEFAULT 'l1',
+    corpus_item_id   TEXT NOT NULL,
+    source_kind      TEXT NOT NULL,
+    content_hash     TEXT NOT NULL,
+    content_text     TEXT NOT NULL DEFAULT '',
+    status           TEXT NOT NULL DEFAULT 'pending',
+    provider         TEXT,
+    source_type      TEXT,
+    source_tier      INTEGER,
+    tickers_json     TEXT DEFAULT '[]',
+    reference_date   TEXT,
+    published_utc    TEXT,
+    publisher_name   TEXT,
+    publisher_logo_url TEXT,
+    article_url      TEXT,
+    image_url        TEXT,
+    author           TEXT,
+    dedup_group_id   TEXT,
     indexed_build_id TEXT,
-    indexed_at      TEXT,
-    PRIMARY KEY (corpus_item_id, source_kind)
+    indexed_at       TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_index_state_build ON index_state(indexed_build_id);
+CREATE INDEX IF NOT EXISTS idx_index_state_corpus ON index_state(corpus_item_id, source_kind);
 
 """
 
@@ -480,13 +494,74 @@ def get_ohlcv(conn: sqlite3.Connection, symbol: str, date: str) -> dict | None:
     }
 
 
-def _migrate_article_tickers_dedup(conn: sqlite3.Connection) -> None:
-    """Add dedup_group_id column to article_tickers if not present (additive DDL)."""
+
+def _migrate_index_state_step4a(conn):
+    """Migrate index_state from old (corpus_item_id PK) to new (chunk_id PK) schema.
+    
+    Safe when index_state is empty. If rows exist, raises to prevent data loss.
+    Callers: persist_index_state in index_builder.py.
+    """
+    # Check if chunk_id column already exists — if so, already migrated
     try:
-        conn.execute("SELECT dedup_group_id FROM article_tickers LIMIT 0")
+        conn.execute("SELECT chunk_id FROM index_state LIMIT 0")
+        return  # Already migrated
     except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE article_tickers ADD COLUMN dedup_group_id TEXT")
-        conn.commit()
+        pass
+    
+    # Migration needed. Refuse if rows exist (data loss risk).
+    row_count = conn.execute("SELECT COUNT(*) FROM index_state").fetchone()[0]
+    if row_count > 0:
+        raise RuntimeError(
+            f"index_state has {row_count} rows but old schema. Manual migration required."
+        )
+    
+    # Drop and recreate with new schema — safe because row_count == 0
+    conn.execute("DROP TABLE IF EXISTS index_state")
+    conn.execute("DROP INDEX IF EXISTS idx_index_state_build")
+    conn.execute("DROP INDEX IF EXISTS idx_index_state_corpus")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS index_state (
+            rowid            INTEGER PRIMARY KEY AUTOINCREMENT,
+            chunk_id         TEXT NOT NULL,
+            chunk_level      TEXT NOT NULL DEFAULT 'l1',
+            corpus_item_id   TEXT NOT NULL,
+            source_kind      TEXT NOT NULL,
+            content_hash     TEXT NOT NULL,
+            content_text     TEXT NOT NULL DEFAULT '',
+            status           TEXT NOT NULL DEFAULT 'pending',
+            provider         TEXT,
+            source_type      TEXT,
+            source_tier      INTEGER,
+            tickers_json     TEXT DEFAULT '[]',
+            reference_date   TEXT,
+            published_utc    TEXT,
+            publisher_name   TEXT,
+            publisher_logo_url TEXT,
+            article_url      TEXT,
+            image_url        TEXT,
+            author           TEXT,
+            dedup_group_id   TEXT,
+            indexed_build_id TEXT,
+            indexed_at       TEXT
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_index_state_corpus ON index_state(corpus_item_id, source_kind)"
+    )
+    conn.commit()
+
+def _migrate_article_tickers_dedup(conn: sqlite3.Connection) -> None:
+    """Add dedup_group_id and is_canonical columns to article_tickers if missing (additive)."""
+    for col_spec in [
+        ("dedup_group_id", "TEXT"),
+        ("is_canonical", "INTEGER NOT NULL DEFAULT 1"),
+    ]:
+        col_name = col_spec[0]
+        try:
+            conn.execute(f"SELECT {col_name} FROM article_tickers LIMIT 0")
+        except sqlite3.OperationalError:
+            conn.execute(f"ALTER TABLE article_tickers ADD COLUMN {col_name} {col_spec[1]}")
+            conn.commit()
 
 
 # ---------------------------------------------------------------------------

@@ -19,13 +19,17 @@ from catalyst_data.articles import ensure_articles_table, upsert_article, upsert
 
 
 def _make_db(db_path: str) -> sqlite3.Connection:
-    """Create a DB with 5 articles, each with article_tickers rows.
+    """Create a DB with 5 eligible articles, each with article_tickers rows.
 
     a3 has a long body (920+ chars) so it triggers L2 at 800-char threshold.
+    Step 4a: seeds canonical article_tickers so articles are embed-eligible;
+    runs the is_canonical migration.
     """
     conn = sqlite3.connect(db_path)
     init_db(conn)
     ensure_articles_table(conn)
+    from catalyst_data.storage.sqlite import _migrate_article_tickers_dedup
+    _migrate_article_tickers_dedup(conn)
 
     for i in range(5):
         conn.execute(
@@ -44,6 +48,7 @@ def _make_db(db_path: str) -> sqlite3.Connection:
         ("poly:a4", "raw-3", "MSFT", "MSFT earnings", None, "MarketWatch", 2),
         ("poly:a5", "raw-4", "JPM", "JPM update", "Quick note.", "Zacks Investment Research", 5),
     ]
+    from catalyst_data.articles import upsert_article_ticker
     for article_id, raw_id, ticker, title, desc, pub, tier in articles:
         upsert_article(conn, article={
             "article_id": article_id,
@@ -58,6 +63,16 @@ def _make_db(db_path: str) -> sqlite3.Connection:
             "publisher_name": pub,
             "source_tier": tier,
         })
+        upsert_article_ticker(conn, article_id=article_id, ticker=ticker,
+                              raw_asset_id=raw_id, reference_date="2025-01-01")
+        conn.execute(
+            "UPDATE articles SET is_rag_eligible = 1, dedup_group_id = ?, is_canonical = 1 WHERE article_id = ?",
+            (f"grp-{article_id}", article_id),
+        )
+        conn.execute(
+            "UPDATE article_tickers SET dedup_group_id = ?, is_canonical = 1 WHERE article_id = ? AND ticker = ?",
+            (f"grp-{article_id}", article_id, ticker),
+        )
 
     # article_tickers for every article
     data = [
@@ -333,10 +348,9 @@ class TestBuildIncrementalRecords:
             h = compute_content_hash(title, desc)
             conn.execute(
                 "INSERT OR REPLACE INTO index_state "
-                "(corpus_item_id, source_kind, content_hash, source_tier, "
-                " indexed_build_id, indexed_at) "
-                "VALUES (?, 'article', ?, 5, 'build-1', datetime('now'))",
-                (article_id, h),
+                "(chunk_id, chunk_level, corpus_item_id, source_kind, content_hash, content_text, source_tier, status) "
+                "VALUES (? || '::l1', 'l1', ?, 'article', ?, 'text', 5, 'pending')",
+                (article_id, article_id, h),
             )
         conn.commit()
 
@@ -366,23 +380,24 @@ class TestBuildIncrementalRecords:
             h = compute_content_hash(title, desc)
             conn.execute(
                 "INSERT OR REPLACE INTO index_state "
-                "(corpus_item_id, source_kind, content_hash, source_tier, indexed_build_id, indexed_at) "
-                "VALUES (?, 'article', ?, 5, 'build-1', datetime('now'))",
-                (article_id, h),
+                "(chunk_id, chunk_level, corpus_item_id, source_kind, content_hash, content_text, source_tier, status) "
+                "VALUES (? || '::l1', 'l1', ?, 'article', ?, 'text', 5, 'pending')",
+                (article_id, article_id, h),
             )
 
-        # Index a3 with a STALE hash (wrong description)
+        # Index a3 with a STALE/wrong hash (mismatched description)
         conn.execute(
             "INSERT OR REPLACE INTO index_state "
-            "(corpus_item_id, source_kind, content_hash, source_tier, indexed_build_id, indexed_at) "
-            "VALUES ('poly:a3', 'article', 'deadbeef', 3, 'build-1', datetime('now'))",
+            "(chunk_id, chunk_level, corpus_item_id, source_kind, content_hash, content_text, source_tier, status) "
+            "VALUES ('poly:a3::l1', 'l1', 'poly:a3', 'article', 'deadbeef', 'old text', 3, 'pending')",
         )
         conn.commit()
 
         result = build_incremental_records(conn, min_l2_chars=800)
-        # a3 is changed, no new articles
-        assert result["changed_article_count"] == 1
-        assert result["new_article_count"] == 0
+        # a3 content changed (stale hash), a1/a2/a4/a5 are indexed with correct hashes
+        # So a3 appears as changed, none as new
+        assert result["changed_article_count"] == 1, f"Expected 1 changed, got {result}"
+        assert result["new_article_count"] == 0, f"Expected 0 new, got {result}"
         assert result["total_delta_articles"] == 1
         assert "poly:a3" in result["delta_article_ids"]
         conn.close()
@@ -406,6 +421,53 @@ class TestBuildIncrementalRecords:
         assert after_im == before_im
         conn.close()
 
+
+
+    def test_incremental_stale_on_changed_article(self, tmp_path):
+        """After a full persist_index_state, changing an article and running
+        build_incremental_records produces a delta with the changed article.
+        A subsequent persist_index_state run would mark the old row stale
+        and insert a new pending row — mirroring the S2 guarantee."""
+        db_path = str(tmp_path / "test_gate.db")
+        conn = _make_db(db_path)
+
+        from catalyst_data.index_builder import (
+            build_incremental_records,
+            persist_index_state,
+            compute_content_hash,
+        )
+
+        # Full persist — all 5 articles enter index_state as pending
+        r1 = persist_index_state(conn)
+        assert r1["article_l1_pending"] == 5
+        assert r1["total_new_rows"] == 6  # 5 L1 + 1 L2 (a3 body >= 800 chars)
+
+        # Change poly:a3 description
+        conn.execute(
+            "UPDATE articles SET description = 'Completely rewritten Tesla news with new content' WHERE article_id = 'poly:a3'"
+        )
+        conn.commit()
+
+        # Incremental: a3 should appear as changed
+        inc = build_incremental_records(conn)
+        assert inc["changed_article_count"] == 1
+        assert "poly:a3" in inc["delta_article_ids"]
+
+        # Re-persist: old a3 L1 should become stale, new a3 L1 pending
+        r2 = persist_index_state(conn)
+        # Still exactly 1 pending L1 for a3
+        pending_a3 = conn.execute(
+            "SELECT COUNT(*) FROM index_state WHERE corpus_item_id = 'poly:a3' AND chunk_level = 'l1' AND status = 'pending'"
+        ).fetchone()[0]
+        stale_a3 = conn.execute(
+            "SELECT COUNT(*) FROM index_state WHERE corpus_item_id = 'poly:a3' AND chunk_level = 'l1' AND status = 'stale'"
+        ).fetchone()[0]
+        conn.close()
+
+        assert pending_a3 == 1, f"Expected 1 pending L1 for a3, got {pending_a3}"
+        assert stale_a3 == 1, f"Expected 1 stale L1 for a3, got {stale_a3}"
+        assert r2["total_new_rows"] == 1  # only a3 L1 changed (L2 unchanged)
+
     def test_polymorphic_join_uses_source_kind(self, tmp_path):
         """Verifies join uses corpus_item_id + source_kind='article'."""
         db_path = str(tmp_path / "test.db")
@@ -417,11 +479,11 @@ class TestBuildIncrementalRecords:
         )
 
         # Insert a row with source_kind='filing' for one article_id
-        # This should NOT satisfy the join (different source_kind)
+        # This should NOT satisfy the join (build_incremental_records joins on source_kind='article')
         conn.execute(
             "INSERT OR REPLACE INTO index_state "
-            "(corpus_item_id, source_kind, content_hash, source_tier, indexed_build_id, indexed_at) "
-            "VALUES ('poly:a1', 'filing', 'deadbeef', 1, 'build-1', datetime('now'))",
+            "(chunk_id, chunk_level, corpus_item_id, source_kind, content_hash, content_text, source_tier, status) "
+            "VALUES ('poly:a1::filing', 'l1', 'poly:a1', 'filing', 'deadbeef', 'filing text', 1, 'pending')",
         )
         conn.commit()
 

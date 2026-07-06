@@ -151,3 +151,44 @@ class TestBronzeRedervability:
         assert at_rows[0][0] == "AAPL"
 
         conn.close()
+
+    def test_post_ohlcv_ceiling_maps_reference_date(self, tmp_path):
+        """Publication after local OHLCV ceiling still maps via calendar oracle."""
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_articles_table(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO ohlcv (symbol, date, close) VALUES "
+            "('AAPL', '2026-05-01', 100.0)"
+        )
+        article = {
+            "id": 999,
+            "headline": "Post ceiling Finnhub",
+            "summary": "Body",
+            "datetime": int(datetime(2026, 6, 15, 14, 0, tzinfo=timezone.utc).timestamp()),
+            "source": "Yahoo",
+            "url": "https://example.com/post",
+        }
+        asset_id = compute_asset_id("AAPL", "2026-06-15", "finnhub_company_news")
+        upsert_raw_asset(
+            conn,
+            asset_id=asset_id,
+            ticker="AAPL",
+            source_type="finnhub_company_news",
+            reference_date="2026-06-15",
+            content_raw=json.dumps([article]).encode("utf-8"),
+            http_status=200,
+            metadata={"article_count": 1},
+        )
+        conn.close()
+
+        rederive_finnhub_news(db_path)
+
+        conn = sqlite3.connect(db_path)
+        ref = conn.execute(
+            "SELECT reference_date FROM articles WHERE article_id = 'finnhub:999'"
+        ).fetchone()[0]
+        conn.close()
+
+        assert ref == "2026-06-15"

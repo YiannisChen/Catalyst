@@ -15,35 +15,12 @@ import logging
 import os
 import sqlite3
 import zlib
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
+from catalyst_data.trading_calendar import latest_closed_trading_day_for_date
+
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# US market holidays (observed dates) — dependency-free
-# ---------------------------------------------------------------------------
-
-_US_HOLIDAYS: frozenset[str] = frozenset({
-    "2025-01-01",  # New Year's Day
-    "2025-01-20",  # MLK Day
-    "2025-02-17",  # Presidents' Day
-    "2025-05-26",  # Memorial Day
-    "2025-06-19",  # Juneteenth
-    "2025-07-04",  # Independence Day
-    "2025-09-01",  # Labor Day
-    "2025-11-27",  # Thanksgiving
-    "2025-12-25",  # Christmas
-    "2026-01-01",  # New Year's Day
-    "2026-01-19",  # MLK Day
-    "2026-02-16",  # Presidents' Day
-    "2026-05-25",  # Memorial Day
-    "2026-06-19",  # Juneteenth
-    "2026-07-03",  # Independence Day (observed Fri Jul 3 for Sat Jul 4)
-    "2026-09-07",  # Labor Day
-    "2026-11-26",  # Thanksgiving
-    "2026-12-25",  # Christmas
-})
 
 _FROZEN_DB_RELPATH = str(
     (Path(__file__).resolve().parent.parent.parent.parent
@@ -55,18 +32,8 @@ _FROZEN_DB_RELPATH = str(
 # ---------------------------------------------------------------------------
 
 def _latest_closed_trading_day_for_date(ref_date: date | None = None) -> date:
-    """Return the most recent US market trading day on or before *ref_date*.
-
-    Steps back over weekends and known US market holidays.
-    """
-    if ref_date is None:
-        ref_date = date.today()
-
-    candidate = ref_date
-    # Step back while weekend or holiday
-    while candidate.weekday() >= 5 or candidate.isoformat() in _US_HOLIDAYS:
-        candidate = candidate - timedelta(days=1)
-    return candidate
+    """Compatibility wrapper for existing audit tests/imports."""
+    return latest_closed_trading_day_for_date(ref_date)
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +490,114 @@ def _d6_canonical_counts(conn: sqlite3.Connection, report: dict) -> dict:
 # D7 — Checkpoint reconciliation
 # ---------------------------------------------------------------------------
 
+def _raw_payload_is_empty(payload: object) -> bool:
+    if isinstance(payload, list):
+        return len(payload) == 0
+    if isinstance(payload, dict):
+        if isinstance(payload.get("news"), dict):
+            results = payload["news"].get("results")
+            if isinstance(results, list):
+                return len(results) == 0
+        results = payload.get("results")
+        if isinstance(results, list):
+            return len(results) == 0
+    return False
+
+
+def _raw_success_empty_for_cell(
+    conn: sqlite3.Connection, source_type: str, ticker: str, date_s: str
+) -> bool:
+    rows = conn.execute(
+        """SELECT http_status, metadata_json, content_raw
+           FROM raw_assets
+           WHERE source_type = ? AND ticker = ? AND reference_date = ?""",
+        (source_type, ticker, date_s),
+    ).fetchall()
+    for http_status, metadata_json, content_raw in rows:
+        if http_status is not None and int(http_status) != 200:
+            continue
+        try:
+            metadata = json.loads(metadata_json or "{}")
+        except json.JSONDecodeError:
+            metadata = {}
+        if metadata.get("article_count") == 0:
+            return True
+        try:
+            payload = json.loads(zlib.decompress(content_raw))
+        except (TypeError, ValueError, zlib.error, json.JSONDecodeError):
+            continue
+        if _raw_payload_is_empty(payload):
+            return True
+    return False
+
+
+def classify_source_checkpoints(conn: sqlite3.Connection) -> list[dict]:
+    """Classify source checkpoint rows against materialized/raw evidence."""
+    try:
+        rows = conn.execute(
+            """SELECT run_id, source_type, ticker, date, status, error_class
+               FROM source_checkpoints
+               ORDER BY source_type, ticker, date, run_id"""
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+    classifications: list[dict] = []
+    for run_id, source_type, ticker, date_s, status, error_class in rows:
+        materialized = False
+        raw_success_empty = False
+
+        if status == "success":
+            materialized = conn.execute(
+                """SELECT 1
+                   FROM article_tickers at
+                   JOIN articles a ON a.article_id = at.article_id
+                   WHERE a.source_type = ?
+                     AND at.ticker = ?
+                     AND at.reference_date = ?
+                   LIMIT 1""",
+                (source_type, ticker, date_s),
+            ).fetchone() is not None
+            if not materialized:
+                raw_success_empty = _raw_success_empty_for_cell(
+                    conn, source_type, ticker, date_s
+                )
+
+        if status == "success" and materialized:
+            classification = "materialized"
+        elif status == "success" and raw_success_empty:
+            classification = "success_empty"
+        elif status == "success":
+            classification = "phantom_success"
+        elif status == "failed":
+            classification = "actionable_failed"
+        elif status == "skipped":
+            classification = "actionable_skipped"
+        else:
+            classification = f"status_{status}"
+
+        classifications.append({
+            "run_id": run_id,
+            "source_type": source_type,
+            "ticker": ticker,
+            "date": date_s,
+            "status": status,
+            "error_class": error_class,
+            "classification": classification,
+            "materialized": materialized,
+            "raw_success_empty": raw_success_empty,
+        })
+    return classifications
+
+
+def summarize_checkpoint_classifications(classifications: list[dict]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in classifications:
+        classification = item["classification"]
+        counts[classification] = counts.get(classification, 0) + 1
+    return counts
+
+
 def _d7_checkpoint_reconciliation(conn: sqlite3.Connection, report: dict) -> dict:
     result: dict = {}
 
@@ -543,6 +618,21 @@ def _d7_checkpoint_reconciliation(conn: sqlite3.Connection, report: dict) -> dic
     for source_type, status, cnt in hist_rows:
         hist.setdefault(source_type, {})[status] = cnt
     result["status_histogram"] = hist
+
+    classifications = classify_source_checkpoints(conn)
+    result["classification_counts"] = summarize_checkpoint_classifications(
+        classifications
+    )
+    result["phantom_success_examples"] = [
+        {
+            "run_id": item["run_id"],
+            "source_type": item["source_type"],
+            "ticker": item["ticker"],
+            "date": item["date"],
+        }
+        for item in classifications
+        if item["classification"] == "phantom_success"
+    ][:20]
 
     # Compare checkpoint max date vs actual max data date per (ticker, source_type)
     try:
@@ -868,3 +958,275 @@ def _print_summary(report: dict) -> None:
 
     print()
     print("=" * 60)
+
+# ---------------------------------------------------------------------------
+# Gate P0 — Pass/fail invariant aggregation
+# ---------------------------------------------------------------------------
+
+def audit_gate_p0(conn):
+    """Aggregate pass/fail for all Gate P0 invariants.
+
+    Returns dict with gate_passed and per-invariant check results.
+    """
+    checks = []
+
+    def _add(name, passed, detail, count=0):
+        checks.append({"name": name, "passed": passed, "detail": detail, "count": count})
+
+    # G1: Zero blank reference_date in prose articles
+    blank_arts = conn.execute("""
+        SELECT COUNT(*) FROM articles a
+        JOIN raw_assets r ON a.raw_asset_id = r.asset_id
+        WHERE (a.reference_date IS NULL OR a.reference_date = '')
+          AND r.source_type IN ('polygon_news', 'finnhub_company_news')
+    """).fetchone()[0]
+    _add("G1_blank_article_refs", blank_arts == 0,
+         f"{blank_arts} blank article reference_dates", blank_arts)
+
+    # G2: Zero blank reference_date in prose article_tickers
+    blank_ats = conn.execute("""
+        SELECT COUNT(*) FROM article_tickers at
+        JOIN raw_assets r ON at.raw_asset_id = r.asset_id
+        WHERE (at.reference_date IS NULL OR at.reference_date = '')
+          AND r.source_type IN ('polygon_news', 'finnhub_company_news')
+    """).fetchone()[0]
+    _add("G2_blank_article_ticker_refs", blank_ats == 0,
+         f"{blank_ats} blank article_ticker reference_dates", blank_ats)
+
+    # G3: No fetch-date FRED release collapse
+    distinct_rel = conn.execute(
+        "SELECT COUNT(DISTINCT released_at) FROM macro_observations"
+    ).fetchone()[0]
+    rel_collapse = distinct_rel <= 2
+    _add("G3_fred_release_collapse", not rel_collapse,
+         f"distinct released_at={distinct_rel}" + (" (COLLAPSED)" if rel_collapse else ""),
+         distinct_rel)
+
+    # G4: released_at <= fetched_at for all macro rows
+    rel_gt_fetched = conn.execute(
+        "SELECT COUNT(*) FROM macro_observations WHERE released_at > fetched_at"
+    ).fetchone()[0]
+    _add("G4_fred_released_le_fetched", rel_gt_fetched == 0,
+         f"{rel_gt_fetched} macro rows with released_at > fetched_at", rel_gt_fetched)
+
+    # G5: No NULL dedup for eligible prose articles
+    null_dedup_arts = conn.execute("""
+        SELECT COUNT(*) FROM articles a
+        JOIN raw_assets r ON a.raw_asset_id = r.asset_id
+        WHERE a.dedup_group_id IS NULL
+          AND r.source_type IN ('polygon_news', 'finnhub_company_news')
+    """).fetchone()[0]
+    _add("G5_null_dedup_articles", null_dedup_arts == 0,
+         f"{null_dedup_arts} prose articles with NULL dedup_group_id", null_dedup_arts)
+
+    # G6: No (dedup_group, ticker) with zero canonical associations
+    zero_canon_dup = 0
+    has_at_canon = False
+    try:
+        conn.execute("SELECT is_canonical FROM article_tickers LIMIT 0")
+        has_at_canon = True
+    except sqlite3.OperationalError:
+        pass
+    if has_at_canon:
+        zero_canon_dup = conn.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT at.dedup_group_id, at.ticker, COUNT(*) as cnt,
+                       SUM(CASE WHEN at.is_canonical = 1 THEN 1 ELSE 0 END) as canon_cnt
+                FROM article_tickers at
+                WHERE at.dedup_group_id IS NOT NULL
+                GROUP BY at.dedup_group_id, at.ticker
+                HAVING cnt >= 1 AND canon_cnt != 1
+            )
+        """).fetchone()[0]
+    _add("G6_zero_canonical_dup_group", zero_canon_dup == 0,
+         f"{zero_canon_dup} (group,ticker) with invalid canonical count" + 
+         ("" if has_at_canon else " (column missing, skipping)"),
+         zero_canon_dup)
+
+    # G7: Per-association canonicality: each (group_id, ticker) has exactly 1 canonical
+    per_assoc_violations = 0
+    if has_at_canon:
+        per_assoc_violations = conn.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT at.dedup_group_id, at.ticker, COUNT(*) as cnt,
+                       SUM(CASE WHEN at.is_canonical = 1 THEN 1 ELSE 0 END) as canon_cnt
+                FROM article_tickers at
+                WHERE at.dedup_group_id IS NOT NULL
+                GROUP BY at.dedup_group_id, at.ticker
+                HAVING canon_cnt != 1
+            )
+        """).fetchone()[0]
+    _add("G7_per_assoc_canonical", per_assoc_violations == 0,
+         f"{per_assoc_violations} (group,ticker) with !=1 canonical" +
+         ("" if has_at_canon else " (column missing, skipping)"),
+         per_assoc_violations)
+
+    # G8: No phantom success checkpoints for prose sources
+    PROSE = ("polygon_news", "finnhub_company_news")
+    phantom = 0
+    try:
+        classifications = classify_source_checkpoints(conn)
+        phantom = sum(
+            1 for c in classifications
+            if c["classification"] == "phantom_success"
+            and c["source_type"] in PROSE
+        )
+    except Exception:
+        phantom = -1
+    _add("G8_phantom_success_checkpoints", phantom == 0,
+         f"{phantom} phantom prose success checkpoints", phantom)
+
+    # G9: Macro Plane-2: zero index_state
+    idx_macro = 0
+    try:
+        idx_macro = conn.execute(
+            "SELECT COUNT(*) FROM index_state WHERE source_kind = 'fred_macro'"
+        ).fetchone()[0]
+    except Exception:
+        pass
+    _add("G9_fred_plane2_index_state", idx_macro == 0,
+         f"{idx_macro} fred_macro rows in index_state", idx_macro)
+
+    # G10: Macro Plane-2: zero clean_assets
+    clean_macro = 0
+    try:
+        clean_macro = conn.execute(
+            "SELECT COUNT(*) FROM clean_assets WHERE source_type = 'fred_macro'"
+        ).fetchone()[0]
+    except Exception:
+        pass
+    _add("G10_fred_plane2_clean_assets", clean_macro == 0,
+         f"{clean_macro} fred_macro rows in clean_assets", clean_macro)
+
+    all_passed = all(c["passed"] for c in checks)
+    failing = [c["name"] for c in checks if not c["passed"]]
+
+    return {
+        "gate_passed": all_passed,
+        "checks": checks,
+        "failing": failing,
+        "total_checks": len(checks),
+        "passed_count": sum(1 for c in checks if c["passed"]),
+        "failed_count": sum(1 for c in checks if not c["passed"]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Step 4a — Pre-GPU embed-readiness gate
+# ---------------------------------------------------------------------------
+
+def audit_embed_readiness(conn):
+    """Pass/fail gate that must be green before any GPU spend.
+
+    Checks: S1 eligibility, S2 index_state consistency, S3 clean layer,
+            ticker-losslessness, SEC scope surfaced.
+    """
+    checks = []
+
+    def _add(name, passed, detail, count=0):
+        checks.append({"name": name, "passed": passed, "detail": detail, "count": count})
+
+    # E1: Per-association canonicality: zero groups with !=1 canonical per (group, ticker)
+    has_at_canon = False
+    try:
+        conn.execute("SELECT is_canonical FROM article_tickers LIMIT 0")
+        has_at_canon = True
+    except sqlite3.OperationalError:
+        pass
+
+    if has_at_canon:
+        canon_violations = conn.execute("""
+            SELECT COUNT(*) FROM (
+                SELECT at.dedup_group_id, at.ticker,
+                       SUM(CASE WHEN at.is_canonical = 1 THEN 1 ELSE 0 END) as canon_cnt
+                FROM article_tickers at
+                WHERE at.dedup_group_id IS NOT NULL
+                GROUP BY at.dedup_group_id, at.ticker
+                HAVING canon_cnt != 1
+            )
+        """).fetchone()[0]
+    else:
+        canon_violations = -1
+    _add("E1_per_assoc_canonical", canon_violations == 0,
+         f"{canon_violations} (group,ticker) with !=1 canonical" +
+         ("" if has_at_canon else " (column missing)"),
+         canon_violations)
+
+    # E2: index_state article L1 count == eligible article count
+    try:
+        from catalyst_data.eligibility import eligible_article_count
+        eligible = eligible_article_count(conn)
+        pending_l1 = conn.execute(
+            "SELECT COUNT(*) FROM index_state WHERE source_kind='article' AND chunk_level='l1' AND status='pending'"
+        ).fetchone()[0]
+    except Exception:
+        eligible = -1
+        pending_l1 = -1
+    _add("E2_l1_equals_eligible", pending_l1 == eligible and eligible >= 0,
+         f"pending_l1={pending_l1}, eligible={eligible}",
+         pending_l1)
+
+    # E3: One pending L1 per eligible article
+    dup_l1 = 0
+    try:
+        dup_l1 = conn.execute(
+            """SELECT COUNT(*) FROM (
+                SELECT corpus_item_id, COUNT(*) as cnt
+                FROM index_state WHERE source_kind='article' AND chunk_level='l1' AND status='pending'
+                GROUP BY corpus_item_id HAVING cnt > 1
+            )"""
+        ).fetchone()[0]
+    except Exception:
+        dup_l1 = -1
+    _add("E3_one_l1_per_article", dup_l1 == 0,
+         f"{dup_l1} articles with >1 pending L1",
+         dup_l1)
+
+    # E4: Clean layer: only prose source_types
+    non_prose = 0
+    try:
+        non_prose = conn.execute(
+            "SELECT COUNT(*) FROM clean_assets WHERE source_type NOT IN ('polygon_news', 'finnhub_company_news')"
+        ).fetchone()[0]
+    except Exception:
+        non_prose = -1
+    _add("E4_clean_prose_only", non_prose == 0,
+         f"{non_prose} non-prose clean_assets rows",
+         non_prose)
+
+    # E5: Zero FRED macro in index_state
+    fred_idx = 0
+    try:
+        fred_idx = conn.execute(
+            "SELECT COUNT(*) FROM index_state WHERE source_kind = 'fred_macro'"
+        ).fetchone()[0]
+    except Exception:
+        fred_idx = -1
+    _add("E5_fred_not_in_index", fred_idx == 0,
+         f"{fred_idx} fred_macro rows in index_state",
+         fred_idx)
+
+    # E6: SEC scope surfaced (informational — always passes, count is informative)
+    sec_count = 0
+    try:
+        sec_count = conn.execute(
+            "SELECT COUNT(*) FROM filings WHERE is_rag_eligible = 1"
+        ).fetchone()[0]
+    except Exception:
+        sec_count = -1
+    thin = sec_count >= 0 and sec_count < 10
+    _add("E6_sec_scope_surfaced", True,
+         f"SEC rag_eligible filings={sec_count}" + (" (THIN)" if thin else ""),
+         sec_count)
+
+    all_passed = all(c["passed"] for c in checks)
+    failing = [c["name"] for c in checks if not c["passed"]]
+
+    return {
+        "gate_passed": all_passed,
+        "checks": checks,
+        "failing": failing,
+        "total_checks": len(checks),
+        "passed_count": sum(1 for c in checks if c["passed"]),
+        "failed_count": sum(1 for c in checks if not c["passed"]),
+    }

@@ -205,6 +205,33 @@ def test_rederive_reference_date_alignment(tmp_path: Path):
     conn.close()
 
 
+def test_rederive_post_ohlcv_ceiling_maps_reference_date(tmp_path: Path):
+    """Publication after local OHLCV ceiling still maps via calendar oracle."""
+    db = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db))
+    init_db(conn)
+    ensure_articles_table(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO ohlcv (symbol, date, open, high, low, close, volume) "
+        "VALUES ('AAPL', '2026-05-01', 100, 105, 99, 103, 1000)"
+    )
+    _seed_raw_asset(conn, "raw-post-ceiling", "AAPL", [
+        {"id": "post", "title": "Post ceiling", "published_utc": "2026-06-15T14:00:00Z",
+         "description": "d", "article_url": "http://x.com/post"},
+    ])
+    conn.close()
+
+    rederive_polygon_news(str(db))
+
+    conn = sqlite3.connect(str(db))
+    ref = conn.execute(
+        "SELECT reference_date FROM articles WHERE article_id = 'poly:post'"
+    ).fetchone()[0]
+    conn.close()
+
+    assert ref == "2026-06-15"
+
+
 def test_rederive_payload_decoding(tmp_path: Path):
     """Handles edge cases: empty results, malformed JSON, missing fields."""
     db = tmp_path / "test.db"

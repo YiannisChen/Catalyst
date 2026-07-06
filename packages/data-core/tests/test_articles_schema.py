@@ -195,6 +195,26 @@ def test_article_tickers_table_created(tmp_path: Path):
     conn.close()
 
 
+def test_fresh_init_db_article_tickers_has_is_canonical(tmp_path: Path):
+    """Fresh DBs must include Step 4a association-level canonical column."""
+    db = tmp_path / "test.db"
+    conn = sqlite3.connect(str(db))
+    init_db(conn)
+    ensure_articles_table(conn)
+
+    cols = {
+        row[1]: {"type": row[2], "notnull": row[3], "default": row[4]}
+        for row in conn.execute("PRAGMA table_info(article_tickers)").fetchall()
+    }
+
+    assert cols["is_canonical"] == {
+        "type": "INTEGER",
+        "notnull": 1,
+        "default": "1",
+    }
+    conn.close()
+
+
 def test_article_tickers_fk_enforcement(tmp_path: Path):
     """Insert with invalid article_id fails when FK enabled."""
     db = tmp_path / "test.db"

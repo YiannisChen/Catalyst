@@ -35,6 +35,7 @@ from catalyst_data.storage.sqlite import (
     upsert_raw_asset,
 )
 from catalyst_data.quality import ensure_ingestion_quality_tables
+from catalyst_data.trading_calendar import trading_days_for_window
 
 logger = logging.getLogger(__name__)
 
@@ -46,17 +47,18 @@ FetchFn = Callable[..., Awaitable[Any]]
 # Missing-cell computation
 # ---------------------------------------------------------------------------
 
+
 def _trading_days_in_window(
     conn: sqlite3.Connection, from_date: str, to_date: str
 ) -> list[str]:
-    """Return all ohlcv dates in [from_date, to_date] sorted ascending."""
-    rows = conn.execute(
-        """SELECT DISTINCT date FROM ohlcv
-           WHERE date >= ? AND date <= ?
-           ORDER BY date""",
-        (from_date, to_date),
-    ).fetchall()
-    return [r[0] for r in rows]
+    """Return trading days in [from_date, to_date] sorted ascending.
+
+    Uses the full calendar window (weekdays minus US market holidays) so
+    partially populated ohlcv data cannot truncate future gap-fill dates.
+    Existing ohlcv dates are unioned in for backward compatibility with
+    historical local calendars.
+    """
+    return trading_days_for_window(conn, from_date, to_date)
 
 
 def compute_missing_cells(
@@ -777,8 +779,10 @@ async def run_update_batch(
     from catalyst_data.source_tier import classify_articles
     classify_articles(conn)
 
-    # 4. Cross-source dedup — run after both providers' rows exist
-    if "finnhub_company_news" in sources:
+    # 4. Cross-source dedup — run after any prose provider update.
+    # The materializer scans the full corrected prose corpus, so a Polygon-only
+    # batch can still dedup against existing Finnhub rows.
+    if any(src in sources for src in ("polygon_news", "finnhub_company_news")):
         from catalyst_data.dedup.cross_source import compute_cross_source_dedup
         dedup_groups = compute_cross_source_dedup(conn)
 
@@ -786,7 +790,7 @@ async def run_update_batch(
     if "polygon_news" in sources:
         from catalyst_data.regenerate_clean import regenerate_polygon_clean_assets
         clean_counts = regenerate_polygon_clean_assets(db_path)
-        clean_assets_inserted = clean_counts.get("clean_assets_inserted", 0)
+        clean_assets_inserted = clean_counts.get("inserted_article_rows", 0)
 
     # 6. Incremental index dry-run (delta-only, no writes)
     from catalyst_data.index_builder import build_incremental_records

@@ -13,30 +13,68 @@ import json
 import logging
 import sqlite3
 import zlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
 from catalyst_data.articles import compute_article_id, upsert_article, upsert_article_ticker
 from catalyst_data.pipeline.align import map_to_trade_date
+from catalyst_data.trading_calendar import trading_days_through
 
 logger = logging.getLogger(__name__)
 
 BATCH_COMMIT_SIZE = 100
 
 
-def _load_trading_calendar(conn: sqlite3.Connection) -> list[str]:
-    """Extract sorted distinct trading dates from ohlcv table."""
-    rows = conn.execute(
-        "SELECT DISTINCT date FROM ohlcv ORDER BY date"
-    ).fetchall()
-    days = [r[0] for r in rows]
-    if not days:
+def _load_trading_calendar(
+    conn: sqlite3.Connection, through_date: str | None = None
+) -> list[str]:
+    """Extract sorted trading dates from ohlcv union calendar oracle."""
+    try:
+        days = trading_days_through(conn, through_date)
+    except RuntimeError as exc:
         raise RuntimeError(
             "Trading calendar is empty — ohlcv table has no dates. "
             "Cannot re-derive articles without reference_date alignment."
-        )
+        ) from exc
     return days
+
+
+def _published_utc_from_finnhub(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+    return str(value) if value else ""
+
+
+def _calendar_ceiling_from_published(values: list[str]) -> str | None:
+    max_date = None
+    for value in values:
+        if not value:
+            continue
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            continue
+        candidate = (dt.date() + timedelta(days=7)).isoformat()
+        max_date = candidate if max_date is None else max(max_date, candidate)
+    return max_date
+
+
+def _max_finnhub_publication_ceiling(raw_rows: list[tuple[str, str, bytes]]) -> str | None:
+    published: list[str] = []
+    for raw_asset_id, _ticker, compressed in raw_rows:
+        try:
+            payload = zlib.decompress(compressed)
+            data = json.loads(payload)
+        except (zlib.error, json.JSONDecodeError) as exc:
+            logger.warning("Skipping calendar scan for %s: %s", raw_asset_id, exc)
+            continue
+        if not isinstance(data, list):
+            continue
+        for article_data in data:
+            if isinstance(article_data, dict):
+                published.append(_published_utc_from_finnhub(article_data.get("datetime")))
+    return _calendar_ceiling_from_published(published)
 
 
 def _parse_finnhub_article(
@@ -54,12 +92,8 @@ def _parse_finnhub_article(
         logger.warning("Skipping article with no id in raw_asset %s", raw_asset_id)
         return None
 
-    # Finnhub datetime is Unix timestamp (int)
-    published_utc = result.get("datetime")
-    if isinstance(published_utc, (int, float)):
-        published_utc = datetime.fromtimestamp(published_utc, tz=timezone.utc).isoformat()
-    else:
-        published_utc = str(published_utc) if published_utc else ""
+    # Finnhub datetime is Unix timestamp (int); conversion uses datetime.fromtimestamp.
+    published_utc = _published_utc_from_finnhub(result.get("datetime"))
 
     description = result.get("summary", "") or ""
 
@@ -110,13 +144,15 @@ def rederive_finnhub_news(db_path: str | Path) -> dict[str, int]:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
 
-    # Load trading calendar once
-    trading_days = _load_trading_calendar(conn)
-
     raw_rows = conn.execute(
         "SELECT asset_id, ticker, content_raw FROM raw_assets "
         "WHERE source_type = 'finnhub_company_news'"
     ).fetchall()
+
+    # Load trading calendar once, extending beyond local OHLCV when Bronze does.
+    trading_days = _load_trading_calendar(
+        conn, through_date=_max_finnhub_publication_ceiling(raw_rows)
+    )
 
     articles_upserted = 0
     articles_skipped = 0

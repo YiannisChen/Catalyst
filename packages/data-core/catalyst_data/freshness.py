@@ -78,6 +78,13 @@ def news_freshness(
 
     result: dict[str, dict[str, Any]] = {}
     for source_type, ticker, latest_date in rows:
+        if latest_date is None or not str(latest_date).strip():
+            result.setdefault(source_type, {})[ticker] = {
+                "latest_date": None,
+                "status": "NO_DATA",
+                "days_behind": -1,
+            }
+            continue
         result.setdefault(source_type, {})[ticker] = {
             "latest_date": latest_date,
             "status": (

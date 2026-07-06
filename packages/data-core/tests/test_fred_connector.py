@@ -25,7 +25,7 @@ async def test_fred_fetches_series():
 
 
 @pytest.mark.asyncio
-async def test_fred_filters_dot_values():
+async def test_fred_preserves_dot_values():
     mock_response = {
         "observations": [
             {"date": "2026-01-15", "value": "."},
@@ -43,7 +43,7 @@ async def test_fred_filters_dot_values():
 
     assert result.status == 200
     obs = result.data.get("observations", [])
-    assert all(o["value"] != "." for o in obs)
+    assert any(o["value"] == "." for o in obs)
 
 
 @pytest.mark.asyncio

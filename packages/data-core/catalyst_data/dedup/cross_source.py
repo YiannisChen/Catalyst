@@ -230,3 +230,155 @@ def compute_cross_source_dedup(conn: sqlite3.Connection) -> int:
     groups_resolved = len(winners)
     conn.commit()
     return groups_resolved
+
+
+def recompute_per_association_canonical(conn: sqlite3.Connection) -> dict:
+    """Recompute article_tickers.is_canonical: exactly 1 canonical association per (group, ticker).
+
+    Singleton groups (1 article, 1 association): that association is canonical.
+    Multi-article groups: select_canonical winner per ticker is canonical;
+    losing associations are non-canonical.
+
+    Also recomputes articles.is_canonical as derived: 1 if ANY association is canonical.
+
+    Returns dict with before/after counts for observability.
+    Idempotent — safe to re-run.
+    """
+    from catalyst_data.storage.sqlite import _migrate_article_tickers_dedup
+    _migrate_article_tickers_dedup(conn)
+
+    before_ats = conn.execute(
+        "SELECT COUNT(*) FROM article_tickers WHERE dedup_group_id IS NOT NULL"
+    ).fetchone()[0]
+
+    # Reset all article_tickers.is_canonical to 0 for rows with dedup_group_id
+    conn.execute(
+        "UPDATE article_tickers SET is_canonical = 0 WHERE dedup_group_id IS NOT NULL"
+    )
+    conn.commit()
+
+    # Find all dedup groups and assign one canonical per (group, ticker)
+    groups = conn.execute("""
+        SELECT at.dedup_group_id, at.ticker, COUNT(DISTINCT at.article_id) as article_cnt
+        FROM article_tickers at
+        WHERE at.dedup_group_id IS NOT NULL
+        GROUP BY at.dedup_group_id, at.ticker
+    """).fetchall()
+
+    winners_set: set[tuple[str, str]] = set()  # (article_id, ticker)
+    canonical_count = 0
+
+    for group_id, ticker, article_cnt in groups:
+        if article_cnt == 1:
+            # Singleton: the sole association is canonical
+            conn.execute(
+                """UPDATE article_tickers SET is_canonical = 1
+                   WHERE dedup_group_id = ? AND ticker = ?""",
+                (group_id, ticker),
+            )
+            canonical_count += 1
+            # Track the winning article
+            row = conn.execute(
+                "SELECT article_id FROM article_tickers WHERE dedup_group_id = ? AND ticker = ?",
+                (group_id, ticker),
+            ).fetchone()
+            if row:
+                winners_set.add((row[0], ticker))
+        else:
+            # Multi-article: run select_canonical
+            article_rows = conn.execute("""
+                SELECT DISTINCT a.article_id, a.source_type, a.title, a.published_utc,
+                       a.article_url, a.description
+                FROM articles a
+                JOIN article_tickers at ON at.article_id = a.article_id
+                WHERE at.dedup_group_id = ? AND at.ticker = ?
+            """, (group_id, ticker)).fetchall()
+
+            if len(article_rows) < 2:
+                # Edge case: fewer than 2 after dedup — pick the one
+                for (aid, *_) in article_rows:
+                    conn.execute(
+                        "UPDATE article_tickers SET is_canonical = 1 WHERE article_id = ? AND ticker = ?",
+                        (aid, ticker),
+                    )
+                    canonical_count += 1
+                    winners_set.add((aid, ticker))
+                continue
+
+            # select_canonical and AssetCandidate are in this module
+            from datetime import datetime, timezone
+
+            candidates = []
+            article_ids = []
+            for (aid, source_type, title, pub_utc, url, desc) in article_rows:
+                article_ids.append(aid)
+                try:
+                    pub_dt = datetime.fromisoformat(
+                        (pub_utc or "").replace("Z", "+00:00")
+                    )
+                except (ValueError, TypeError):
+                    pub_dt = datetime(1970, 1, 1, tzinfo=timezone.utc)
+                candidates.append(AssetCandidate(
+                    source_type=source_type or "",
+                    title=title or "",
+                    published_utc=pub_dt,
+                    url=url or "",
+                    ticker_primary=ticker,
+                    body_md=desc or "",
+                ))
+
+            try:
+                winner = select_canonical(candidates)
+                # Find the winning article_id by matching the candidate
+                winner_aid = None
+                for i, cand in enumerate(candidates):
+                    if (cand.source_type == winner.source_type
+                        and cand.title == winner.title
+                        and cand.ticker_primary == winner.ticker_primary):
+                        winner_aid = article_ids[i]
+                        break
+                if winner_aid is None:
+                    winner_aid = article_ids[0]  # fallback
+
+                conn.execute(
+                    "UPDATE article_tickers SET is_canonical = 1 WHERE article_id = ? AND ticker = ?",
+                    (winner_aid, ticker),
+                )
+                canonical_count += 1
+                winners_set.add((winner_aid, ticker))
+            except (ValueError, IndexError):
+                # Fallback: first article wins
+                conn.execute(
+                    "UPDATE article_tickers SET is_canonical = 1 WHERE article_id = ? AND ticker = ?",
+                    (article_ids[0], ticker),
+                )
+                canonical_count += 1
+                winners_set.add((article_ids[0], ticker))
+
+    conn.commit()
+
+    # Recompute articles.is_canonical as derived
+    # Article is canonical if ANY of its article_tickers associations is canonical
+    conn.execute("UPDATE articles SET is_canonical = 0")
+    winner_article_ids = set(aid for aid, _ in winners_set)
+    if winner_article_ids:
+        placeholders = ",".join("?" for _ in winner_article_ids)
+        conn.execute(
+            f"UPDATE articles SET is_canonical = 1 WHERE article_id IN ({placeholders})",
+            tuple(winner_article_ids),
+        )
+    conn.commit()
+
+    after_ats = conn.execute(
+        "SELECT COUNT(*) FROM article_tickers WHERE dedup_group_id IS NOT NULL"
+    ).fetchone()[0]
+    canon_ats = conn.execute(
+        "SELECT COUNT(*) FROM article_tickers WHERE is_canonical = 1"
+    ).fetchone()[0]
+
+    return {
+        "before_at_count": before_ats,
+        "after_at_count": after_ats,
+        "canonical_associations": canon_ats,
+        "winner_article_ids": len(winner_article_ids),
+    }

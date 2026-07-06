@@ -67,15 +67,15 @@ class TestIndexStateTable:
         conn.close()
 
     def test_polymorphic_pk(self, tmp_path: Path):
-        """Primary key is (corpus_item_id, source_kind) — not article_id only."""
+        """Primary key is chunk_id (auto-increment rowid). Polymorphic via (corpus_item_id, source_kind)."""
         db = tmp_path / "test.db"
         conn = sqlite3.connect(str(db))
         init_db(conn)
 
         pks = conn.execute("PRAGMA table_info(index_state)").fetchall()
         pk_cols = [c[1] for c in pks if c[5] > 0]  # c[5] = pk order
-        assert "corpus_item_id" in pk_cols
-        assert "source_kind" in pk_cols
+        # Step 4a: PK is rowid (auto-increment), chunk_id is indexed
+        assert "rowid" in pk_cols or any("rowid" in str(c) for c in pks)
         conn.close()
 
     def test_no_fk_to_articles(self, tmp_path: Path):
@@ -96,39 +96,39 @@ class TestIndexStateTable:
         init_db(conn)
 
         conn.execute(
-            """INSERT OR REPLACE INTO index_state
-               (corpus_item_id, source_kind, content_hash, source_tier,
-                indexed_build_id, indexed_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            ("poly:abc123", "article",
-             "a" * 64, 5,
-             "build-001", "2025-01-01T00:00:00Z"),
+            """INSERT INTO index_state
+               (chunk_id, chunk_level, corpus_item_id, source_kind,
+                content_hash, content_text, status, source_tier,
+                tickers_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("poly:abc123::l1", "l1", "poly:abc123", "article",
+             "a" * 64, "test content", "pending", 5, "[]"),
         )
         conn.commit()
 
         row = conn.execute(
-            "SELECT * FROM index_state WHERE corpus_item_id = ? AND source_kind = ?",
-            ("poly:abc123", "article"),
+            "SELECT * FROM index_state WHERE chunk_id = ?",
+            ("poly:abc123::l1",),
         ).fetchone()
         assert row is not None
-        assert row[0] == "poly:abc123"
-        assert row[1] == "article"
+        assert row[1] == "poly:abc123::l1"  # chunk_id
+        assert row[2] == "l1"  # chunk_level
         conn.close()
 
     def test_can_insert_filing_row(self, tmp_path: Path):
-        """Future-proof: filing rows (sec:{cik}:{accession}, source_kind='filing')."""
+        """Future-proof: filing rows with source_kind='filing'."""
         db = tmp_path / "test.db"
         conn = sqlite3.connect(str(db))
         init_db(conn)
 
         conn.execute(
-            """INSERT OR REPLACE INTO index_state
-               (corpus_item_id, source_kind, content_hash, source_tier,
-                indexed_build_id, indexed_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            ("sec:0000320193:0000320193-25-000012", "filing",
-             "b" * 64, 1,
-             "build-002", "2025-01-02T00:00:00Z"),
+            """INSERT INTO index_state
+               (chunk_id, chunk_level, corpus_item_id, source_kind,
+                content_hash, content_text, status, source_tier,
+                tickers_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("sec:filing::l1", "l1", "sec:0000320193:0000320193-25-000012", "filing",
+             "b" * 64, "filing content", "pending", 1, "[]"),
         )
         conn.commit()
 
@@ -137,7 +137,30 @@ class TestIndexStateTable:
             ("sec:0000320193:0000320193-25-000012", "filing"),
         ).fetchone()
         assert row is not None
-        assert row[1] == "filing"
+        assert row[4] == "filing"  # source_kind
+        conn.close()
+
+    def test_step4a_migrates_empty_legacy_index_state_schema(self, tmp_path: Path):
+        """One-off Step 4a migration must match authoritative index_state DDL."""
+        from catalyst_data.storage.sqlite import _migrate_index_state_step4a
+
+        db = tmp_path / "test.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            """CREATE TABLE index_state (
+               corpus_item_id TEXT NOT NULL,
+               source_kind TEXT NOT NULL,
+               content_hash TEXT NOT NULL,
+               PRIMARY KEY (corpus_item_id, source_kind)
+            )"""
+        )
+        conn.commit()
+
+        _migrate_index_state_step4a(conn)
+
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(index_state)")]
+        assert cols.count("article_url") == 1
+        assert {"chunk_id", "chunk_level", "content_text", "status"} <= set(cols)
         conn.close()
 
     def test_same_id_different_kind_coexist(self, tmp_path: Path):
@@ -147,12 +170,12 @@ class TestIndexStateTable:
         init_db(conn)
 
         conn.execute(
-            "INSERT OR REPLACE INTO index_state VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("same_id", "article", "a" * 64, 5, None, "build-001", "2025-01-01T00:00:00Z"),
+            "INSERT INTO index_state (chunk_id, chunk_level, corpus_item_id, source_kind, content_hash, content_text) VALUES (?, ?, ?, ?, ?, ?)",
+            ("same::article::l1", "l1", "same_id", "article", "a" * 64, "article text"),
         )
         conn.execute(
-            "INSERT OR REPLACE INTO index_state VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("same_id", "filing", "b" * 64, 1, None, "build-001", "2025-01-01T00:00:00Z"),
+            "INSERT INTO index_state (chunk_id, chunk_level, corpus_item_id, source_kind, content_hash, content_text) VALUES (?, ?, ?, ?, ?, ?)",
+            ("same::filing::l1", "l1", "same_id", "filing", "b" * 64, "filing text"),
         )
         conn.commit()
 

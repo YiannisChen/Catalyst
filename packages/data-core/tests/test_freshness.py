@@ -125,6 +125,74 @@ class TestNewsFreshness:
         # TSLA ref=2026-04-30 == watermark → FRESH
         assert pn["TSLA"]["status"] == "FRESH"
 
+    def test_blank_reference_date_is_no_data_not_parsed(self, tmp_path):
+        db_path = str(tmp_path / "blank_ref.db")
+        conn = _make_db(db_path, with_articles=False)
+        conn.execute(
+            "INSERT OR REPLACE INTO raw_assets "
+            "(asset_id, ticker, source_type, reference_date, fetched_at, content_raw) "
+            "VALUES ('raw-blank', 'AAPL', 'polygon_news', '2026-05-01', datetime('now'), ?)",
+            (b"{}",),
+        )
+        upsert_article(conn, article={
+            "article_id": "poly:blank",
+            "raw_asset_id": "raw-blank",
+            "provider": "polygon",
+            "source_type": "polygon_news",
+            "ticker": "AAPL",
+            "reference_date": "   ",
+            "published_utc": "2026-05-01T12:00:00Z",
+            "title": "Blank reference article",
+            "description": "Body.",
+            "publisher_name": "Test Publisher",
+            "source_tier": 5,
+        })
+        conn.execute(
+            "INSERT OR REPLACE INTO article_tickers "
+            "(article_id, ticker, raw_asset_id, reference_date) "
+            "VALUES ('poly:blank', 'AAPL', 'raw-blank', '   ')"
+        )
+        conn.commit()
+
+        result = news_freshness(conn, watermark="2026-05-01")
+        conn.close()
+
+        assert result["polygon_news"]["AAPL"] == {
+            "latest_date": None,
+            "status": "NO_DATA",
+            "days_behind": -1,
+        }
+
+    def test_null_reference_date_group_is_no_data(self, tmp_path):
+        db_path = str(tmp_path / "null_ref.db")
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE ohlcv (symbol TEXT, date TEXT, close REAL)")
+        conn.execute(
+            "CREATE TABLE articles (article_id TEXT PRIMARY KEY, source_type TEXT)"
+        )
+        conn.execute(
+            "CREATE TABLE article_tickers "
+            "(article_id TEXT, ticker TEXT, reference_date TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO ohlcv (symbol, date, close) VALUES ('AAPL', '2026-05-01', 100.0)"
+        )
+        conn.execute(
+            "INSERT INTO articles (article_id, source_type) VALUES ('poly:null', 'polygon_news')"
+        )
+        conn.execute(
+            "INSERT INTO article_tickers (article_id, ticker, reference_date) "
+            "VALUES ('poly:null', 'AAPL', NULL)"
+        )
+        conn.commit()
+
+        result = news_freshness(conn, watermark="2026-05-01")
+        conn.close()
+
+        assert result["polygon_news"]["AAPL"]["status"] == "NO_DATA"
+        assert result["polygon_news"]["AAPL"]["latest_date"] is None
+        assert result["polygon_news"]["AAPL"]["days_behind"] == -1
+
 
 class TestIndexFreshness:
     def test_no_index_when_no_live_manifest(self, tmp_path):
@@ -211,10 +279,10 @@ class TestIndexFreshness:
             h = compute_content_hash(title, desc)
             conn.execute("""
                 INSERT INTO index_state
-                (corpus_item_id, source_kind, content_hash, source_tier,
+                (chunk_id, chunk_level, corpus_item_id, source_kind, content_hash, content_text, source_tier,
                  dedup_group_id, indexed_build_id, indexed_at)
-                VALUES (?, 'article', ?, 5, NULL, ?, datetime('now'))
-            """, (art_id, h, old_build_id))
+                VALUES (? || '::l1', 'l1', ?, 'article', ?, 'text', 5, NULL, ?, datetime('now'))
+            """, (art_id, art_id, h, old_build_id))
 
         # Now insert a NEW live manifest (build-live-new) — but do NOT
         # re-index the articles. They still only have old-build rows.

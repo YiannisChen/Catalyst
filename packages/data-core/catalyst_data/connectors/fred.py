@@ -9,7 +9,7 @@ URL pattern:
     &observation_start={date-30d}&observation_end={date}
     [&output_type=4&realtime_start=...&realtime_end=...]  # for first-release
 
-FRED uses "." for missing data; these observations are filtered out.
+FRED uses "." for missing data; normalization maps these to NULL.
 output_type=4 returns initial release values with per-observation realtime_start
 (first-release date) — required for no-look-ahead integrity.
 """
@@ -76,12 +76,6 @@ def create_fred_fetcher(
 
             if resp.status_code == 200:
                 body = resp.json()
-                # Filter out FRED missing-data markers (".")
-                observations = [
-                    obs for obs in body.get("observations", [])
-                    if obs.get("value") != "."
-                ]
-                body["observations"] = observations
                 return FetchResult(
                     status=200,
                     data=body,
