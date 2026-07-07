@@ -187,33 +187,52 @@ def build_index_records(
     return article_records + filing_records
 
 def index_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return aggregate summary of built index records."""
+    """Return aggregate summary of built index records.
+
+    Polymorphic — handles both article records (article_id) and filing
+    records (corpus_item_id + source_kind) via unified accessor.
+    """
+    def _rid(r):
+        return r.get("corpus_item_id") or r["article_id"]
+
+    def _sk(r):
+        return r.get("source_kind", "article")
+
     l1 = [r for r in records if r["chunk_level"] == "l1"]
     l2 = [r for r in records if r["chunk_level"] == "l2"]
 
-    l2_eligible_ids = {r["article_id"] for r in l2}
-    total_article_ids = {r["article_id"] for r in l1}
+    l2_eligible_ids = {(_rid(r), _sk(r)) for r in l2}
+    total_corpus_ids = {(_rid(r), _sk(r)) for r in l1}
 
-    per_tier: dict[int, dict[str, int]] = {}
+    per_tier: dict[str, dict[int, dict[str, int]]] = {}
     for r in l1:
+        sk = _sk(r)
         tier = r["source_tier"]
-        if tier not in per_tier:
-            per_tier[tier] = {"l1": 0, "l2": 0}
-        per_tier[tier]["l1"] += 1
+        per_tier.setdefault(sk, {}).setdefault(tier, {"l1": 0, "l2": 0})
+        per_tier[sk][tier]["l1"] += 1
 
     for r in l2:
+        sk = _sk(r)
         tier = r["source_tier"]
-        if tier not in per_tier:
-            per_tier[tier] = {"l1": 0, "l2": 0}
-        per_tier[tier]["l2"] += 1
+        per_tier.setdefault(sk, {}).setdefault(tier, {"l1": 0, "l2": 0})
+        per_tier[sk][tier]["l2"] += 1
+
+    article_l1 = sum(1 for r in l1 if _sk(r) == "article")
+    article_l2 = sum(1 for r in l2 if _sk(r) == "article")
+    filing_l1 = sum(1 for r in l1 if _sk(r) == "filing")
+    filing_l2 = sum(1 for r in l2 if _sk(r) == "filing")
 
     return {
         "l1_count": len(l1),
         "l2_count": len(l2),
+        "article_l1_count": article_l1,
+        "article_l2_count": article_l2,
+        "filing_l1_count": filing_l1,
+        "filing_l2_count": filing_l2,
         "l2_eligible_count": len(l2_eligible_ids),
         "l2_eligible_pct": (
-            round(100 * len(l2_eligible_ids) / len(total_article_ids), 2)
-            if total_article_ids else 0
+            round(100 * len(l2_eligible_ids) / len(total_corpus_ids), 2)
+            if total_corpus_ids else 0
         ),
         "would_embed_count": len(l1) + len(l2),
         "per_tier": per_tier,

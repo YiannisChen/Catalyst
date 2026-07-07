@@ -126,8 +126,8 @@ class TestCLIRebuildIndex:
         assert "L1 records:" in output
         assert "L2 records:" in output
         assert "Would-embed total:" in output
-        assert "Ticker-lossless guard:   PASS" in output
-        assert "Dedup guard:             PASS" in output
+        assert "Article ticker guard:    PASS" in output
+        assert "Article dedup guard:     PASS" in output
         assert "index_state and index_manifests were NOT written" in output
 
     def test_dry_run_does_not_write_index_state(self, tmp_path: Path):
@@ -339,3 +339,195 @@ class TestCLIDBFlag:
             cmd_status(db_path)
         output = f.getvalue()
         assert "Latest Build" in output or "No builds" in output
+
+
+# ============================================================
+# H1-T2: Dry-run read-only + materialize-tiers
+# ============================================================
+
+class TestCLIDryRunReadOnly:
+    def test_dry_run_does_not_write_source_tier(self, tmp_path: Path):
+        """rebuild-index --mode dry-run must NOT call classify_articles or write source_tier."""
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        # Clear source_tier to simulate unmaterialized state
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE articles SET source_tier = NULL")
+        conn.commit()
+
+        # Verify NULLs exist
+        null_count = conn.execute(
+            "SELECT COUNT(*) FROM articles WHERE source_tier IS NULL"
+        ).fetchone()[0]
+        assert null_count > 0
+        conn.close()
+
+        import io, os
+        with open(os.devnull, 'w') as devnull:
+            import sys
+            old = sys.stdout
+            sys.stdout = devnull
+            try:
+                from catalyst_data.cli_index import cmd_rebuild_index
+                cmd_rebuild_index(db_path, mode="dry-run")
+            finally:
+                sys.stdout = old
+
+        # source_tier must still be NULL (dry-run didn't write)
+        conn = sqlite3.connect(db_path)
+        null_after = conn.execute(
+            "SELECT COUNT(*) FROM articles WHERE source_tier IS NULL"
+        ).fetchone()[0]
+        conn.close()
+        assert null_after == null_count, (
+            f"dry-run wrote source_tier: {null_after} vs {null_count}"
+        )
+
+    def test_dry_run_warns_on_null_tiers(self, tmp_path: Path):
+        """rebuild-index must print WARNING when articles have NULL source_tier."""
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE articles SET source_tier = NULL")
+        conn.commit()
+        conn.close()
+
+        import io
+        from contextlib import redirect_stdout
+        from catalyst_data.cli_index import cmd_rebuild_index
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cmd_rebuild_index(db_path, mode="dry-run")
+        output = f.getvalue()
+
+        assert "WARNING" in output or "not materialized" in output or "NULL" in output, (
+            f"Expected NULL tier warning, got: {output[:200]}"
+        )
+
+    def test_dry_run_row_counts_unchanged(self, tmp_path: Path):
+        """Core data tables (articles, article_tickers, raw_assets) unchanged after dry-run."""
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        def count(conn, table):
+            try:
+                return conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            except sqlite3.OperationalError:
+                return -1
+
+        conn = sqlite3.connect(db_path)
+        art_before = count(conn, "articles")
+        at_before = count(conn, "article_tickers")
+        raw_before = count(conn, "raw_assets")
+        conn.close()
+
+        import io, os
+        with open(os.devnull, 'w') as devnull:
+            import sys
+            old = sys.stdout
+            sys.stdout = devnull
+            try:
+                from catalyst_data.cli_index import cmd_rebuild_index
+                cmd_rebuild_index(db_path, mode="dry-run")
+            finally:
+                sys.stdout = old
+
+        conn = sqlite3.connect(db_path)
+        art_after = count(conn, "articles")
+        at_after = count(conn, "article_tickers")
+        raw_after = count(conn, "raw_assets")
+        conn.close()
+
+        assert art_before == art_after, f"articles: {art_before} → {art_after}"
+        assert at_before == at_after, f"article_tickers: {at_before} → {at_after}"
+        assert raw_before == raw_after, f"raw_assets: {raw_before} → {raw_after}"
+
+
+class TestCLIMaterializeTiers:
+    def test_materialize_tiers_only_nulls(self, tmp_path: Path):
+        """Without --force: only NULL source_tier rows updated."""
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        conn = sqlite3.connect(db_path)
+        conn.execute("UPDATE articles SET source_tier = NULL WHERE article_id = 'poly:a1'")
+        conn.commit()
+        conn.close()
+
+        import io
+        from contextlib import redirect_stdout
+        from catalyst_data.cli_index import cmd_materialize_tiers
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cmd_materialize_tiers(db_path, force=False)
+        output = f.getvalue()
+
+        assert "Classified" in output or "Materialized" in output
+
+        # poly:a1 should now have a tier
+        conn = sqlite3.connect(db_path)
+        tier = conn.execute(
+            "SELECT source_tier FROM articles WHERE article_id = 'poly:a1'"
+        ).fetchone()[0]
+        assert tier is not None
+        conn.close()
+
+    def test_materialize_tiers_force_all(self, tmp_path: Path):
+        """With --force: every row re-evaluated."""
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        # Force a wrong tier for an article with known publisher
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "UPDATE articles SET source_tier = 4, publisher_name = 'The Motley Fool' "
+            "WHERE article_id = 'poly:a1'"
+        )
+        conn.commit()
+        conn.close()
+
+        import io
+        from contextlib import redirect_stdout
+        from catalyst_data.cli_index import cmd_materialize_tiers
+
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cmd_materialize_tiers(db_path, force=True)
+        output = f.getvalue()
+
+        conn = sqlite3.connect(db_path)
+        tier = conn.execute(
+            "SELECT source_tier FROM articles WHERE article_id = 'poly:a1'"
+        ).fetchone()[0]
+        conn.close()
+        assert tier == 5, f"Expected T5 for Motley Fool, got {tier}"
+
+    def test_materialize_tiers_idempotent(self, tmp_path: Path):
+        """Second --force run reports 0 changed."""
+        db_path = str(tmp_path / "test.db")
+        _make_populated_db(db_path)
+
+        import io
+        from contextlib import redirect_stdout
+        from catalyst_data.cli_index import cmd_materialize_tiers
+
+        # First run
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cmd_materialize_tiers(db_path, force=True)
+        output1 = f.getvalue()
+
+        # Second run — should report 0 changes
+        f = io.StringIO()
+        with redirect_stdout(f):
+            cmd_materialize_tiers(db_path, force=True)
+        output2 = f.getvalue()
+
+        # Changed count should be 0 or not mentioned
+        assert "0 changed" in output2.lower() or "0 rows" in output2.lower() or "no changes" in output2.lower(), (
+            f"Expected idempotent, got: {output2[:200]}"
+        )

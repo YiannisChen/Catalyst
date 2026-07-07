@@ -155,21 +155,25 @@ def _store_bronze_and_silver(
     endpoints: list[str],
     clean_rows: list[dict],
     ohlcv_bar: dict[str, float | str] | None = None,
+    conn: sqlite3.Connection | None = None,
 ) -> str | None:
     """Synchronous helper that writes Bronze + Silver in one thread-safe call.
 
-    Opens its own ``sqlite3.Connection`` so it can be safely invoked via
-    ``asyncio.to_thread`` without sharing a connection across threads.
+    When *conn* is provided, uses it instead of opening its own — caller
+    manages init_db/PRAGMAs/commit/close.  Otherwise opens its own connection
+    (backward-compatible for existing callers).
 
     Returns None on success or an error string on failure.
     """
-    conn = sqlite3.connect(str(db_path))
-    init_db(conn)
-    # Legacy FK on clean_assets.asset_id expects raw_assets-compatible ids,
-    # but polygon_news now uses poly:{article_id} format. Disable FK for that scope.
-    # Must be set AFTER init_db (which sets foreign_keys=ON).
-    if source == "polygon_news":
-        conn.execute("PRAGMA foreign_keys=OFF")
+    own_conn = conn is None
+    if own_conn:
+        conn = sqlite3.connect(str(db_path))
+        init_db(conn)
+        # Legacy FK on clean_assets.asset_id expects raw_assets-compatible ids,
+        # but polygon_news now uses poly:{article_id} format. Disable FK for that scope.
+        # Must be set AFTER init_db (which sets foreign_keys=ON).
+        if source == "polygon_news":
+            conn.execute("PRAGMA foreign_keys=OFF")
     try:
         upsert_raw_asset(
             conn,
@@ -180,6 +184,7 @@ def _store_bronze_and_silver(
             content_raw=raw_bytes,
             http_status=http_status,
             metadata={"endpoints": endpoints},
+            commit=own_conn,
         )
         for row in clean_rows:
             upsert_clean_asset(
@@ -191,6 +196,7 @@ def _store_bronze_and_silver(
                 content_md=row["content_md"],
                 title_hash=row.get("title_hash"),
                 raw_asset_id=asset_id,
+                commit=own_conn,
             )
         if ohlcv_bar is not None:
             upsert_ohlcv(
@@ -203,13 +209,24 @@ def _store_bronze_and_silver(
                 close=float(ohlcv_bar["close"]),
                 volume=float(ohlcv_bar["volume"]),
                 source="polygon",
+                commit=own_conn,
             )
         return None
     except Exception as exc:  # noqa: BLE001
         logger.error("Storage failed for %s: %s", asset_id, exc)
+        if own_conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
         return str(exc)
     finally:
-        conn.close()
+        if own_conn:
+            try:
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
 
 
 async def _process_source(
@@ -218,6 +235,7 @@ async def _process_source(
     source: str,
     db_path: str | Path,
     fetch_fn: FetchFn,
+    **kwargs: Any,
 ) -> dict[str, Any]:
     """Run the full pipeline for a single logical source.
 
@@ -311,7 +329,11 @@ async def _process_source(
             return summary
         clean_rows = [{"asset_id": asset_id, "content_md": transform_result.data, "title_hash": None}]
 
-    # 7. Store Bronze + Silver (offloaded to thread pool to avoid blocking loop)
+    # 7. Prepare or store Bronze + Silver.
+    #
+    # H2 atomic-cell path passes _store=False so the caller can write
+    # raw+silver+checkpoint in one transaction.  In that mode this function is
+    # strictly prepare-only: no DB connection is opened and no commit happens.
     summary["asset_id"] = asset_id
     ohlcv_bar = _extract_ohlcv_bar(validated_data) if source == "polygon_ohlcv" else None
     if source == "polygon_ohlcv" and ohlcv_bar is None:
@@ -319,19 +341,48 @@ async def _process_source(
         summary["skipped"] = True
         summary["skip_reason"] = "no_ohlcv_bar"
         return summary
-    storage_err = await asyncio.to_thread(
-        _store_bronze_and_silver,
-        db_path,
-        asset_id=asset_id,
-        ticker=ticker,
-        source=source,
-        date=date,
-        raw_bytes=raw_bytes,
-        http_status=first_status,
-        endpoints=endpoints,
-        clean_rows=clean_rows,
-        ohlcv_bar=ohlcv_bar,
-    )
+    # Include storage data in result for callers that want to re-store atomically
+    summary["_raw_bytes"] = raw_bytes
+    summary["_clean_rows"] = clean_rows
+    summary["_http_status"] = first_status
+    summary["_endpoints"] = endpoints
+    summary["_ohlcv_bar"] = ohlcv_bar
+
+    if kwargs.get("_store") is False:
+        summary["ok"] = True
+        return summary
+
+    # Store Bronze + Silver (offloaded to thread pool to avoid blocking loop).
+    # Allow caller to supply a shared connection for atomic writes
+    shared_conn = kwargs.get("_conn")
+    if shared_conn is not None:
+        storage_err = _store_bronze_and_silver(
+            db_path,
+            asset_id=asset_id,
+            ticker=ticker,
+            source=source,
+            date=date,
+            raw_bytes=raw_bytes,
+            http_status=first_status,
+            endpoints=endpoints,
+            clean_rows=clean_rows,
+            ohlcv_bar=ohlcv_bar,
+            conn=shared_conn,
+        )
+    else:
+        storage_err = await asyncio.to_thread(
+            _store_bronze_and_silver,
+            db_path,
+            asset_id=asset_id,
+            ticker=ticker,
+            source=source,
+            date=date,
+            raw_bytes=raw_bytes,
+            http_status=first_status,
+            endpoints=endpoints,
+            clean_rows=clean_rows,
+            ohlcv_bar=ohlcv_bar,
+        )
     if storage_err:
         summary["error"] = f"storage: {storage_err}"
         return summary
@@ -349,6 +400,7 @@ async def process_request(
     limiter: Any | None = None,
     *,
     conn: sqlite3.Connection | None = None,
+    store: bool = True,
 ) -> list[dict]:
     """Orchestrate the full data pipeline for one ticker/date across sources.
 
@@ -381,8 +433,11 @@ async def process_request(
 
     async def _safe_process(source: str) -> dict:
         try:
+            extra = {"_store": store}
+            if conn is not None:
+                extra["_conn"] = conn
             return await _process_source(
-                ticker, date, source, db_path, fetch_fn,
+                ticker, date, source, db_path, fetch_fn, **extra,
             )
         except Exception as exc:  # noqa: BLE001
             logger.error("Unhandled error processing source %s: %s", source, exc)

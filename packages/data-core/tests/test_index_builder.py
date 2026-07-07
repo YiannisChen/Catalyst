@@ -493,3 +493,197 @@ class TestBuildIncrementalRecords:
         # so a1 should appear as a NEW article
         assert "poly:a1" in result["delta_article_ids"]
         conn.close()
+
+
+# ============================================================
+# H1-T1: index_summary polymorphic fix
+# ============================================================
+
+class TestIndexSummaryPolymorphic:
+    def test_summary_with_filing_records_does_not_crash(self, tmp_path):
+        """index_summary must handle filing records which use corpus_item_id, not article_id."""
+        from catalyst_data.index_builder import build_filing_records, index_summary
+        from catalyst_data.storage.sqlite import init_db, ensure_filings_tables, upsert_filing
+
+        db_path = str(tmp_path / "test.db")
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        ensure_filings_tables(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO raw_assets "
+            "(asset_id, ticker, source_type, reference_date, fetched_at, content_raw) "
+            "VALUES ('ra1', 'AAPL', 'sec_filing', '2025-01-01', datetime('now'), x'7b7d')"
+        )
+        conn.commit()
+
+        upsert_filing(conn, filing_id="sec:f1", cik="123", ticker="AAPL",
+                      form_type="10-K", filed_at="2025-01-01",
+                      accession_number="0001", url="https://example.com",
+                      is_rag_eligible=1)
+        # Also add a filing_document row so build_filing_records has text
+        conn.execute(
+            "INSERT OR REPLACE INTO filing_documents "
+            "(filing_id, document_url, document_type, text, char_len, extraction_status) "
+            "VALUES ('sec:f1', 'https://example.com/doc', 'primary_doc', "
+            "'A' * 900, 900, 'success')"
+        )
+        conn.commit()
+
+        records = build_filing_records(conn)
+        assert len(records) > 0
+
+        # This must not raise KeyError
+        summary = index_summary(records)
+        assert summary["l1_count"] >= 1
+        assert "filing_l1_count" in summary
+        conn.close()
+
+    def test_summary_article_records_have_no_corpus_item_id(self, tmp_path):
+        """Article records have article_id but NOT corpus_item_id. Unified accessor handles both."""
+        from catalyst_data.index_builder import build_article_records, index_summary
+
+        conn = _make_db(str(tmp_path / "test.db"))
+        records = build_article_records(conn, min_l2_chars=800)
+        # Article records should NOT have corpus_item_id
+        for r in records:
+            assert "corpus_item_id" not in r, f"Article record unexpectedly has corpus_item_id: {r['chunk_id']}"
+            assert "article_id" in r
+
+        # index_summary must work on article-only records
+        summary = index_summary(records)
+        assert summary["article_l1_count"] == 5
+        conn.close()
+
+    def test_summary_mixed_article_and_filing(self, tmp_path):
+        """DB with both article and filing records → correct per-kind counts."""
+        from catalyst_data.index_builder import build_index_records, index_summary
+        from catalyst_data.storage.sqlite import ensure_filings_tables, upsert_filing
+
+        db_path = str(tmp_path / "test.db")
+        conn = _make_db(db_path)
+        ensure_filings_tables(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO raw_assets "
+            "(asset_id, ticker, source_type, reference_date, fetched_at, content_raw) "
+            "VALUES ('ra_f1', 'AAPL', 'sec_filing', '2025-01-01', datetime('now'), x'7b7d')"
+        )
+        conn.commit()
+        upsert_filing(conn, filing_id="sec:f1", cik="123", ticker="AAPL",
+                      form_type="10-K", filed_at="2025-01-01",
+                      accession_number="0001", url="https://example.com",
+                      is_rag_eligible=1)
+        conn.execute(
+            "INSERT OR REPLACE INTO filing_documents "
+            "(filing_id, document_url, document_type, text, char_len, extraction_status) "
+            "VALUES ('sec:f1', 'https://example.com/doc', 'primary_doc', "
+            "'A' * 900, 900, 'success')"
+        )
+        conn.commit()
+
+        records = build_index_records(conn, min_l2_chars=800)
+        summary = index_summary(records)
+
+        assert summary["article_l1_count"] == 5  # 5 articles from _make_db
+        assert summary["filing_l1_count"] == 1    # 1 filing
+        assert summary["l1_count"] == 6           # total
+        conn.close()
+
+    def test_summary_per_tier_split_by_source_kind(self, tmp_path):
+        """per_tier must have 'article' and 'filing' sub-keys."""
+        from catalyst_data.index_builder import build_index_records, index_summary
+        from catalyst_data.storage.sqlite import ensure_filings_tables, upsert_filing
+
+        db_path = str(tmp_path / "test.db")
+        conn = _make_db(db_path)
+        ensure_filings_tables(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO raw_assets "
+            "(asset_id, ticker, source_type, reference_date, fetched_at, content_raw) "
+            "VALUES ('ra_f1', 'AAPL', 'sec_filing', '2025-01-01', datetime('now'), x'7b7d')"
+        )
+        conn.commit()
+        upsert_filing(conn, filing_id="sec:f1", cik="123", ticker="AAPL",
+                      form_type="10-K", filed_at="2025-01-01",
+                      accession_number="0001", url="https://example.com",
+                      is_rag_eligible=1, source_tier=1)
+        conn.execute(
+            "INSERT OR REPLACE INTO filing_documents "
+            "(filing_id, document_url, document_type, text, char_len, extraction_status) "
+            "VALUES ('sec:f1', 'https://example.com/doc', 'primary_doc', "
+            "'A' * 900, 900, 'success')"
+        )
+        conn.commit()
+
+        records = build_index_records(conn, min_l2_chars=800)
+        summary = index_summary(records)
+
+        assert "per_tier" in summary
+        per_tier = summary["per_tier"]
+        assert "article" in per_tier or ("article" in str(per_tier))
+        # Filing tier 1 should be present
+        assert "filing" in per_tier or str(1) in str(per_tier)
+        conn.close()
+
+    def test_summary_l2_eligible_filings(self, tmp_path):
+        """l2_eligible_count includes filing items with long body."""
+        from catalyst_data.index_builder import build_index_records, index_summary
+        from catalyst_data.storage.sqlite import ensure_filings_tables, upsert_filing
+
+        db_path = str(tmp_path / "test.db")
+        conn = _make_db(db_path)
+        ensure_filings_tables(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO raw_assets "
+            "(asset_id, ticker, source_type, reference_date, fetched_at, content_raw) "
+            "VALUES ('ra_f1', 'AAPL', 'sec_filing', '2025-01-01', datetime('now'), x'7b7d')"
+        )
+        conn.commit()
+        upsert_filing(conn, filing_id="sec:f1", cik="123", ticker="AAPL",
+                      form_type="10-K", filed_at="2025-01-01",
+                      accession_number="0001", url="https://example.com",
+                      is_rag_eligible=1)
+        # Long body ≥ 800 chars triggers L2
+        conn.execute(
+            "INSERT OR REPLACE INTO filing_documents "
+            "(filing_id, document_url, document_type, text, char_len, extraction_status) "
+            "VALUES ('sec:f1', 'https://example.com/doc', 'primary_doc', "
+            "'A' * 900, 900, 'success')"
+        )
+        conn.commit()
+
+        records = build_index_records(conn, min_l2_chars=800)
+        summary = index_summary(records)
+        assert summary["l2_eligible_count"] >= 1  # filing + article a3
+        conn.close()
+
+    def test_summary_article_l1_count_matches_article_count(self, tmp_path):
+        """article_l1_count must equal COUNT(*) FROM articles (for rebuild-index guard)."""
+        from catalyst_data.index_builder import build_index_records, index_summary
+        from catalyst_data.storage.sqlite import ensure_filings_tables, upsert_filing
+
+        db_path = str(tmp_path / "test.db")
+        conn = _make_db(db_path)
+        ensure_filings_tables(conn)
+        conn.execute(
+            "INSERT OR REPLACE INTO raw_assets "
+            "(asset_id, ticker, source_type, reference_date, fetched_at, content_raw) "
+            "VALUES ('ra_f1', 'AAPL', 'sec_filing', '2025-01-01', datetime('now'), x'7b7d')"
+        )
+        conn.commit()
+        upsert_filing(conn, filing_id="sec:f1", cik="123", ticker="AAPL",
+                      form_type="10-K", filed_at="2025-01-01",
+                      accession_number="0001", url="https://example.com",
+                      is_rag_eligible=1)
+        conn.execute(
+            "INSERT OR REPLACE INTO filing_documents "
+            "(filing_id, document_url, document_type, text, char_len, extraction_status) "
+            "VALUES ('sec:f1', 'https://example.com/doc', 'primary_doc', "
+            "'A' * 900, 900, 'success')"
+        )
+        conn.commit()
+
+        article_count = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+        records = build_index_records(conn, min_l2_chars=800)
+        summary = index_summary(records)
+        assert summary["article_l1_count"] == article_count
+        conn.close()

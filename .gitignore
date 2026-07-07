@@ -40,6 +40,10 @@ CLAUDE.md
 /packages/data-core/scripts/smoke_test_assets.db
 /packages/data-core/core_references
 
+# Run reports (generated per ingestion run)
+/data/run_reports/
+/packages/data-core/data/run_reports/
+
 # Python packaging
 *.egg-info/
 

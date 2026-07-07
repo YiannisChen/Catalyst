@@ -253,7 +253,7 @@ def upsert_filing(conn, *, filing_id, cik, ticker, form_type, filed_at,
                   accession_number, url, period=None, primary_document=None,
                   items_json=None, source_tier=1, dedup_group_id=None,
                   is_canonical=1, is_rag_eligible=1, quality_score=1.0,
-                  raw_asset_id=None):
+                  raw_asset_id=None, commit: bool = True):
     """Insert or replace a filing row."""
     from catalyst_data.storage.sqlite import _now_iso
     conn.execute("""
@@ -267,12 +267,14 @@ def upsert_filing(conn, *, filing_id, cik, ticker, form_type, filed_at,
           accession_number, primary_document, url, items_json,
           source_tier, dedup_group_id, is_canonical, is_rag_eligible,
           quality_score, raw_asset_id, _now_iso()))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def upsert_filing_document(conn, *, filing_id, document_url, document_type='primary_doc',
                            text=None, char_len=None, content_type=None,
-                           byte_size=None, extraction_status='success'):
+                           byte_size=None, extraction_status='success',
+                           commit: bool = True):
     """Insert or replace a filing_documents row."""
     from datetime import datetime, timezone
     extracted_at = datetime.now(timezone.utc).isoformat()
@@ -283,7 +285,8 @@ def upsert_filing_document(conn, *, filing_id, document_url, document_type='prim
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (filing_id, document_url, document_type, text, char_len,
           content_type, byte_size, extraction_status, extracted_at))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 def init_db(conn: sqlite3.Connection) -> None:
     """Set pragmas, create all tables and indexes."""
@@ -294,6 +297,11 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_articles_table(conn)
     ensure_filings_tables(conn)
     ensure_macro_tables(conn)
+    # Fold quality tables into init_db so migrations can see them (H4-F5)
+    from catalyst_data.quality import _QUALITY_TABLES_SQL
+    conn.executescript(_QUALITY_TABLES_SQL)
+    from catalyst_data.migrations import run_migrations
+    run_migrations(conn)
     conn.commit()
 
 
@@ -313,6 +321,7 @@ def upsert_raw_asset(
     content_raw: bytes,
     http_status: int | None = None,
     metadata: dict | None = None,
+    commit: bool = True,
 ) -> None:
     """Insert or replace a raw (Bronze) asset. Compresses content_raw with zlib."""
     compressed = zlib.compress(content_raw)
@@ -337,7 +346,8 @@ def upsert_raw_asset(
             metadata_json,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_raw_asset(conn: sqlite3.Connection, asset_id: str) -> dict | None:
@@ -389,6 +399,7 @@ def upsert_clean_asset(
     title_hash: str | None = None,
     is_duplicate: int = 0,
     raw_asset_id: str | None = None,
+    commit: bool = True,
 ) -> None:
     """Insert or replace a cleaned (Silver) asset."""
     conn.execute(
@@ -410,7 +421,8 @@ def upsert_clean_asset(
             raw_asset_id,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_clean_asset(conn: sqlite3.Connection, asset_id: str) -> dict | None:
@@ -456,6 +468,7 @@ def upsert_ohlcv(
     close: float,
     volume: float,
     source: str = "polygon",
+    commit: bool = True,
 ) -> None:
     """Insert or replace a daily OHLCV bar."""
     conn.execute(
@@ -466,7 +479,8 @@ def upsert_ohlcv(
         """,
         (symbol, date, open, high, low, close, volume, source),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_ohlcv(conn: sqlite3.Connection, symbol: str, date: str) -> dict | None:

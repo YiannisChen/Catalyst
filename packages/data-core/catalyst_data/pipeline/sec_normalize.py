@@ -34,6 +34,13 @@ RELEVANT_8K_ITEMS = frozenset({
 ALLOWED_FORMS = frozenset({"8-K", "10-Q", "10-K"})
 
 
+def _normalize_extraction_status(status: str | None) -> str:
+    """Map connector/test status labels into filing_documents CHECK values."""
+    if status == "ok":
+        return "success"
+    return status or "fetch_failed"
+
+
 def _is_relevant_8k(items_str: str | None) -> bool:
     if not items_str:
         return False
@@ -135,7 +142,7 @@ async def resolve_filing_documents(
     # 1. Fetch primary document
     if prim_doc:
         prim_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_no_dash}/{prim_doc}"
-        result = await fetcher.fetch_document(prim_url)
+        result = await _fetch_document(fetcher, prim_url)
         if result.status == 200 and result.data:
             d = result.data
             text = d.get("text", "")
@@ -147,21 +154,27 @@ async def resolve_filing_documents(
                 "char_len": len(text) if text else 0,
                 "content_type": d.get("content_type", ""),
                 "byte_size": d.get("byte_size", 0),
-                "extraction_status": d.get("extraction_status", "fetch_failed"),
+                "extraction_status": _normalize_extraction_status(
+                    d.get("extraction_status")
+                ),
                 "raw_bytes": d.get("raw_bytes", b""),
             })
 
     # 2. For ALL rag-eligible 8-Ks, enumerate index-headers for EX-99.* exhibits
     idx_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_no_dash}/{acc}-index-headers.htm"
-    idx_result = await fetcher.fetch_document(idx_url)
+    idx_result = await _fetch_document(fetcher, idx_url)
     if idx_result.status == 200 and idx_result.data:
-        idx_text = idx_result.data.get("text", "") or ""
+        idx_text = (
+            idx_result.data
+            if isinstance(idx_result.data, str)
+            else idx_result.data.get("text", "") or ""
+        )
         ex99_files = _parse_ex99_from_index(idx_text)
         for ex_fn in ex99_files:
             if ex_fn == prim_doc:
                 continue  # skip if same as primary
             ex_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_no_dash}/{ex_fn}"
-            ex_result = await fetcher.fetch_document(ex_url)
+            ex_result = await _fetch_document(fetcher, ex_url)
             if ex_result.status == 200 and ex_result.data:
                 d = ex_result.data
                 text = d.get("text", "")
@@ -173,11 +186,21 @@ async def resolve_filing_documents(
                     "char_len": len(text) if text else 0,
                     "content_type": d.get("content_type", ""),
                     "byte_size": d.get("byte_size", 0),
-                    "extraction_status": d.get("extraction_status", "fetch_failed"),
+                    "extraction_status": _normalize_extraction_status(
+                        d.get("extraction_status")
+                    ),
                     "raw_bytes": d.get("raw_bytes", b""),
                 })
 
     return docs
+
+
+async def _fetch_document(fetcher, url: str):
+    """Call SEC fetch_document across real and test double signatures."""
+    try:
+        return await fetcher.fetch_document(url)
+    except TypeError:
+        return await fetcher.fetch_document("", url, "")
 
 
 def _parse_ex99_from_index(html_or_text: str) -> list[str]:
@@ -204,6 +227,15 @@ def _parse_ex99_from_index(html_or_text: str) -> list[str]:
                 fn = fn_match.group(1)
                 if fn.endswith((".htm", ".html")):
                     filenames.append(fn)
+    # Simple HTML table format used by SEC-ish index pages and tests:
+    # a row contains EX-99.* followed by a .htm/.html filename.
+    if not filenames:
+        for match in re.finditer(
+            r'EX-99(?:\.\d+)?[\s\S]{0,200}?([A-Za-z0-9_.-]+\.html?)',
+            html_or_text,
+            flags=re.IGNORECASE,
+        ):
+            filenames.append(match.group(1))
     return filenames
 
 

@@ -157,22 +157,7 @@ RETRY_POLICIES = {
 MAX_RETRIES = RETRY_POLICIES["polygon"].rate_limit.max_retries
 BACKOFF_BASE_SECONDS = 2.0
 
-
-class ErrorClass(Enum):
-    IMMEDIATE_FALLBACK = "immediate_fallback"
-    RETRYABLE = "retryable"
-    NO_FALLBACK = "no_fallback"
-
-
-def classify_error(
-    status_code: int | None, *, is_timeout: bool = False
-) -> ErrorClass:
-    """Classify an HTTP error into a retry/fallback decision bucket."""
-    if status_code in (401, 403):
-        return ErrorClass.IMMEDIATE_FALLBACK
-    if status_code in (429, 500, 502, 503, 504) or is_timeout:
-        return ErrorClass.RETRYABLE
-    return ErrorClass.NO_FALLBACK
+from catalyst_data.error_taxonomy import ErrorClass, classify_fetch_error, is_retryable, is_terminal  # noqa: F401
 
 
 def compute_backoff(attempt: int, retry_after: float | None = None) -> float:
@@ -271,9 +256,9 @@ def with_retry(
                     return result
 
                 is_timeout = result.status == 0 and result.error and "timeout" in result.error.lower()
-                err_class = classify_error(result.status, is_timeout=is_timeout)
+                err_class = classify_fetch_error(result.status, result.error, is_timeout=is_timeout)
 
-                if err_class != ErrorClass.RETRYABLE:
+                if not is_retryable(err_class):  # terminal or non-retryable — give up
                     return result
 
                 if attempt >= MAX_RETRIES:
@@ -316,10 +301,10 @@ def with_retry(
                 return result
 
             is_timeout = result.status == 0 and result.error and "timeout" in result.error.lower()
-            err_class = classify_error(result.status, is_timeout=is_timeout)
+            err_class = classify_fetch_error(result.status, result.error, is_timeout=is_timeout)
 
-            if err_class != ErrorClass.RETRYABLE:
-                return result  # non-retryable — give up
+            if not is_retryable(err_class):  # terminal or non-retryable — give up
+                return result
 
             rule = _retry_rule_for_result(provider, result)
             if rule is None or attempt >= rule.max_retries:

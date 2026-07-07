@@ -5,49 +5,49 @@ import pytest
 from catalyst_data.connectors.base import FetchResult
 from catalyst_data.retry import (
     ErrorClass,
-    classify_error,
     compute_backoff,
     should_retry,
     with_retry,
     MAX_RETRIES,
 )
+from catalyst_data.error_taxonomy import classify_fetch_error
 
 
 class TestClassifyError(unittest.TestCase):
     def test_401_immediate_fallback(self):
-        self.assertEqual(classify_error(401), ErrorClass.IMMEDIATE_FALLBACK)
+        self.assertEqual(classify_fetch_error(401), ErrorClass.AUTH)
 
     def test_403_immediate_fallback(self):
-        self.assertEqual(classify_error(403), ErrorClass.IMMEDIATE_FALLBACK)
+        self.assertEqual(classify_fetch_error(403), ErrorClass.AUTH)
 
     def test_429_retryable(self):
-        self.assertEqual(classify_error(429), ErrorClass.RETRYABLE)
+        self.assertEqual(classify_fetch_error(429), ErrorClass.RATE_LIMIT)
 
     def test_500_retryable(self):
-        self.assertEqual(classify_error(500), ErrorClass.RETRYABLE)
+        self.assertEqual(classify_fetch_error(500), ErrorClass.PROVIDER_5XX)
 
     def test_502_retryable(self):
-        self.assertEqual(classify_error(502), ErrorClass.RETRYABLE)
+        self.assertEqual(classify_fetch_error(502), ErrorClass.PROVIDER_5XX)
 
     def test_503_retryable(self):
-        self.assertEqual(classify_error(503), ErrorClass.RETRYABLE)
+        self.assertEqual(classify_fetch_error(503), ErrorClass.PROVIDER_5XX)
 
     def test_504_retryable(self):
-        self.assertEqual(classify_error(504), ErrorClass.RETRYABLE)
+        self.assertEqual(classify_fetch_error(504), ErrorClass.PROVIDER_5XX)
 
     def test_timeout_retryable(self):
         self.assertEqual(
-            classify_error(None, is_timeout=True), ErrorClass.RETRYABLE
+            classify_fetch_error(None, is_timeout=True), ErrorClass.TIMEOUT
         )
 
     def test_200_no_fallback(self):
-        self.assertEqual(classify_error(200), ErrorClass.NO_FALLBACK)
+        self.assertEqual(classify_fetch_error(200), ErrorClass.EMPTY_VALID)
 
     def test_404_no_fallback(self):
-        self.assertEqual(classify_error(404), ErrorClass.NO_FALLBACK)
+        self.assertEqual(classify_fetch_error(404), ErrorClass.AUTH)
 
     def test_none_status_no_timeout_no_fallback(self):
-        self.assertEqual(classify_error(None), ErrorClass.NO_FALLBACK)
+        self.assertEqual(classify_fetch_error(None), ErrorClass.UNKNOWN)
 
 
 class TestComputeBackoff(unittest.TestCase):

@@ -165,22 +165,69 @@ def cmd_status(db_path: str, freshness: bool = False) -> None:
     conn.close()
 
 
+
+
+# ---------------------------------------------------------------------------
+# materialize-tiers
+# ---------------------------------------------------------------------------
+
+def cmd_materialize_tiers(db_path: str, force: bool = False) -> None:
+    """Materialize source tiers for articles.
+
+    Without --force: only articles WHERE source_tier IS NULL (idempotent).
+    With --force: re-evaluates ALL articles, reports delta.
+    """
+    conn = _open_db(db_path)
+
+    if force:
+        from catalyst_data.source_tier import materialize_all_tiers, unknown_publisher_audit
+        changed, unknowns = materialize_all_tiers(conn)
+        print(f"Materialized tiers (--force): {changed} rows changed")
+    else:
+        from catalyst_data.source_tier import classify_articles, unknown_publisher_audit
+        count = classify_articles(conn)
+        print(f"Classified: {count} articles (newly assigned tier)")
+
+    dist = tier_distribution(conn)
+    print(f"\nTier Distribution:")
+    for tier in sorted(dist):
+        print(f"  {tier_label(tier)}: {dist[tier]}")
+    print(f"  Total articles:  {sum(dist.values())}")
+
+    audit = unknown_publisher_audit(conn)
+    if audit["count"] > 0:
+        print(f"\nUnknown publishers (assigned T4): {audit['count']}")
+        for name in audit["unknown_publishers"]:
+            print(f"  - {name}")
+
+    conn.close()
+
 # ---------------------------------------------------------------------------
 # rebuild-index
 # ---------------------------------------------------------------------------
 
 def cmd_rebuild_index(db_path: str, mode: str = "dry-run") -> None:
-    """Rebuild index records — dry-run only on Mac (no embedding)."""
+    """Rebuild index records — dry-run only on Mac (no embedding).
+
+    STRICTLY read-only: PRAGMA query_only=ON for entire connection lifetime.
+    Tier materialization is NEVER done here — use materialize-tiers.
+    """
     if mode != "dry-run":
         print("ERROR: Only --mode dry-run is supported on Mac.")
         print("       Full rebuild requires cloud/GPU (Step 4).")
         sys.exit(1)
 
     conn = _open_db(db_path)
+    conn.execute("PRAGMA query_only = ON")
 
-    print("Classifying articles...")
-    classified = classify_articles(conn)
-    print(f"  Classified: {classified} articles (newly assigned tier)")
+    # Check for unmaterialized tiers (warn only, no write)
+    null_tier_count = conn.execute(
+        "SELECT COUNT(*) FROM articles WHERE source_tier IS NULL"
+    ).fetchone()[0]
+    if null_tier_count > 0:
+        print(f"WARNING: {null_tier_count} articles have NULL source_tier.")
+        print("         Run 'materialize-tiers' first for accurate per-tier stats.")
+        print()
 
     print("Building index records (dry-run, no embedding)...")
     records = build_index_records(conn, min_l2_chars=800)
@@ -192,25 +239,50 @@ def cmd_rebuild_index(db_path: str, mode: str = "dry-run") -> None:
     at_count = conn.execute(
         "SELECT COUNT(*) FROM article_tickers"
     ).fetchone()[0]
-    l1_records = [r for r in records if r["chunk_level"] == "l1"]
-    ticker_refs = sum(len(r["tickers"]) for r in l1_records)
+
+    # Article-scoped guards (not filing-inclusive)
+    article_l1 = summary["article_l1_count"]
+    ticker_refs = sum(
+        len(r["tickers"]) for r in records
+        if r["chunk_level"] == "l1" and r.get("source_kind", "article") == "article"
+    )
+    ticker_ok = ticker_refs == at_count
+    dedup_ok = article_l1 == article_count
 
     print(f"\n=== Dry-Run Summary ===")
-    print(f"  L1 records:              {summary['l1_count']}")
+    print(f"  L1 records:              {summary['l1_count']} (article={summary['article_l1_count']}, filing={summary['filing_l1_count']})")
     print(f"  L2 records:              {summary['l2_count']}")
-    print(f"  L2-eligible articles:    {summary['l2_eligible_count']} "
+    print(f"  L2-eligible items:       {summary['l2_eligible_count']} "
           f"({summary['l2_eligible_pct']}%)")
     print(f"  Would-embed total:       {summary['would_embed_count']}")
-    print(f"  Ticker-lossless guard:   PASS ({ticker_refs} == {at_count})")
-    print(f"  Dedup guard:             PASS (L1={summary['l1_count']} == articles={article_count})")
+    ticker_label = "PASS" if ticker_ok else "FAIL"
+    dedup_label = "PASS" if dedup_ok else "FAIL"
+    print(f"  Article ticker guard:    {ticker_label} (records={ticker_refs} == DB={at_count})")
+    print(f"  Article dedup guard:     {dedup_label} (L1={summary['article_l1_count']} == articles={article_count})")
 
-    print(f"\n  Per-tier distribution:")
-    for tier in sorted(summary["per_tier"]):
-        t = summary["per_tier"][tier]
-        print(f"    {tier_label(tier)}: L1={t['l1']}, L2={t['l2']}")
+    # Print per-tier distribution from the polymorphic summary
+    per_tier = summary.get("per_tier", {})
+    if per_tier:
+        print(f"\n  Per-tier distribution:")
+        for sk in sorted(per_tier):
+            for tier in sorted(per_tier[sk]):
+                t = per_tier[sk][tier]
+                print(f"    {sk}/{tier_label(tier)}: L1={t['l1']}, L2={t['l2']}")
+
+    # Distribution from DB (read-only)
+    dist = tier_distribution(conn)
+    print(f"\n  DB Tier Distribution:")
+    for tier in sorted(dist):
+        print(f"    {tier_label(tier)}: {dist[tier]}")
+    print(f"  Total articles:  {sum(dist.values())}")
 
     print(f"\n  NOTE: index_state and index_manifests were NOT written.")
     print(f"  Real embedding is deferred to Step 4 (cloud/GPU).")
+
+    if not ticker_ok or not dedup_ok:
+        print(f"\nERROR: Guard failure — ticker_lossless={ticker_ok}, dedup={dedup_ok}")
+        conn.close()
+        sys.exit(1)
 
     conn.close()
 
@@ -229,6 +301,8 @@ def cmd_update_news(
     dry_run: bool = False,
     live: bool = False,
     confirm: bool = False,
+    resume_from: str | None = None,
+    json_output: bool = False,
 ) -> None:
     """Run the update pipeline (dry-run default; --live --confirm for real)."""
     ticker_list = (
@@ -239,6 +313,8 @@ def cmd_update_news(
         [s.strip() for s in sources.split(",") if s.strip()]
         if sources else None
     )
+
+    fetch_fn = None
 
     # --live path: gated runner
     if live:
@@ -277,58 +353,50 @@ def cmd_update_news(
         print(f"  Sources: {resolved_sources}")
         print(f"  Tickers: {ticker_list or '(all 10)'}")
 
-        _ensure_db(db_path)
-
-        async def _run_live():
-            from catalyst_data.update_pipeline import run_update_batch
-            return await run_update_batch(
-                db_path, tickers=ticker_list, sources=source_list,
-                from_date=from_date, to_date=to_date, fetch_fn=fetch_fn,
-                limit=limit, dry_run=False,
-            )
-
-        report = asyncio.run(_run_live())
-        print(f"\n  Cells processed: {report.get('cells_total', '?')}")
-        return
-
-    _ensure_db(db_path)
-
-    if not dry_run:
+    elif not dry_run:
         print("ERROR: Only --dry-run is supported on Mac (Step 2).")
         print("       Use --live --confirm for real network calls.")
         sys.exit(1)
 
-    async def _run():
-        from catalyst_data.update_pipeline import run_update_batch
+    _ensure_db(db_path)
+    from catalyst_data.run_report import RunConfig
+    from catalyst_data.update_pipeline import run_update
+    cfg = RunConfig(
+        db_path=db_path,
+        tickers=ticker_list,
+        sources=source_list,
+        from_date=from_date,
+        to_date=to_date,
+        limit=limit,
+        dry_run=not live,
+        resume_from=resume_from,
+        fetch_fn=fetch_fn,
+    )
+    report = run_update(cfg)
 
-        report = await run_update_batch(
-            db_path,
-            tickers=ticker_list,
-            sources=source_list,
-            from_date=from_date,
-            to_date=to_date,
-            fetch_fn=None,
-            limit=limit,
-            dry_run=True,
-        )
-        return report
+    if json_output:
+        import json
+        print(json.dumps(report.to_dict(), indent=2, default=str))
+    else:
+        if report.mode == "dry-run":
+            print(f"\n=== Update-News Dry-Run ===")
+        else:
+            print(f"\n=== Update-News Report ===")
+        print(f"  Run ID:         {report.run_id}")
+        print(f"  Mode:           {report.mode}")
+        print(f"  Status:         {report.config.get('dry_run') and 'dry-run' or 'live'}")
+        print(f"  Report path:    {report.report_path}")
+        for provider, stats in sorted(report.providers.items()):
+            print(f"  {provider}: {stats}")
+        if report.mode == "dry-run":
+            print(f"\n  ZERO network calls made.  ZERO DB writes.")
 
-    report = asyncio.run(_run())
-
-    print(f"\n=== Update-News Dry-Run ===")
-    print(f"  Mode:           dry-run")
-    print(f"  Date window:    {from_date or '(auto)'} → {to_date or '(auto)'}")
-    print(f"  Tickers:        {ticker_list or '(all 10 universe)'}")
-    print(f"  Sources:        {source_list or 'polygon_news'}")
-    print(f"  Missing cells:  {report['cells_total']}")
-    if report["missing_cells"]:
-        print(f"\n  First 10 missing cells:")
-        for cell in report["missing_cells"][:10]:
-            print(f"    {cell[0]}  {cell[1]}  {cell[2]}")
-        if report["cells_total"] > 10:
-            print(f"    ... and {report['cells_total'] - 10} more")
-
-    print(f"\n  ZERO network calls made.  ZERO DB writes.")
+    # Keep CLI process semantics outside service layer.
+    total_failed = sum(v.get("cells_failed", 0) for v in report.providers.values())
+    total_success = sum(v.get("cells_success", 0) + v.get("cells_success_empty", 0)
+                        for v in report.providers.values())
+    if total_failed and not total_success:
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +404,21 @@ def cmd_update_news(
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# doctor
+# ---------------------------------------------------------------------------
+
+def cmd_doctor(db_path: str, json_output: bool = False) -> None:
+    """Run the full operator contract gate (all four audit dimensions).
+
+    Exits 0 if all gates pass, non-zero otherwise.
+    """
+    from catalyst_data.doctor import doctor as run_doctor
+
+    result = run_doctor(db_path, json_output=json_output)
+    sys.exit(result["exit_code"])
 
 # ---------------------------------------------------------------------------
 # reconcile-schema
@@ -726,6 +809,13 @@ def main() -> None:
     status_p.add_argument("--db", default=str(DEFAULT_DB),
                           help=f"Path to dev DB (default: {DEFAULT_DB})")
 
+    # materialize-tiers
+    mat_p = sub.add_parser("materialize-tiers", help="Classify and populate source_tier")
+    mat_p.add_argument("--force", action="store_true", default=False,
+                       help="Re-evaluate ALL articles, not just NULL source_tier")
+    mat_p.add_argument("--db", default=str(DEFAULT_DB),
+                       help=f"Path to dev DB (default: {DEFAULT_DB})")
+
     # rebuild-index
     rebuild = sub.add_parser("rebuild-index", help="Rebuild index records")
     rebuild.add_argument(
@@ -755,7 +845,19 @@ def main() -> None:
                           help="Use real connectors + network (requires --confirm)")
     update_p.add_argument("--confirm", action="store_true", default=False,
                           help="Confirm live network execution")
+    update_p.add_argument("--resume", dest="resume_from", default=None,
+                          help="Resume failed/skipped cells from RUN_ID")
+    update_p.add_argument("--json", dest="json_output", action="store_true", default=False,
+                          help="Print RunReport JSON")
     update_p.add_argument("--db", default=str(DEFAULT_DB),
+                          help=f"Path to dev DB (default: {DEFAULT_DB})")
+
+
+    # doctor
+    doctor_p = sub.add_parser("doctor", help="Run all operator-contract audit gates")
+    doctor_p.add_argument("--json", dest="doctor_json", action="store_true", default=False,
+                          help="Output JSON to stdout")
+    doctor_p.add_argument("--db", dest="doctor_db", default=str(DEFAULT_DB),
                           help=f"Path to dev DB (default: {DEFAULT_DB})")
 
     # reconcile-schema
@@ -815,6 +917,9 @@ def main() -> None:
     if args.command == "status":
         db_path = getattr(args, "db", str(DEFAULT_DB))
         cmd_status(db_path, freshness=args.freshness)
+    elif args.command == "materialize-tiers":
+        db_path = getattr(args, "db", str(DEFAULT_DB))
+        cmd_materialize_tiers(db_path, force=getattr(args, "force", False))
     elif args.command == "rebuild-index":
         db_path = getattr(args, "db", str(DEFAULT_DB))
         cmd_rebuild_index(db_path, mode=args.mode)
@@ -830,7 +935,13 @@ def main() -> None:
             dry_run=getattr(args, "dry_run", False),
             live=getattr(args, "live", False),
             confirm=getattr(args, "confirm", False),
+            resume_from=getattr(args, "resume_from", None),
+            json_output=getattr(args, "json_output", False),
         )
+    elif args.command == "doctor":
+        db_arg = getattr(args, "doctor_db", str(DEFAULT_DB))
+        cmd_doctor(db_arg, json_output=getattr(args, "doctor_json", False))
+
     elif args.command == "refresh-cik-map":
         result = refresh_cik_map(getattr(args, "output", None))
         print(f"CIK map refreshed: {len(result)} tickers written")
