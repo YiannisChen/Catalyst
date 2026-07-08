@@ -105,7 +105,14 @@ class WorkbenchStore:
         ticker: str,
         trade_date: str,
     ) -> dict[str, Any] | None:
-        """Get the most recent fundamentals snapshot for a ticker on or before trade_date."""
+        """Get the most recent fundamentals snapshot for a ticker on or before trade_date.
+
+        Scans snapshots in reverse chronological order and skips any whose fiscal
+        period end date (the "date" field in the content markdown) falls after
+        trade_date.  This prevents look-ahead bias from quarterly filings that were
+        ingested with the fiscal period-end date but not actually published until
+        after the trade session.
+        """
         sql = """
             SELECT asset_id, ticker, reference_date, content_md
             FROM clean_assets
@@ -113,25 +120,101 @@ class WorkbenchStore:
               AND source_type = 'fmp_fundamentals'
               AND reference_date <= ?
             ORDER BY reference_date DESC
-            LIMIT 1
         """
         rows = self._fetchall(sql, (ticker.upper(), trade_date))
-        if not rows:
+        for row in rows:
+            content = row[3] or ""
+            metrics: dict[str, str] = {}
+            has_valid_date = False
+            for line in content.split("\n"):
+                if "|" in line and "---" not in line and "Field" not in line:
+                    parts = [p.strip() for p in line.split("|") if p.strip()]
+                    if len(parts) == 2:
+                        metrics[parts[0]] = parts[1]
+            # Check the fiscal period end date — must not be after trade_date
+            fiscal_date = metrics.get("date")
+            if fiscal_date and fiscal_date > trade_date:
+                continue  # skip future-leaking snapshot
+            return {
+                "asset_id": row[0],
+                "ticker": row[1],
+                "reference_date": row[2],
+                "metrics": metrics,
+            }
+        return None
+
+    def get_session(
+        self,
+        *,
+        ticker: str,
+        trade_date: str,
+    ) -> dict[str, Any] | None:
+        """Return selected-session OHLCV data with properly computed previous_close.
+
+        previous_close must be the immediately preceding available trading
+        session, not one calendar day earlier.
+        """
+        # Fetch the selected candle
+        candle_sql = """
+            SELECT symbol, date, open, high, low, close, volume, source
+            FROM ohlcv
+            WHERE symbol = ? AND date = ?
+        """
+        candle_rows = self._fetchall(candle_sql, (ticker.upper(), trade_date))
+        if not candle_rows:
             return None
-        row = rows[0]
-        content = row[3] or ""
-        # Parse key-value pairs from markdown table
-        metrics: dict[str, str] = {}
-        for line in content.split("\n"):
-            if "|" in line and "---" not in line and "Field" not in line:
-                parts = [p.strip() for p in line.split("|") if p.strip()]
-                if len(parts) == 2:
-                    metrics[parts[0]] = parts[1]
+
+        row = candle_rows[0]
+        open_val = row[2]
+        high_val = row[3]
+        low_val = row[4]
+        close_val = row[5]
+
+        # Fetch the immediately preceding trading session
+        prev_sql = """
+            SELECT close FROM ohlcv
+            WHERE symbol = ? AND date < ?
+            ORDER BY date DESC
+            LIMIT 1
+        """
+        prev_rows = self._fetchall(prev_sql, (ticker.upper(), trade_date))
+        previous_close = prev_rows[0][0] if prev_rows else None
+
+        # Compute close_move_pct using previous_close
+        close_move_pct = None
+        if previous_close is not None and previous_close != 0 and close_val is not None:
+            close_move_pct = round(((close_val - previous_close) / previous_close) * 100, 2)
+
+        # Compute intraday range
+        intraday_range = None
+        if high_val is not None and low_val is not None:
+            intraday_range = round(high_val - low_val, 2)
+
+        # Compute event window (trade_date ± a few days)
+        from datetime import datetime, timedelta
+        try:
+            dt = datetime.strptime(trade_date, "%Y-%m-%d")
+            event_window_start = (dt - timedelta(days=3)).strftime("%Y-%m-%d")
+            event_window_end = dt.strftime("%Y-%m-%d")
+        except ValueError:
+            event_window_start = None
+            event_window_end = None
+
         return {
-            "asset_id": row[0],
-            "ticker": row[1],
-            "reference_date": row[2],
-            "metrics": metrics,
+            "ticker": ticker.upper(),
+            "trade_date": trade_date,
+            "open": open_val,
+            "high": high_val,
+            "low": low_val,
+            "close": close_val,
+            "volume": row[6],
+            "previous_close": previous_close,
+            "close_move_pct": close_move_pct,
+            "intraday_range": intraday_range,
+            "source": row[7],
+            "event_window_start": event_window_start,
+            "event_window_end": event_window_end,
+            "is_trading_day": True,
         }
 
     def local_range(self) -> dict[str, Any]:

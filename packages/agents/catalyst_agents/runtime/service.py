@@ -45,11 +45,13 @@ class LiveRunService:
         *,
         db_path: Path | str,
         graph_factory: Callable[..., Any],
+        credential_store: Any = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_workers: int = 1,
     ) -> None:
         self.db_path = Path(db_path)
         self.graph_factory = graph_factory
+        self.credential_store = credential_store
         self.timeout_seconds = timeout_seconds
         self.max_workers = max_workers
 
@@ -129,6 +131,7 @@ class LiveRunService:
         runner = LiveRunRunner(
             db_path=self.db_path,
             graph_factory=self.graph_factory,
+            credential_store=self.credential_store,
             timeout_seconds=self.timeout_seconds,
             max_workers=self.max_workers,
         )
@@ -155,6 +158,7 @@ class LiveRunService:
         runner = LiveRunRunner(
             db_path=self.db_path,
             graph_factory=self.graph_factory,
+            credential_store=self.credential_store,
             timeout_seconds=self.timeout_seconds,
             max_workers=self.max_workers,
         )
@@ -229,11 +233,31 @@ class LiveRunService:
             return {"ok": False, "failure": {"sub_reason": "run_not_terminal", "message": "Only terminal runs can be retried."}}
         config = json.loads(row["config"] or "{}")
         conn.close()
+
+        # Determine the model source for the retry
+        resolved_model = model if model is not None else config.get("model")
+
+        # If the parent run was BYOK (model is a dict), a fresh credential is required.
+        # model=None means the caller did not supply a new ModelConfig.
+        # config["model"] contains only metadata (no api_key), so the retry would
+        # have no credential registered and would fail at execution time.
+        if isinstance(config.get("model"), dict) and model is None:
+            return {
+                "ok": False,
+                "failure": {
+                    "sub_reason": "credential_required",
+                    "message": (
+                        "This run used a BYOK API key which is not persisted. "
+                        "Supply a new model config with api_key to retry."
+                    ),
+                },
+            }
+
         created = self.create_run(
             ticker=row["ticker"],
             trade_date=row["trade_date"],
             query=config.get("query"),
-            model=model if model is not None else config.get("model"),
+            model=resolved_model,
             config=config.get("config") or "mcj_full",
         )
         if created.get("status") == "QUEUED":

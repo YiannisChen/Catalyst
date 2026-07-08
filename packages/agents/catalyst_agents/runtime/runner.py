@@ -19,17 +19,29 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+
+def _resolve_model_id(model: object) -> str:
+    """Extract model_id string from model config or legacy fallback."""
+    if isinstance(model, dict):
+        return model.get("model_id", "runtime-default")
+    if isinstance(model, str) and model:
+        return model
+    return "runtime-default"
+
+
 class LiveRunRunner:
     def __init__(
         self,
         *,
         db_path: Path | str,
         graph_factory: Callable[..., Any],
+        credential_store: Any = None,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_workers: int = 1,
     ) -> None:
         self.db_path = Path(db_path)
         self.graph_factory = graph_factory
+        self.credential_store = credential_store
         self.timeout_seconds = timeout_seconds
         self.max_workers = max_workers
 
@@ -57,6 +69,9 @@ class LiveRunRunner:
             self._mark_system_error(run_id, str(exc))
             return {"run_id": run_id, "status": "FAILED_SYSTEM", "sub_reason": "system_error"}
         finally:
+            # Cleanup credential on terminal (success, failure, cancel, timeout)
+            if self.credential_store:
+                self.credential_store.remove(run_id)
             executor.shutdown(wait=False, cancel_futures=True)
 
     def _connect(self) -> sqlite3.Connection:
@@ -104,15 +119,28 @@ class LiveRunRunner:
             "cost_breakdown": [],
             "total_cost_usd": 0.0,
             "total_tokens": 0,
-            "model_id": config.get("model") or "runtime-default",
+            # model holds full metadata dict (BYOK) or legacy string
+            "model": config.get("model"),
+            "model_id": _resolve_model_id(config.get("model")),
             "config": config.get("config") or "mcj_full",
         }
 
     def _invoke_graph(self, state: dict[str, Any], run_id: str, timed_out: threading.Event) -> Any:
+        # Retrieve api_key from in-memory store (never from persisted config)
+        api_key = None
+        if self.credential_store:
+            cred = self.credential_store.get(run_id)
+            if cred:
+                api_key = cred.api_key
+
+        model = state.get("model")
+        if model is None:
+            model = state.get("model_id")  # legacy string fallback
+
         previous_db_path = os.environ.get("CATALYST_DB_PATH")
         os.environ["CATALYST_DB_PATH"] = str(self.db_path)
         try:
-            graph = self.graph_factory(model_id=state.get("model_id"))
+            graph = self.graph_factory(model=model, api_key=api_key)
             result = graph.invoke(state, run_id=run_id)
             # If timeout already happened in the parent thread, restore timeout terminal status.
             if timed_out.is_set():

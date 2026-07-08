@@ -35,6 +35,9 @@ class ContractService:
     def run_next(self):
         return {"status": "SUCCEEDED"}
 
+    def run_one(self, run_id):
+        return {"status": "SUCCEEDED"}
+
     def get_run(self, run_id):
         if run_id != "run-1":
             return None

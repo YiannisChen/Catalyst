@@ -9,6 +9,7 @@ from catalyst_app.schemas import (
     NewsResponse,
     OhlcvResponse,
     RangeLocalResponse,
+    SessionResponse,
     TickersResponse,
 )
 from catalyst_app.workbench_store import WorkbenchStoreError
@@ -101,3 +102,24 @@ def get_fundamentals(
         reference_date=result["reference_date"],
         metrics=result["metrics"],
     )
+
+@router.get("/session/{ticker}", response_model=SessionResponse)
+def get_session(
+    ticker: str,
+    trade_date: str = Query(...),
+    store=Depends(get_workbench_store),
+) -> SessionResponse:
+    """Return real OHLCV session data for the selected ticker and trade date."""
+    if not ticker.strip():
+        raise HTTPException(status_code=400, detail="ticker must not be blank")
+    try:
+        result = store.get_session(ticker=ticker, trade_date=trade_date)
+    except WorkbenchStoreError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if result is None:
+        return SessionResponse(
+            ticker=ticker.upper(),
+            trade_date=trade_date,
+            is_trading_day=False,
+        )
+    return SessionResponse.model_validate(result)

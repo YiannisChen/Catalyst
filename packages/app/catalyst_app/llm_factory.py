@@ -1,9 +1,12 @@
-"""LLM client factory for aihubmix OpenAI-compatible proxy.
+"""LLM client factory — BYOK runtime credential path.
 
-Provides build_llm() which creates a LangChain ChatOpenAI instance configured
-to use the aihubmix relay at https://aihubmix.com/v1.
+Provides build_llm() which creates a LangChain ChatOpenAI instance.
 
-The API key is read from the AIHUBMIX_API_KEY environment variable.
+Supports two paths:
+  Legacy/dev:   model_id string + AIHUBMIX_API_KEY env variable
+  Production:   provider + model_id + api_key + optional base_url
+
+Never persists the API key. The caller is responsible for key lifecycle.
 """
 from __future__ import annotations
 
@@ -27,8 +30,20 @@ SUPPORTED_MODELS: list[str] = [
 
 DEFAULT_MODEL: str = "gemini-2.5-flash-nothink"
 
+_PROVIDER_DEFAULTS: dict[str, str] = {
+    "openai": "https://api.openai.com/v1",
+    "aihubmix": "https://aihubmix.com/v1",
+    "deepseek": "https://api.deepseek.com/v1",
+    "siliconflow": "https://api.siliconflow.cn/v1",
+    "glm": "https://api.z.ai/api/paas/v4",
+}
+
 
 def _get_api_key() -> str:
+    """Read AIHUBMIX_API_KEY from environment. Legacy/dev convenience only.
+
+    Raises ValueError if the variable is not set.
+    """
     key = os.environ.get("AIHUBMIX_API_KEY", "").strip()
     if not key:
         raise ValueError(
@@ -38,34 +53,57 @@ def _get_api_key() -> str:
     return key
 
 
-def build_llm(model_id: str | None = None) -> ChatOpenAI:
-    """Create a ChatOpenAI instance targeting the aihubmix proxy.
+def build_llm(
+    model_id: str | None = None,
+    *,
+    provider: str = "openai",
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> ChatOpenAI:
+    """Create a ChatOpenAI instance from runtime credentials or env fallback.
 
     Args:
-        model_id: One of SUPPORTED_MODELS. Defaults to DEFAULT_MODEL
-                  when None or "runtime-default".
+        model_id: Model identifier. When None or "runtime-default", uses
+                  DEFAULT_MODEL.  Required unless the legacy env path is active.
+        provider: Provider name for base_url resolution. Ignored when base_url
+                  is supplied directly.
+        api_key:  API key for the provider. When None, falls back to
+                  AIHUBMIX_API_KEY env variable (legacy/dev only).
+        base_url: Explicit base URL. Takes precedence over provider lookup.
 
     Returns:
-        A configured ChatOpenAI with the aihubmix base URL and API key.
+        A configured ChatOpenAI instance.
 
     Raises:
-        ValueError: If the model_id is not in SUPPORTED_MODELS or
-                    AIHUBMIX_API_KEY is not set.
+        ValueError: If no api_key is available and env fallback is not set,
+                    or if the provider is unknown and no base_url is given.
     """
     resolved_model = model_id if model_id and model_id != "runtime-default" else DEFAULT_MODEL
 
-    if resolved_model not in SUPPORTED_MODELS:
+    # Base URL resolution
+    if base_url:
+        resolved_base_url = base_url
+    elif provider in _PROVIDER_DEFAULTS:
+        resolved_base_url = _PROVIDER_DEFAULTS[provider]
+    else:
         raise ValueError(
-            f"Model '{resolved_model}' is not supported. "
-            f"Choose from: {', '.join(SUPPORTED_MODELS)}"
+            f"Unknown provider '{provider}'. Provide a base_url for custom endpoints "
+            f"(use provider='custom_openai_compatible' with a base_url)."
         )
 
-    api_key = _get_api_key()
+    # API key resolution
+    resolved_api_key = api_key
+    if not resolved_api_key:
+        resolved_api_key = _get_api_key()  # legacy/dev fallback
+    if not resolved_api_key:
+        raise ValueError(
+            "No API key available. Provide an api_key or set AIHUBMIX_API_KEY."
+        )
 
     return ChatOpenAI(
         model=resolved_model,
-        api_key=api_key,
-        base_url=AIHUBMIX_BASE_URL,
+        api_key=resolved_api_key,
+        base_url=resolved_base_url,
         temperature=0.0,
         max_retries=2,
         timeout=90,
