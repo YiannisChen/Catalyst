@@ -7,6 +7,7 @@ Spec reference: Section 4.3 — Miner Node.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import hashlib
 import os
 import re
 import sqlite3
@@ -27,6 +28,37 @@ DATE_WINDOW_DAYS = 3
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
+def _build_arm_b_evidence(reranked_chunks: list[dict]) -> dict:
+    """Build the pre-Critic arm_b_evidence artifact from the top-8 reranked chunks.
+
+    Persisted at the MINER node so Arm B receives evidence BEFORE the Critic
+    filters/annotates it.  Returns {per_asset: {asset_id: full content_md}, sha256}.
+
+    This is the PRE-CRITIC evidence — full content_md, no relevance filter,
+    no category tags.  The Critic has not yet touched these chunks.
+    """
+    if not reranked_chunks:
+        return {"per_asset": {}, "sha256": ""}
+
+    per_asset: dict[str, str] = {}
+    for chunk in reranked_chunks[:8]:  # TOP-8
+        asset_id = chunk.get("asset_id", "")
+        content = chunk.get("content_md", "")
+        if asset_id and content:
+            per_asset[asset_id] = content
+
+    # Build evidence block (same template as Arm B's _reconstruct_evidence_block)
+    if not per_asset:
+        return {"per_asset": {}, "sha256": ""}
+
+    parts = []
+    for asset_id, content in per_asset.items():
+        parts.append(f"### Evidence {asset_id}\n\n{content}")
+    block = "\n\n---\n\n".join(parts)
+    sha = hashlib.sha256(block.encode("utf-8")).hexdigest()
+
+    return {"per_asset": per_asset, "sha256": sha}
+
 
 def _compute_date_range(trade_date: str, window_days: int = DATE_WINDOW_DAYS) -> tuple[str, str]:
     """Return (start_date, end_date) for a ±window_days window around trade_date.
@@ -286,6 +318,7 @@ def miner(
             "price_move_pct": actual_pct,
             "retrieved_chunks": [],
             "reranked_chunks": [],
+            "arm_b_evidence": {"per_asset": {}, "sha256": ""},
             "current_layer": layer,
         }
 
@@ -325,6 +358,7 @@ def miner(
         "price_move_pct": actual_pct,
         "retrieved_chunks": all_retrieved,
         "reranked_chunks": reranked,
+        "arm_b_evidence": _build_arm_b_evidence(reranked),
         "retrieval_metadata": metadata,
         "current_layer": layer,
     }

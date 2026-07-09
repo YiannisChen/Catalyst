@@ -1,0 +1,78 @@
+{
+  "2838e1868df777b8578463e94abf1f78c4b94089ababa8db2b5e4e6093fcea37": {
+    "cache_hit": false,
+    "pairings": [
+      {
+        "golden_idx": 0,
+        "pred_idx": 0,
+        "verdict": "same_event_same_direction"
+      }
+    ]
+  },
+  "58e87a8bcfa898102c2b62fec8e1c7d8356443ee1aaa4cec364d450c63dd5872": {
+    "cache_hit": false,
+    "pairings": [
+      {
+        "golden_idx": 0,
+        "pred_idx": 0,
+        "verdict": "same_event_same_direction"
+      },
+      {
+        "golden_idx": 1,
+        "pred_idx": 1,
+        "verdict": "same_event_same_direction"
+      }
+    ]
+  },
+  "929fd94e585dd74e2c05b671ef09707ea599e1711904746983e8a38ee54cf79d": {
+    "cache_hit": false,
+    "per_cause_verdicts": [
+      {
+        "reason": "Evidence directly supports claim",
+        "verdict": "supported"
+      },
+      {
+        "reason": "Evidence directly supports claim",
+        "verdict": "supported"
+      }
+    ]
+  },
+  "9361026bea663a22af4fdae4c48c7cf34732348109898df3f8aa2de7e1bf928a": {
+    "cache_hit": false,
+    "per_cause_verdicts": [
+      {
+        "reason": "Evidence directly supports",
+        "verdict": "supported"
+      },
+      {
+        "reason": "Evidence directly supports",
+        "verdict": "supported"
+      }
+    ]
+  },
+  "d3e2b874be28cc38d7594204d0861f344cc925eaf73f3dbbff17b12de383fd23": {
+    "cache_hit": false,
+    "pairings": [
+      {
+        "golden_idx": 0,
+        "pred_idx": 0,
+        "verdict": "same_event_same_direction"
+      }
+    ]
+  },
+  "ebed98d9b18e378770ee5b780bcf78b3023ec62988b3eca2076a92232011c89a": {
+    "cache_hit": false,
+    "pairings": [
+      {
+        "golden_idx": 0,
+        "pred_idx": 0,
+        "verdict": "same_event_same_direction"
+      },
+      {
+        "golden_idx": 1,
+        "pred_idx": 1,
+        "verdict": "same_event_same_direction"
+      }
+    ]
+  }
+}

@@ -323,6 +323,16 @@ def critic(state: AttributionState, *, llm: Any = None) -> dict:
         filtered = _apply_temporal_penalty_and_filter(graded)
         decision = _build_critic_decision(filtered, parsed.get("reasoning", ""))
 
+        # Add per-item critic_decision: filtered items are "accepted"
+        for item in filtered:
+            item["critic_decision"] = "accepted"
+        # Items in graded but not in filtered are "rejected"
+        filtered_ids = {item.get("chunk_id") for item in filtered if item.get("chunk_id")}
+        for item in graded:
+            chunk_id = item.get("chunk_id")
+            if chunk_id and chunk_id not in filtered_ids:
+                item["critic_decision"] = "rejected"
+
         return {
             "graded_evidence": filtered,
             "all_graded_chunks": graded,

@@ -86,6 +86,22 @@ class AttributionState(TypedDict):
     retrieval_metadata: object | None
 
     # ------------------------------------------------------------------
+    # ------------------------------------------------------------------
+    # Arm B/C evidence artifacts (pre-Critic from miner, post-Critic from judge)
+    # ------------------------------------------------------------------
+    arm_b_evidence: dict | None
+    # ^ pre-Critic top-8 reranked chunks, {per_asset: {asset_id: content_md}, sha256}
+    #   Persisted at miner node — Arm B consumes this (NOT judge_evidence).
+    #   Exists even when Critic later refuses.
+
+    # Arm C runtime instrumentation (judge_evidence — SECONDARY fidelity check)
+    # ------------------------------------------------------------------
+    judge_evidence: dict[str, str] | None
+    # ^ per asset_id -> content_md, Critic fields stripped (§0.5)
+    judge_evidence_sha256: str | None
+    # ^ SHA-256 of the assembled evidence block the Judge received
+
+    # ------------------------------------------------------------------
     # Cost tracking (per-node granularity for experiments)
     # ------------------------------------------------------------------
     cost_breakdown: list[dict]     # [{node, input_tokens, output_tokens, model_id, cost_usd}]

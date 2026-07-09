@@ -7,11 +7,11 @@ from typing import Any
 
 
 _NODE_ARTIFACT_TYPES: dict[str, list[str]] = {
-    "miner": ["retrieved_chunks", "reranked_chunks", "state_snapshot"],
+    "miner": ["arm_b_evidence", "retrieved_chunks", "reranked_chunks", "state_snapshot"],
     "critic": ["graded_evidence", "all_graded_chunks", "critic_decision", "raw_llm_response", "state_snapshot"],
     "decision_router": ["state_snapshot"],
     "expand_macro": ["state_snapshot"],
-    "judge": ["judge_causes", "judge_summary", "raw_llm_response", "state_snapshot"],
+    "judge": ["judge_causes", "judge_summary", "judge_evidence", "raw_llm_response", "state_snapshot"],
     "validator": ["validator_decision", "raw_llm_response", "state_snapshot"],
     "finalizer": ["state_snapshot"],
     "insufficient_handler": ["state_snapshot"],
@@ -150,10 +150,26 @@ def _state_snapshot(merged_state: dict[str, Any]) -> dict[str, Any]:
             "stop_reason": getattr(metadata, "stop_reason", None),
             "expansion_reasons": list(getattr(metadata, "expansion_reasons", [])),
         }
+    # Include arm_b_evidence_sha256 in state snapshot for observability
+    if merged_state.get("arm_b_evidence") is not None:
+        abe = merged_state["arm_b_evidence"]
+        if isinstance(abe, dict) and abe.get("sha256"):
+            snapshot["arm_b_evidence_sha256"] = abe["sha256"]
+    # Include judge_evidence_sha256 in state snapshot for observability
+    if merged_state.get("judge_evidence_sha256") is not None:
+        snapshot["judge_evidence_sha256"] = merged_state["judge_evidence_sha256"]
     return {"state": snapshot}
 
 
 def _project_payload(artifact_type: str, merged_state: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    if artifact_type == "arm_b_evidence":
+        abe = merged_state.get("arm_b_evidence")
+        if abe is None:
+            return {"per_asset": {}, "sha256": ""}
+        return {
+            "per_asset": abe.get("per_asset", {}),
+            "sha256": abe.get("sha256", ""),
+        }
     if artifact_type == "retrieved_chunks":
         chunks = merged_state.get("retrieved_chunks", [])[:_MAX_RETRIEVED]
         return {"chunks": [_project_chunk(chunk, include_rerank=False) for chunk in chunks]}
@@ -181,6 +197,13 @@ def _project_payload(artifact_type: str, merged_state: dict[str, Any], result: d
         return {"causes": _clean_value(merged_state.get("causes", []))}
     if artifact_type == "judge_summary":
         return {"summary_md": merged_state.get("summary_md", ""), "grounding_rate": merged_state.get("grounding_rate")}
+    if artifact_type == "judge_evidence":
+        je = merged_state.get("judge_evidence")
+        sha = merged_state.get("judge_evidence_sha256")
+        return {
+            "per_asset": je if je is not None else {},
+            "sha256": sha if sha is not None else "",
+        }
     if artifact_type == "validator_decision":
         return {
             "output_status": str(merged_state.get("output_status")) if merged_state.get("output_status") is not None else None,

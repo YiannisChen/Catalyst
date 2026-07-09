@@ -82,3 +82,13 @@ A valid golden set must cover:
 
 - `v1_2.jsonl` — Current midterm golden set file (`g001` through `g050`)
 - `annotation_template.md` — Historical annotation prompt and validation notes retained for provenance of `v1_2.jsonl`
+
+## S1 v1.3 Golden Sets (Phase A)
+
+S1 evaluation uses 65 cases across two files:
+
+- `v1_3_answerable.jsonl` — 50 cases expected to produce an attribution
+- `v1_3_unanswerable.jsonl` — 15 cases expected to trigger a refusal
+
+These supersede the v1.2 lineage for S1 metric evaluation. The S1 ruler is driven by
+`test_s1_rebuild_eval_ruler.py` and `test_s1_three_arm.py`.

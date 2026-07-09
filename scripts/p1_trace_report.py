@@ -38,11 +38,11 @@ from catalyst_agents.retrieval.policy import Layer, RetrievalMetadata
 from catalyst_agents.trace.exporter import export_run
 from catalyst_agents.cost_tracker import MODEL_PRICING
 from catalyst_eval.harness.frozen_eval import resolve_lancedb_dir_sha256, sha256_file, utc_now_iso
-from catalyst_eval.metrics.attribution_f1 import AttributionF1
+from catalyst_eval.metrics.cause_match import CauseMatch
 from catalyst_eval.metrics.category_accuracy import CategoryAccuracy
 from catalyst_eval.metrics.confidence_calibration import ConfidenceCalibration
-from catalyst_eval.metrics.grounding_rate import GroundingRate
-from catalyst_eval.metrics.temporal_precision import TemporalPrecision
+from catalyst_eval.metrics.citation_faithfulness import CitationFaithfulness
+from catalyst_eval.metrics.refusal_correctness import RefusalCorrectness
 from catalyst_eval.schema.golden_event import GoldenEvent
 from catalyst_eval.schema.result import AttributionResult, PredictedCause, RetrievedEvidence
 
@@ -499,13 +499,32 @@ def _eval_metrics(case: dict[str, Any], result: dict[str, Any]) -> dict[str, flo
     )
 
     return {
-        "attribution_f1": AttributionF1().compute(predicted, golden),
+        "cause_match_f1": _compute_cause_match_f1(predicted, golden),
         "category_accuracy": CategoryAccuracy().compute(predicted, golden),
-        "grounding_rate": GroundingRate().compute(predicted, golden),
-        "temporal_precision": TemporalPrecision().compute(predicted, golden),
+        "citation_faithfulness": _compute_faithfulness(predicted, golden),
+        "refusal_correctness": _compute_refusal(predicted, golden),
         "confidence_calibration": ConfidenceCalibration().compute(predicted, golden),
     }
 
+
+
+def _compute_cause_match_f1(predicted, golden):
+    """Bridge: CauseMatch returns dict, extract F1 as float."""
+    from catalyst_eval.metrics.cause_match import CauseMatch
+    result = CauseMatch().compute(predicted, golden)
+    return result.get("f1", 0.0) if isinstance(result, dict) else float(result)
+
+def _compute_faithfulness(predicted, golden):
+    """Bridge: CitationFaithfulness returns dict, extract score as float."""
+    from catalyst_eval.metrics.citation_faithfulness import CitationFaithfulness
+    result = CitationFaithfulness().compute(predicted, golden)
+    return result.get("score", 0.0) if isinstance(result, dict) else float(result)
+
+def _compute_refusal(predicted, golden):
+    """Bridge: RefusalCorrectness returns dict, extract score as float."""
+    from catalyst_eval.metrics.refusal_correctness import RefusalCorrectness
+    result = RefusalCorrectness().compute(predicted, golden)
+    return result.get("score", 0.0) if isinstance(result, dict) else float(result)
 
 def _status_name(value: Any) -> str:
     return getattr(value, "name", None) or str(value)

@@ -3,10 +3,12 @@ Experiment comparator — runs multiple agent configurations against the same
 golden set and produces a side-by-side ComparisonReport.
 
 Usage:
+    from catalyst_eval.metrics import CauseMatch
+
     comparison = compare(
         configs={"baseline": agent_v1, "improved": agent_v2},
         golden_set=events,
-        metrics=[AttributionF1(), CategoryAccuracy()],
+        metrics=[CauseMatch()],
     )
     print(comparison.to_markdown())
 """

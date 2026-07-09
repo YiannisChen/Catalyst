@@ -24,3 +24,6 @@ packages = ["catalyst_eval"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "integration: cross-package tests that require editable install of catalyst_agents",
+]

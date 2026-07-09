@@ -1,0 +1,9 @@
+{
+  "description": "Committed arm_b_evidence fixture for eval-only fidelity tests. Pre-Critic top-8 with full content_md.",
+  "per_asset": {
+    "poly:abc123::l1": "## TSLA Deliveries Miss\nTesla Q4 deliveries of 495,570 missed consensus of 503,269, disappointing investors despite setting a quarterly delivery record.",
+    "poly:def456::l1": "## Sector Selloff\nSemiconductor stocks fell broadly on China export ban fears, with the SOX index dropping 2.3%.",
+    "fmp:ghi789::l1": "## Analyst Downgrade\nMorgan Stanley cut TSLA to underweight citing margin compression from ongoing price competition."
+  },
+  "sha256": "b13c416af17bae3f5be1cd55bdce8f0fcfb1d45244cae13ef34bd2cd41ad336d"
+}

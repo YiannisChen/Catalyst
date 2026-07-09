@@ -161,7 +161,7 @@ def test_adapter_works_with_eval_harness(monkeypatch):
     monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     from catalyst_eval.harness.runner import evaluate
-    from catalyst_eval.metrics.attribution_f1 import AttributionF1
+    from catalyst_eval.metrics.cause_match import CauseMatch
     from catalyst_eval.schema.golden_event import GoldenEvent, Cause, CauseCategory
 
     golden_set = [
@@ -185,9 +185,9 @@ def test_adapter_works_with_eval_harness(monkeypatch):
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
     predict = make_catalyst_predict(graph)
 
-    report = evaluate(predict_fn=predict, golden_set=golden_set, metrics=[AttributionF1()])
-    assert "attribution_f1" in report.scores
-    assert report.scores["attribution_f1"] > 0
+    report = evaluate(predict_fn=predict, golden_set=golden_set, metrics=[CauseMatch(judge_fn=lambda p: {"pairings": [{"pred_idx": 0, "golden_idx": 0, "verdict": "same_event_same_direction"}]})])
+    assert "cause_match_f1" in report.scores
+    assert report.scores["cause_match_f1"] > 0
 
 
 def test_rag_only_predict_uses_retrieval_outputs(monkeypatch):

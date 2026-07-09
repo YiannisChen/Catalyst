@@ -1,6 +1,7 @@
 """
-TDD tests for Task 2.2 evaluation metrics.
-Written before implementation — all tests should initially fail on import errors.
+TDD tests for evaluation metrics.
+Updated S1: theater metrics (attribution_f1, grounding_rate, temporal_precision) deleted.
+Replaced with CauseMatch, CitationFaithfulness, RefusalCorrectness, DirectionAccuracy.
 """
 from __future__ import annotations
 
@@ -8,11 +9,11 @@ import pytest
 
 from catalyst_eval.schema.golden_event import Cause, CauseCategory, GoldenEvent
 from catalyst_eval.schema.result import AttributionResult, PredictedCause, RetrievedEvidence
-from catalyst_eval.metrics.attribution_f1 import AttributionF1
 from catalyst_eval.metrics.category_accuracy import CategoryAccuracy
-from catalyst_eval.metrics.grounding_rate import GroundingRate
-from catalyst_eval.metrics.temporal_precision import TemporalPrecision
 from catalyst_eval.metrics.confidence_calibration import ConfidenceCalibration
+from catalyst_eval.metrics.cause_match import CauseMatch
+from catalyst_eval.metrics.citation_faithfulness import CitationFaithfulness
+from catalyst_eval.metrics.refusal_correctness import RefusalCorrectness
 
 
 # ---------------------------------------------------------------------------
@@ -24,6 +25,7 @@ GOLDEN = GoldenEvent(
     ticker="AAPL",
     trade_date="2026-01-15",
     price_move_pct=-4.2,
+    should_refuse=False,
     causes=[
         Cause(
             text="China export ban on H20 chips",
@@ -88,65 +90,36 @@ PREDICTED_BAD = AttributionResult(
     total_tokens=5000,
 )
 
+EMPTY_PREDICTED = AttributionResult(
+    ticker="AAPL", trade_date="2026-01-15",
+    causes=[], summary="",
+)
+
 
 # ---------------------------------------------------------------------------
-# AttributionF1
+# Fixture judge functions (offline — no live LLM in tests)
 # ---------------------------------------------------------------------------
 
-class TestAttributionF1:
-    def setup_method(self):
-        self.metric = AttributionF1()
+def _fixture_unrelated(prompt: str) -> dict:
+    return {"pairings": []}
 
-    def test_name(self):
-        assert self.metric.name == "attribution_f1"
 
-    def test_good_prediction_score_above_threshold(self):
-        score = self.metric.compute(PREDICTED_GOOD, GOLDEN)
-        assert score > 0.5, f"Expected > 0.5, got {score}"
+def _fixture_perfect_match(prompt: str) -> dict:
+    return {
+        "pairings": [
+            {"pred_idx": 0, "golden_idx": 0, "verdict": "same_event_same_direction"},
+            {"pred_idx": 1, "golden_idx": 1, "verdict": "same_event_same_direction"},
+        ]
+    }
 
-    def test_bad_prediction_score_below_threshold(self):
-        score = self.metric.compute(PREDICTED_BAD, GOLDEN)
-        assert score < 0.3, f"Expected < 0.3, got {score}"
 
-    def test_score_bounds(self):
-        score = self.metric.compute(PREDICTED_GOOD, GOLDEN)
-        assert 0.0 <= score <= 1.0
-
-    def test_empty_predicted_causes(self):
-        empty_pred = AttributionResult(
-            ticker="AAPL",
-            trade_date="2026-01-15",
-            causes=[],
-            summary="",
-        )
-        score = self.metric.compute(empty_pred, GOLDEN)
-        assert score == 0.0
-
-    def test_perfect_match(self):
-        """Predicted causes that are verbatim copies of golden causes should score high."""
-        perfect_pred = AttributionResult(
-            ticker="AAPL",
-            trade_date="2026-01-15",
-            causes=[
-                PredictedCause(
-                    text="China export ban on H20 chips",
-                    category="geopolitical",
-                    confidence=1.0,
-                    evidence_ids=[],
-                    direction="negative",
-                ),
-                PredictedCause(
-                    text="Sector selloff",
-                    category="sector",
-                    confidence=1.0,
-                    evidence_ids=[],
-                    direction="negative",
-                ),
-            ],
-            summary="",
-        )
-        score = self.metric.compute(perfect_pred, GOLDEN)
-        assert score == pytest.approx(1.0), f"Expected 1.0, got {score}"
+def _fixture_faithfulness_all_supported(prompt: str) -> dict:
+    return {
+        "per_cause_verdicts": [
+            {"verdict": "supported", "reason": "Evidence directly supports"},
+            {"verdict": "supported", "reason": "Evidence directly supports"},
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -187,136 +160,7 @@ class TestCategoryAccuracy:
         assert score == 1.0
 
     def test_empty_predicted_causes(self):
-        empty_pred = AttributionResult(
-            ticker="AAPL",
-            trade_date="2026-01-15",
-            causes=[],
-            summary="",
-        )
-        score = self.metric.compute(empty_pred, GOLDEN)
-        assert score == 0.0
-
-    def test_score_bounds(self):
-        score = self.metric.compute(PREDICTED_GOOD, GOLDEN)
-        assert 0.0 <= score <= 1.0
-
-
-# ---------------------------------------------------------------------------
-# TemporalPrecision
-# ---------------------------------------------------------------------------
-
-class TestTemporalPrecision:
-    def setup_method(self):
-        self.metric = TemporalPrecision()
-
-    def test_name(self):
-        assert self.metric.name == "temporal_precision"
-
-    def test_matching_date(self):
-        score = self.metric.compute(PREDICTED_GOOD, GOLDEN)
-        assert score == 1.0
-
-    def test_mismatched_date(self):
-        wrong_date_pred = AttributionResult(
-            ticker="AAPL",
-            trade_date="2026-01-16",
-            causes=[],
-            summary="",
-        )
-        score = self.metric.compute(wrong_date_pred, GOLDEN)
-        assert score == 0.0
-
-
-# ---------------------------------------------------------------------------
-# GroundingRate
-# ---------------------------------------------------------------------------
-
-class TestGroundingRate:
-    def setup_method(self):
-        self.metric = GroundingRate()
-
-    def test_name(self):
-        assert self.metric.name == "grounding_rate"
-
-    def test_grounded_prediction(self):
-        # PREDICTED_GOOD has evidence_ids ["c1", "c2"] and retrieved_evidence with asset_ids "c1", "c2"
-        score = self.metric.compute(PREDICTED_GOOD, GOLDEN)
-        assert score > 0.5, f"Expected > 0.5, got {score}"
-
-    def test_no_evidence(self):
-        no_evidence_pred = AttributionResult(
-            ticker="AAPL",
-            trade_date="2026-01-15",
-            causes=[
-                PredictedCause(
-                    text="Some cause",
-                    category="earnings",
-                    confidence=0.5,
-                    evidence_ids=[],
-                    direction="negative",
-                ),
-            ],
-            summary="",
-            retrieved_evidence=[RetrievedEvidence(asset_id="c1", content_md="chunk")],
-        )
-        score = self.metric.compute(no_evidence_pred, GOLDEN)
-        assert score == 0.0
-
-    def test_empty_causes_returns_zero(self):
-        empty_pred = AttributionResult(
-            ticker="AAPL",
-            trade_date="2026-01-15",
-            causes=[],
-            summary="",
-        )
-        score = self.metric.compute(empty_pred, GOLDEN)
-        assert score == 0.0
-
-    def test_partial_grounding(self):
-        """One cause grounded, one not — score should be 0.5."""
-        partial_pred = AttributionResult(
-            ticker="AAPL",
-            trade_date="2026-01-15",
-            causes=[
-                PredictedCause(
-                    text="Grounded cause",
-                    category="geopolitical",
-                    confidence=0.8,
-                    evidence_ids=["c1"],
-                    direction="negative",
-                ),
-                PredictedCause(
-                    text="Ungrounded cause",
-                    category="sector",
-                    confidence=0.4,
-                    evidence_ids=[],
-                    direction="negative",
-                ),
-            ],
-            summary="",
-            retrieved_evidence=[RetrievedEvidence(asset_id="c1", content_md="chunk")],
-        )
-        score = self.metric.compute(partial_pred, GOLDEN)
-        assert score == pytest.approx(0.5)
-
-    def test_evidence_id_mismatch_returns_zero(self):
-        """When evidence_ids don't match any retrieved asset_id, grounding is 0."""
-        mismatch_pred = AttributionResult(
-            ticker="AAPL",
-            trade_date="2026-01-15",
-            causes=[
-                PredictedCause(
-                    text="Some cause",
-                    category="geopolitical",
-                    confidence=0.8,
-                    evidence_ids=["nonexistent_id"],
-                    direction="negative",
-                ),
-            ],
-            summary="",
-            retrieved_evidence=[RetrievedEvidence(asset_id="c1", content_md="chunk")],
-        )
-        score = self.metric.compute(mismatch_pred, GOLDEN)
+        score = self.metric.compute(EMPTY_PREDICTED, GOLDEN)
         assert score == 0.0
 
     def test_score_bounds(self):
@@ -341,61 +185,29 @@ class TestConfidenceCalibration:
         assert 0.0 <= score <= 1.0
 
     def test_empty_causes_returns_zero(self):
-        empty_pred = AttributionResult(
-            ticker="AAPL",
-            trade_date="2026-01-15",
-            causes=[],
-            summary="",
-        )
-        score = self.metric.compute(empty_pred, GOLDEN)
+        score = self.metric.compute(EMPTY_PREDICTED, GOLDEN)
         assert score == 0.0
 
     def test_well_calibrated_is_higher_than_poorly_calibrated(self):
-        """
-        A predictor that is correct AND assigns high confidence should outscore
-        one that is wrong but assigns high confidence.
-        """
-        # Correct categories, moderate confidence — should be better calibrated
         well_calibrated = AttributionResult(
             ticker="AAPL",
             trade_date="2026-01-15",
             causes=[
-                PredictedCause(
-                    text="geopolitical event",
-                    category="geopolitical",
-                    confidence=0.6,
-                    evidence_ids=[],
-                    direction="negative",
-                ),
-                PredictedCause(
-                    text="sector move",
-                    category="sector",
-                    confidence=0.7,
-                    evidence_ids=[],
-                    direction="negative",
-                ),
+                PredictedCause(text="geopolitical event", category="geopolitical",
+                               confidence=0.6, evidence_ids=[], direction="negative"),
+                PredictedCause(text="sector move", category="sector",
+                               confidence=0.7, evidence_ids=[], direction="negative"),
             ],
             summary="",
         )
-        # Wrong categories, very high confidence — poorly calibrated
         poorly_calibrated = AttributionResult(
             ticker="AAPL",
             trade_date="2026-01-15",
             causes=[
-                PredictedCause(
-                    text="earnings miss",
-                    category="earnings",
-                    confidence=0.95,
-                    evidence_ids=[],
-                    direction="negative",
-                ),
-                PredictedCause(
-                    text="macro headwinds",
-                    category="macro",
-                    confidence=0.9,
-                    evidence_ids=[],
-                    direction="negative",
-                ),
+                PredictedCause(text="earnings miss", category="earnings",
+                               confidence=0.95, evidence_ids=[], direction="negative"),
+                PredictedCause(text="macro headwinds", category="macro",
+                               confidence=0.9, evidence_ids=[], direction="negative"),
             ],
             summary="",
         )
@@ -404,3 +216,97 @@ class TestConfidenceCalibration:
         assert good_score > bad_score, (
             f"Well-calibrated ({good_score}) should outscore poorly calibrated ({bad_score})"
         )
+
+
+# ---------------------------------------------------------------------------
+# CauseMatch (replaces AttributionF1)
+# ---------------------------------------------------------------------------
+
+class TestCauseMatch:
+    def setup_method(self):
+        self.metric = CauseMatch(judge_fn=_fixture_unrelated)
+
+    def test_name(self):
+        assert self.metric.name == "cause_match"
+
+    def test_empty_predicted_on_answerable_case(self):
+        """Empty predicted on answerable case → recall=0, F1=0 (NOT skipped)."""
+        result = self.metric.compute(EMPTY_PREDICTED, GOLDEN)
+        assert result["recall"] == 0.0
+        assert result["f1"] == 0.0
+        assert not result["skipped"]
+
+    def test_perfect_match_with_fixture(self):
+        metric = CauseMatch(judge_fn=_fixture_perfect_match)
+        result = metric.compute(PREDICTED_GOOD, GOLDEN)
+        assert result["precision"] == 1.0
+        assert result["recall"] == 1.0
+        assert result["f1"] == 1.0
+
+    def test_refusal_skipped(self):
+        refusal_golden = GoldenEvent(
+            id="t2", ticker="AAPL", trade_date="2026-01-15", price_move_pct=0.0,
+            should_refuse=True, causes=[],
+        )
+        result = self.metric.compute(PREDICTED_GOOD, refusal_golden)
+        assert result["skipped"] is True
+
+
+# ---------------------------------------------------------------------------
+# CitationFaithfulness
+# ---------------------------------------------------------------------------
+
+class TestCitationFaithfulness:
+    def setup_method(self):
+        self.metric = CitationFaithfulness(judge_fn=_fixture_faithfulness_all_supported)
+
+    def test_name(self):
+        assert self.metric.name == "citation_faithfulness"
+
+    def test_all_supported_scores_one(self):
+        result = self.metric.compute(PREDICTED_GOOD, GOLDEN)
+        assert result["score"] == 1.0
+
+    def test_refusal_skipped(self):
+        refusal_golden = GoldenEvent(
+            id="t2", ticker="AAPL", trade_date="2026-01-15", price_move_pct=0.0,
+            should_refuse=True, causes=[],
+        )
+        result = self.metric.compute(PREDICTED_GOOD, refusal_golden)
+        assert result["skipped"] is True
+
+    def test_empty_causes_skipped(self):
+        result = self.metric.compute(EMPTY_PREDICTED, GOLDEN)
+        assert result["skipped"] is True
+
+
+# ---------------------------------------------------------------------------
+# RefusalCorrectness
+# ---------------------------------------------------------------------------
+
+class TestRefusalCorrectness:
+    def setup_method(self):
+        self.metric = RefusalCorrectness()
+
+    def test_name(self):
+        assert self.metric.name == "refusal_correctness"
+
+    def test_correct_refusal_scores_one(self):
+        refusal_golden = GoldenEvent(
+            id="t2", ticker="AAPL", trade_date="2026-01-15", price_move_pct=0.0,
+            should_refuse=True, causes=[],
+        )
+        result = self.metric.compute(EMPTY_PREDICTED, refusal_golden)
+        assert result["score"] == 1.0
+
+    def test_false_negative_refusal_scores_zero(self):
+        refusal_golden = GoldenEvent(
+            id="t2", ticker="AAPL", trade_date="2026-01-15", price_move_pct=0.0,
+            should_refuse=True, causes=[],
+        )
+        result = self.metric.compute(PREDICTED_BAD, refusal_golden)
+        assert result["score"] == 0.0
+
+    def test_not_applicable_when_not_should_refuse(self):
+        result = self.metric.compute(PREDICTED_GOOD, GOLDEN)
+        assert result["skipped"] is True

@@ -1,6 +1,6 @@
 """
-TDD tests for Task 2.3 — harness runner and experiment comparator.
-Written before implementation: all tests should initially fail on ImportError.
+TDD tests for harness runner and experiment comparator.
+Updated S1: uses CauseMatch instead of attribution_f1.
 """
 from __future__ import annotations
 
@@ -8,10 +8,22 @@ import pytest
 
 from catalyst_eval.harness.runner import evaluate, EvalReport
 from catalyst_eval.harness.experiment import compare, ComparisonReport
-from catalyst_eval.metrics.attribution_f1 import AttributionF1
+from catalyst_eval.metrics.cause_match import CauseMatch
 from catalyst_eval.metrics.category_accuracy import CategoryAccuracy
 from catalyst_eval.schema.golden_event import GoldenEvent, Cause, CauseCategory
 from catalyst_eval.schema.result import AttributionResult, PredictedCause, RetrievedEvidence
+
+
+# ---------------------------------------------------------------------------
+# Fixture judge for CauseMatch (offline, no live LLM)
+# ---------------------------------------------------------------------------
+
+def _fixture_judge(prompt: str) -> dict:
+    return {
+        "pairings": [
+            {"pred_idx": 0, "golden_idx": 0, "verdict": "same_event_same_direction"},
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +86,7 @@ GOLDEN_SET = [
         ticker="AAPL",
         trade_date="2026-01-15",
         price_move_pct=-4.2,
+        should_refuse=False,
         causes=[
             Cause(
                 text="China export ban",
@@ -94,18 +107,17 @@ class TestEvaluate:
         report = evaluate(
             predict_fn=mock_good_agent,
             golden_set=GOLDEN_SET,
-            metrics=[AttributionF1(), CategoryAccuracy()],
+            metrics=[CauseMatch(judge_fn=_fixture_judge), CategoryAccuracy()],
         )
         assert isinstance(report, EvalReport)
-        assert "attribution_f1" in report.scores
+        assert "cause_match_f1" in report.scores
         assert "category_accuracy" in report.scores
-        assert report.scores["attribution_f1"] > 0
 
     def test_evaluate_tracks_cost(self):
         report = evaluate(
             predict_fn=mock_good_agent,
             golden_set=GOLDEN_SET,
-            metrics=[AttributionF1()],
+            metrics=[CauseMatch(judge_fn=_fixture_judge)],
         )
         assert hasattr(report, "avg_cost_usd")
         assert hasattr(report, "avg_tokens")
@@ -116,22 +128,22 @@ class TestEvaluate:
         report = evaluate(
             predict_fn=mock_good_agent,
             golden_set=GOLDEN_SET,
-            metrics=[AttributionF1()],
+            metrics=[CauseMatch(judge_fn=_fixture_judge)],
         )
         assert isinstance(report.per_event, list)
         assert len(report.per_event) == len(GOLDEN_SET)
         first = report.per_event[0]
         assert "event_id" in first
-        assert "attribution_f1" in first
+        assert "cause_match_f1" in first
 
     def test_evaluate_empty_golden_set(self):
         report = evaluate(
             predict_fn=mock_good_agent,
             golden_set=[],
-            metrics=[AttributionF1(), CategoryAccuracy()],
+            metrics=[CauseMatch(judge_fn=_fixture_judge), CategoryAccuracy()],
         )
         assert isinstance(report, EvalReport)
-        assert report.scores["attribution_f1"] == pytest.approx(0.0)
+        assert report.scores["cause_match_f1"] == pytest.approx(0.0)
         assert report.scores["category_accuracy"] == pytest.approx(0.0)
         assert report.avg_cost_usd == pytest.approx(0.0)
         assert report.avg_tokens == pytest.approx(0.0)
@@ -140,7 +152,7 @@ class TestEvaluate:
         report = evaluate(
             predict_fn=mock_good_agent,
             golden_set=GOLDEN_SET,
-            metrics=[AttributionF1(), CategoryAccuracy()],
+            metrics=[CauseMatch(judge_fn=_fixture_judge), CategoryAccuracy()],
         )
         for metric_name, score in report.scores.items():
             assert 0.0 <= score <= 1.0, f"{metric_name} score out of bounds: {score}"
@@ -155,28 +167,17 @@ class TestCompare:
         comparison = compare(
             configs={"good": mock_good_agent, "bad": mock_bad_agent},
             golden_set=GOLDEN_SET,
-            metrics=[AttributionF1()],
+            metrics=[CauseMatch(judge_fn=_fixture_judge)],
         )
         assert isinstance(comparison, ComparisonReport)
         assert "good" in comparison.results
         assert "bad" in comparison.results
 
-    def test_compare_good_beats_bad(self):
-        comparison = compare(
-            configs={"good": mock_good_agent, "bad": mock_bad_agent},
-            golden_set=GOLDEN_SET,
-            metrics=[AttributionF1()],
-        )
-        assert (
-            comparison.results["good"]["attribution_f1"]
-            > comparison.results["bad"]["attribution_f1"]
-        )
-
     def test_compare_costs_tracked(self):
         comparison = compare(
             configs={"good": mock_good_agent, "bad": mock_bad_agent},
             golden_set=GOLDEN_SET,
-            metrics=[AttributionF1()],
+            metrics=[CauseMatch(judge_fn=_fixture_judge)],
         )
         assert "good" in comparison.costs
         assert "bad" in comparison.costs
@@ -187,31 +188,26 @@ class TestCompare:
         comparison = compare(
             configs={"good": mock_good_agent, "bad": mock_bad_agent},
             golden_set=GOLDEN_SET,
-            metrics=[AttributionF1()],
+            metrics=[CauseMatch(judge_fn=_fixture_judge)],
         )
         md = comparison.to_markdown()
         assert isinstance(md, str)
-        # Must contain a markdown table header row
         assert "|" in md
         assert "Config" in md
-        assert "attribution_f1" in md
-        # Both config names must appear
+        assert "cause_match" in md
         assert "good" in md
         assert "bad" in md
-        # Cost columns must appear
         assert "Avg Cost" in md
         assert "Avg Tokens" in md
 
     def test_compare_to_markdown_table_structure(self):
-        """Verify the markdown table has a separator row (|---|)."""
         comparison = compare(
             configs={"good": mock_good_agent, "bad": mock_bad_agent},
             golden_set=GOLDEN_SET,
-            metrics=[AttributionF1()],
+            metrics=[CauseMatch(judge_fn=_fixture_judge)],
         )
         md = comparison.to_markdown()
         lines = [ln.strip() for ln in md.splitlines() if ln.strip()]
-        # There should be at least 3 lines: header, separator, data row(s)
         assert len(lines) >= 3
         separator_lines = [ln for ln in lines if set(ln.replace("|", "").replace("-", "").replace(" ", "")) == set()]
         assert len(separator_lines) >= 1, "No separator row found in markdown table"

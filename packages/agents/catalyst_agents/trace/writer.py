@@ -67,7 +67,7 @@ class TraceWriter:
             "SELECT status, trace_id FROM agent_runs WHERE run_id = ?",
             (self.run_id,),
         ).fetchone()
-        if existing is not None and existing[0] == "QUEUED":
+        if existing is not None:
             existing_trace_id = existing[1]
             if existing_trace_id:
                 self.trace_id = existing_trace_id

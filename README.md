@@ -92,14 +92,16 @@ AIHUBMIX_API_KEY=your_llm_proxy_key   # or set OPENAI_API_KEY / ANTHROPIC_API_KE
 
 Data providers: [Polygon.io](https://polygon.io) (free tier available), [FMP](https://financialmodelingprep.com), [FRED](https://fred.stlouisfed.org/docs/api/fred/) (free).
 
-### 3. Run the end-to-end drill
+### 3. Verify S1 evaluation pipeline
 
 ```bash
-# Deterministic smoke test — no API keys needed
-python scripts/e2e_drill.py
-
-# With real LLM
-python scripts/e2e_real.py
+# Run S1 metric, harness, and ruler tests (no network required)
+.venv/bin/python -m pytest \
+  packages/eval/tests/test_s1_rebuild_eval_ruler.py \
+  packages/eval/tests/test_s1_three_arm.py \
+  packages/eval/tests/test_metrics.py \
+  packages/eval/tests/test_harness.py \
+  -q
 ```
 
 ### 4. Start the workbench
@@ -118,24 +120,39 @@ npm install && npm run dev
 
 ## Evaluation
 
-Catalyst is evaluated against a frozen golden set of 50 financial events with ground-truth attribution labels.
+Catalyst is evaluated against a frozen golden set of 65 financial events
+with ground-truth attribution labels:
+
+| File | Cases | Purpose |
+|------|-------|--------|
+| `packages/eval/golden_set/v1_3_answerable.jsonl` | 50 | Expected to produce an attribution |
+| `packages/eval/golden_set/v1_3_unanswerable.jsonl` | 15 | Expected to trigger a refusal |
+| **Total** | **65** | |
+
+### S1 metrics
+
+- CauseMatch — precision/recall over attributed event causes
+- CitationFaithfulness — fraction of claims with valid evidence references
+- DirectionAccuracy — correctness of predicted price-move direction
+- RefusalCorrectness — accuracy of refusal decisions on unanswerable cases
+
+### Three-arm evaluation design
+
+- **Arm A:** closed-book (LLM only, no evidence)
+- **Arm B:** same pre-Critic miner evidence
+- **Arm C:** full MCJ pipeline
+
+The 65-case API baseline runner has not yet been implemented on this branch.
+S1 pipeline integrity is verified by the test suite (see Quick Start above).
+
+### Legacy runners
 
 ```bash
-# Run frozen eval (requires data/)
+# Legacy T-13b/v1.2 frozen eval (requires data/)
 python packages/eval/scripts/run_frozen_eval.py
-
-# Ablation: critic on vs. off
-python scripts/p1_ablation.py
-
-# Statistical report
-python scripts/p1_stats.py
 ```
 
-**Five metrics:** Attribution F1 · Grounding Rate · Temporal Precision · Category Accuracy · Confidence Calibration
-
-See [docs/ADR/ADR-010-golden-set-expansion-and-statistical-power.md](docs/ADR/ADR-010-golden-set-expansion-and-statistical-power.md) for evaluation design.
-
----
+See [docs/ADR/ADR-010-golden-set-expansion-and-statistical-power.md](docs/ADR/ADR-010-golden-set-expansion-and-statistical-power.md) for evaluation design history.
 
 ## Key Design Decisions
 

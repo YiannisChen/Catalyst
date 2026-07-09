@@ -36,3 +36,5 @@ class AttributionResult(BaseModel):
     stopped_after_case_id: str | None = None
     executed_case_count: int = 0
     cost_cap_policy: str = "strict_gt"
+    # Arm-B fidelity: SHA-256 of the reconstructed evidence block
+    evidence_block_sha256: str | None = Field(default=None)

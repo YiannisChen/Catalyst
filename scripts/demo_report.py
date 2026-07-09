@@ -1,10 +1,10 @@
-"""Generate a presentation-friendly demo report from a completed E2E pipeline run.
+"""Generate a presentation-friendly demo report from a completed pipeline run.
 
-Consumes the same intermediate state fields that e2e_strict.py already collects
-and formats them for a 4-minute midterm walkthrough — no jargon, readable chunk
-previews, and an honest limitations section.
+Formats intermediate pipeline state (run metadata, silver chunks, pipeline state)
+into a readable Markdown report suitable for walkthroughs and presentations —
+no jargon, readable chunk previews, and an honest limitations section.
 
-Usage (from e2e_strict.py):
+Usage:
     from demo_report import write_demo_report
     write_demo_report(run_metadata, silver_chunks, pipeline_state, output_path)
 """
