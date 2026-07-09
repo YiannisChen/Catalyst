@@ -83,32 +83,74 @@ def _record_attempt(metadata: RetrievalMetadata, layer: Layer) -> None:
 
 
 def _sql_fallback_query(layer: Layer, metadata: RetrievalMetadata) -> list[dict[str, Any]]:
-    conn = sqlite3.connect(str(metadata.db_path or default_db_path()))
+    """Retrieve evidence from SQL — prefers corpus_items VIEW, falls back to clean_assets.
+
+    S3 Data Belt: corpus_items is the canonical retrieval surface.
+    Frozen DB compat: when corpus_items VIEW is absent (frozen DB), queries clean_assets
+    directly and records fallback_surface='clean_assets'.
+    """
+    db_path = str(metadata.db_path or default_db_path())
+    conn = sqlite3.connect(db_path)
     start, end = metadata.date_range
     source_types = _source_types_for_layer(layer)
 
-    clauses = [
-        "reference_date >= ?",
-        "reference_date <= ?",
-        f"source_type IN ({','.join('?' for _ in source_types)})",
-        "COALESCE(is_duplicate, 0) = 0",
-    ]
-    params: list[Any] = [start, end, *source_types]
+    # Determine surface: corpus_items VIEW or clean_assets fallback
+    # S3 Data Belt: corpus_items is the canonical retrieval surface.
+    # Fallback to clean_assets ONLY when the VIEW is absent (frozen DB).
+    # Do NOT use COUNT(*) — an empty corpus_items VIEW must return zero rows.
+    view_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='view' AND name='corpus_items'"
+    ).fetchone() is not None
 
-    if layer == Layer.DIRECT:
-        clauses.insert(0, "ticker = ?")
-        params.insert(0, metadata.ticker)
+    if view_exists:
+        clauses = [
+            "reference_date >= ?",
+            "reference_date <= ?",
+            f"source_type IN ({','.join('?' for _ in source_types)})",
+        ]
+        params: list[Any] = [start, end, *source_types]
 
-    rows = conn.execute(
-        f"""
-        SELECT asset_id, ticker, source_type, reference_date, content_md
-        FROM clean_assets
-        WHERE {' AND '.join(clauses)}
-        ORDER BY reference_date DESC, asset_id ASC
-        LIMIT ?
-        """,
-        (*params, metadata.top_k),
-    ).fetchall()
+        if layer == Layer.DIRECT:
+            clauses.insert(0, "ticker = ?")
+            params.insert(0, metadata.ticker)
+
+        rows = conn.execute(
+            f"""
+            SELECT corpus_item_id AS asset_id, ticker, source_type, reference_date, content_md
+            FROM corpus_items
+            WHERE {' AND '.join(clauses)}
+            ORDER BY reference_date DESC, asset_id ASC
+            LIMIT ?
+            """,
+            (*params, metadata.top_k),
+        ).fetchall()
+        fallback_surface = "corpus_items"
+    else:
+        # Frozen DB fallback — clean_assets only
+        clauses = [
+            "reference_date >= ?",
+            "reference_date <= ?",
+            f"source_type IN ({','.join('?' for _ in source_types)})",
+            "COALESCE(is_duplicate, 0) = 0",
+        ]
+        params = [start, end, *source_types]
+
+        if layer == Layer.DIRECT:
+            clauses.insert(0, "ticker = ?")
+            params.insert(0, metadata.ticker)
+
+        rows = conn.execute(
+            f"""
+            SELECT asset_id, ticker, source_type, reference_date, content_md
+            FROM clean_assets
+            WHERE {' AND '.join(clauses)}
+            ORDER BY reference_date DESC, asset_id ASC
+            LIMIT ?
+            """,
+            (*params, metadata.top_k),
+        ).fetchall()
+        fallback_surface = "clean_assets"
+
     conn.close()
 
     results = []
@@ -121,6 +163,7 @@ def _sql_fallback_query(layer: Layer, metadata: RetrievalMetadata) -> list[dict[
                 "reference_date": row[3],
                 "content_md": row[4],
                 "rrf_score": 1.0 / idx,
+                "_fallback_surface": fallback_surface,
             }
         )
     return results

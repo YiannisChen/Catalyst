@@ -48,6 +48,13 @@ class RunReport:
     index_state: dict[str, int] = field(default_factory=dict)
     doctor: dict[str, Any] | None = None
     report_path: str = ""
+    # S3 Data Belt §0.7 — observability fields
+    embedded_count: int = 0
+    queued_count: int = 0
+    pending_after: int = 0
+    skipped_ineligible: int = 0
+    watermarks: dict[str, Any] = field(default_factory=dict)
+    dedup: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

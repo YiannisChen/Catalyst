@@ -20,6 +20,34 @@ from datetime import datetime, timezone
 
 from catalyst_data.articles import ensure_articles_table
 
+import os as _os
+
+# ── Frozen DB guard (S3 Data Belt §0.1, D1) ──
+from pathlib import Path as _Path
+_REPO_ROOT = str(_Path(__file__).resolve().parents[4])
+FROZEN_PATHS = frozenset({
+    _os.path.realpath(_os.path.join(_REPO_ROOT, "data", "catalyst_eval_frozen_v2.db")),
+})
+
+
+class FrozenDBWriteError(RuntimeError):
+    """Raised when a write operation targets a frozen (immutable) database."""
+    pass
+
+
+def _assert_not_frozen(db_path: str) -> None:
+    """Raise FrozenDBWriteError if db_path resolves to a frozen database.
+
+    Uses os.path.realpath to catch symlinks, copies, and renamed files.
+    NEVER uses endswith() -- that misses renamed copies and future versions.
+    """
+    real = _os.path.realpath(db_path)
+    if real in FROZEN_PATHS:
+        raise FrozenDBWriteError(
+            f"Refusing to write to frozen database: {real}. "
+            f"Use a separate dev database for writes."
+        )
+
 # ---------------------------------------------------------------------------
 # Schema DDL
 # ---------------------------------------------------------------------------
@@ -288,8 +316,122 @@ def upsert_filing_document(conn, *, filing_id, document_url, document_type='prim
     if commit:
         conn.commit()
 
+
+# ── corpus_items VIEW (S3 Data Belt §0.1, D1) ──
+_CORPUS_ITEMS_VIEW = """
+CREATE VIEW corpus_items AS
+-- Articles branch: one row per article_id x ticker (INNER JOIN article_tickers)
+-- content_md byte-identical to index_builder L1: title || char(10) || COALESCE(description, '')
+SELECT
+    a.article_id AS corpus_item_id,
+    'article'     AS source_kind,
+    at.ticker,
+    a.provider,
+    a.source_type,
+    at.reference_date,
+    a.published_utc,
+    a.title || char(10) || COALESCE(a.description, '') AS content_md,
+    a.title,
+    a.article_url,
+    a.publisher_name,
+    a.source_tier,
+    at.dedup_group_id,
+    at.is_canonical,
+    a.is_rag_eligible,
+    'l1'          AS chunk_level
+FROM articles a
+INNER JOIN article_tickers at ON a.article_id = at.article_id
+UNION ALL
+-- Filings branch: one row per is_rag_eligible filing with best-document selection
+-- content_md matches index_builder filing L1
+-- ROW_NUMBER() window function reproduces document preference (exhibit_99_1 over primary_doc)
+SELECT
+    ranked.filing_id AS corpus_item_id,
+    'filing'      AS source_kind,
+    ranked.ticker,
+    'sec'         AS provider,
+    'sec_filing'  AS source_type,
+    ranked.filed_at AS reference_date,
+    ranked.filed_at AS published_utc,
+    CASE
+        WHEN ranked.doc_text IS NOT NULL AND ranked.doc_text != ''
+        THEN (ranked.form_type || ' filed ' || ranked.filed_at) || char(10) || ranked.doc_text
+        ELSE (ranked.form_type || ' filed ' || ranked.filed_at)
+    END AS content_md,
+    ranked.form_type AS title,
+    ranked.url AS article_url,
+    'SEC'         AS publisher_name,
+    ranked.source_tier,
+    ranked.dedup_group_id,
+    ranked.is_canonical,
+    ranked.is_rag_eligible,
+    'l1'          AS chunk_level
+FROM (
+    SELECT
+        f.filing_id,
+        f.ticker,
+        f.form_type,
+        f.filed_at,
+        f.url,
+        f.source_tier,
+        f.dedup_group_id,
+        f.is_canonical,
+        f.is_rag_eligible,
+        fd.text AS doc_text,
+        fd.extraction_status,
+        ROW_NUMBER() OVER (
+            PARTITION BY f.filing_id
+            ORDER BY CASE fd.document_type WHEN 'exhibit_99_1' THEN 0 ELSE 1 END,
+                     fd.document_type
+        ) AS doc_rank
+    FROM filings f
+    LEFT JOIN filing_documents fd
+        ON f.filing_id = fd.filing_id
+        AND fd.extraction_status = 'success'
+    WHERE f.is_rag_eligible = 1
+) ranked
+WHERE ranked.doc_rank = 1
+"""
+
+
+def _get_conn_path(conn):
+    """Extract the database file path from a sqlite3 connection.
+
+    Returns None for in-memory databases (':memory:' or '').
+    """
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        if row:
+            db_name = row[2]
+            if db_name and db_name not in ("", "main", ":memory:"):
+                return db_name
+        return None
+    except Exception:
+        return None
+
+
+def _ensure_corpus_items_view(conn):
+    """Create or refresh the corpus_items VIEW.
+
+    Drops any existing corpus_items VIEW and re-creates it with the
+    current definition.  This ensures dev DBs always use the corrected
+    SQL even if a stale VIEW was created by an older code version.
+
+    Raises FrozenDBWriteError if conn points to a frozen database.
+    """
+    db_path = _get_conn_path(conn)
+    if db_path:
+        _assert_not_frozen(db_path)
+    conn.execute("DROP VIEW IF EXISTS corpus_items")
+    conn.executescript(_CORPUS_ITEMS_VIEW)
+    conn.commit()
+
 def init_db(conn: sqlite3.Connection) -> None:
     """Set pragmas, create all tables and indexes."""
+    # S3 Data Belt: frozen DB guard — must be FIRST, before any PRAGMA/DDL
+    db_path = _get_conn_path(conn)
+    if db_path:
+        _assert_not_frozen(db_path)
     for pragma in _PRAGMAS:
         conn.execute(pragma)
     conn.executescript(_DDL)
@@ -297,6 +439,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     ensure_articles_table(conn)
     ensure_filings_tables(conn)
     ensure_macro_tables(conn)
+    _ensure_corpus_items_view(conn)
     # Fold quality tables into init_db so migrations can see them (H4-F5)
     from catalyst_data.quality import _QUALITY_TABLES_SQL
     conn.executescript(_QUALITY_TABLES_SQL)

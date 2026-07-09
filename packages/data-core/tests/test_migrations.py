@@ -37,8 +37,8 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT)")
         conn.commit()
         v = run_migrations(conn)
-        assert v == 5
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert v == 6
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 6
         conn.close()
 
     def test_per_statement_catch(self, tmp_path: Path):
@@ -55,7 +55,7 @@ class TestMigrations:
         """)
         conn.commit()
         v = run_migrations(conn)
-        assert v == 5
+        assert v == 6
         conn.close()
 
     def test_duplicate_column_skipped(self, tmp_path: Path):

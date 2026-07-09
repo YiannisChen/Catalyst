@@ -1,4 +1,4 @@
-"""Ordered migration registry keyed by PRAGMA user_version.
+"""Ordered migration registry keyed by PRAGMA user_version (v6 = S3 timestamp canonicalization).
 
 H4 owns this module.  All schema changes after initial init_db DDL are
 registered here and applied sequentially by run_migrations().
@@ -53,6 +53,12 @@ MIGRATIONS: list[Migration] = [
         "ALTER TABLE source_checkpoints ADD COLUMN fallback_provider TEXT",
         "ALTER TABLE source_checkpoints ADD COLUMN fallback_triggered INTEGER DEFAULT 0",
     ]),
+    Migration(version=6, name="s3_timestamp_canonical", statements=[
+        "UPDATE article_tickers SET reference_date = REPLACE(reference_date, '+00:00', 'Z') WHERE reference_date LIKE '%+00:00'",
+        "UPDATE articles SET published_utc = REPLACE(published_utc, '+00:00', 'Z') WHERE published_utc LIKE '%+00:00'",
+        "UPDATE clean_assets SET reference_date = REPLACE(reference_date, '+00:00', 'Z') WHERE reference_date LIKE '%+00:00'",
+        "UPDATE raw_assets SET reference_date = REPLACE(reference_date, '+00:00', 'Z') WHERE reference_date LIKE '%+00:00'",
+    ], reversible=False),
 ]
 
 
@@ -65,6 +71,12 @@ def run_migrations(conn: sqlite3.Connection) -> int:
 
     Returns the final PRAGMA user_version value.
     """
+    # S3 Data Belt: frozen DB guard — refuse writes before any PRAGMA/DDL
+    from catalyst_data.storage.sqlite import _get_conn_path, _assert_not_frozen
+    db_path = _get_conn_path(conn)
+    if db_path:
+        _assert_not_frozen(db_path)
+
     current = conn.execute("PRAGMA user_version").fetchone()[0]
 
     for migration in sorted(MIGRATIONS, key=lambda m: m.version):
