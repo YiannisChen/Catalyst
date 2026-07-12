@@ -69,7 +69,7 @@ cd Catalyst
 python -m venv .venv && source .venv/bin/activate
 
 # Install packages in dependency order
-pip install -e packages/data-core
+pip install -e "packages/data-core[dev]"
 pip install -e packages/eval
 pip install -e packages/agents
 pip install -e packages/app

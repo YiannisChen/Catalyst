@@ -12,6 +12,9 @@ Implements a **medallion pipeline** — raw provider responses (Bronze) are clea
 # Core (no vector dependencies)
 pip install -e packages/data-core
 
+# With dev dependencies (pytest, pytest-asyncio)
+pip install -e "packages/data-core[dev]"
+
 # With LanceDB vector support
 pip install -e "packages/data-core[vector]"
 ```

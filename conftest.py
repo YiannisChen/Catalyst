@@ -14,7 +14,7 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parent
 _FIX_CMD = (
-    ".venv/bin/pip install -e packages/data-core "
+    ".venv/bin/pip install -e \"packages/data-core[dev]\" "
     "-e packages/agents -e packages/app -e packages/eval"
 )
 
