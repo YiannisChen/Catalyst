@@ -891,12 +891,50 @@ async def run_update_batch(
     Returns a report dict.
     """
     db_path = str(db_path)
-    conn = sqlite3.connect(db_path)
-    init_db(conn)
-    ensure_ingestion_quality_tables(conn)
 
     if sources is None:
         sources = ["polygon_news"]
+
+    if dry_run:
+        import warnings
+        warnings.warn(
+            "run_update_batch(dry_run=True) is deprecated. "
+            "Use plan_update from catalyst_data.update_planner instead.",
+            DeprecationWarning, stacklevel=2,
+        )
+        from catalyst_data.update_planner import plan_update as _plan_update
+        plan = _plan_update(
+            db_path,
+            tickers=tickers,
+            sources=sources,
+            from_date=from_date,
+            to_date=to_date,
+        )
+        all_cells = plan.stages["market"]["cells"] + plan.stages["evidence"]["cells"]
+        return {
+            "run_id": None,
+            "mode": "dry-run",
+            "plan_preview": True,
+            "cells_total": len(all_cells),
+            "cells_success": 0,
+            "cells_failed": 0,
+            "cells_skipped": 0,
+            "missing_cells": all_cells,
+            "articles_upserted": 0,
+            "clean_assets_inserted": 0,
+            "index_delta_new": 0,
+            "index_delta_changed": 0,
+            "index_would_embed": 0,
+            "elapsed_sec": 0.0,
+            "freshness_before": {},
+            "freshness_after": {},
+            "per_cell_report": [],
+            "plan_hash": plan.plan_hash,
+        }
+
+    conn = sqlite3.connect(db_path)
+    init_db(conn)
+    ensure_ingestion_quality_tables(conn)
 
     import os
 
@@ -919,25 +957,7 @@ async def run_update_batch(
     freshness_before = freshness_report(conn)
     conn.close()
 
-    if dry_run:
-        return {
-            "run_id": None,
-            "mode": "dry-run",
-            "cells_total": len(missing),
-            "cells_success": 0,
-            "cells_failed": 0,
-            "cells_skipped": 0,
-            "missing_cells": missing,
-            "articles_upserted": 0,
-            "clean_assets_inserted": 0,
-            "index_delta_new": 0,
-            "index_delta_changed": 0,
-            "index_would_embed": 0,
-            "elapsed_sec": 0.0,
-            "freshness_before": freshness_before,
-            "freshness_after": freshness_before,
-            "per_cell_report": [],
-        }
+    # dry_run handled above via early return in run_update_batch
 
     # Real run — requires fetch_fn
     if fetch_fn is None:
@@ -1291,6 +1311,34 @@ def run_update(config) -> Any:
     started = datetime.now(timezone.utc).isoformat()
     start_time = time.monotonic()
 
+    if config.dry_run:
+        import warnings
+        warnings.warn(
+            "run_update(dry_run=True) is deprecated. "
+            "Use plan_update from catalyst_data.update_planner instead.",
+            DeprecationWarning, stacklevel=2,
+        )
+        from catalyst_data.update_planner import plan_update as _plan_update
+        plan = _plan_update(
+            db_path,
+            tickers=config.tickers,
+            sources=config.sources or None,
+            from_date=config.from_date,
+            to_date=config.to_date,
+        )
+        ended = datetime.now(timezone.utc).isoformat()
+        all_cells = plan.stages["market"]["cells"] + plan.stages["evidence"]["cells"]
+        report = RunReport(
+            run_id="", mode="dry-run", resume_from=config.resume_from,
+            config={**_config_report_dict(config), "plan_preview": True, "plan_hash": plan.plan_hash}, started_at=started, ended_at=ended,
+            elapsed_sec=round(time.monotonic() - start_time, 2),
+            providers={src: {"cells_total": plan.estimates["requests"].get(src, 0),
+                             "cells_success": 0, "cells_failed": 0, "cells_skipped": 0}
+                       for src in sources},
+            rows_changed={}, index_state={}, doctor=None,
+        )
+        return report
+
     conn = sqlite3.connect(db_path)
     init_db(conn)
     ensure_ingestion_quality_tables(conn)
@@ -1337,27 +1385,7 @@ def run_update(config) -> Any:
         )
         conn.commit()
 
-    if config.dry_run:
-        ended = datetime.now(timezone.utc).isoformat()
-        report = RunReport(
-            run_id=run_id, mode="dry-run", resume_from=config.resume_from,
-            config=_config_report_dict(config), started_at=started, ended_at=ended,
-            elapsed_sec=round(time.monotonic() - start_time, 2),
-            providers={src: {"cells_total": sum(1 for m in missing if m[2] == src),
-                             "cells_success": 0, "cells_failed": 0, "cells_skipped": 0}
-                       for src in resolved_sources},
-            rows_changed={}, index_state={}, doctor=None,
-        )
-        path = save_run_report(report, report_dir=report_dir)
-        report.report_path = path
-        save_run_report(report, report_dir=report_dir)
-        conn.execute(
-            "UPDATE ingestion_runs SET status='succeeded', ended_at=?, report_path=? WHERE run_id=?",
-            (ended, path, run_id),
-        )
-        conn.commit()
-        conn.close()
-        return report
+    # dry_run handled at top of function
 
     policy = FallbackPolicy()
     cells_success = cells_failed = cells_skipped = 0
