@@ -144,8 +144,14 @@ def test_backend_api_contract_endpoints(tmp_path):
     _make_db(db_path)
     client = _client(WorkbenchStore(db_path=db_path))
 
-    create_ok = client.post("/api/live-runs", json={"ticker": "AAPL", "trade_date": "2025-05-02", "query": "q"})
-    create_failed = client.post("/api/live-runs", json={"ticker": "BAD", "trade_date": "2025-05-02", "query": "q"})
+    create_ok = client.post(
+        "/api/live-runs",
+        json={"ticker": "AAPL", "trade_date": "2025-05-02", "query": "q", "model_id": "model-default"},
+    )
+    create_failed = client.post(
+        "/api/live-runs",
+        json={"ticker": "BAD", "trade_date": "2025-05-02", "query": "q", "model_id": "model-default"},
+    )
     run_ok = client.get("/api/live-runs/run-1")
     run_missing = client.get("/api/live-runs/unknown")
     events = client.get("/api/live-runs/run-1/events")

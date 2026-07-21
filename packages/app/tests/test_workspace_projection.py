@@ -101,6 +101,7 @@ class WorkspaceFakeService:
                     "chunk_id": "ev1", "category": "macro", "relevance": 0.9,
                     "reasoning": "Directly relevant",
                     "temporal_match": True, "conflict_signal": 0.1,
+                    "critic_decision": "accepted",
                 }]}),
             },
             {

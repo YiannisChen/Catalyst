@@ -85,10 +85,20 @@ def _make_client(service, db_path):
     return TestClient(app)
 
 
+def _wait_for_terminal(client, run_id, timeout=1.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        payload = client.get(f"/api/live-runs/{run_id}").json()
+        if payload["status"] not in {"QUEUED", "RUNNING"}:
+            return payload
+        time.sleep(0.01)
+    return client.get(f"/api/live-runs/{run_id}").json()
+
+
 def test_failed_request_paths_invalid_inputs(tmp_path):
     db_path = tmp_path / "failure_request.db"
     _prepare_db(db_path)
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: StatusGraph(db_path, "SUFFICIENT"))
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: StatusGraph(db_path, "SUFFICIENT"))
     client = _make_client(service, db_path)
 
     unsupported_ticker = client.post(
@@ -119,7 +129,7 @@ def test_failed_request_paths_invalid_inputs(tmp_path):
 def test_graph_exception_results_in_failed_system_not_stuck(tmp_path):
     db_path = tmp_path / "failure_exception.db"
     _prepare_db(db_path)
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: ExceptionGraph())
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: ExceptionGraph())
     client = _make_client(service, db_path)
 
     created = client.post(
@@ -127,17 +137,16 @@ def test_graph_exception_results_in_failed_system_not_stuck(tmp_path):
         json={"ticker": "AAPL", "trade_date": "2026-01-15", "query": "q", "model_id": "model-default"},
     )
     run_id = created.json()["run_id"]
-    summary = client.get(f"/api/live-runs/{run_id}")
+    summary = _wait_for_terminal(client, run_id)
 
     assert created.status_code == 200
-    assert summary.status_code == 200
-    assert summary.json()["status"] == "FAILED_SYSTEM"
+    assert summary["status"] == "FAILED_SYSTEM"
 
 
 def test_timeout_results_in_failed_system_timeout(tmp_path):
     db_path = tmp_path / "failure_timeout.db"
     _prepare_db(db_path)
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: TimeoutGraph(), timeout_seconds=0.001)
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: TimeoutGraph(), timeout_seconds=0.001)
     client = _make_client(service, db_path)
 
     created = client.post(
@@ -145,33 +154,32 @@ def test_timeout_results_in_failed_system_timeout(tmp_path):
         json={"ticker": "AAPL", "trade_date": "2026-01-15", "query": "q", "model_id": "model-default"},
     )
     run_id = created.json()["run_id"]
-    summary = client.get(f"/api/live-runs/{run_id}")
+    summary = _wait_for_terminal(client, run_id)
 
     assert created.status_code == 200
-    assert summary.status_code == 200
-    assert summary.json()["status"] == "FAILED_SYSTEM"
-    assert summary.json()["failure"]["sub_reason"] == "timeout"
+    assert summary["status"] == "FAILED_SYSTEM"
+    assert summary["failure"]["sub_reason"] == "timeout"
 
 
 def test_terminal_insufficient_and_partial_are_visible(tmp_path):
     db_path = tmp_path / "failure_terminal.db"
     _prepare_db(db_path)
 
-    insufficient_service = LiveRunService(db_path=db_path, graph_factory=lambda: StatusGraph(db_path, "INSUFFICIENT"))
+    insufficient_service = LiveRunService(db_path=db_path, graph_factory=lambda **_: StatusGraph(db_path, "INSUFFICIENT"))
     insufficient_client = _make_client(insufficient_service, db_path)
     insufficient_run = insufficient_client.post(
         "/api/live-runs",
         json={"ticker": "AAPL", "trade_date": "2026-01-15", "query": "q", "model_id": "model-default"},
     ).json()["run_id"]
-    insufficient_summary = insufficient_client.get(f"/api/live-runs/{insufficient_run}").json()
+    insufficient_summary = _wait_for_terminal(insufficient_client, insufficient_run)
 
-    partial_service = LiveRunService(db_path=db_path, graph_factory=lambda: StatusGraph(db_path, "PARTIAL"))
+    partial_service = LiveRunService(db_path=db_path, graph_factory=lambda **_: StatusGraph(db_path, "PARTIAL"))
     partial_client = _make_client(partial_service, db_path)
     partial_run = partial_client.post(
         "/api/live-runs",
         json={"ticker": "AAPL", "trade_date": "2026-01-15", "query": "q", "model_id": "model-default"},
     ).json()["run_id"]
-    partial_summary = partial_client.get(f"/api/live-runs/{partial_run}").json()
+    partial_summary = _wait_for_terminal(partial_client, partial_run)
 
     assert insufficient_summary["status"] == "INSUFFICIENT"
     assert partial_summary["status"] == "PARTIAL"
@@ -180,7 +188,7 @@ def test_terminal_insufficient_and_partial_are_visible(tmp_path):
 def test_artifact_endpoint_empty_missing_and_invalid_type(tmp_path):
     db_path = tmp_path / "failure_artifacts.db"
     _prepare_db(db_path)
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: StatusGraph(db_path, "SUFFICIENT"))
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: StatusGraph(db_path, "SUFFICIENT"))
     client = _make_client(service, db_path)
 
     missing_run_artifacts = client.get("/api/live-runs/missing-run/artifacts")
@@ -194,13 +202,15 @@ def test_artifact_endpoint_empty_missing_and_invalid_type(tmp_path):
 def test_retry_semantics_and_lineage(tmp_path):
     db_path = tmp_path / "failure_retry.db"
     _prepare_db(db_path)
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: StatusGraph(db_path, "SUFFICIENT"))
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: StatusGraph(db_path, "SUFFICIENT"))
     client = _make_client(service, db_path)
 
-    queued_run = client.post(
-        "/api/live-runs",
-        json={"ticker": "AAPL", "trade_date": "2026-01-15", "query": "q", "model_id": "model-default"},
-    ).json()["run_id"]
+    queued_run = service.create_run(
+        ticker="AAPL",
+        trade_date="2026-01-15",
+        query="q",
+        model="model-default",
+    )["run_id"]
 
     conn = sqlite3.connect(db_path)
     conn.execute("UPDATE agent_runs SET status = 'RUNNING' WHERE run_id = ?", (queued_run,))
@@ -221,9 +231,8 @@ def test_retry_semantics_and_lineage(tmp_path):
     assert terminal_retry.json()["ok"] is True
     retry_run_id = terminal_retry.json()["run_id"]
 
-    retry_summary = client.get(f"/api/live-runs/{retry_run_id}")
-    assert retry_summary.status_code == 200
-    assert retry_summary.json()["status"] != "QUEUED"
+    retry_summary = _wait_for_terminal(client, retry_run_id)
+    assert retry_summary["status"] != "QUEUED"
 
     conn = sqlite3.connect(db_path)
     link_row = conn.execute(

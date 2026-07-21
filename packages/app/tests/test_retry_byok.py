@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from catalyst_agents.trace.schema import init_trace_db
 from catalyst_agents.runtime.service import LiveRunService
+from runtime_fixture import prepare_runtime_db
 
 TEST_API_KEY = "sk-test-secret-retry-key-abc123"
 
@@ -41,8 +42,8 @@ def _make_service(db_path: Path) -> LiveRunService:
 
 def _insert_terminal_byok_run(db_path: Path) -> str:
     """Insert a terminal SUCCEEDED run with BYOK metadata in config."""
+    prepare_runtime_db(db_path)
     conn = sqlite3.connect(str(db_path))
-    init_trace_db(conn)
     run_id = uuid4().hex
     trace_id = uuid4().hex
     config = json.dumps({"model": BYOK_META, "config": "mcj_full"}, sort_keys=True)
@@ -62,7 +63,7 @@ def _read_config(db_path: Path, run_id: str) -> dict:
     conn = sqlite3.connect(str(db_path))
     row = conn.execute("SELECT config FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
     conn.close()
-    return json.loads(row["config"]) if row else {}
+    return json.loads(row[0]) if row else {}
 
 
 # ── Tests ──
