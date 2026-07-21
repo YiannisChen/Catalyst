@@ -2,7 +2,7 @@
 
 # yfinance (Yahoo Finance) — Catalyst Data-Core
 
-> **Scope:** Unofficial **community** library over Yahoo Finance; not a vendor contract API. Behavior and availability can change without notice. Use only as **FMP fallback** per project policy. **Convention:** [README](./README.md).
+> **Scope:** Unofficial **community** library over Yahoo Finance; not a vendor contract API. Behavior and availability can change without notice. Use only as the configured OHLCV fallback, never as silent primary data. **Convention:** [README](./README.md).
 
 ---
 

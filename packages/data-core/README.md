@@ -1,95 +1,36 @@
 # catalyst-data
 
-Financial data ingestion, cleaning, and storage for the Catalyst agent system.
+Data ingestion and retrieval foundations for Catalyst.
 
-Implements a **medallion pipeline** — raw provider responses (Bronze) are cleaned and deduplicated into structured Markdown (Silver), then embedded into a vector index (Gold) — with five data source connectors, cross-source deduplication, and provider-level rate limiting.
+## Responsibilities
 
----
+- provider connectors for Polygon, Finnhub, FMP, SEC, FRED, and yfinance fallback;
+- deterministic update planning and plan hashes;
+- SQLite-backed Raw Source Archive and Canonical Domain Store;
+- article, filing, OHLCV, macro, checkpoint, and run-state schemas;
+- deduplication, corpus eligibility, chunking, and retrieval-index artifacts;
+- rate limits, retries, fallback policy, quality checks, and migrations.
 
-## Installation
+Functional terminology is used throughout new APIs:
+
+| Layer | Meaning |
+|---|---|
+| Raw Source Archive | Provider responses and request provenance |
+| Canonical Domain Store | Normalized articles, ticker links, OHLCV, filings, and macro observations |
+| Retrieval Corpus | Versioned searchable document chunks |
+| Retrieval Index | Lexical and vector indexes derived from a corpus manifest |
+
+## Install and test
 
 ```bash
-# Core (no vector dependencies)
-pip install -e packages/data-core
-
-# With dev dependencies (pytest, pytest-asyncio)
 pip install -e "packages/data-core[dev]"
+.venv/bin/python -m pytest packages/data-core -q
+```
 
-# With LanceDB vector support
+Vector dependencies are optional:
+
+```bash
 pip install -e "packages/data-core[vector]"
 ```
 
-**Requirements:** Python ≥ 3.11
-
----
-
-## Configuration
-
-All settings are read from environment variables with sensible defaults.
-
-```bash
-cp packages/data-core/.env.template .env
-```
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `POLYGON_API_KEY` | Yes | Polygon.io OHLCV + news |
-| `FMP_API_KEY` | Yes | Financial Modeling Prep fundamentals |
-| `FRED_API_KEY` | Yes | FRED macro indicators |
-| `FINNHUB_API_KEY` | No | Optional supplemental news |
-| `SEC_USER_AGENT` | No | SEC EDGAR user-agent string |
-| `CATALYST_DB_PATH` | No | SQLite path (default: `data/catalyst_dev.db`) |
-| `CATALYST_RAG_MIN_CHAR_COUNT` | No | Minimum chunk size for RAG (default: 200) |
-
----
-
-## Package Structure
-
-```
-catalyst_data/
-├── connectors/         # Provider API clients
-│   ├── polygon.py      # OHLCV and news events
-│   ├── fmp.py          # Income statement, balance sheet, cash flow
-│   ├── fred.py         # FRED macro time series
-│   └── gdelt.py        # Global news events (free, no key)
-├── storage/
-│   ├── sqlite.py       # WAL-mode SQLite with medallion schema
-│   └── lancedb_store.py  # LanceDB vector index (Gold layer)
-├── pipeline/           # Orchestrated ingestion runs
-├── dedup/              # Cross-source deduplication
-├── transmuter.py       # HTML → Markdown cleaning
-├── quality.py          # Asset quality flags and spam detection
-├── rate_limiter.py     # Per-provider token bucket + key pool
-└── config.py           # Environment-based configuration
-```
-
----
-
-## Storage Schema
-
-**SQLite** (Bronze/Silver layers):
-
-| Table | Description |
-|-------|-------------|
-| `raw_assets` | Raw provider responses (Bronze) |
-| `clean_assets` | Cleaned Markdown (Silver) |
-| `ohlcv` | Daily OHLCV prices |
-| `news_alignment` | News↔price event alignment |
-| `attributions` | Attribution outputs |
-| `golden_events` | Frozen evaluation cases |
-| `ingestion_runs` | Ingestion run history |
-| `agent_runs` | Agent execution records |
-| `trace_events` | Node-level trace events |
-
-**LanceDB** (Gold layer): BGE-M3 embeddings for hybrid retrieval.
-
----
-
-## Running Tests
-
-```bash
-cd packages/data-core
-python -m pytest tests/ -q
-```
-
-Most connector tests use mock responses and do not require live API keys. Tests that hit real APIs are marked `@pytest.mark.live`.
+Tests use recorded or synthetic fixtures. Live provider calls require explicit operator authorization.
