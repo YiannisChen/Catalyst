@@ -53,6 +53,9 @@ node_modules/
 
 # Step 3F coverage audit outputs (generated artifacts)
 data/provider_discovery/*.json
+/data/provider_discovery/
+/data/provider_probe/
+/data/*.db.damaged-*
 
 # Provider probe scripts (one-shot, not committed)
 scripts/provider_discovery.py
