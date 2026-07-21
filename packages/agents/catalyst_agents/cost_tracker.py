@@ -22,11 +22,7 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "gemini-2.5-flash-nothink":   {"input": 0.15,  "output": 0.60},
     "claude-opus-4-6":            {"input": 15.0,  "output": 75.0},
     "deepseek-v4-flash":          {"input": 0.20,  "output": 0.60},
-    "qwen3.6-flash":              {"input": 0.0,   "output": 0.0},
-    "qwen-turbo":                 {"input": 0.0,   "output": 0.0},
     "deepseek-v3":                {"input": 0.27,  "output": 1.10},
-    "coding-minimax-m2.7-free":   {"input": 0.0,   "output": 0.0},
-    "qwen3.6-plus-preview-free":  {"input": 0.0,   "output": 0.0},
 }
 
 # Fallback pricing when model_id is not in MODEL_PRICING

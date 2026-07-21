@@ -12,4 +12,4 @@ def test_validator_uses_threshold_override(monkeypatch):
 
 def test_default_m_threshold_is_calibrated():
     from catalyst_agents.nodes.critic import M_THRESHOLD
-    assert M_THRESHOLD == 0.45
+    assert M_THRESHOLD == 0.6

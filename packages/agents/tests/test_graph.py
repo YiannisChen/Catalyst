@@ -155,7 +155,8 @@ def test_mcj_graph_accumulates_total_costs(monkeypatch):
     graph = build_attribution_graph(use_critic=True, llm=MockLLM())
     result = graph.invoke(_base_state())
 
-    assert len(result["cost_breakdown"]) == 2
+    charged_nodes = [entry["node"] for entry in result["cost_breakdown"]]
+    assert charged_nodes == ["critic", "judge", "validator"]
     assert result["total_cost_usd"] > 0
     assert result["total_tokens"] > 0
 
