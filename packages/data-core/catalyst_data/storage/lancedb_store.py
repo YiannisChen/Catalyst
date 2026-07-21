@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 RRF_K: int = 60
 DEFAULT_TOP_K: int = 12
-DEFAULT_RERANK_TOP_K: int = 5
+DEFAULT_RERANK_TOP_K: int = 8
 EMBEDDING_MODEL: str = "BAAI/bge-m3"
 RERANKER_MODEL: str = "BAAI/bge-reranker-v2-m3"
 L2_ELIGIBLE_SOURCE_TYPES: tuple[str, ...] = ("polygon_news",)

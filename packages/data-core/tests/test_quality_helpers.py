@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS source_checkpoints (
     status               TEXT NOT NULL CHECK (status IN ('pending', 'success', 'failed', 'skipped')),
     error_class          TEXT,
     retries              INTEGER NOT NULL DEFAULT 0,
+    error_message_redacted TEXT, http_status INTEGER, retry_after_seconds REAL, provider_latency_ms REAL, raw_asset_id TEXT, items_count INTEGER, fallback_provider TEXT, fallback_triggered INTEGER DEFAULT 0, empty_reason TEXT,
     PRIMARY KEY (run_id, source_type, ticker, date)
 );
 """
@@ -186,6 +187,12 @@ EXPECTED_COLUMNS = [
     "retry_after_seconds", "provider_latency_ms", "raw_asset_id", "items_count",
     "fallback_provider",
     "fallback_triggered",
+    "empty_reason",
+    "logical_fetch_id",
+    "request_count",
+    "pages_received",
+    "items_received",
+    "is_complete",
 ]
 
 
@@ -193,7 +200,7 @@ class TestSourceCheckpointSchema:
     """H2b — schema hardening: new columns, CHECK removal, reconcile."""
 
     def test_new_columns_exist(self, tmp_path):
-        """After ensure_ingestion_quality_tables, all 13 columns present."""
+        """After ensure_ingestion_quality_tables, all 18 columns present."""
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         init_db(conn)

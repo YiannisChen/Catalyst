@@ -16,6 +16,7 @@ import json
 import logging
 import sqlite3
 import time
+import uuid
 import zlib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,6 +54,179 @@ def request_cancel(run_id: str) -> None:
     intentionally small; a future app worker can persist the same intent.
     """
     _CANCEL_REQUESTS.add(run_id)
+
+# ---- W1-C: OHLCV helpers ----
+
+def _normalize_ohlcv(fr) -> dict | None:
+    """Normalize a FetchResult from any OHLCV provider into an internal bar dict.
+
+    Returns None when the provider returned no valid bar (empty valid).
+    """
+    raw = getattr(fr, 'data', None)
+    if raw is None:
+        return None
+    # Polygon: results array with o/c/h/l/v fields
+    if isinstance(raw, dict) and raw.get("results") is not None:
+        results = raw["results"]
+        if not results:
+            return None
+        r = results[0]
+        try:
+            return {
+                "open": float(r["o"]), "high": float(r["h"]),
+                "low": float(r["l"]), "close": float(r["c"]),
+                "volume": float(r.get("v", r.get("vw", 0))),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+    # yfinance: dict with Open/High/Low/Close/Volume
+    if isinstance(raw, dict) and "Open" in raw:
+        try:
+            return {
+                "open": float(raw["Open"]), "high": float(raw["High"]),
+                "low": float(raw["Low"]), "close": float(raw["Close"]),
+                "volume": float(raw["Volume"]),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+    # Already normalized dict
+    if isinstance(raw, dict) and "open" in raw:
+        try:
+            return {
+                "open": float(raw["open"]), "high": float(raw["high"]),
+                "low": float(raw["low"]), "close": float(raw["close"]),
+                "volume": float(raw.get("volume", 0)),
+            }
+        except (KeyError, TypeError, ValueError):
+            return None
+    return None
+
+
+def _persist_ohlcv_success(
+    conn, run_id, ticker, date, source, ohlcv_bar,
+    ohlcv_source, retries, fr,
+    fallback_provider=None,
+):
+    """Atomically persist OHLCV success: raw_asset + bar + checkpoint.
+
+    Does NOT close conn — caller owns the connection.
+    On failure, rolls back all business writes and returns status='failed'.
+    """
+    from catalyst_data.storage.sqlite import compute_asset_id, upsert_ohlcv as _upsert
+    from catalyst_data.error_taxonomy import ErrorClass
+
+    asset_id = compute_asset_id(ticker, date, source)
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    fr_status = getattr(fr, 'status', 200)
+
+    def _store_ohlcv(c):
+        _upsert(c, symbol=ticker, date=date,
+                open=ohlcv_bar["open"], high=ohlcv_bar["high"],
+                low=ohlcv_bar["low"], close=ohlcv_bar["close"],
+                volume=ohlcv_bar["volume"], source=ohlcv_source,
+                commit=False)
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO raw_assets "
+            "(asset_id,ticker,source_type,reference_date,fetched_at,data_version,content_raw,http_status) "
+            "VALUES (?,?,?,?,?,'v1',?,?)",
+            (asset_id, ticker, source, date, fetched_at,
+             zlib.compress(json.dumps(ohlcv_bar).encode()),
+             fr_status),
+        )
+        _store_ohlcv(conn)
+        from catalyst_data.quality import write_source_checkpoint
+        write_source_checkpoint(
+            conn, run_id=run_id, source_type=source,
+            ticker=ticker, date=date, status="success",
+            error_class=None, raw_asset_id=asset_id,
+            fallback_provider=fallback_provider,
+            fallback_triggered=1 if fallback_provider else 0,
+            items_count=1, retries=retries, commit=False,
+        )
+        conn.commit()
+        return {
+            "ticker": ticker, "date": date, "source": source,
+            "status": "success", "error": None,
+            "ohlcv_bar": True, "asset_id": asset_id,
+            "fallback_provider": fallback_provider,
+        }
+    except Exception as exc:
+        conn.rollback()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            from catalyst_data.quality import write_source_checkpoint
+            write_source_checkpoint(
+                conn, run_id=run_id, source_type=source,
+                ticker=ticker, date=date, status="failed",
+                error_class=ErrorClass.UNKNOWN.value,
+                error_message_redacted=str(exc)[:500],
+                retries=retries, commit=False,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        return {
+            "ticker": ticker, "date": date, "source": source,
+            "status": "failed", "error": str(exc),
+            "ohlcv_bar": False,
+        }
+
+
+def _persist_ohlcv_empty(conn, run_id, ticker, date, source, retries, fr):
+    """Persist EMPTY_VALID OHLCV result.  Caller owns conn."""
+    from catalyst_data.storage.sqlite import compute_asset_id
+    from catalyst_data.error_taxonomy import ErrorClass
+    from catalyst_data.quality import write_source_checkpoint
+
+    asset_id = compute_asset_id(ticker, date, source)
+    fetched_at = datetime.now(timezone.utc).isoformat()
+    fr_status = getattr(fr, 'status', 200)
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO raw_assets "
+            "(asset_id,ticker,source_type,reference_date,fetched_at,data_version,content_raw,http_status) "
+            "VALUES (?,?,?,?,?,'v1',?,?)",
+            (asset_id, ticker, source, date, fetched_at, b"", fr_status),
+        )
+        write_source_checkpoint(
+            conn, run_id=run_id, source_type=source,
+            ticker=ticker, date=date, status="success_empty",
+            error_class=ErrorClass.EMPTY_VALID.value,
+            empty_reason="no_bars_returned",
+            items_count=0, raw_asset_id=asset_id,
+            retries=retries, commit=False,
+        )
+        conn.commit()
+        return {
+            "ticker": ticker, "date": date, "source": source,
+            "status": "success_empty", "error": None,
+            "empty_reason": "no_bars_returned",
+            "ohlcv_bar": False, "asset_id": asset_id,
+        }
+    except Exception as exc:
+        conn.rollback()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            write_source_checkpoint(
+                conn, run_id=run_id, source_type=source,
+                ticker=ticker, date=date, status="failed",
+                error_class=ErrorClass.UNKNOWN.value,
+                error_message_redacted=str(exc)[:500],
+                retries=retries, commit=False,
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+        return {
+            "ticker": ticker, "date": date, "source": source,
+            "status": "failed", "error": str(exc),
+            "ohlcv_bar": False,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +566,447 @@ def persist_cell(
             pass
 
 
+# ============================================================================
+# B2 — execute_update entrypoint with PlanDriftError guarding
+# ============================================================================
+
+_B2_PROVIDER_BY_SOURCE = {
+    "polygon_news": ("polygon", "polygon_news", "news"),
+    "polygon_ohlcv": ("polygon", "polygon_ohlcv", "ohlcv"),
+    "finnhub_company_news": ("finnhub", "finnhub_company_news", "news"),
+    "fmp_fundamentals": ("fmp", "fmp_fundamentals", "fundamentals"),
+    "fred_macro": ("fred", "fred_macro", "macro"),
+    "sec_filings": ("sec", "sec_filings", "filings"),
+    "yfinance_ohlcv": ("yfinance", "yfinance_ohlcv", "ohlcv"),
+    "yfinance_fundamentals": ("yfinance", "yfinance_fundamentals", "fundamentals"),
+}
+
+
+def _utc_now_z() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _plan_stage_cells(plan: "UpdatePlan", stage_name: str) -> list[tuple[str, str, str]]:
+    stage = (plan.stages or {}).get(stage_name) or {}
+    return [tuple(c) for c in stage.get("cells", [])]
+
+
+def _b2_cell_id(ticker: str, date: str, source: str, stage: str) -> str:
+    payload = {
+        "source_type": source,
+        "endpoint_name": source,
+        "ticker_or_series": ticker,
+        "window_start": date,
+        "window_end": date,
+        "stage": stage,
+        "provider_profile_version": "v1",
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _ensure_b2_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    plan_hash: str,
+    expected_plan_hash: str,
+    allow_stale_ohlcv: bool,
+    tickers: list[str] | None = None,
+    sources: list[str] | None = None,
+) -> None:
+    existing_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(ingestion_runs)").fetchall()
+    }
+    row_values: dict[str, Any] = {
+        "run_id": run_id,
+        "status": "PLANNED",
+        "started_at": _utc_now_z(),
+        "plan_hash": plan_hash,
+        "expected_plan_hash": expected_plan_hash,
+        "allow_stale_ohlcv": 1 if allow_stale_ohlcv else 0,
+        "allow_stale_ohlcv_overridden": 1 if allow_stale_ohlcv else 0,
+        "ticker_list_json": json.dumps(tickers or [], sort_keys=True),
+        "source_list_json": json.dumps(sources or [], sort_keys=True),
+        "success_count": 0,
+        "fail_count": 0,
+        "mode": "update",
+    }
+    columns = [col for col in row_values if col in existing_cols]
+    placeholders = ", ".join("?" for _ in columns)
+    conn.execute(
+        f"INSERT INTO ingestion_runs ({', '.join(columns)}) VALUES ({placeholders})",
+        [row_values[col] for col in columns],
+    )
+    conn.commit()
+
+
+def _set_b2_run_status(conn: sqlite3.Connection, run_id: str, status: str) -> None:
+    if status in {"SUCCEEDED", "PARTIAL", "FAILED", "CANCELLED"}:
+        conn.execute(
+            "UPDATE ingestion_runs SET status = ?, ended_at = ? WHERE run_id = ?",
+            (status, _utc_now_z(), run_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE ingestion_runs SET status = ? WHERE run_id = ?",
+            (status, run_id),
+        )
+    conn.commit()
+
+
+def _fetch_result_payload(response: Any) -> tuple[int, dict[str, Any], bytes]:
+    if isinstance(response, FetchResult):
+        status = int(response.status or 0)
+        data = response.data if isinstance(response.data, dict) else {"data": response.data}
+    elif isinstance(response, dict) and "body" in response:
+        status = int(response.get("status") or response.get("status_code") or 200)
+        body = response.get("body") or b"{}"
+        raw = body if isinstance(body, bytes) else str(body).encode("utf-8")
+        return status, json.loads(raw.decode("utf-8") or "{}"), raw
+    elif isinstance(response, dict):
+        status = int(response.get("status") or response.get("status_code") or 200)
+        data = response
+    else:
+        status = int(getattr(response, "status_code", getattr(response, "status", 200)) or 200)
+        data = response.json() if hasattr(response, "json") else {}
+    raw = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return status, data, raw
+
+
+async def _call_b2_transport(
+    transport: Any,
+    *,
+    provider: str,
+    source: str,
+    endpoint: str,
+    ticker: str,
+    date: str,
+) -> Any:
+    if transport is None:
+        raise ValueError("transport is required for B2 execute_update")
+    if isinstance(transport, dict):
+        fetcher = transport.get(source) or transport.get(endpoint) or transport.get(provider)
+        if fetcher is None:
+            raise ValueError(f"No fake transport registered for source {source}")
+        return await fetcher(ticker, endpoint, date)
+    url = f"https://b2.local/{provider}/{endpoint}"
+    return await transport(
+        provider,
+        "GET",
+        url,
+        source=source,
+        endpoint=endpoint,
+        ticker=ticker,
+        date=date,
+        params={"ticker": ticker, "date": date},
+    )
+
+
+def _record_b2_entity(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    ticker: str,
+    date: str,
+    data: dict[str, Any],
+    raw_asset_id: str,
+) -> int:
+    from catalyst_data.ingestion.provenance import record_provenance
+
+    if source in {"polygon_ohlcv", "yfinance_ohlcv"}:
+        bar = _normalize_ohlcv(SimpleNamespace(data=data))
+        if bar is None:
+            return 0
+        ohlcv_source = "yfinance" if source.startswith("yfinance") else "polygon"
+        conn.execute(
+            """INSERT OR REPLACE INTO ohlcv
+               (symbol, date, open, high, low, close, volume, source)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                ticker, date, bar["open"], bar["high"], bar["low"],
+                bar["close"], bar["volume"], ohlcv_source,
+            ),
+        )
+        entity_id = f"{ticker}:{date}:{ohlcv_source}"
+        entity_version = hashlib.sha256(
+            json.dumps({"entity_id": entity_id, **bar}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        record_provenance(
+            conn, entity_type="ohlcv", entity_id=entity_id,
+            entity_version=entity_version, raw_asset_id=raw_asset_id,
+        )
+        return 1
+
+    if source == "sec_filings":
+        entity_id = f"sec:{ticker}:{date}"
+        entity_type = "filing"
+    elif source == "fred_macro":
+        entity_id = f"fred:{ticker}:{date}"
+        entity_type = "macro_observation"
+    elif source in {"fmp_fundamentals", "yfinance_fundamentals"}:
+        entity_id = f"{source}:{ticker}:{date}"
+        entity_type = "fundamental_snapshot"
+    elif source == "finnhub_company_news":
+        items = data if isinstance(data, list) else data.get("results", data.get("data", []))
+        count = 0
+        if isinstance(items, list):
+            for idx, item in enumerate(items):
+                native_id = str(item.get("id") or item.get("url") or idx) if isinstance(item, dict) else str(idx)
+                entity_id = f"finnhub:{native_id}"
+                entity_version = hashlib.sha256(
+                    json.dumps(item, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+                ).hexdigest()
+                record_provenance(
+                    conn, entity_type="article", entity_id=entity_id,
+                    entity_version=entity_version, raw_asset_id=raw_asset_id,
+                )
+                count += 1
+        return count
+    else:
+        return 0
+
+    entity_version = hashlib.sha256(
+        json.dumps(data, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+    record_provenance(
+        conn, entity_type=entity_type, entity_id=entity_id,
+        entity_version=entity_version, raw_asset_id=raw_asset_id,
+    )
+    return 1
+
+
+async def _execute_b2_cell(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    ticker: str,
+    date: str,
+    source: str,
+    stage: str,
+    transport: Any,
+) -> dict[str, Any]:
+    from catalyst_data.ingestion.redaction import redact_request, compute_request_fingerprint
+    from catalyst_data.ingestion.request_ledger import (
+        insert_attempt, transition_attempt, compute_logical_fetch_id,
+    )
+    from catalyst_data.ingestion.raw_store import store_raw_response
+
+    provider, endpoint, request_source_type = _B2_PROVIDER_BY_SOURCE.get(
+        source, (source.split("_", 1)[0], source, source)
+    )
+    cell_id = _b2_cell_id(ticker, date, source, stage)
+    logical_fetch_id = compute_logical_fetch_id(run_id, cell_id)
+
+    if source == "polygon_news":
+        from catalyst_data.connectors.polygon import fetch_paginated_news
+        return await fetch_paginated_news(
+            db=conn, run_id=run_id, ticker=ticker, date=date,
+            transport=transport, page_limit=20, item_limit=1000,
+        )
+
+    request_id = hashlib.sha256(
+        f"{run_id}:{cell_id}:1:1".encode("utf-8")
+    ).hexdigest()
+    url = f"https://b2.local/{provider}/{endpoint}"
+    redacted = redact_request({
+        "method": "GET",
+        "url": url,
+        "params": {"ticker": ticker, "date": date},
+        "provider_profile_version": "v1",
+    })
+    insert_attempt(conn, {
+        "request_id": request_id,
+        "run_id": run_id,
+        "logical_fetch_id": logical_fetch_id,
+        "source_type": request_source_type,
+        "provider": provider,
+        "endpoint_name": endpoint,
+        "ticker_or_series": ticker,
+        "window_start": date,
+        "window_end": date,
+        "attempt_no": 1,
+        "page_no": 1,
+        "parent_request_id": None,
+        "request_fingerprint": compute_request_fingerprint(redacted),
+        "request_params_redacted": json.dumps(redacted["sorted_redacted_params"], sort_keys=True, separators=(",", ":")),
+        "cursor_fingerprint": None,
+        "started_at": _utc_now_z(),
+        "completed_at": None,
+        "status": "STARTED",
+    })
+    conn.commit()
+
+    response = await _call_b2_transport(
+        transport, provider=provider, source=source, endpoint=endpoint,
+        ticker=ticker, date=date,
+    )
+    status_code, data, raw_body = _fetch_result_payload(response)
+    raw_asset_id = store_raw_response(
+        conn, request_id=request_id, response_bytes=raw_body,
+        content_encoding="identity", page_no=1, ticker=ticker,
+        reference_date=date, source_type=request_source_type,
+        http_status=status_code,
+    )
+    items_count = _record_b2_entity(
+        conn, source=source, ticker=ticker, date=date,
+        data=data, raw_asset_id=raw_asset_id,
+    )
+    response_sha256 = hashlib.sha256(raw_body).hexdigest()
+    transition_attempt(
+        conn, request_id, "SUCCEEDED", http_status=status_code,
+        items_count=items_count, raw_asset_id=raw_asset_id,
+        response_sha256=response_sha256, response_bytes=len(raw_body),
+    )
+    cp_status = "success_empty" if items_count == 0 else "success"
+    conn.execute(
+        """INSERT OR REPLACE INTO source_checkpoints
+           (run_id, source_type, ticker, date, status, logical_fetch_id,
+            request_count, pages_received, items_received, is_complete,
+            raw_asset_id, items_count, http_status)
+           VALUES (?, ?, ?, ?, ?, ?, 1, 1, ?, 1, ?, ?, ?)""",
+        (
+            run_id, source, ticker, date, cp_status, logical_fetch_id,
+            items_count, raw_asset_id, items_count, status_code,
+        ),
+    )
+    conn.commit()
+    return {
+        "ticker": ticker,
+        "date": date,
+        "source": source,
+        "status": cp_status,
+        "items_count": items_count,
+        "raw_asset_id": raw_asset_id,
+    }
+
+
+def _latest_ohlcv_watermark_for_plan(conn: sqlite3.Connection, plan: "UpdatePlan") -> str | None:
+    tickers = (plan.universe or {}).get("tickers") or (plan.config or {}).get("tickers") or []
+    if tickers:
+        placeholders = ",".join("?" for _ in tickers)
+        row = conn.execute(
+            f"SELECT MAX(date) FROM ohlcv WHERE symbol IN ({placeholders})",
+            list(tickers),
+        ).fetchone()
+    else:
+        row = conn.execute("SELECT MAX(date) FROM ohlcv").fetchone()
+    return row[0] if row else None
+
+
+async def execute_update(
+    *,
+    db: "sqlite3.Connection",
+    plan: "UpdatePlan",
+    transport: "Any" = None,
+) -> dict:
+    """B2 execution entrypoint with two-stage OHLCV-first orchestration."""
+
+    # Plan drift check — before any write or network call
+    from catalyst_data.update_planner import _check_plan_drift
+    _check_plan_drift(plan)
+
+    run_id = f"b2-{uuid.uuid4().hex}"
+    plan_hash = plan.plan_hash
+    expected_plan_hash = plan.expected_plan_hash or plan_hash
+    allow_stale_ohlcv = bool((plan.config or {}).get("allow_stale_ohlcv", False))
+    _ensure_b2_run(
+        db, run_id=run_id, plan_hash=plan_hash,
+        expected_plan_hash=expected_plan_hash,
+        allow_stale_ohlcv=allow_stale_ohlcv,
+        tickers=(plan.universe or {}).get("tickers") or (plan.config or {}).get("tickers") or [],
+        sources=(plan.config or {}).get("sources") or [],
+    )
+
+    per_cell: list[dict[str, Any]] = []
+    cells_success = 0
+    cells_failed = 0
+    started = time.monotonic()
+    evidence_replan: dict[str, Any] = {}
+
+    try:
+        _set_b2_run_status(db, run_id, "RUNNING_OHLCV")
+        for ticker, date, source in _plan_stage_cells(plan, "market"):
+            result = await _execute_b2_cell(
+                db, run_id=run_id, ticker=ticker, date=date,
+                source=source, stage="ohlcv", transport=transport,
+            )
+            per_cell.append(result)
+            if result.get("status") in {"success", "success_empty"}:
+                cells_success += 1
+            else:
+                cells_failed += 1
+        db.commit()
+
+        evidence_replan = {
+            "latest_ohlcv_watermark": _latest_ohlcv_watermark_for_plan(db, plan),
+            "plan_hash": plan_hash,
+        }
+
+        _set_b2_run_status(db, run_id, "RUNNING_EVIDENCE")
+        for ticker, date, source in _plan_stage_cells(plan, "evidence"):
+            result = await _execute_b2_cell(
+                db, run_id=run_id, ticker=ticker, date=date,
+                source=source, stage="evidence", transport=transport,
+            )
+            per_cell.append(result)
+            if result.get("status") in {"success", "success_empty"}:
+                cells_success += 1
+            else:
+                cells_failed += 1
+
+        final = "PARTIAL" if cells_failed and cells_success else ("FAILED" if cells_failed else "SUCCEEDED")
+        _set_b2_run_status(db, run_id, final)
+    except Exception:
+        try:
+            _set_b2_run_status(db, run_id, "FAILED")
+        except Exception:
+            db.rollback()
+        raise
+
+    elapsed = round(time.monotonic() - started, 2)
+    total_cells = len(_plan_stage_cells(plan, "market")) + len(_plan_stage_cells(plan, "evidence"))
+    report = {
+        "run_id": run_id,
+        "mode": "update",
+        "status": final,
+        "stage_sequence": ["ohlcv", "evidence"],
+        "plan_hash": plan_hash,
+        "expected_plan_hash": expected_plan_hash,
+        "allow_stale_ohlcv_overridden": allow_stale_ohlcv,
+        "evidence_replan": evidence_replan,
+        "cells_total": total_cells,
+        "cells_success": cells_success,
+        "cells_failed": cells_failed,
+        "cells_skipped": 0,
+        "missing_cells": [],
+        "articles_upserted": db.execute(
+            "SELECT COUNT(*) FROM articles"
+        ).fetchone()[0],
+        "clean_assets_inserted": 0,
+        "index_delta_new": 0,
+        "index_delta_changed": 0,
+        "index_would_embed": 0,
+        "elapsed_sec": elapsed,
+        "freshness_before": {},
+        "freshness_after": {},
+        "per_cell_report": per_cell,
+    }
+    return report
+
+
+async def execute_update_v2(
+    *,
+    db: "sqlite3.Connection",
+    plan: "UpdatePlan",
+    transport: "Any" = None,
+) -> dict:
+    """Compatibility alias for the single authoritative B2 executor."""
+    return await execute_update(db=db, plan=plan, transport=transport)
+
+
+
 async def _fetch_cell(
     db_path: str,
     ticker: str,
@@ -424,7 +1039,97 @@ async def _fetch_cell(
 
     max_retries = (retry_config or {}).get("max_retries", 1)
 
-    # ── SEC filings path ──
+    # ── OHLCV path (W1-C) ──
+    if source == "polygon_ohlcv":
+        from catalyst_data.error_taxonomy import ErrorClass, classify_fetch_error
+        from catalyst_data.fallback import FallbackPolicy
+
+        TERMINAL_ERRORS = {
+            ErrorClass.AUTH.value, ErrorClass.PERMISSION_PAID.value,
+            ErrorClass.RATE_LIMIT.value, ErrorClass.BUDGET_EXHAUSTED.value,
+        }
+
+        # ── Resolve fetch callables from fetch_fn/fetch_map ──
+        primary_fn = _cell_fetcher(fetch_fn, "polygon_ohlcv") if fetch_fn else None
+        fallback_fn = _cell_fetcher(fetch_fn, "yfinance_ohlcv") if fetch_fn else None
+
+        # ── Primary fetch ──
+        primary_result = None
+        primary_error = None
+        primary_ec = None
+        if primary_fn:
+            try:
+                primary_result = await primary_fn(ticker, "ohlcv", date)
+            except Exception as exc:
+                primary_error = str(exc)
+                primary_ec = classify_fetch_error(
+                    None, error_message=primary_error,
+                    exception_type=type(exc).__name__,
+                )
+
+        # ── Primary success ──
+        if primary_result is not None and getattr(primary_result, 'status', 0) == 200:
+            ohlcv_bar = _normalize_ohlcv(primary_result)
+            if ohlcv_bar is not None:
+                return _persist_ohlcv_success(
+                    conn, run_id, ticker, date, source,
+                    ohlcv_bar, "polygon", retries, primary_result,
+                )
+            else:
+                # Empty valid response from provider
+                return _persist_ohlcv_empty(
+                    conn, run_id, ticker, date, source, retries, primary_result,
+                )
+
+        # ── Classify primary error before fallback decision ──
+        if primary_ec is None and primary_result is not None:
+            primary_ec = classify_fetch_error(
+                primary_result.status,
+                error_message=getattr(primary_result, 'error', None),
+            )
+
+        # ── Fallback decision ──
+        try_fallback = (
+            fallback_fn
+            and primary_ec
+            and primary_ec.value not in TERMINAL_ERRORS
+        )
+        fallback_result = None
+        fallback_error = None
+        if try_fallback:
+            try:
+                fallback_result = await fallback_fn(ticker, "ohlcv", date)
+                if fallback_result is not None and getattr(fallback_result, 'status', 0) == 200:
+                    ohlcv_bar = _normalize_ohlcv(fallback_result)
+                    if ohlcv_bar is not None:
+                        return _persist_ohlcv_success(
+                            conn, run_id, ticker, date, source,
+                            ohlcv_bar, "yfinance", retries, fallback_result,
+                            fallback_provider="yfinance_ohlcv",
+                        )
+            except Exception as exc:
+                fallback_error = str(exc)
+
+        # ── Failure path: preserve both primary and fallback evidence ──
+        final_error = primary_error or fallback_error or "OHLCV fetch failed"
+        final_ec = primary_ec or classify_fetch_error(
+            None, error_message=final_error,
+            exception_type="Unknown",
+        )
+        fr = FetchResult(
+            status=0, error=final_error, source_label=source,
+        )
+        if hasattr(fr, 'error_class'):
+            fr.error_class = final_ec.value
+        result = persist_cell(
+            db_path, run_id=run_id, ticker=ticker, date=date,
+            source=source, fetch_result=fr, error_class=final_ec.value,
+            retries=retries,
+        )
+        conn.close()
+        return result
+
+    # ── SEC filings path ──    # ── SEC filings path ──    # ── SEC filings path ──
     if source == "sec_filings":
         if fetcher_ns is None:
             raise ValueError(
@@ -867,6 +1572,31 @@ async def _fetch_cell_sec(
 # Batch update runner
 # ---------------------------------------------------------------------------
 
+def _b2_transport_from_legacy_fetch_fn(fetch_fn: Any):
+    endpoint_aliases = {
+        "polygon_news": "news",
+        "polygon_ohlcv": "ohlcv",
+        "yfinance_ohlcv": "ohlcv",
+        "finnhub_company_news": "company-news",
+        "sec_filings": "sec_submissions",
+    }
+
+    async def _transport(provider: str, method: str, url: str, **kwargs: Any):
+        source = kwargs["source"]
+        ticker = kwargs["ticker"]
+        date = kwargs["date"]
+        endpoint = endpoint_aliases.get(source, kwargs.get("endpoint", source))
+        if isinstance(fetch_fn, dict):
+            fetcher = fetch_fn.get(source) or fetch_fn.get(provider) or fetch_fn.get(endpoint)
+            if fetcher is None:
+                raise ValueError(f"No fake fetch_fn registered for source {source}")
+        else:
+            fetcher = fetch_fn
+        return await fetcher(ticker, endpoint, date)
+
+    return _transport
+
+
 async def run_update_batch(
     db_path: str | Path,
     *,
@@ -955,13 +1685,64 @@ async def run_update_batch(
 
     # Freshness before
     freshness_before = freshness_report(conn)
-    conn.close()
 
     # dry_run handled above via early return in run_update_batch
 
     # Real run — requires fetch_fn
     if fetch_fn is None:
+        conn.close()
         raise ValueError("fetch_fn is required for non-dry-run execution")
+
+    resolved_tickers = tickers or [
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT symbol FROM ohlcv ORDER BY symbol"
+        ).fetchall()
+    ]
+    has_b2_schema = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='provider_request_attempts'"
+    ).fetchone() is not None
+    b2_delegate_sources = {"polygon_news", "polygon_ohlcv", "yfinance_ohlcv"}
+    if has_b2_schema and set(sources).issubset(b2_delegate_sources):
+        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
+        market_cells = [c for c in missing if c[2] in ("polygon_ohlcv", "yfinance_ohlcv")]
+        evidence_cells = [c for c in missing if c[2] not in ("polygon_ohlcv", "yfinance_ohlcv")]
+        plan = UpdatePlan(
+            config={
+                "tickers": resolved_tickers,
+                "sources": sources,
+                "from_date": from_date,
+                "to_date": to_date,
+            },
+            universe={"tickers": resolved_tickers, "provenance": "run_update_batch"},
+            reference_today=to_date or "",
+            latest_closed_session=to_date or "",
+            stages={
+                "market": {"cells": market_cells, "count": len(market_cells)},
+                "evidence": {"cells": evidence_cells, "count": len(evidence_cells), "provisional": True},
+            },
+            estimates={"requests": {src: len([c for c in missing if c[2] == src]) for src in sources}},
+        )
+        plan.plan_hash = compute_plan_hash(plan)
+        plan.expected_plan_hash = plan.plan_hash
+        conn.close()
+        b2_conn = sqlite3.connect(db_path)
+        b2_conn.row_factory = sqlite3.Row
+        try:
+            report = await execute_update(
+                db=b2_conn,
+                plan=plan,
+                transport=_b2_transport_from_legacy_fetch_fn(fetch_fn),
+            )
+            if any(src in sources for src in ("polygon_news", "finnhub_company_news")):
+                from catalyst_data.source_tier import classify_articles
+                classify_articles(b2_conn)
+                from catalyst_data.dedup.cross_source import compute_cross_source_dedup
+                report["dedup_groups_resolved"] = compute_cross_source_dedup(b2_conn)
+            return report
+        finally:
+            b2_conn.close()
+
+    conn.close()
 
     # ── Construct SEC fetcher namespace if sec_filings is in sources ──
     fetcher_ns: Any | None = None
@@ -1001,11 +1782,6 @@ async def run_update_batch(
     conn = sqlite3.connect(db_path)
     init_db(conn)
     ensure_ingestion_quality_tables(conn)
-    resolved_tickers = tickers or [
-        r[0] for r in conn.execute(
-            "SELECT DISTINCT symbol FROM ohlcv ORDER BY symbol"
-        ).fetchall()
-    ]
     run_id = open_ingestion_run(
         conn, tickers=resolved_tickers, sources=sources, mode="update",
     )

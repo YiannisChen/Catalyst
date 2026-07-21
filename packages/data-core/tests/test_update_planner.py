@@ -145,7 +145,7 @@ class TestReadOnlyEnforcement:
             raise RuntimeError("network blocked")
         socket.socket = _block
         try:
-            plan = plan_update(db_path, tickers=["AAPL"], sources=["polygon_news"])
+            plan = plan_update(db_path, use_ohlcv_universe=True)
             assert plan.plan_hash
         finally:
             socket.socket = original
@@ -269,7 +269,7 @@ class TestWALMode:
         before_mtime = os.path.getmtime(db_path)
         before_files = set(os.listdir(str(tmp_path)))
 
-        plan = plan_update(db_path, tickers=["AAPL"], sources=["polygon_news"])
+        plan = plan_update(db_path, use_ohlcv_universe=True)
         assert plan.plan_hash
 
         after_db = Path(db_path).read_bytes()
@@ -304,13 +304,13 @@ class TestPlanUpdateBasic:
         db_path = create_fixture_db(tmp_path, extra_sql=[
             "INSERT INTO ohlcv VALUES ('AAPL','2026-07-09',220.0,225.0,219.0,224.0,50000000,'polygon')",
         ])
-        plan = plan_update(db_path)
+        plan = plan_update(db_path, use_ohlcv_universe=True)
         assert plan.universe["provenance"] == "ohlcv-derived-fallback"
         assert any(w["type"] == "universe-fallback" for w in plan.warnings)
 
     def test_empty_universe_returns_plan_with_zero_cells(self, tmp_path):
         db_path = create_fixture_db(tmp_path)
-        plan = plan_update(db_path)
+        plan = plan_update(db_path, use_ohlcv_universe=True)
         assert plan.universe["tickers"] == []
         assert plan.plan_hash
 
@@ -402,7 +402,7 @@ class TestZeroWriteProof:
         before_ir = pre_conn.execute("SELECT COUNT(*) FROM ingestion_runs").fetchone()[0]
         pre_conn.close()
 
-        plan = plan_update(db_path, tickers=["AAPL"], sources=["polygon_news"])
+        plan = plan_update(db_path, use_ohlcv_universe=True)
 
         after_sha = hashlib.sha256(db_file.read_bytes()).hexdigest()
         after_size = db_file.stat().st_size
@@ -505,7 +505,7 @@ class TestPathHandling:
         before_bytes = Path(db_path).read_bytes()
         before_mtime = os.path.getmtime(db_path)
 
-        plan = plan_update(db_path, tickers=["AAPL"], sources=["polygon_news"])
+        plan = plan_update(db_path, use_ohlcv_universe=True)
 
         after_files = set(os.listdir(str(db_dir)))
         after_bytes = Path(db_path).read_bytes()
@@ -534,3 +534,156 @@ class TestPathHandling:
         after_files = set(os.listdir(str(db_dir)))
         assert before_files == after_files
 
+
+
+# ---------------------------------------------------------------------------
+# W1-B: Per-ticker windows + universe provenance
+# ---------------------------------------------------------------------------
+
+
+class TestPerTickerWindows:
+    @pytest.fixture
+    def fixture_db(self, tmp_path):
+        return create_fixture_db(tmp_path, extra_sql=[
+            "INSERT INTO ohlcv VALUES ('AAPL','2026-07-09',220.0,225.0,219.0,224.0,50000000,'polygon')",
+            "INSERT INTO ohlcv VALUES ('JPM','2026-05-01',190.0,192.0,188.0,191.0,20000000,'polygon')",
+        ])
+
+    def test_stale_ticker_does_not_constrain_current(self, fixture_db):
+        """JPM at 2026-05-01 should not limit AAPL's window."""
+        plan = plan_update(fixture_db, tickers=["AAPL", "JPM"],
+                          sources=["polygon_ohlcv"], reference_today="2026-07-11")
+        aapl_dates = sorted({c[1] for c in plan.stages["market"]["cells"] if c[0] == "AAPL"})
+        jpm_dates = sorted({c[1] for c in plan.stages["market"]["cells"] if c[0] == "JPM"})
+        # Both tickers planned; JPM has cells (not excluded by stale watermark)
+        assert len(jpm_dates) > 0
+        assert len(aapl_dates) > 0
+        # Global window starts at or before JPM's next session (2026-05-04)
+        assert jpm_dates[0] <= '2026-05-04'
+
+    def test_absent_ticker_uses_historical_start(self, fixture_db):
+        """NVDA not in ohlcv → plans from HISTORICAL_START."""
+        plan = plan_update(fixture_db, tickers=["NVDA"], sources=["polygon_ohlcv"],
+                          reference_today="2026-07-11")
+        nvda_cells = [c for c in plan.stages["market"]["cells"]]
+        assert len(nvda_cells) > 0
+
+    def test_deleting_ohlcv_does_not_shrink_calendar(self, tmp_path):
+        """Deleting OHLCV row lowers measured state but doesn't shrink calendar."""
+        db_path = create_fixture_db(tmp_path, extra_sql=[
+            "INSERT INTO ohlcv VALUES ('AAPL','2026-07-08',220.0,225.0,219.0,224.0,50000000,'polygon')",
+            "INSERT INTO ohlcv VALUES ('AAPL','2026-07-09',221.0,226.0,220.0,225.0,50000000,'polygon')",
+        ])
+        plan1 = plan_update(db_path, tickers=["AAPL"], sources=["polygon_ohlcv"],
+                           reference_today="2026-07-11")
+        conn = sqlite3.connect(db_path)
+        conn.execute("DELETE FROM ohlcv WHERE date='2026-07-09'")
+        conn.commit(); conn.close()
+        plan2 = plan_update(db_path, tickers=["AAPL"], sources=["polygon_ohlcv"],
+                           reference_today="2026-07-11")
+        assert plan1.latest_closed_session == plan2.latest_closed_session
+        # More cells planned after deletion (more missing)
+        assert plan2.stages["market"]["count"] >= plan1.stages["market"]["count"]
+
+
+class TestUniverseProvenance:
+    def test_configured_universe_is_default(self, tmp_path):
+        db_path = create_fixture_db(tmp_path, extra_sql=[
+            "INSERT INTO ohlcv VALUES ('AAPL','2026-07-09',220.0,225.0,219.0,224.0,50000000,'polygon')",
+            "INSERT INTO ohlcv VALUES ('XYZ','2026-07-09',10.0,11.0,9.0,10.0,100,'polygon')",
+        ])
+        # Default: uses TICKER_UNIVERSE, not ohlcv-derived
+        plan = plan_update(db_path)
+        assert plan.universe["provenance"] == "explicit-config"
+        from catalyst_data.config import TICKER_UNIVERSE
+        assert set(plan.universe["tickers"]) == set(TICKER_UNIVERSE)
+        # XYZ not in TICKER_UNIVERSE → excluded
+        assert "XYZ" not in plan.universe["tickers"]
+
+    def test_explicit_tickers_override_configured(self, tmp_path):
+        db_path = create_fixture_db(tmp_path, extra_sql=[
+            "INSERT INTO ohlcv VALUES ('TSLA','2026-07-09',250.0,255.0,248.0,253.0,40000000,'polygon')",
+        ])
+        plan = plan_update(db_path, tickers=["TSLA"], sources=["polygon_news"])
+        assert plan.universe["provenance"] == "explicit-config"
+        assert plan.universe["tickers"] == ["TSLA"]
+
+    def test_compat_flag_required_for_ohlcv_derived(self, tmp_path):
+        db_path = create_fixture_db(tmp_path, extra_sql=[
+            "INSERT INTO ohlcv VALUES ('AAPL','2026-07-09',220.0,225.0,219.0,224.0,50000000,'polygon')",
+            "INSERT INTO ohlcv VALUES ('META','2026-07-09',500.0,505.0,498.0,503.0,30000000,'polygon')",
+        ])
+        # Without compat flag: TICKER_UNIVERSE (all 10)
+        plan1 = plan_update(db_path)
+        assert plan1.universe["provenance"] == "explicit-config"
+        assert len(plan1.universe["tickers"]) == 10
+        # With compat flag: ohlcv-derived (2)
+        plan2 = plan_update(db_path, use_ohlcv_universe=True)
+        assert plan2.universe["provenance"] == "ohlcv-derived-fallback"
+        assert set(plan2.universe["tickers"]) == {"AAPL", "META"}
+        assert any(w["type"] == "universe-fallback" for w in plan2.warnings)
+
+
+class TestPlanHashCompleteness:
+    """B2 — plan_hash excludes runtime fields; PlanDriftError on mismatch."""
+
+    def test_plan_hash_excludes_runtime_fields(self):
+        """plan_hash is deterministic and unchanged when runtime fields change."""
+        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
+
+        plan = UpdatePlan(
+            universe={"tickers": ["AAPL"]},
+            reference_today="2026-01-15",
+            latest_closed_session="2026-01-14",
+            config={"sources": ["polygon_news"]},
+        )
+        h1 = compute_plan_hash(plan)
+        # Change runtime fields → hash unchanged
+        plan.created_at = "2099-01-01T00:00:00Z"
+        plan.db_path = "/different/path"
+        h2 = compute_plan_hash(plan)
+        assert h1 == h2, (
+            f"plan_hash must be invariant under runtime-field changes: {h1} != {h2}"
+        )
+
+    def test_plan_hash_changes_with_universe(self):
+        """plan_hash changes when universe changes."""
+        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
+
+        plan1 = UpdatePlan(
+            universe={"tickers": ["AAPL"]},
+            reference_today="2026-01-15",
+            latest_closed_session="2026-01-14",
+        )
+        plan2 = UpdatePlan(
+            universe={"tickers": ["MSFT"]},
+            reference_today="2026-01-15",
+            latest_closed_session="2026-01-14",
+        )
+        assert compute_plan_hash(plan1) != compute_plan_hash(plan2)
+
+    def test_plan_drift_error_exists(self):
+        """PlanDriftError is importable from update_planner."""
+        from catalyst_data.update_planner import PlanDriftError
+        assert issubclass(PlanDriftError, Exception)
+
+    def test_expected_plan_hash_field_exists(self):
+        """UpdatePlan has expected_plan_hash field."""
+        from catalyst_data.update_planner import UpdatePlan
+        plan = UpdatePlan()
+        assert hasattr(plan, "expected_plan_hash")
+
+    def test_plan_drift_error_raised_on_mismatch(self):
+        """When expected_plan_hash differs from computed plan_hash, PlanDriftError is raised."""
+        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash, PlanDriftError, _check_plan_drift
+
+        plan = UpdatePlan(
+            universe={"tickers": ["AAPL"]},
+            reference_today="2026-01-15",
+            latest_closed_session="2026-01-14",
+        )
+        plan.plan_hash = compute_plan_hash(plan)
+        plan.expected_plan_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+        with pytest.raises(PlanDriftError):
+            _check_plan_drift(plan)

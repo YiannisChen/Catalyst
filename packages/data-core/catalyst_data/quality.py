@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS source_checkpoints (
     items_count          INTEGER,
     fallback_provider    TEXT,
     fallback_triggered   INTEGER DEFAULT 0,
+    empty_reason         TEXT,
     PRIMARY KEY (run_id, source_type, ticker, date)
 );
 
@@ -295,7 +296,7 @@ def _reconcile_source_checkpoints_check(conn: sqlite3.Connection) -> None:
         "run_id", "source_type", "ticker", "date", "status",
         "error_class", "retries", "error_message_redacted", "http_status",
         "retry_after_seconds", "provider_latency_ms", "raw_asset_id", "items_count",
-        "fallback_provider", "fallback_triggered",
+        "fallback_provider", "fallback_triggered", "empty_reason",
     ]
 
     select_parts = []
@@ -327,6 +328,7 @@ def _reconcile_source_checkpoints_check(conn: sqlite3.Connection) -> None:
             items_count          INTEGER,
             fallback_provider    TEXT,
             fallback_triggered   INTEGER DEFAULT 0,
+            empty_reason         TEXT,
             PRIMARY KEY (run_id, source_type, ticker, date)
         );
 
@@ -527,6 +529,7 @@ def write_source_checkpoint(
     items_count: int | None = None,
     fallback_provider: str | None = None,
     fallback_triggered: int = 0,
+    empty_reason: str | None = None,
     commit: bool = True,
 ) -> None:
     """INSERT OR REPLACE a source_checkpoints row.
@@ -541,12 +544,12 @@ def write_source_checkpoint(
            (run_id, source_type, ticker, date, status, error_class, retries,
             error_message_redacted, http_status, retry_after_seconds,
             provider_latency_ms, raw_asset_id, items_count,
-            fallback_provider, fallback_triggered)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            fallback_provider, fallback_triggered, empty_reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (run_id, source_type, ticker, date, status, error_class, retries,
          error_message_redacted, http_status, retry_after_seconds,
          provider_latency_ms, raw_asset_id, items_count,
-         fallback_provider, fallback_triggered),
+         fallback_provider, fallback_triggered, empty_reason),
     )
     if commit:
         conn.commit()

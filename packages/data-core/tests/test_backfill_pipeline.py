@@ -70,8 +70,8 @@ class TestRunBackfillDryRun:
 
         assert len(results) == 4
         total_cells = sum(r["cells_total"] for r in results)
-        # 10 trading days × 1 ticker × 1 source = 10
-        assert total_cells == 10
+        # 6 trading days x 1 ticker x 1 source = 6
+        assert total_cells == 6
 
     def test_chunks_no_overlap(self, tmp_path):
         db_path = str(tmp_path / "test.db")
@@ -94,8 +94,8 @@ class TestRunBackfillDryRun:
 
         cells = [c for r in results for c in r.get("missing_cells", [])]
         dates_seen = set(c[1] for c in cells)
-        # Should cover exactly 3 days with no duplicates
-        assert len(dates_seen) == 3
+        # Should cover exactly 1 trading day (2026-06-22) with no duplicates
+        assert dates_seen == {"2026-06-22"}
 
     def test_chunk_size_respected(self, tmp_path):
         db_path = str(tmp_path / "test.db")

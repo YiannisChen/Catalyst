@@ -1141,3 +1141,305 @@ class TestFetchCellFinnhub:
         ra_after = conn.execute("SELECT COUNT(*) FROM raw_assets").fetchone()[0]
         assert ra_after == ra_before, "Dry-run must not write to raw_assets"
         conn.close()
+
+
+class TestExecuteUpdateDrift:
+    """B2 Task 4: PlanDriftError wired into execute_update."""
+
+    @pytest.mark.asyncio
+    async def test_execute_update_raises_plan_drift_before_transport(self):
+        """execute_update raises PlanDriftError before any transport call."""
+        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash, PlanDriftError
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(8)
+        plan = UpdatePlan(
+            universe={"tickers": ["AAPL"]},
+            reference_today="2026-01-15",
+            latest_closed_session="2026-01-14",
+            config={"sources": ["polygon_news"]},
+            stages={
+                "market": {"cells": [], "count": 0},
+                "evidence": {"cells": [("AAPL", "2026-01-14", "polygon_news")], "count": 1},
+            },
+        )
+        plan.plan_hash = compute_plan_hash(plan)
+        plan.expected_plan_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+        before_counts = {
+            table: db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in ("ingestion_runs", "provider_request_attempts", "raw_assets", "normalized_provenance")
+        }
+
+        transport_calls = []
+        async def fake_transport(*args, **kwargs):
+            transport_calls.append(1)
+            return {}
+
+        with pytest.raises(PlanDriftError):
+            await execute_update(
+                db=db,
+                plan=plan,
+                transport=fake_transport,
+            )
+
+        assert len(transport_calls) == 0, "transport must not be called on drift"
+        after_counts = {
+            table: db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in before_counts
+        }
+        assert after_counts == before_counts
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_update_no_drift_calls_transport(self):
+        """When expected_plan_hash matches, execution calls transport and persists B2 state."""
+        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(8)
+        plan = UpdatePlan(
+            universe={"tickers": ["AAPL"]},
+            reference_today="2026-01-15",
+            latest_closed_session="2026-01-14",
+            config={"sources": ["polygon_news"]},
+            stages={
+                "market": {"cells": [], "count": 0},
+                "evidence": {"cells": [("AAPL", "2026-01-14", "polygon_news")], "count": 1},
+            },
+        )
+        plan.plan_hash = compute_plan_hash(plan)
+        plan.expected_plan_hash = plan.plan_hash  # match
+
+        transport_calls = []
+        async def fake_transport(provider, method, url, **kwargs):
+            transport_calls.append((provider, method, url, kwargs))
+            class FakeResponse:
+                status_code = 200
+                def json(self):
+                    return {
+                        "results": [
+                            {
+                                "id": "poly-1",
+                                "title": "AAPL update",
+                                "description": "body",
+                                "published_utc": "2026-01-14T15:00:00Z",
+                                "article_url": "https://example.com/aapl",
+                                "tickers": ["AAPL"],
+                                "publisher": {"name": "Example"},
+                            }
+                        ],
+                        "next_url": None,
+                    }
+            return FakeResponse()
+
+        report = await execute_update(
+            db=db,
+            plan=plan,
+            transport=fake_transport,
+        )
+        assert len(transport_calls) == 1
+        assert report["status"] == "SUCCEEDED"
+        assert report["stage_sequence"] == ["ohlcv", "evidence"]
+        assert report["cells_success"] == 1
+        assert db.execute("SELECT COUNT(*) FROM ingestion_runs").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM provider_request_attempts").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM raw_assets WHERE data_version='v2'").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM normalized_provenance").fetchone()[0] == 1
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_update_two_stage_replans_evidence_after_ohlcv(self):
+        """OHLCV commits before evidence and evidence re-plan sees refreshed watermark."""
+        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(8)
+        db.execute(
+            "INSERT INTO ohlcv (symbol, date, open, high, low, close, volume, source) "
+            "VALUES ('AAPL', '2026-01-13', 1, 1, 1, 1, 1, 'polygon')"
+        )
+        db.commit()
+        plan = UpdatePlan(
+            universe={"tickers": ["AAPL"]},
+            reference_today="2026-01-15",
+            latest_closed_session="2026-01-14",
+            config={"sources": ["polygon_ohlcv", "polygon_news"], "allow_stale_ohlcv": True},
+            stages={
+                "market": {"cells": [("AAPL", "2026-01-14", "polygon_ohlcv")], "count": 1},
+                "evidence": {"cells": [("AAPL", "2026-01-14", "polygon_news")], "count": 1, "provisional": True},
+            },
+        )
+        plan.plan_hash = compute_plan_hash(plan)
+        plan.expected_plan_hash = plan.plan_hash
+
+        seen = []
+        async def fake_transport(provider, method, url, **kwargs):
+            seen.append((kwargs["source"], db.execute(
+                "SELECT MAX(date) FROM ohlcv WHERE symbol='AAPL'"
+            ).fetchone()[0]))
+            class FakeResponse:
+                status_code = 200
+                def json(self):
+                    if kwargs["source"] == "polygon_ohlcv":
+                        return {"results": [{"o": 10, "h": 11, "l": 9, "c": 10.5, "v": 1000}]}
+                    return {"results": [], "next_url": None}
+            return FakeResponse()
+
+        report = await execute_update(db=db, plan=plan, transport=fake_transport)
+
+        assert seen == [
+            ("polygon_ohlcv", "2026-01-13"),
+            ("polygon_news", "2026-01-14"),
+        ]
+        assert report["stage_sequence"] == ["ohlcv", "evidence"]
+        assert report["evidence_replan"]["latest_ohlcv_watermark"] == "2026-01-14"
+        assert report["allow_stale_ohlcv_overridden"] is True
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_run_update_batch_delegates_v8_non_dry_run_to_b2_executor(self, tmp_path, monkeypatch):
+        """v8 non-dry-run uses execute_update so the B2 executor is not dead code."""
+        from catalyst_data.storage.sqlite import init_db
+        from catalyst_data.migrations import run_migrations
+        from catalyst_data.update_pipeline import run_update_batch
+        import catalyst_data.update_pipeline as update_pipeline
+
+        db_path = tmp_path / "b2_delegate.db"
+        conn = sqlite3.connect(db_path)
+        init_db(conn)
+        run_migrations(conn)
+        conn.execute(
+            "INSERT INTO ohlcv (symbol, date, open, high, low, close, volume, source) "
+            "VALUES ('AAPL', '2026-01-14', 1, 1, 1, 1, 1, 'polygon')"
+        )
+        conn.commit()
+        conn.close()
+
+        delegated = {}
+        async def fake_execute_update(*, db, plan, transport):
+            delegated["sources"] = plan.config["sources"]
+            delegated["transport"] = transport
+            return {
+                "run_id": "run-delegated",
+                "mode": "update",
+                "status": "SUCCEEDED",
+                "cells_total": 0,
+                "cells_success": 0,
+                "cells_failed": 0,
+                "cells_skipped": 0,
+                "per_cell_report": [],
+            }
+        monkeypatch.setattr(update_pipeline, "execute_update", fake_execute_update)
+
+        report = await run_update_batch(
+            db_path,
+            tickers=["AAPL"],
+            sources=["polygon_news"],
+            from_date="2026-01-14",
+            to_date="2026-01-14",
+            fetch_fn=lambda *a, **k: None,
+        )
+
+        assert delegated["sources"] == ["polygon_news"]
+        assert delegated["transport"] is not None
+        assert report["run_id"] == "run-delegated"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("source", "stage", "payload", "expected_provider"),
+        [
+            ("polygon_news", "evidence", {"results": [{"id": "p1", "title": "P", "published_utc": "2026-01-14T00:00:00Z", "article_url": "https://x/p", "tickers": ["AAPL"], "publisher": {"name": "P"}}], "next_url": None}, "polygon"),
+            ("finnhub_company_news", "evidence", {"data": [{"id": "fh1", "headline": "H"}]}, "finnhub"),
+            ("fmp_fundamentals", "evidence", {"revenue": 100}, "fmp"),
+            ("fred_macro", "evidence", {"observations": [{"date": "2026-01-14", "value": "1"}]}, "fred"),
+            ("sec_filings", "evidence", {"filings": {"recent": {"accessionNumber": []}}}, "sec"),
+            ("yfinance_ohlcv", "market", {"open": 10, "high": 11, "low": 9, "close": 10, "volume": 100}, "yfinance"),
+        ],
+    )
+    async def test_execute_update_instruments_all_b2_provider_paths(
+        self, source, stage, payload, expected_provider
+    ):
+        """B2 executor records request ledger/raw/provenance for each fake provider path."""
+        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(8)
+        stages = {
+            "market": {"cells": [], "count": 0},
+            "evidence": {"cells": [], "count": 0, "provisional": True},
+        }
+        stages[stage]["cells"] = [("AAPL", "2026-01-14", source)]
+        stages[stage]["count"] = 1
+        plan = UpdatePlan(
+            universe={"tickers": ["AAPL"]},
+            reference_today="2026-01-15",
+            latest_closed_session="2026-01-14",
+            config={"sources": [source]},
+            stages=stages,
+        )
+        plan.plan_hash = compute_plan_hash(plan)
+        plan.expected_plan_hash = plan.plan_hash
+
+        calls = []
+        async def fake_transport(provider, method, url, **kwargs):
+            calls.append((provider, kwargs["source"]))
+            class FakeResponse:
+                status_code = 200
+                def json(self):
+                    return payload
+            return FakeResponse()
+
+        await execute_update(db=db, plan=plan, transport=fake_transport)
+
+        assert calls == [(expected_provider, source)]
+        assert db.execute(
+            "SELECT COUNT(*) FROM provider_request_attempts WHERE provider = ?",
+            (expected_provider,),
+        ).fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM raw_assets WHERE data_version = 'v2'").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM normalized_provenance").fetchone()[0] == 1
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_execute_update_success_empty_persists_complete_checkpoint(self):
+        """A valid empty Polygon response is success_empty, not failed."""
+        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(8)
+        plan = UpdatePlan(
+            universe={"tickers": ["AAPL"]},
+            reference_today="2026-01-15",
+            latest_closed_session="2026-01-14",
+            config={"sources": ["polygon_news"]},
+            stages={
+                "market": {"cells": [], "count": 0},
+                "evidence": {"cells": [("AAPL", "2026-01-14", "polygon_news")], "count": 1},
+            },
+        )
+        plan.plan_hash = compute_plan_hash(plan)
+        plan.expected_plan_hash = plan.plan_hash
+
+        async def fake_transport(*args, **kwargs):
+            class FakeResponse:
+                status_code = 200
+                def json(self):
+                    return {"results": [], "next_url": None}
+            return FakeResponse()
+
+        report = await execute_update(db=db, plan=plan, transport=fake_transport)
+
+        cp = db.execute(
+            "SELECT status, is_complete, items_received FROM source_checkpoints"
+        ).fetchone()
+        assert report["status"] == "SUCCEEDED"
+        assert cp["status"] == "success_empty"
+        assert cp["is_complete"] == 1
+        assert cp["items_received"] == 0
+        db.close()

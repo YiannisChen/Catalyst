@@ -12,6 +12,7 @@ Tables
 
 from __future__ import annotations
 
+import enum
 import hashlib
 import json
 import sqlite3
@@ -210,6 +211,22 @@ def compute_asset_id(
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+
+
+# ---- W1-C: OHLCV source precedence ----
+SOURCE_PRECEDENCE: dict[str, int] = {
+    "polygon": 100,
+    "yfinance": 50,
+}
+
+
+class UnknownOHLCVSource(Exception):
+    """Source has no entry in SOURCE_PRECEDENCE — fail closed."""
+
+
+class UpsertOutcome(enum.Enum):
+    BLOCKED = "blocked"       # lower rank — row unchanged
+    UPDATED = "updated"       # equal or higher rank — row inserted/updated
 
 # ---------------------------------------------------------------------------
 # Initialization
@@ -612,18 +629,43 @@ def upsert_ohlcv(
     volume: float,
     source: str = "polygon",
     commit: bool = True,
-) -> None:
-    """Insert or replace a daily OHLCV bar."""
+):
+    """Precedence-aware OHLCV upsert (W1-C).
+
+    Runs inside the caller's existing transaction.  When commit=False, the
+    caller controls commit/rollback.  Never issues BEGIN IMMEDIATE.
+    """
+    rank = SOURCE_PRECEDENCE.get(source)
+    if rank is None:
+        raise UnknownOHLCVSource(f"Unknown OHLCV source: {source}")
+
+    existing = conn.execute(
+        "SELECT source FROM ohlcv WHERE symbol=? AND date=?",
+        (symbol, date),
+    ).fetchone()
+
+    if existing:
+        existing_rank = SOURCE_PRECEDENCE.get(existing[0])
+        if existing_rank is None:
+            raise UnknownOHLCVSource(
+                f"Unknown persisted OHLCV source: {existing[0]}"
+            )
+        if rank < existing_rank:
+            return UpsertOutcome.BLOCKED
+
     conn.execute(
         """
-        INSERT OR REPLACE INTO ohlcv
-            (symbol, date, open, high, low, close, volume, source)
+        INSERT INTO ohlcv (symbol, date, open, high, low, close, volume, source)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(symbol, date) DO UPDATE SET
+            open=excluded.open, high=excluded.high, low=excluded.low,
+            close=excluded.close, volume=excluded.volume, source=excluded.source
         """,
         (symbol, date, open, high, low, close, volume, source),
     )
     if commit:
         conn.commit()
+    return UpsertOutcome.UPDATED
 
 
 def get_ohlcv(conn: sqlite3.Connection, symbol: str, date: str) -> dict | None:

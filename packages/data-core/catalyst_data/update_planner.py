@@ -19,14 +19,23 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from catalyst_data.config import HISTORICAL_START, TICKER_UNIVERSE
 from catalyst_data.freshness import latest_local_ohlcv_date
 from catalyst_data.trading_calendar import (
+    CalendarCoverageError,
     calendar_trading_days,
     latest_closed_trading_day_for_date,
     trading_days_for_window,
 )
 from catalyst_data.storage.sqlite import FROZEN_PATHS
 
+
+
+def _next_session(date_str: str) -> str:
+    """Return the next calendar day after date_str (YYYY-MM-DD)."""
+    from datetime import date as _date, timedelta
+    dt = _date.fromisoformat(date_str)
+    return (dt + timedelta(days=1)).isoformat()
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -66,6 +75,29 @@ class ActiveWALForPlanning(Exception):
             f"Close all writers before planning."
         )
 
+
+class PlanDriftError(Exception):
+    """Raised when the computed plan_hash differs from expected_plan_hash at execution start."""
+
+    def __init__(self, expected: str, actual: str):
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"Plan drift detected: expected hash {expected[:16]}..., got {actual[:16]}..."
+        )
+
+
+def _check_plan_drift(plan: "UpdatePlan") -> None:
+    """Raise PlanDriftError if plan.plan_hash != plan.expected_plan_hash.
+
+    Called before execution writes or network calls.
+    """
+    if not plan.expected_plan_hash:
+        return  # no expected hash set → first run, no drift check
+    actual = plan.plan_hash or compute_plan_hash(plan)
+    if actual != plan.expected_plan_hash:
+        raise PlanDriftError(expected=plan.expected_plan_hash, actual=actual)
+
 # ---------------------------------------------------------------------------
 # Warnings
 # ---------------------------------------------------------------------------
@@ -97,6 +129,7 @@ class UpdatePlan:
     estimates: dict[str, Any] = field(default_factory=dict)
     warnings: list[dict[str, str]] = field(default_factory=list)
     plan_hash: str = ""
+    expected_plan_hash: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +143,7 @@ def _canonical_json(plan: UpdatePlan) -> str:
     d.pop("created_at", None)
     d.pop("plan_hash", None)
     d.pop("db_path", None)  # path varies; DB is identified by content SHA
+    d.pop("expected_plan_hash", None)  # runtime drift-compare field; DB is identified by content SHA
     return json.dumps(d, sort_keys=True, default=str)
 
 
@@ -163,30 +197,38 @@ def _check_schema(conn: sqlite3.Connection) -> None:
 
 
 def _resolve_universe(
-    conn: sqlite3.Connection, tickers: list[str] | None
+    conn: sqlite3.Connection,
+    tickers: list[str] | None,
+    *,
+    use_ohlcv_universe: bool = False,
 ) -> tuple[list[str], str, list[dict[str, str]]]:
     """Return (ticker_list, provenance_label, warnings).
 
-    If tickers is explicit → "explicit-config" provenance.
-    Otherwise → OHLCV-derived with "ohlcv-derived-fallback" + typed warning.
+    Resolution order:
+    1. Explicit caller tickers → "explicit-config"
+    2. Configured TICKER_UNIVERSE constant → "explicit-config" (default)
+    3. OHLCV-derived with use_ohlcv_universe=True → "ohlcv-derived-fallback"
+       + typed universe-fallback warning
     """
     warnings: list[dict[str, str]] = []
     if tickers:
         return sorted(tickers), "explicit-config", warnings
 
-    rows = conn.execute(
-        "SELECT DISTINCT symbol FROM ohlcv ORDER BY symbol"
-    ).fetchall()
-    tickers = [r[0] for r in rows]
-    warnings.append({
-        "type": "universe-fallback",
-        "message": (
-            "Universe derived from ohlcv table.  This fallback is not "
-            "acceptable for certified execution.  Use explicit tickers or "
-            "configured universe."
-        ),
-    })
-    return tickers, "ohlcv-derived-fallback", warnings
+    if use_ohlcv_universe:
+        rows = conn.execute(
+            "SELECT DISTINCT symbol FROM ohlcv ORDER BY symbol"
+        ).fetchall()
+        derived = [r[0] for r in rows]
+        warnings.append({
+            "type": "universe-fallback",
+            "message": (
+                "Universe derived from ohlcv table.  This fallback is not "
+                "acceptable for certified execution."
+            ),
+        })
+        return derived, "ohlcv-derived-fallback", warnings
+
+    return sorted(TICKER_UNIVERSE), "explicit-config", warnings
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +244,7 @@ def plan_update(
     from_date: str | None = None,
     to_date: str | None = None,
     reference_today: str | None = None,
+    use_ohlcv_universe: bool = False,
 ) -> UpdatePlan:
     """Compute an UpdatePlan from DB state.  NEVER writes.
 
@@ -245,7 +288,7 @@ def plan_update(
         srcs = sources or ["polygon_news"]
 
         # ── Universe ──
-        universe_tickers, provenance, warns = _resolve_universe(conn, tickers)
+        universe_tickers, provenance, warns = _resolve_universe(conn, tickers, use_ohlcv_universe=use_ohlcv_universe)
         if not universe_tickers:
             conn.close()
             plan = UpdatePlan(
@@ -264,14 +307,35 @@ def plan_update(
             plan.plan_hash = compute_plan_hash(plan)
             return plan
 
-        # ── Date window ──
+        # ── Per-ticker date windows ──
         if from_date is None or to_date is None:
-            wm = latest_local_ohlcv_date(conn)
-        fd = from_date or wm
-        td = to_date or latest
+            # Resolve from_date per ticker: max(explicit from_date,
+            #   that ticker's ohlcv watermark + 1, historical_start)
+            wm_rows = conn.execute(
+                f"SELECT symbol, MAX(date) FROM ohlcv "
+                f"WHERE symbol IN ({','.join('?' for _ in universe_tickers)}) "
+                f"GROUP BY symbol",
+                universe_tickers,
+            ).fetchall()
+            wm_map: dict[str, str] = {r[0]: r[1] for r in wm_rows if r[1]}
+
+            ticker_from: dict[str, str] = {}
+            for t in universe_tickers:
+                wm = wm_map.get(t)
+                if wm:
+                    ticker_from[t] = _next_session(wm)
+                else:
+                    ticker_from[t] = HISTORICAL_START
+
+            # Global from_date = min(per-ticker), global to_date = latest session
+            fd = from_date or min(ticker_from.values())
+            td = to_date or latest
+        else:
+            fd = from_date
+            td = to_date
 
         # ── Trading days ──
-        trading_days = trading_days_for_window(conn, fd, td)
+        trading_days = calendar_trading_days(fd, td)
 
         # ── Missing cells ──
         success_rows = conn.execute(
@@ -292,7 +356,11 @@ def plan_update(
                 for src in srcs:
                     cell = (ticker, tday, src)
                     if cell not in success_cells:
-                        missing.append(cell)
+                        if _should_plan_cell(
+                            conn, ticker, tday, src,
+                            reference_today=ref_today_str,
+                        ):
+                            missing.append(cell)
 
         # ── Stage 1 (market): filter OHLCV sources ──
         market_cells = [c for c in missing if c[2] in ("polygon_ohlcv",)]
@@ -331,3 +399,87 @@ def plan_update(
         return plan
     finally:
         conn.close()
+
+# ---- W1-C: Checkpoint lifecycle constants (architect-approved) ----
+SUCCESS_EMPTY_RECHECK_MAX = 1
+SUCCESS_EMPTY_RECHECK_DELAY_DAYS = 1
+SUCCESS_EMPTY_WINDOW_DAYS = 5
+PERMANENT_FAILURE_THRESHOLD = 3
+CHRONIC_TRANSIENT_THRESHOLD = 5
+
+
+def _should_plan_cell(
+    conn: sqlite3.Connection,
+    ticker: str,
+    date_str: str,
+    source: str,
+    *,
+    reference_today: str,
+) -> bool:
+    """Return True if cell should be planned (not excluded by lifecycle).
+
+    Filters: success_empty recheck limits, permanent-failure exclusion,
+    chronic-transient warning, superseded-by-success detection.
+    """
+    from datetime import date as _date
+    from catalyst_data.error_taxonomy import ErrorClass
+
+    PERMANENT_CLASSES = {
+        ErrorClass.AUTH.value, ErrorClass.PERMISSION_PAID.value,
+        ErrorClass.MALFORMED_RESPONSE.value, ErrorClass.PARSE_FAILURE.value,
+        ErrorClass.BUDGET_EXHAUSTED.value,
+    }
+
+    # Check for existing success checkpoint (fast path)
+    success = conn.execute(
+        "SELECT 1 FROM source_checkpoints "
+        "WHERE ticker=? AND date=? AND source_type=? AND status='success'",
+        (ticker, date_str, source),
+    ).fetchone()
+    if success:
+        return False
+
+    # success_empty: at most one recheck, delay, window
+    empty_rows = conn.execute(
+        "SELECT run_id, date FROM source_checkpoints "
+        "WHERE ticker=? AND date=? AND source_type=? AND status='success_empty'",
+        (ticker, date_str, source),
+    ).fetchall()
+    # Terminal after max rechecks: 0=first attempt, 1=recheck, 2=terminal
+    if len(empty_rows) > SUCCESS_EMPTY_RECHECK_MAX:
+        return False
+    if empty_rows:
+        ref = _date.fromisoformat(reference_today)
+        chk = _date.fromisoformat(empty_rows[0][1])
+        days_since = (ref - chk).days
+        if days_since < SUCCESS_EMPTY_RECHECK_DELAY_DAYS:
+            return False
+        if days_since > SUCCESS_EMPTY_WINDOW_DAYS:
+            return False
+
+    # Permanent-class failures: exclude at threshold 3
+    failed_rows = conn.execute(
+        "SELECT error_class, run_id FROM source_checkpoints "
+        "WHERE ticker=? AND date=? AND source_type=? AND status='failed'",
+        (ticker, date_str, source),
+    ).fetchall()
+    permanent_count = 0
+    transient_count = 0
+    for ec_val, _rid in failed_rows:
+        if ec_val in PERMANENT_CLASSES:
+            permanent_count += 1
+        else:
+            transient_count += 1
+    if permanent_count >= PERMANENT_FAILURE_THRESHOLD:
+        return False
+
+    # Chronic-transient: warn at threshold but do NOT exclude
+    if transient_count >= CHRONIC_TRANSIENT_THRESHOLD:
+        import logging
+        _logger = logging.getLogger(__name__)
+        _logger.warning(
+            "Chronic transient failure: %s/%s/%s has %d transient failures",
+            ticker, date_str, source, transient_count,
+        )
+
+    return True

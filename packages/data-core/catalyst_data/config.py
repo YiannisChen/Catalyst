@@ -92,3 +92,11 @@ RATE_POLICIES = {
     },
     "test": {},  # all mocked, no network
 }
+
+# ---- W1-B: Phase-1 explicit universe and historical window ----
+TICKER_UNIVERSE: tuple[str, ...] = (
+    "AAPL", "AMD", "AMZN", "GOOGL", "JPM",
+    "META", "MSFT", "NVDA", "TSLA", "UNH",
+)
+
+HISTORICAL_START: str = "2024-12-30"

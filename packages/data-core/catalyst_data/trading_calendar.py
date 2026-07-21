@@ -10,6 +10,23 @@ import sqlite3
 from datetime import date, timedelta
 
 
+
+# ---- W1-B: Calendar coverage ----
+
+CALENDAR_YEARS: tuple[int, int] = (2024, 2027)
+
+
+class CalendarCoverageError(Exception):
+    """Requested date range is outside the supported holiday calendar."""
+
+    def __init__(self, requested: str, supported: tuple[int, int]):
+        self.requested = requested
+        self.supported = supported
+        super().__init__(
+            f"Date {requested} is outside supported calendar range "
+            f"{supported[0]}-{supported[1]}"
+        )
+
 US_MARKET_HOLIDAYS: frozenset[str] = frozenset({
     "2025-01-01", "2025-01-20", "2025-02-17", "2025-04-18",
     "2025-05-26", "2025-06-19", "2025-07-04", "2025-09-01",
@@ -20,6 +37,10 @@ US_MARKET_HOLIDAYS: frozenset[str] = frozenset({
     "2027-01-01", "2027-01-18", "2027-02-15", "2027-03-26",
     "2027-05-31", "2027-06-18", "2027-07-05", "2027-09-06",
     "2027-11-25", "2027-12-24",
+    # 2024 (added W1-B)
+    "2024-01-01", "2024-01-15", "2024-02-19", "2024-03-29",
+    "2024-05-27", "2024-06-19", "2024-07-04", "2024-09-02",
+    "2024-11-28", "2024-12-25",
 })
 
 
@@ -27,6 +48,12 @@ def calendar_trading_days(from_date: str, to_date: str) -> list[str]:
     """Generate weekday dates in [from_date, to_date] excluding market holidays."""
     if not from_date or not to_date:
         return []
+
+    # W1-B: fail closed outside supported calendar years
+    for ds in (from_date, to_date):
+        yr = int(ds[:4])
+        if yr < CALENDAR_YEARS[0] or yr > CALENDAR_YEARS[1]:
+            raise CalendarCoverageError(ds, CALENDAR_YEARS)
 
     start = date.fromisoformat(from_date)
     end = date.fromisoformat(to_date)
