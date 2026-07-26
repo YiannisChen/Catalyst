@@ -9,6 +9,7 @@ REPO_ROOT = PACKAGE_DIR.parents[1]
 MONOREPO_PACKAGES = [
     REPO_ROOT,
     PACKAGE_DIR,
+    PACKAGE_DIR / "tests",
     PACKAGE_DIR.parent / "eval",
     PACKAGE_DIR.parent / "data-core",
 ]

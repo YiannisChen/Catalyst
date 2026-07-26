@@ -78,6 +78,29 @@ def _fresh_db_at_version(target_version: int, *, foreign_keys: bool = True) -> s
             data TEXT,
             fetched_at TEXT
         );
+        CREATE TABLE IF NOT EXISTS index_state (
+            chunk_id         TEXT NOT NULL,
+            chunk_level      TEXT NOT NULL DEFAULT 'l1',
+            corpus_item_id   TEXT NOT NULL,
+            source_kind      TEXT NOT NULL,
+            content_hash     TEXT NOT NULL,
+            content_text     TEXT NOT NULL DEFAULT '',
+            status           TEXT NOT NULL DEFAULT 'pending',
+            provider         TEXT,
+            source_type      TEXT,
+            source_tier      INTEGER,
+            tickers_json     TEXT DEFAULT '[]',
+            reference_date   TEXT,
+            published_utc    TEXT,
+            publisher_name   TEXT,
+            publisher_logo_url TEXT,
+            article_url      TEXT,
+            image_url        TEXT,
+            author           TEXT,
+            dedup_group_id   TEXT,
+            indexed_build_id TEXT,
+            indexed_at       TEXT
+        );
     """)
     conn.commit()
 
