@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import sqlite3
 
+from catalyst_agents.trace.version import ensure_trace_schema_version
+
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS agent_runs (
@@ -70,11 +72,21 @@ CREATE TABLE IF NOT EXISTS run_links (
     FOREIGN KEY (parent_run_id) REFERENCES agent_runs(run_id)
 );
 CREATE INDEX IF NOT EXISTS idx_run_links_parent ON run_links(parent_run_id);
+
+CREATE TABLE IF NOT EXISTS run_assurance (
+    run_id          TEXT PRIMARY KEY,
+    schema_version  TEXT NOT NULL CHECK (schema_version = '1.0.0'),
+    record_json     TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES agent_runs(run_id)
+);
 """
 
 
 def init_trace_db(conn: sqlite3.Connection) -> None:
     """Create trace tables and indexes if they do not already exist."""
+    conn.execute("PRAGMA foreign_keys=ON")
+    ensure_trace_schema_version(conn)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     conn.executescript(_DDL)

@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 import pytest
 
+from attribution_fixtures import FixtureRetriever, RecordingCutoffPolicy, mock_provider_with_ohlcv
 from catalyst_agents.graph import build_attribution_graph
 from catalyst_agents.trace.artifacts import read_node_artifacts, write_node_artifact
 from catalyst_agents.trace.exporter import export_run
@@ -310,6 +311,14 @@ def test_node_artifact_roundtrip_and_filters(tmp_path: Path):
     db_path = tmp_path / "trace.db"
     conn = sqlite3.connect(db_path)
     init_trace_db(conn)
+    conn.execute("INSERT INTO agent_runs (run_id, trace_id, status) VALUES ('r1', 't1', 'RUNNING')")
+    for event_seq, node in ((1, "miner"), (2, "critic")):
+        conn.execute(
+            """INSERT INTO trace_events
+            (run_id, trace_id, event_seq, node, started_at, ended_at, latency_ms)
+            VALUES ('r1', 't1', ?, ?, '2026-01-15T00:00:00Z', '2026-01-15T00:00:01Z', 1)""",
+            (event_seq, node),
+        )
 
     write_node_artifact(
         conn,
@@ -471,21 +480,7 @@ def test_exporter_writes_json_file(tmp_path: Path):
 
 def test_graph_invoke_persists_trace_rows(tmp_path: Path, monkeypatch):
     db_path = tmp_path / "trace_graph.db"
-    monkeypatch.setenv("CATALYST_DB_PATH", str(db_path))
-
-    chunks = [
-        {
-            "asset_id": "c1",
-            "ticker": "AAPL",
-            "source_type": "polygon_news",
-            "reference_date": "2026-01-15",
-            "content_md": "China chip ban expanded.",
-            "rrf_score": 0.5,
-        }
-    ]
-
-    def mock_retrieve(query, layer, metadata, *, rerank=None):
-        return chunks[: metadata.top_k]
+    monkeypatch.setenv("CATALYST_TRACE_DB_PATH", str(db_path))
 
     class MockUsage:
         def __init__(self) -> None:
@@ -508,7 +503,7 @@ def test_graph_invoke_persists_trace_rows(tmp_path: Path, monkeypatch):
                             {
                                 "chunk_id": "c1",
                                 "relevance": 0.9,
-                                "category": "geopolitical",
+                                "category": "earnings",
                                 "temporal_match": True,
                                 "reasoning": "Direct cause",
                             }
@@ -518,21 +513,22 @@ def test_graph_invoke_persists_trace_rows(tmp_path: Path, monkeypatch):
                 ),
                 json.dumps(
                     {
-                        "causes": [
+                        "hypotheses": [
                             {
-                                "text": "China chip ban",
-                                "category": "geopolitical",
-                                "confidence": 0.8,
-                                "evidence_ids": ["c1"],
+                                "cause_label": "earnings_guidance",
                                 "direction": "negative",
+                                "transmission_mechanism": "Guidance weakness reduced expectations",
+                                "supporting_evidence_ids": ["c1"],
+                                "counter_evidence_ids": [],
+                                "missing_evidence": [],
+                                "change_condition": "Reassess if guidance improves",
+                                "facts": ["Guidance was reduced"],
+                                "calculations": [],
+                                "inferences": ["Investors priced lower forward revenue"],
+                                "unavailable_evidence": [],
                             }
                         ],
                         "summary_md": "AAPL dropped due to [c1] export ban.",
-                        "self_grounding_check": {
-                            "total_claims": 1,
-                            "grounded_claims": 1,
-                            "ungrounded_claims": 0,
-                        },
                     }
                 ),
             ]
@@ -542,9 +538,14 @@ def test_graph_invoke_persists_trace_rows(tmp_path: Path, monkeypatch):
             self.calls += 1
             return MockResponse(self.responses[idx])
 
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
-
-    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    graph = build_attribution_graph(
+        context_provider=mock_provider_with_ohlcv(),
+        retriever=FixtureRetriever(),
+        cutoff_policy=RecordingCutoffPolicy(),
+        requested_manifest_id="corpus-fixture-v1",
+        use_critic=True,
+        llm=MockLLM(),
+    )
     result = graph.invoke(
         {
             "ticker": "AAPL",
@@ -589,3 +590,29 @@ def test_graph_invoke_persists_trace_rows(tmp_path: Path, monkeypatch):
     assert event_count >= 6
     assert "miner" in nodes
     assert "finalizer" in nodes
+
+
+def test_unknown_run_cost_persists_as_null(tmp_path: Path, monkeypatch):
+    from catalyst_agents.trace.writer import TraceWriter
+
+    db_path = tmp_path / "trace_unknown_cost.db"
+    monkeypatch.setenv("CATALYST_TRACE_DB_PATH", str(db_path))
+    with TraceWriter(run_id="unknown-cost", ticker="AAPL", trade_date="2026-01-15", config="test") as writer:
+        writer.complete({
+            "output_status": "SYSTEM_ERROR",
+            "error_type": "system_error",
+            "validation_error": "unknown model price",
+            "total_cost_usd": None,
+            "cost_status": "unknown",
+            "cost_breakdown": [{"node": "judge", "model_id": "unknown", "cost_status": "unknown", "cost_usd": None}],
+            "cutoff": "2026-01-15T21:00:00Z",
+            "context_cutoff": "2026-01-15T21:00:00Z",
+            "retrieval_cutoff": "2026-01-15T21:00:00Z",
+            "validator_cutoff": "2026-01-15T21:00:00Z",
+            "context_artifact": {"schema_version": "1.0.0"},
+        })
+
+    conn = sqlite3.connect(db_path)
+    stored = conn.execute("SELECT total_cost_usd FROM agent_runs WHERE run_id='unknown-cost'").fetchone()[0]
+    conn.close()
+    assert stored is None

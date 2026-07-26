@@ -12,6 +12,7 @@ class RunStatus(str, Enum):
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     PARTIAL = "PARTIAL"
+    ABSTAIN = "ABSTAIN"
     INSUFFICIENT = "INSUFFICIENT"
     FAILED_SYSTEM = "FAILED_SYSTEM"
     FAILED_REQUEST = "FAILED_REQUEST"
@@ -22,6 +23,7 @@ class TraceStatus(str, Enum):
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
     PARTIAL = "PARTIAL"
+    ABSTAIN = "ABSTAIN"
     INSUFFICIENT = "INSUFFICIENT"
     FAILED_SYSTEM = "FAILED_SYSTEM"
     FAILED_REQUEST = "FAILED_REQUEST"
@@ -253,7 +255,7 @@ class RangeLocalResponse(BaseModel):
 TerminalRunStatus = Literal[
     RunStatus.SUCCEEDED,
     RunStatus.PARTIAL,
-    RunStatus.INSUFFICIENT,
+    RunStatus.ABSTAIN,
     RunStatus.FAILED_SYSTEM,
     RunStatus.FAILED_REQUEST,
 ]

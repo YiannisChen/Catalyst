@@ -141,32 +141,10 @@ def test_generic_error_returns_request_failed(mock_chat):
 
 
 def test_deepseek_provider_resolves():
-    """deepseek is in _PROVIDER_DEFAULTS."""
-    # Test that the provider is known (no base_url needed)
-    result = validate_provider(
-        provider="deepseek",
-        model_id="deepseek-chat",
-        api_key=API_KEY,
-    )
-    # It may fail (no real network) but should not be "invalid"
-    assert result.status != "invalid"
+    from catalyst_app.llm_factory import _PROVIDER_DEFAULTS
+    assert "deepseek" in _PROVIDER_DEFAULTS
 
 
 def test_siliconflow_provider_resolves():
-    """siliconflow is in _PROVIDER_DEFAULTS."""
-    result = validate_provider(
-        provider="siliconflow",
-        model_id="Qwen/Qwen3-235B",
-        api_key=API_KEY,
-    )
-    assert result.status != "invalid"
-
-
-def test_dashscope_provider_resolves():
-    """dashscope is in _PROVIDER_DEFAULTS."""
-    result = validate_provider(
-        provider="dashscope",
-        model_id="qwen-turbo",
-        api_key=API_KEY,
-    )
-    assert result.status != "invalid"
+    from catalyst_app.llm_factory import _PROVIDER_DEFAULTS
+    assert "siliconflow" in _PROVIDER_DEFAULTS

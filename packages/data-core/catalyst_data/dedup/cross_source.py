@@ -382,3 +382,53 @@ def recompute_per_association_canonical(conn: sqlite3.Connection) -> dict:
         "canonical_associations": canon_ats,
         "winner_article_ids": len(winner_article_ids),
     }
+
+
+# ── B3: Cluster field computation ────────────────────────────────────────────
+
+_SOURCE_CLASS_PRIORITY: dict[str, int] = {
+    "corporate_press_release": 0,
+    "issuer_disclosure": 1,
+    "official_government": 2,
+    "reported_news": 3,
+    "analysis_opinion": 4,
+    "aggregated_unknown": 5,
+    "structured_market_data": 6,
+}
+
+
+def compute_cluster_fields(
+    members: list[dict],
+) -> dict[str, str | None]:
+    """Compute cluster_first_available_at and representative_document_id.
+
+    cluster_first_available_at: the earliest available_at in the cluster.
+    representative_document_id: the document with the highest-priority
+    source_class. Ties are broken by earliest available_at.
+
+    Returns dict with keys: cluster_first_available_at, representative_document_id.
+    """
+    if not members:
+        return {
+            "cluster_first_available_at": None,
+            "representative_document_id": None,
+        }
+
+    # Earliest available_at
+    availability = [m["available_at"] for m in members if m.get("available_at")]
+    first_available = min(availability) if availability else None
+
+    # Representative: highest-priority source_class, tie-break by earliest available_at
+    def _rank(m: dict) -> tuple[int, str, str]:
+        sc = m.get("source_class", "aggregated_unknown")
+        pri = _SOURCE_CLASS_PRIORITY.get(sc, 99)
+        at = m.get("available_at", "9999-12-31T00:00:00Z")
+        return (pri, at, m.get("document_id", ""))
+
+    representative = min(members, key=_rank)
+    rep_id = representative.get("document_id")
+
+    return {
+        "cluster_first_available_at": first_available,
+        "representative_document_id": rep_id,
+    }

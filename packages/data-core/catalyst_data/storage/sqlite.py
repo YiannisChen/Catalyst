@@ -85,7 +85,8 @@ CREATE TABLE IF NOT EXISTS clean_assets (
     content_md      TEXT NOT NULL,
     title_hash      TEXT,
     is_duplicate    INTEGER DEFAULT 0,
-    FOREIGN KEY (asset_id) REFERENCES raw_assets(asset_id)
+    raw_asset_id    TEXT,
+    FOREIGN KEY (raw_asset_id) REFERENCES raw_assets(asset_id)
 );
 -- Additive: provenance column (applied via ensure_clean_provenance)
 CREATE INDEX IF NOT EXISTS idx_clean_ticker_date ON clean_assets(ticker, reference_date);

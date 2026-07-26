@@ -40,6 +40,7 @@ The data-core migration registry currently contains v1–v7. The current Dev DB 
 | v8 | B2 | request-attempt ledger, request-scoped raw-response fields, normalized provenance, durable update-run control |
 | v9 | B3 | corpus documents/chunks, profile identity, corpus manifests, reconciliation and tombstones |
 | v10 | B4 | FTS5 lexical index and lexical-index metadata if persistent schema is required |
+| v11 | B2-O | full source-cell checkpoint identity and FMP `fundamental_statements` |
 
 B5 does not add financial attribution tables to the corpus DB for the Core milestone. Benchmark, sector ETF, peer, and relationship configuration are versioned manifests plus existing OHLCV/domain records. B5 may add an additive trace-schema version for assurance records, but the agents trace DB must first gain an explicit schema-version registry; it must not borrow data-core `user_version` numbers.
 
@@ -114,6 +115,25 @@ STARTED
 6. persist a terminal run report.
 
 An explicit `allow_stale_ohlcv` override is recorded in the plan and report. It is never inferred silently.
+
+#### B2-O exception (binding; 2026-07-24)
+
+Operational B2-O fills governed by
+`docs/plans/2026-07-23-b2o-data-readiness-design.md` use one immutable
+`UpdatePlan` with hash-bearing `source_scopes` authorized before the first
+network call. For those runs only:
+
+1. market-stage OHLCV cells execute first and commit;
+2. the latest OHLCV watermark is recorded in the run report;
+3. evidence-stage cells from the **same** authorized plan execute next;
+4. mid-run evidence re-plan and mid-run plan-hash mutation are prohibited;
+5. resume uses the stored plan identity plus `parent_run_id` lineage and
+   skips only terminal-complete cells (`success`, `success_empty` with
+   `is_complete=1`).
+
+This exception does not authorize silent empty success for transport,
+auth, parse, partial, or rate-limit failures. Non-B2-O callers retain the
+default re-plan sequence above until separately amended.
 
 ### 4.5 Raw response and normalized provenance
 
@@ -377,6 +397,10 @@ manifest_id = SHA256(canonical_json({
   embedding_revision_or_null
 }))
 ```
+
+`sorted_active_chunk_inventory` is not a list of chunk IDs. It is a list of canonical JSON objects, sorted by `chunk_id ASC`, with exactly these fields: `chunk_id`, `document_id`, `chunk_profile_version`, `section_key`, `ordinal`, `content_hash`, `metadata_hash`, `available_at`, `source_class`, `dedup_cluster_id`, `cluster_first_available_at`, `representative_document_id`, and `eligibility`. This means a text change or metadata-only change changes the manifest identity even when `chunk_id` is stable. `content_text`, timestamps such as `created_at`/`updated_at`, and embedding vectors are excluded.
+
+Canonical JSON means UTF-8 JSON with sorted object keys, no insignificant whitespace, and deterministic array order. `tokenizer_revision` is the bare 40-character revision SHA; tokenizer model ID is reported in the manifest body as `tokenizer_model_id` but is excluded from the formula only because B3 fixes it to `BAAI/bge-m3`. `embedding_revision_or_null` is null in B3.
 
 `created_at` is reported but excluded from `manifest_id`. An interrupted reconciliation never publishes a current manifest. Removed, ineligible, superseded-profile, and disappeared-child chunks receive tombstones.
 

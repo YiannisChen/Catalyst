@@ -193,6 +193,11 @@ EXPECTED_COLUMNS = [
     "pages_received",
     "items_received",
     "is_complete",
+    "cell_id",
+    "window_start",
+    "window_end",
+    "endpoint_name",
+    "provider_profile_version",
 ]
 
 

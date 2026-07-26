@@ -16,10 +16,11 @@ from typing import Any
 class FetchResult:
     """Uniform result from any connector (FMP, yfinance, GDELT, etc.)."""
     status: int
-    data: dict | None = None
+    data: Any = None
     error: str | None = None
     latency_ms: float = 0.0
     source_label: str = ""
     retry_after_seconds: float | None = None
     error_class: str | None = None        # H2: ErrorClass value from error_taxonomy
     items_count: int | None = None        # H2: number of items in data
+    raw_body: bytes | None = None         # exact provider response bytes when available

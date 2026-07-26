@@ -19,7 +19,7 @@ def is_cancelled(conn: sqlite3.Connection, run_id: str) -> bool:
         "SELECT cancel_requested FROM ingestion_runs WHERE run_id = ?",
         (run_id,),
     ).fetchone()
-    return bool(row["cancel_requested"]) if row else False
+    return bool(row[0]) if row else False
 
 
 def acquire_lease(

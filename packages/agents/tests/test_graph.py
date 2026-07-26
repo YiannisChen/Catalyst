@@ -14,6 +14,7 @@ from catalyst_agents.graph import build_attribution_graph
 from catalyst_agents.trace.artifacts import read_node_artifacts
 from catalyst_agents.state import OutputStatus
 from catalyst_agents.retrieval.policy import Layer
+from attribution_fixtures import FixtureRetriever, RecordingCutoffPolicy, mock_provider_with_ohlcv
 
 
 # ---------------------------------------------------------------------------
@@ -36,30 +37,31 @@ CRITIC_RESPONSE = json.dumps({
         {
             "chunk_id": "c1",
             "relevance": 0.9,
-            "category": "geopolitical",
+            "category": "earnings",
             "temporal_match": True,
             "reasoning": "Direct cause — chip ban impacts Apple supply chain.",
         }
     ],
-    "reasoning": "Strong geopolitical evidence directly linked to the price move.",
+    "reasoning": "Strong earnings evidence directly linked to the price move.",
 })
 
 JUDGE_RESPONSE = json.dumps({
-    "causes": [
+    "hypotheses": [
         {
-            "text": "China chip ban impacted Apple supply chain",
-            "category": "geopolitical",
-            "confidence": 0.8,
-            "evidence_ids": ["c1"],
+            "cause_label": "earnings_guidance",
             "direction": "negative",
+            "transmission_mechanism": "Guidance weakness reduced expectations",
+            "supporting_evidence_ids": ["c1"],
+            "counter_evidence_ids": [],
+            "missing_evidence": [],
+            "change_condition": "Reassess if guidance improves",
+            "facts": ["Guidance was reduced"],
+            "calculations": [],
+            "inferences": ["Investors priced lower forward revenue"],
+            "unavailable_evidence": [],
         }
     ],
-    "summary_md": "AAPL dropped due to [c1] China export ban affecting supply chain.",
-    "self_grounding_check": {
-        "total_claims": 1,
-        "grounded_claims": 1,
-        "ungrounded_claims": 0,
-    },
+    "summary_md": "AAPL dropped after [c1] guidance weakness.",
 })
 
 
@@ -131,14 +133,24 @@ def _base_state() -> dict:
         "total_cost_usd": 0.0,
         "total_tokens": 0,
         "model_id": "claude-sonnet-4-20250514",
+        "cost_status": "known",
     }
+
+
+def _graph(llm=None, **kwargs):
+    return build_attribution_graph(
+        context_provider=mock_provider_with_ohlcv(),
+        retriever=FixtureRetriever(),
+        cutoff_policy=RecordingCutoffPolicy(),
+        requested_manifest_id="corpus-fixture-v1",
+        llm=llm or MockLLM(),
+        **kwargs,
+    )
 
 
 def test_mcj_graph_full_pipeline(monkeypatch):
     """Full MCJ path: miner → critic → judge produces valid attribution."""
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
-
-    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    graph = _graph(use_critic=True, llm=MockLLM())
 
     result = graph.invoke(_base_state())
 
@@ -150,23 +162,20 @@ def test_mcj_graph_full_pipeline(monkeypatch):
 
 
 def test_mcj_graph_accumulates_total_costs(monkeypatch):
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
-
-    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    graph = _graph(use_critic=True, llm=MockLLM())
     result = graph.invoke(_base_state())
 
-    assert len(result["cost_breakdown"]) == 2
+    charged_nodes = [entry["node"] for entry in result["cost_breakdown"]]
+    assert charged_nodes == ["critic", "judge"]
     assert result["total_cost_usd"] > 0
     assert result["total_tokens"] > 0
 
 
 def test_baseline_graph_skips_critic(monkeypatch):
     """With use_critic=False, critic node is bypassed and no critic cost is recorded."""
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
-
     llm = MockLLM()
     llm._responses = [JUDGE_RESPONSE]  # Only judge response — critic never called
-    graph = build_attribution_graph(use_critic=False, llm=llm)
+    graph = _graph(use_critic=False, llm=llm)
 
     result = graph.invoke(_base_state())
 
@@ -178,11 +187,9 @@ def test_baseline_graph_skips_critic(monkeypatch):
 
 def test_baseline_graph_passes_usable_evidence_to_judge(monkeypatch):
     """Baseline Miner->Judge must still expose evidence IDs for grounding and citations."""
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
-
     llm = MockLLM()
     llm._responses = [JUDGE_RESPONSE]  # Judge only in baseline mode
-    graph = build_attribution_graph(use_critic=False, llm=llm)
+    graph = _graph(use_critic=False, llm=llm)
 
     result = graph.invoke(_base_state())
 
@@ -192,7 +199,6 @@ def test_baseline_graph_passes_usable_evidence_to_judge(monkeypatch):
 
 def test_mcj_insufficient_evidence_path(monkeypatch):
     """When all chunks have relevance <= 0.5, routing goes to insufficient_handler."""
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     all_low = json.dumps({
         "graded_chunks": [
@@ -209,30 +215,27 @@ def test_mcj_insufficient_evidence_path(monkeypatch):
 
     llm = MockLLM()
     llm._responses = [all_low]  # Critic only — judge must NOT be called
-    graph = build_attribution_graph(use_critic=True, llm=llm)
+    graph = _graph(use_critic=True, llm=llm)
 
     result = graph.invoke(_base_state())
 
     assert result["causes"][0]["category"] == "unknown"
-    assert "Insufficient evidence" in result["causes"][0]["text"]
+    assert "Abstained" in result["causes"][0]["text"]
     assert result["grounding_rate"] is None
 
 
 def test_mcj_zero_retrieved_evidence_does_not_call_judge(monkeypatch):
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve_empty)
-
     llm = MockLLM()
-    graph = build_attribution_graph(use_critic=True, llm=llm)
+    graph = build_attribution_graph(context_provider=mock_provider_with_ohlcv(), retriever=FixtureRetriever(evidence=()), cutoff_policy=RecordingCutoffPolicy(), requested_manifest_id="corpus-fixture-v1", use_critic=True, llm=llm)
 
     result = graph.invoke(_base_state())
 
-    assert result["output_status"] == OutputStatus.INSUFFICIENT
-    assert "Insufficient evidence" in result["causes"][0]["text"]
+    assert result["output_status"] == OutputStatus.ABSTAIN
+    assert "Abstained" in result["causes"][0]["text"]
     assert llm.call_count == 0
 
 
 def test_mcj_all_rejected_evidence_does_not_call_judge(monkeypatch):
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     all_low = json.dumps({
         "graded_chunks": [
@@ -249,21 +252,20 @@ def test_mcj_all_rejected_evidence_does_not_call_judge(monkeypatch):
 
     llm = MockLLM()
     llm._responses = [all_low, JUDGE_RESPONSE]
-    graph = build_attribution_graph(use_critic=True, llm=llm)
+    graph = _graph(use_critic=True, llm=llm)
 
     result = graph.invoke(_base_state())
 
-    assert result["output_status"] == OutputStatus.INSUFFICIENT
-    assert "Insufficient evidence" in result["causes"][0]["text"]
+    assert result["output_status"] == OutputStatus.ABSTAIN
+    assert "Abstained" in result["causes"][0]["text"]
     assert llm.call_count == 1
 
 
 def test_mcj_graph_critic_failure_routes_to_system_error(monkeypatch):
     """LLM failure must route to system_error_handler, not insufficient_handler (BUG-005)."""
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
     monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", lambda _: None)
 
-    graph = build_attribution_graph(use_critic=True, llm=FailingLLM())
+    graph = _graph(use_critic=True, llm=FailingLLM())
     result = graph.invoke(_base_state())
 
     assert result["causes"] == []
@@ -271,49 +273,22 @@ def test_mcj_graph_critic_failure_routes_to_system_error(monkeypatch):
     assert result["grounding_rate"] is None
 
 
-def test_mcj_graph_expand_macro_loops_back_through_miner(monkeypatch):
-    captured_layers = []
-
-    def fake_retrieve(query, layer, metadata, *, rerank=None):
-        captured_layers.append(layer)
-        return MOCK_CHUNKS
-
-    decisions = iter(
-        [
-            ("partial", "expand_macro", 0.45, "Need macro expansion."),
-            ("partial", "proceed", 0.65, "Macro evidence is enough to judge."),
-        ]
-    )
-
-    def fake_decision(filtered, reasoning):
-        sufficiency, next_action, magnitude_coverage, reason = next(decisions)
-        from catalyst_agents.state import CriticDecision
-
-        return CriticDecision(
-            sufficiency=sufficiency,
-            next_action=next_action,
-            magnitude_coverage=magnitude_coverage,
-            reasoning=reason,
-        )
-
-    llm = MockLLM()
-    llm._responses = [CRITIC_RESPONSE, CRITIC_RESPONSE, JUDGE_RESPONSE]
-
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", fake_retrieve)
-    monkeypatch.setattr("catalyst_agents.nodes.critic._build_critic_decision", fake_decision)
-
-    graph = build_attribution_graph(use_critic=True, llm=llm)
-    result = graph.invoke(_base_state())
-
-    assert captured_layers == [Layer.DIRECT, Layer.MACRO]
+def test_mcj_graph_starts_with_context_builder_then_miner(tmp_path, monkeypatch):
+    db_path = tmp_path / "trace_graph.db"
+    monkeypatch.setenv("CATALYST_TRACE_DB_PATH", str(db_path))
+    graph = _graph(use_critic=True, llm=MockLLM())
+    result = graph.invoke(_base_state(), run_id="order-run")
+    conn = sqlite3.connect(db_path)
+    nodes = [row[0] for row in conn.execute("SELECT node FROM trace_events WHERE run_id = ? ORDER BY event_seq", ("order-run",)).fetchall()]
+    conn.close()
+    assert nodes[:2] == ["context_builder", "miner"]
     assert result["summary_md"] != ""
 
 
 def test_baseline_graph_judge_failure_falls_back_instead_of_crashing(monkeypatch):
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
     monkeypatch.setattr("catalyst_agents.backoff._safe_sleep", lambda _: None)
 
-    graph = build_attribution_graph(use_critic=False, llm=FailingLLM())
+    graph = _graph(use_critic=False, llm=FailingLLM())
     result = graph.invoke(_base_state())
 
     assert result["causes"][0]["category"] == "unknown"
@@ -322,23 +297,22 @@ def test_baseline_graph_judge_failure_falls_back_instead_of_crashing(monkeypatch
 
 def test_build_graph_returns_invokable_object():
     """build_attribution_graph must always return an object with .invoke()."""
-    graph = build_attribution_graph(use_critic=True)
+    graph = _graph(use_critic=True)
     assert callable(getattr(graph, "invoke", None))
 
 
 def test_build_graph_no_critic_returns_invokable_object():
     """build_attribution_graph(use_critic=False) must return an object with .invoke()."""
-    graph = build_attribution_graph(use_critic=False)
+    graph = _graph(use_critic=False)
     assert callable(getattr(graph, "invoke", None))
 
 
 def test_graph_invoke_uses_provided_run_id_and_persists_artifacts(tmp_path, monkeypatch):
     db_path = tmp_path / "trace_graph.db"
-    monkeypatch.setenv("CATALYST_DB_PATH", str(db_path))
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
+    monkeypatch.setenv("CATALYST_TRACE_DB_PATH", str(db_path))
     run_id = "external-run-1"
 
-    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    graph = _graph(use_critic=True, llm=MockLLM())
     result = graph.invoke(_base_state(), run_id=run_id)
 
     conn = sqlite3.connect(db_path)
@@ -358,11 +332,10 @@ def test_graph_invoke_uses_provided_run_id_and_persists_artifacts(tmp_path, monk
 
 def test_graph_persists_raw_llm_response_artifacts(tmp_path, monkeypatch):
     db_path = tmp_path / "trace_graph.db"
-    monkeypatch.setenv("CATALYST_DB_PATH", str(db_path))
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
+    monkeypatch.setenv("CATALYST_TRACE_DB_PATH", str(db_path))
     run_id = "external-run-2"
 
-    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    graph = _graph(use_critic=True, llm=MockLLM())
     graph.invoke(_base_state(), run_id=run_id)
 
     conn = sqlite3.connect(db_path)
@@ -375,13 +348,12 @@ def test_graph_persists_raw_llm_response_artifacts(tmp_path, monkeypatch):
 
 
 def test_graph_ignores_artifact_write_failure_and_keeps_mcj_result(monkeypatch):
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", mock_retrieve)
 
     def _boom(*args, **kwargs):
         raise TypeError("artifact write failed")
 
     monkeypatch.setattr("catalyst_agents.graph.write_node_artifact", _boom)
-    graph = build_attribution_graph(use_critic=True, llm=MockLLM())
+    graph = _graph(use_critic=True, llm=MockLLM())
     result = graph.invoke(_base_state())
 
     assert len(result["causes"]) > 0

@@ -17,6 +17,7 @@ import time
 from typing import Any
 
 from catalyst_agents.state import AttributionState
+from catalyst_agents.attribution.context_builder import ContextBuilder, canonical_context_bytes
 from catalyst_agents.nodes.miner import miner
 from catalyst_agents.nodes.critic import critic, insufficient_handler, system_error_handler
 from catalyst_agents.nodes.decision_router import decision_router, route_after_decision_router
@@ -27,6 +28,27 @@ from catalyst_agents.retrieval.policy import Layer
 from catalyst_agents.trace.artifacts import write_node_artifact
 from catalyst_agents.trace.projection import project_node_artifacts
 from catalyst_agents.trace.writer import TraceWriter, activate_writer, get_current_writer
+
+
+class AttributionDependencyError(RuntimeError):
+    pass
+
+
+def context_builder_node(state: dict, *, context_provider: Any, cutoff_policy: Any) -> dict:
+    cutoff = cutoff_policy.compute_cutoff(ticker=state["ticker"], session_date=state["trade_date"], mode="attribution")
+    artifact = ContextBuilder(provider=context_provider).build(
+        ticker=state["ticker"],
+        session_date=state["trade_date"],
+        cutoff=cutoff,
+    )
+    return {
+        "context_artifact": artifact.model_dump(mode="json"),
+        "context_artifact_sha256": __import__("hashlib").sha256(canonical_context_bytes(artifact)).hexdigest(),
+        "cutoff": cutoff,
+        "context_cutoff": cutoff,
+        "price_move_pct": artifact.target_return_pct,
+        "market_session_valid": artifact.target_return_pct is not None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +75,7 @@ def _baseline_graded_evidence(reranked_chunks: list[dict]) -> list[dict]:
     return [
         {
             "chunk_id": chunk.get("asset_id", ""),
-            "relevance": chunk.get("rerank_score", chunk.get("rrf_score", 1.0)),
+            "relevance": min(1.0, float(chunk.get("rerank_score", chunk.get("rrf_score", 1.0)) or 0.0)),
             "category": "unknown",
             "temporal_match": True,
             "reasoning": "Critic disabled; forwarding Miner evidence directly to Judge.",
@@ -156,7 +178,7 @@ def _trace_node(node_name: str, fn):
             model_id=merged_state.get("model_id"),
             input_tokens=sum(int(entry.get("input_tokens", 0) or 0) for entry in new_breakdown),
             output_tokens=sum(int(entry.get("output_tokens", 0) or 0) for entry in new_breakdown),
-            cost_usd=sum(float(entry.get("cost_usd", 0.0) or 0.0) for entry in new_breakdown),
+            cost_usd=None if any(entry.get("cost_status") == "unknown" or entry.get("cost_usd") is None for entry in new_breakdown) else sum(float(entry.get("cost_usd", 0.0) or 0.0) for entry in new_breakdown),
             decision=_decision_payload(node_name, merged_state),
             error_type=merged_state.get("error_type"),
             error_message=_error_message(merged_state),
@@ -195,8 +217,17 @@ class _TracedCompiledGraph:
             trade_date=state.get("trade_date"),
             config=self._config_name,
         ) as writer:
-            with activate_writer(writer):
-                result = self._compiled_graph.invoke(state)
+            try:
+                with activate_writer(writer):
+                    result = self._compiled_graph.invoke(state)
+            except Exception as exc:
+                writer.complete({
+                    **state,
+                    "output_status": "SYSTEM_ERROR",
+                    "error_type": "system_error",
+                    "validation_error": str(exc),
+                })
+                raise
             writer.complete(result)
             return {
                 **result,
@@ -214,6 +245,10 @@ class _TracedCompiledGraph:
 
 def build_attribution_graph(
     *,
+    context_provider: Any = None,
+    retriever: Any = None,
+    cutoff_policy: Any = None,
+    requested_manifest_id: str | None = None,
     use_critic: bool = True,
     table: Any = None,
     embedding_fn: Any = None,
@@ -243,12 +278,18 @@ def build_attribution_graph(
     """
     from langgraph.graph import StateGraph, END
 
+    if context_provider is None or retriever is None or cutoff_policy is None or not requested_manifest_id:
+        raise AttributionDependencyError(
+            "build_attribution_graph requires context_provider, retriever, cutoff_policy, and requested_manifest_id"
+        )
+
     # Bind dependencies to nodes via partial application
-    bound_miner = _trace_node("miner", partial(miner, table=table, embedding_fn=embedding_fn, reranker=reranker))
+    bound_context = _trace_node("context_builder", partial(context_builder_node, context_provider=context_provider, cutoff_policy=cutoff_policy))
+    bound_miner = _trace_node("miner", partial(miner, retriever=retriever, cutoff_policy=cutoff_policy, requested_manifest_id=requested_manifest_id, table=table, embedding_fn=embedding_fn, reranker=reranker))
     bound_critic = _trace_node("critic", partial(critic, llm=llm))
     bound_router = _trace_node("decision_router", decision_router)
     bound_judge = _trace_node("judge", partial(judge, llm=llm))
-    bound_validator = _trace_node("validator", partial(validator, llm=llm))
+    bound_validator = _trace_node("validator", partial(validator, llm=llm, cutoff_policy=cutoff_policy))
     bound_finalizer = _trace_node("finalizer", finalizer)
     bound_insufficient = _trace_node("insufficient_handler", insufficient_handler)
     bound_system_error = _trace_node("system_error_handler", system_error_handler)
@@ -256,6 +297,7 @@ def build_attribution_graph(
     bound_expand_macro = _trace_node("expand_macro", expand_macro_transition)
 
     graph = StateGraph(AttributionState)
+    graph.add_node("context_builder", bound_context)
     graph.add_node("miner", bound_miner)
     graph.add_node("decision_router", bound_router)
     graph.add_node("expand_macro", bound_expand_macro)
@@ -266,7 +308,8 @@ def build_attribution_graph(
     graph.add_node("system_error_handler", bound_system_error)
     graph.add_node("baseline_prepare_evidence", bound_baseline)
 
-    graph.set_entry_point("miner")
+    graph.set_entry_point("context_builder")
+    graph.add_edge("context_builder", "miner")
 
     if use_critic:
         graph.add_node("critic", bound_critic)

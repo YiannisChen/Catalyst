@@ -23,13 +23,144 @@
 - Trace-version tests create a temporary trace DB, verify the registry row, upgrade behavior, and fail loudly on an unknown future version.
 - Relationship gates consume one reviewed manifest at `packages/agents/catalyst_agents/attribution/manifests/relationships_core_v1.json`. Required fields are `schema_version`, `manifest_id`, and `edges[]`; each edge has `edge_id`, `from_ticker`, `to_ticker`, `relationship_type`, `effective_from`, optional `effective_to`, `review_source`, and `reviewed_at`. `manifest_id` is the SHA-256 of canonical JSON containing `schema_version` and deterministically sorted `edges`, explicitly excluding the `manifest_id` field itself. No runtime graph discovery is allowed.
 
+### 0.1 Completion and no-deferral contract
+
+- B5 is one execution unit. The executor must complete Tasks 0–8, including every production-wiring task in Task 7, before reporting completion. Passing schema/unit tests alone is not B5 completion.
+- “Requires refactoring”, “legacy path is complex”, “production integration is large”, or “can be completed in a later amendment” are not blockers and are not valid reasons to stop. Continue with the smallest coherent refactor inside the allowlist.
+- Do not report `COMPLETE` while any required file, exact public API, graph edge, runtime persistence path, compatibility decoder, landmine, or integration test in this plan is missing. A partial report must say `NOT COMPLETE`, list exact unchecked gates, and continue execution unless an external permission/safety boundary makes further work impossible.
+- No required production function may contain placeholder behavior (`pass`, unconditional empty return, `NotImplementedError`, TODO-only body), and no required test may merely inspect source text when behavior can be executed.
+- Every task follows RED → GREEN → focused regression. Capture the RED failure reason before implementing. A collection error caused by an undefined fixture/import is an invalid RED and must be fixed before production code is written.
+- Do not weaken, delete, skip, or xfail an existing test to make B5 pass. Intentional `INSUFFICIENT` → `ABSTAIN` expectation changes must preserve a separate historical-read compatibility test.
+- The only intentionally deferred production component is B7's SQLite-backed `ContextProvider`/`Retriever` composition adapter. B5 must nevertheless execute the complete production graph and runtime using injected deterministic implementations of both protocols; no node may open corpus SQLite.
+
+### 0.2 Binding B5 runtime interfaces
+
+These interfaces are binding; do not create parallel ad-hoc dependency shapes:
+
+```python
+@dataclass(frozen=True)
+class ContextInputs:
+    ticker: str
+    session_date: date
+    cutoff: str
+    target_close: float | None
+    previous_target_close: float | None
+    target_volume: float | None
+    expected_prior_sessions: tuple[str, ...]
+    prior_volumes_by_session: Mapping[str, float | None]
+    benchmark_ticker: str | None
+    benchmark_return_pct: float | None
+    sector_ticker: str | None
+    sector_return_pct: float | None
+    peer_returns_by_ticker: Mapping[str, float | None]
+
+class ContextProvider(Protocol):
+    def load_context_inputs(
+        self, *, ticker: str, session_date: str, cutoff: str
+    ) -> ContextInputs: ...
+
+@dataclass(frozen=True)
+class RetrievedEvidence:
+    chunk_id: str
+    document_id: str
+    content_text: str
+    available_at: str
+    source_class: str
+    ticker_associations: tuple[str, ...]
+    dedup_cluster_id: str | None
+    cluster_first_available_at: str
+    representative_document_id: str
+    is_novel: bool
+    lexical_raw_score: float | None
+    lexical_rank: int
+    corpus_manifest_id: str
+    index_manifest_id: str | None
+    mode_requested: str
+    mode_served: str
+    is_degraded: bool
+    fallback_reason: str | None
+
+class Retriever(Protocol):
+    def retrieve(
+        self, query: str, *, ticker: str, cutoff: str,
+        requested_manifest_id: str, top_k: int = 8, candidate_depth: int = 20,
+    ) -> tuple[RetrievedEvidence, ...]: ...
+```
+
+`Retriever` is the agents-side injected protocol. The B7 app adapter owns the SQLite connection, calls B4 retrieval, and hydrates `content_text`; B5 fixture retrieval returns the same agents-side records. Miner consumes only this protocol. It must not import `sqlite3`, `default_db_path`, or legacy LanceDB/SQL fallback functions after B5.
+
+`build_attribution_graph()` gains required keyword dependencies `context_provider`, `retriever`, `cutoff_policy`, and `requested_manifest_id`; the manifest identity has no fixture/default production value. Existing model/reranker arguments remain only where existing non-B5 tests require compatibility. Context Builder is the graph entry node. A missing required B5 dependency fails before graph execution with a typed dependency error; it must not silently select the old SQLite path.
+
+Run assurance is persisted in the agents trace DB, not as an unspecified side file. Trace schema version `2.0.0` adds exactly:
+
+```sql
+CREATE TABLE IF NOT EXISTS run_assurance (
+    run_id          TEXT PRIMARY KEY,
+    schema_version  TEXT NOT NULL CHECK (schema_version = '1.0.0'),
+    record_json     TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    FOREIGN KEY (run_id) REFERENCES agent_runs(run_id)
+);
+```
+
+`RunAssuranceRecord` is a frozen, extra-forbid model with `schema_version='1.0.0'`, `run_id`, `trace_id`, `output_status`, `cutoff`, nullable corpus/index manifest IDs, sorted `model_ids`, sorted `prompt_versions`, ordered `checks`, source-support flags, `retry_count`, `repair_count`, `budget_exhausted`, `is_degraded`, and `created_at`. Each `AssuranceCheck` has `check_name`, `status: pass|fail|not_applicable`, `detail`, and `checked_at`. Required check order is cutoff, citation resolution, Judge visibility, prerequisite gates, legal path, trace completeness, identities, budget/retry/repair, degraded state, and structured-context support. Exactly one row is written for every completed, abstained, partial, or system-error graph run. Repeated persistence for the same `run_id` is idempotent only when canonical `record_json` is identical; otherwise it raises `AssuranceConflictError`.
+
+Unknown model pricing is represented per cost entry by `cost_status='unknown'` and `cost_usd=None`. If any entry is unknown, run-level `cost_status='unknown'` and `total_cost_usd=None`; zero is never used as a substitute for unknown cost.
+
+### 0.3 Formula, gate, and ranking definitions
+
+All percentage returns use `(current_close / previous_close - 1) * 100`. Both closes must be finite and strictly positive; otherwise that return is unavailable with a named reason. Do not substitute zero. The additive decomposition is emitted only when target, benchmark, and sector returns are all available. If benchmark is unavailable, all three decomposition components are null. If sector is unavailable, `market_component` may be reported descriptively but `sector_excess` and `company_specific` are null and `decomposition_available=false`. Peer median uses all finite same-session peer returns supplied by `ContextInputs`; an empty valid set yields literal `"not_available"`.
+
+`ContextBuilderArtifact` is a frozen, extra-forbid model with no wall-clock field. It contains `schema_version='1.0.0'`, `formula_revision='b5-context-v1'`, ticker/session/cutoff, target current/previous close and return, target volume, all 20 expected prior session IDs, valid prior session IDs and values in session order, volume denominator/ratio/availability/reason, benchmark and sector identities/returns, the three decomposition components and availability/reason, sorted peer-return pairs, peer median, target-vs-peers, and sorted data-quality flags. Canonical bytes are UTF-8 JSON with sorted keys and compact separators. Two builds from equal `ContextInputs` must have byte-identical canonical output; tests compare the complete bytes, not selected fields.
+
+The fixed cause enum and tie-break order are:
+
+```text
+market, sector, earnings_guidance, product_demand, legal_regulatory,
+macro, peer_propagation, supply_chain_propagation, mixed, unexplained
+```
+
+`ABSTAIN` is an output status, never a hypothesis cause. `mixed` requires at least two distinct gate-passed causes other than `mixed` and `unexplained`. `unexplained` passes only when context quality is adequate and no other explanatory cause passes. Evidence-driven causes require at least one cited supporting item with `relevance > 0.5`, `temporal_match=true`, and `available_at <= cutoff`. Exact Critic-category compatibility is: earnings_guidance→earnings; legal_regulatory→regulatory; macro→macro or geopolitical; sector→sector; product_demand→other unless a later typed event tag explicitly narrows it. Market and sector descriptive decompositions require their OHLCV context; any narrative event claim additionally requires compatible cited evidence.
+
+Direction validation is deterministic where structured context supplies polarity: `market` uses `market_component`, `sector` uses `sector_excess`, and `peer_propagation` uses `target_vs_peers`; positive values require `positive`, negative values require `negative`, and an explicit contradictory direction emits `direction_mismatch` and fails the gate. `unknown` is allowed when a structured component is zero or unavailable. B5 narrative evidence has no typed polarity field, so earnings/product/legal/macro/supply-chain direction remains an explicitly recorded inference and is not falsely self-certified by Validator.
+
+The model does not self-certify gates or ranking fields. Judge parses into frozen `HypothesisDraft` containing only `cause_label`, `direction`, `transmission_mechanism`, supporting/counter evidence ID tuples, missing evidence, change condition, facts, calculations, inferences, and unavailable evidence. Extra fields such as `prerequisite_gate_passed`, `source_support_flags`, relevance, or confidence in Judge JSON are rejected. Validator resolves IDs into frozen `EvidenceRef` records by joining retrieval metadata and Critic grades, then emits frozen `Hypothesis` values with computed gate result/reason, direct-support flag, cluster count, maximum relevance, source flags, counter relevance, novelty, and validation violations. Finalizer consumes only these enriched values.
+
+Peer and supply-chain gates require all of: an effective reviewed relationship edge for the target/counterparty/session date, same-session finite peer context for that counterparty, and pre-cutoff supporting evidence whose `ticker_associations` contains the counterparty. Edge direction alone never supplies hypothesis direction. Relationship types are exactly `peer`, `supplier`, `customer`, and `competitor`; duplicate edge IDs, invalid date intervals, unknown types, future `reviewed_at`, and hash mismatch reject the whole manifest.
+
+Direct support is deterministic: a supporting item is direct only when it passes the relevance/temporal/cutoff checks and its source class is one of `official_government`, `issuer_disclosure`, `corporate_press_release`, or `reported_news`. `analysis_opinion` and `aggregated_unknown` are never direct. Independent cluster identity is `dedup_cluster_id` when present, otherwise `chunk:<chunk_id>`. Cluster count is the number of unique supporting identities, capped at two. Maximum relevance is zero with no valid support. Maximum counter relevance is zero with no valid counter-evidence. A hypothesis is novel when at least one valid supporting item has `is_novel=true`.
+
+Source-support flags are computed from valid supporting evidence only:
+
+- `opinion_only_support`: non-empty support and every source is `analysis_opinion`;
+- `unknown_origin_support`: any source is `aggregated_unknown`;
+- `issuer_claim_only_support`: non-empty support and every source is `issuer_disclosure` or `corporate_press_release`;
+- degradation count: number of true flags above.
+
+Sort ascending by this exact key; booleans are converted to 0 for preferred/true and 1 for disfavored/false:
+
+```python
+(
+    0 if prerequisite_gate_passed else 1,
+    0 if direct_support_exists else 1,
+    -min(independent_supporting_cluster_count, 2),
+    -max_supporting_critic_relevance,
+    source_support_degradation_count,
+    max_counter_evidence_relevance,
+    0 if is_novel else 1,
+    CAUSE_ORDER[cause_label],
+)
+```
+
+No input order may participate in a tie. The eight fields above are the only semantic ranking criteria. If all eight are equal, resolve the otherwise exact tie by ascending canonical hypothesis JSON (`model_dump(mode='json')`, sorted keys, compact separators); this resolver does not alter any criterion and exists only to make permutations byte-stable. Tests vary each criterion independently while holding the other seven equal, assert one complete mixed ordering, and permute an exact same-cause tie.
+
 
 ## 1. Objective
 
 Deliver B5 that passes Core Exit Gates D (Agent workflow), E (Runtime assurance), and contributes to Gate G (Contributor experience). Specifically:
 
 - Deterministic Context Builder producing market/sector/peer decomposition;
-- Injected ContextProvider protocol (backed by data-core);
+- Injected ContextProvider and Retriever protocols (fixture-backed for B5 execution; SQLite-backed app adapters land in B7);
 - Strengthened typed output schemas for all nodes;
 - Hypothesis prerequisite gates (deterministic);
 - Competing hypothesis schema with supporting/counter/missing evidence;
@@ -134,7 +265,7 @@ Deliver B5 that passes Core Exit Gates D (Agent workflow), E (Runtime assurance)
 
 ### Output Artifacts
 
-- RunAssuranceRecord (JSON, per run)
+- RunAssuranceRecord (canonical JSON persisted in the agents trace DB `run_assurance` table, one per graph run)
 - Trace DB with schema version registry
 - AttributionRun result type
 
@@ -150,7 +281,7 @@ Deliver B5 that passes Core Exit Gates D (Agent workflow), E (Runtime assurance)
 - `ContextBuilderArtifact` (deterministic output: target return, decomposition, flags)
 - `Hypothesis` (typed: cause_label, transmission_mechanism, supporting_evidence, counter_evidence, missing_evidence, change_condition, prerequisite_gate_passed, source_support_flags)
 - `AttributionOutput` (SUFFICIENT|PARTIAL|ABSTAIN|SYSTEM_ERROR, ranked hypotheses)
-- `RunAssuranceRecord` (run_id, check_name, status, detail, checked_at)
+- `AssuranceCheck` and `RunAssuranceRecord` with the exact fields, check order, identity rules, and persistence semantics in §0.2
 
 ### Owned Trace Schema
 
@@ -188,6 +319,9 @@ packages/agents/tests/test_runtime_assurance.py
 packages/agents/tests/test_trace_version.py
 packages/agents/tests/test_finalizer.py
 packages/agents/tests/attribution_fixtures.py
+packages/agents/tests/test_attribution_fixtures.py
+packages/agents/tests/test_b5_integration.py
+packages/agents/tests/test_cost_tracker.py
 ```
 
 ### Allowed to Modify
@@ -196,6 +330,7 @@ packages/agents/tests/attribution_fixtures.py
 packages/agents/catalyst_agents/state.py                     — add typed output fields
 packages/agents/catalyst_agents/nodes/miner.py               — use cutoff-safe retrieval
 packages/agents/catalyst_agents/retrieval/policy.py           — remove direct SQLite access; delegate through injected B4 Retriever
+packages/agents/catalyst_agents/retrieval/__init__.py         — re-export the single Retriever contract/facade
 packages/agents/catalyst_agents/nodes/critic.py              — strengthen output typing
 packages/agents/catalyst_agents/nodes/judge.py               — structured hypothesis output
 packages/agents/catalyst_agents/nodes/validator.py           — gate checks, repair
@@ -204,19 +339,40 @@ packages/agents/catalyst_agents/nodes/decision_router.py     — timeline/novelt
 packages/agents/catalyst_agents/graph.py                     — add Context Builder node
 packages/agents/catalyst_agents/runtime/runner.py            — produce RunAssuranceRecord
 packages/agents/catalyst_agents/runtime/service.py           — wire assurance
+packages/agents/catalyst_agents/runtime/status.py            — historical INSUFFICIENT decoder and ABSTAIN writes
+packages/agents/catalyst_agents/runtime/dependencies.py      — expose injected B5 protocols without node-owned SQLite
 packages/agents/catalyst_agents/cost_tracker.py              — unknown model cost
+packages/agents/catalyst_agents/trace/schema.py              — version registry and run_assurance table
+packages/agents/catalyst_agents/trace/writer.py              — persist exactly one assurance record per run
+packages/agents/catalyst_agents/trace/projection.py          — persist context/hypothesis artifacts required by assurance
+packages/agents/catalyst_agents/trace/artifacts.py           — typed artifact read/write support for new B5 artifact types
+packages/agents/catalyst_agents/trace/__init__.py            — trace-version public exports
+packages/agents/catalyst_agents/prompts/judge.md              — exact structured Hypothesis JSON output
 packages/agents/tests/test_graph.py                          — add Context Builder tests
 packages/agents/tests/test_critic.py                         — strengthen output tests
 packages/agents/tests/test_judge.py                          — hypothesis schema tests
 packages/agents/tests/test_validator.py                      — gate check tests
 packages/agents/tests/test_finalizer.py                      — ranking tests
 packages/agents/tests/test_miner.py                          — cutoff-safe retrieval
+packages/agents/tests/test_retrieval_policy.py               — injected Retriever compatibility
+packages/agents/tests/test_live_run_service.py               — persisted assurance lifecycle
+packages/agents/tests/test_runtime_status.py                 — historical status compatibility
+packages/agents/tests/test_trace.py                          — v1→v2 trace migration and assurance persistence
+packages/agents/tests/test_failure_taxonomy.py               — inject B5 dependencies and preserve failure classifications
+packages/agents/tests/test_critic_v2.py                      — intentional typed-output compatibility assertions only
+packages/agents/tests/test_state.py                          — new state/output contract
+packages/agents/tests/test_runtime_dependencies.py           — injected protocol dependency shape
+packages/app/catalyst_app/schemas.py                         — accept canonical ABSTAIN runtime/trace status
+packages/app/catalyst_app/workspace_projection.py            — project ABSTAIN terminal state
+packages/app/tests/test_failure_paths.py                      — historical INSUFFICIENT decodes to ABSTAIN at API boundary
 ```
+
+If another existing `packages/agents/tests/test_*.py` fails solely because a binding B5 API now requires injected dependencies or emits `ABSTAIN`, it may be changed only to import the shared Task 0 fixture and assert the new contract. Record the file and old/new assertion in the evidence report. Do not remove behavioral coverage, replace exact assertions with membership assertions, or introduce local mocks.
 
 ### Files Explicitly Forbidden
 
 - `packages/eval/` — agents must not import eval
-- `packages/app/` — B7 domain
+- Other `packages/app/` files — B7 domain; B5 may touch only the three status-compatibility files above because the binding ABSTAIN decoder contract crosses the existing API boundary
 - `packages/data-core/` — consume public B4 protocols only; no B5 modifications
 - `docs/plans/2026-07-21-b2-b7-technical-contracts.md`
 
@@ -224,7 +380,11 @@ packages/agents/tests/test_miner.py                          — cutoff-safe ret
 
 ### Task 0: Deterministic attribution fixtures
 
-Create `packages/agents/tests/attribution_fixtures.py` with `FixtureContextProvider`, exact OHLCV/session data, hypothesis builders exposing all eight ranking criteria, a recording cutoff policy, a valid relationship-manifest fixture, and persisted-run artifact builders used below. It also defines `EXPECTED_20_SESSIONS`, `VALID_12_VOLUMES`, `EXPECTED_VALID_12_SESSION_IDS`, and `volume_window_provider`; these are literal independent fixtures and must include an older out-of-window observation that would change the median if the implementation illegally expanded its lookback. Fixture helpers return immutable copies and fail on unregistered tickers/sessions. Run their self-tests before Task 1; later snippets must not define ad-hoc mocks.
+Create `packages/agents/tests/attribution_fixtures.py` with `FixtureContextProvider`, `FixtureRetriever`, `StubModelClient`, exact OHLCV/session data, hypothesis builders exposing all eight ranking criteria, one shared recording cutoff policy, a valid relationship-manifest fixture, and persisted-run artifact builders used below. It also defines `EXPECTED_20_SESSIONS`, `VALID_12_VOLUMES`, `EXPECTED_VALID_12_SESSION_IDS`, and `volume_window_provider`; these are literal independent fixtures and must include an older out-of-window observation that would change the median if the implementation illegally expanded its lookback. Fixture helpers return immutable copies and fail on unregistered tickers/sessions.
+
+Add `packages/agents/tests/test_attribution_fixtures.py` proving literal expected values, immutability, unknown-key failure, deterministic stub call counts, and that expected assurance/status objects are not generated by production serializers. Run these tests before Task 1. Later test files import these helpers explicitly and must not define ad-hoc mocks.
+
+Every snippet below that uses `pytest`, `make_hypothesis`, `mock_provider`, `mock_provider_with_ohlcv`, `volume_window_provider`, `mock_run_artifacts`, `create_temp_trace_db`, or `initialize_trace_schema` must import it explicitly from `pytest` or `attribution_fixtures` as appropriate. Undefined fixture names or collection failures are not acceptable RED states.
 
 ### Task 1: Context Builder
 
@@ -333,11 +493,12 @@ def test_peer_median_missing_is_not_available():
 
 def test_context_builder_emits_deterministic_artifact():
     """Same inputs → byte-identical artifact (idempotent)."""
+    from catalyst_agents.attribution.context_builder import canonical_context_bytes
+
     provider = mock_provider_with_ohlcv()
     b1 = ContextBuilder(provider=provider).build(ticker="AAPL", session_date="2026-01-15", cutoff="2026-01-15T21:00:00Z")
     b2 = ContextBuilder(provider=provider).build(ticker="AAPL", session_date="2026-01-15", cutoff="2026-01-15T21:00:00Z")
-    assert b1.target_return_pct == b2.target_return_pct
-    assert b1.market_component == b2.market_component
+    assert canonical_context_bytes(b1) == canonical_context_bytes(b2)
 ```
 
 **Step 2: Run test**
@@ -371,25 +532,23 @@ Expected: all PASS.
 
 def test_hypothesis_has_all_fields():
     """Hypothesis carries typed fields per contract §7.2–§7.3."""
-    from catalyst_agents.attribution.hypothesis import Hypothesis
+    from catalyst_agents.attribution.hypothesis import HypothesisDraft
 
-    h = Hypothesis(
+    h = HypothesisDraft(
         cause_label="earnings_guidance",
         direction="negative",
         transmission_mechanism="Reduced forward guidance lowered revenue expectations",
-        supporting_evidence=[{"chunk_id": "poly:1:1::001", "relevance": 2}],
-        counter_evidence=[],
+        supporting_evidence_ids=("poly:1:news_v2:body:0001",),
+        counter_evidence_ids=(),
         missing_evidence=["Actual EPS figure not yet released"],
         change_condition="If actual EPS exceeds consensus, reassess",
-        prerequisite_gate_passed=True,
-        source_support_flags={"opinion_only_support": False, "unknown_origin_support": False},
         facts=["EPS guidance was lowered from $2.00 to $1.50"],
         calculations=[],
         inferences=["Market interpreted guidance cut as demand weakness signal"],
         unavailable_evidence=["Full earnings transcript"],
     )
     assert h.cause_label == "earnings_guidance"
-    assert h.prerequisite_gate_passed is True
+    assert not hasattr(h, "prerequisite_gate_passed")
 
 
 def test_market_hypothesis_requires_benchmark_ohlcv():
@@ -657,19 +816,15 @@ Expected: all PASS.
 def test_assurance_record_produced_per_run():
     """Every attribution run produces one RunAssuranceRecord."""
     from catalyst_agents.runtime.assurance.record import RunAssuranceRecord
+    from attribution_fixtures import VALID_ASSURANCE_RECORD
 
-    record = RunAssuranceRecord(
-        run_id="run-001",
-        checks=[
-            {"check_name": "cutoff_violation", "status": "pass", "detail": "0 violations", "checked_at": "2026-01-01T00:00:00Z"},
-            {"check_name": "citation_resolution", "status": "pass", "detail": "all resolved", "checked_at": "2026-01-01T00:00:00Z"},
-            {"check_name": "visibility_ok", "status": "pass", "detail": "all visible", "checked_at": "2026-01-01T00:00:00Z"},
-            {"check_name": "gate_violation", "status": "pass", "detail": "0 violations", "checked_at": "2026-01-01T00:00:00Z"},
-            {"check_name": "trace_completeness", "status": "pass", "detail": "complete", "checked_at": "2026-01-01T00:00:00Z"},
-            {"check_name": "identity_ok", "status": "pass", "detail": "all present", "checked_at": "2026-01-01T00:00:00Z"},
-        ]
-    )
-    assert len(record.checks) == 6
+    record = RunAssuranceRecord.model_validate(VALID_ASSURANCE_RECORD)
+    assert [check.check_name for check in record.checks] == [
+        "cutoff", "citation_resolution", "judge_visibility",
+        "prerequisite_gates", "legal_path", "trace_completeness",
+        "identities", "budget_retry_repair", "degraded_state",
+        "structured_context_support",
+    ]
 
 
 def test_assurance_without_eval_import():
@@ -677,7 +832,7 @@ def test_assurance_without_eval_import():
     import catalyst_agents.runtime.assurance as a
     # Must not have eval import
     import sys
-    assert "catalyst_eval" not in str(sys.modules.get("catalyst_agents.runtime.assurance", ""))
+    assert "catalyst_eval" not in sys.modules
 
 
 def test_assurance_deterministic():
@@ -690,8 +845,7 @@ def test_assurance_deterministic():
     checks1 = run_all_checks("run-001", artifacts1)
     checks2 = run_all_checks("run-001", artifacts2)
 
-    for c1, c2 in zip(checks1, checks2):
-        assert c1["status"] == c2["status"]
+    assert checks1 == checks2
 
 
 def test_source_support_flags_in_assurance():
@@ -714,7 +868,7 @@ def test_cost_unknown_mode():
     """When model cost is unknown, cost_status='unknown', cost_usd=None."""
     from catalyst_agents.cost_tracker import CostEstimate
 
-    est = CostEstimate(tokens_prompt=1000, tokens_completion=200)
+    est = CostEstimate(model_id="unpriced-model", tokens_prompt=1000, tokens_completion=200)
     assert est.cost_status == "unknown"
     assert est.cost_usd is None
 ```
@@ -731,8 +885,7 @@ Expected: FAIL.
 
 - `catalyst_agents/runtime/assurance/record.py`: `RunAssuranceRecord`
 - `catalyst_agents/runtime/assurance/checks.py`: `run_all_checks()`, `compute_source_flags()`
-- All L0 checks: cutoff_violation, citation_resolution, visibility_ok, gate_violation, trace_completeness, identity_ok
-- Plus [R]-tagged L3 checks: structured_context_support
+- Implement all ten checks in the exact order and with the exact persisted model from §0.2. A schema-only hand-constructed record does not satisfy this task; the independent mutation tests and Task 7D runtime persistence are required.
 
 **Step 4: Run tests**
 
@@ -776,6 +929,8 @@ def test_unknown_future_trace_version_fails_closed():
 
 **Step 2: Implement `catalyst_agents/trace/version.py`**
 
+Use a singleton table `trace_schema_version(singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1), schema_version TEXT NOT NULL, applied_at TEXT NOT NULL)`. `init_trace_db()` upgrades an unversioned existing trace schema as v1 input to `2.0.0` in one transaction, creates `run_assurance`, preserves all existing run/event/artifact/link rows, and leaves `PRAGMA user_version=0`. A known older version upgrades; an unknown newer version raises `UnsupportedTraceSchemaVersion` before DDL/DML. Do not catch broad `OperationalError` and continue.
+
 **Step 3: Run tests**
 
 ```bash
@@ -784,51 +939,96 @@ def test_unknown_future_trace_version_fails_closed():
 
 Expected: PASS.
 
-### Task 7: Node strengthening
+### Task 7: Production workflow and runtime integration
 
-**Step 1: Modify Judge for structured hypothesis output**
+Task 7 is required implementation, not optional cleanup. Execute all five sub-tasks in order and keep their focused tests green after each sub-task.
 
-Update `catalyst_agents/nodes/judge.py`:
-- Output typed `Hypothesis` list, not free-form text
-- Include `supporting_evidence`, `counter_evidence`, `missing_evidence`, `transmission_mechanism`, `change_condition`
-- Separate `facts`, `calculations`, `inferences`, `unavailable_evidence`
+#### Task 7A: Replace node-owned retrieval and cutoff logic
 
-**Step 2: Modify Validator for gate checks**
+1. Add RED tests in `test_retrieval_policy.py` and `test_miner.py` using `FixtureRetriever` and one shared recording cutoff policy.
+2. Prove Miner passes the exact query, ticker, canonical cutoff, requested corpus manifest, `top_k=8`, and `candidate_depth=20` to the injected Retriever.
+3. Prove Miner maps every `RetrievedEvidence` field into Judge-visible evidence without dropping chunk/document identity, available time, source class, served mode, degradation reason, or manifest identities.
+4. Prove Retriever exceptions become a typed system error and never trigger the old SQLite/LanceDB path.
+5. Remove direct SQLite, `default_db_path`, ±3-calendar-day calculation, and old SQL fallback ownership from `catalyst_agents/retrieval/policy.py` and `nodes/miner.py`. Keep only a compatibility facade that delegates to the injected protocol if an existing import path must survive.
+6. Inject the same cutoff-policy object into Validator. Execute Miner and Validator paths and assert identical `(ticker, session_date, mode)` calls and cutoff values; calling the policy twice directly is prohibited as a tautological test.
 
-Update `catalyst_agents/nodes/validator.py`:
-- Verify prerequisite gates for each emitted hypothesis
-- Verify cited evidence IDs resolve and were Judge-visible
-- Verify cutoff compliance on all evidence
-- At most one exceptional repair call
-- Emit `gate_violation_count`
-
-**Step 3: Modify Finalizer for lexicographic ranking**
-
-Update `catalyst_agents/nodes/finalizer.py`:
-- Replace any weighted scoring with lexicographic `rank_hypotheses()`
-- Assign `SUFFICIENT|PARTIAL|ABSTAIN|SYSTEM_ERROR` per `determine_status()`
-
-**Step 4: Wire Context Builder into graph**
-
-Update `catalyst_agents/graph.py`:
-- Add Context Builder as first node (before Miner)
-- Pass ContextBuilderArtifact through state
-
-**Step 5: Modify Runner for assurance**
-
-Update `catalyst_agents/runtime/runner.py`:
-- After run completes, call `run_all_checks()`
-- Persist `RunAssuranceRecord` alongside trace
-
-**Step 4 (for all node changes): Run full test suite**
+Run after RED and after GREEN:
 
 ```bash
+.venv/bin/python -m pytest packages/agents/tests/test_retrieval_policy.py packages/agents/tests/test_miner.py packages/agents/tests/test_validator.py -q
+```
+
+#### Task 7B: Put Context Builder into the real graph
+
+1. Add a RED graph test asserting invocation order starts `context_builder → miner`; inspect executed fixture calls, not graph source text.
+2. Extend `AttributionState` with typed context artifact, cutoff, corpus/index identities, hypotheses, source-support flags, assurance inputs, run-level cost status, and repair/retry counters. Remove new writes of legacy confidence-bearing causes.
+3. Update `build_attribution_graph()` to require `context_provider`, `retriever`, and `cutoff_policy`, bind them into nodes, and set Context Builder as the entry point.
+4. Preserve old imports only through one-line re-export/deprecation facades; do not retain a second executable graph or retrieval body.
+5. Add a missing-dependency test that fails before node execution with `AttributionDependencyError`, with zero model and zero retrieval calls.
+
+Run:
+
+```bash
+.venv/bin/python -m pytest packages/agents/tests/test_graph.py packages/agents/tests/test_state.py -q
+```
+
+#### Task 7C: Strengthen Judge, Validator, and Finalizer end to end
+
+1. Add RED tests for the exact Judge JSON schema and update `prompts/judge.md` to request only that schema. `_parse_judge_response()` must reject missing/extra hypothesis fields rather than fill them with defaults.
+2. Judge emits typed `Hypothesis` values with supporting, counter, missing and unavailable evidence plus facts/calculations/inferences, transmission mechanism, and change condition.
+3. Validator independently checks evidence resolution, Judge visibility, `available_at <= cutoff`, relationship manifest validity/effectivity, every prerequisite gate, and direction support. It emits deterministic violation codes and may invoke the model at most once for exceptional repair.
+4. Finalizer calls the single `rank_hypotheses()` implementation and `determine_status()`. Gate-failed hypotheses cannot produce SUFFICIENT/PARTIAL output. No weighted score or confidence field survives in the new output.
+5. A counting stub proves normal execution makes exactly Critic + Judge model calls; a repair case makes exactly one additional Validator call. Retrieval expansion may not add another normal-path model call in B5.
+
+Run:
+
+```bash
+.venv/bin/python -m pytest packages/agents/tests/test_judge.py packages/agents/tests/test_validator.py packages/agents/tests/test_finalizer.py packages/agents/tests/test_critic.py -q
+```
+
+#### Task 7D: Persist trace version and one assurance record per run
+
+1. Add RED tests that initialize an empty DB at trace schema `2.0.0`, migrate a real v1-shaped temporary trace DB to v2 without losing rows, keep `PRAGMA user_version=0`, and reject `999.0.0` before any run read/write.
+2. Implement the exact `run_assurance` DDL from §0.2 and atomic `persist_assurance_record(conn, record)`. Do not use `INSERT OR REPLACE`.
+3. Build assurance inputs from persisted trace events plus final state. Independently mutate citation ID, Judge visibility, cutoff, gate result, legal path, identity, and repair count; each mutation must fail only its corresponding check where the contracts are otherwise independent.
+4. Integrate persistence into the real traced runtime lifecycle. Success, PARTIAL, ABSTAIN, and SYSTEM_ERROR graph runs each leave exactly one assurance row. A failed-request row that never starts the graph is outside B5's attribution-run assurance requirement.
+5. Add service read coverage proving the persisted JSON round-trips to the frozen model and is available after runner completion, not only returned ephemerally.
+
+Run:
+
+```bash
+.venv/bin/python -m pytest packages/agents/tests/test_trace_version.py packages/agents/tests/test_trace.py packages/agents/tests/test_runtime_assurance.py packages/agents/tests/test_live_run_service.py -q
+```
+
+#### Task 7E: Complete status and cost compatibility
+
+1. Add RED tests reading persisted historical `INSUFFICIENT` from `agent_runs`, trace events, and state dictionaries; every public decoder returns `ABSTAIN` while preserving the historical reason.
+2. Assert every new state, trace, service and assurance write uses `ABSTAIN`, never `INSUFFICIENT`.
+3. Add known- and unknown-price tests at per-node and run aggregate levels. Unknown cost is nullable and contaminates the aggregate to unknown; it never becomes `$0`.
+4. Update all terminal-status and retryability tables consistently. ABSTAIN is terminal and follows the existing non-system insufficiency retry policy unless an explicit sub-reason says otherwise.
+
+Run:
+
+```bash
+.venv/bin/python -m pytest packages/agents/tests/test_output_status.py packages/agents/tests/test_runtime_status.py packages/agents/tests/test_cost_tracker.py -q
+```
+
+#### Task 7F: B5 closure integration test
+
+Add `packages/agents/tests/test_b5_integration.py` and execute one complete runtime run with literal fixtures, `FixtureContextProvider`, `FixtureRetriever`, the shared cutoff policy, and `StubModelClient`. Assert exact node order, two normal model calls, ranked hypotheses, status, citation set, cutoff, corpus identity, trace version/events/artifacts, one assurance row, source flags, cost status, and zero network. Install a real socket guard that raises on any connection attempt. Add separate ABSTAIN and SYSTEM_ERROR cases and prove each persists its matching trace and assurance state.
+
+Run:
+
+```bash
+.venv/bin/python -m pytest packages/agents/tests/test_b5_integration.py -q
 .venv/bin/python -m pytest packages/agents -q
 ```
 
-Expected: 237+ passed, with new tests adding to the count.
+Expected: both commands PASS with exact counts reported. `237+ passed` is not an acceptable completion assertion; report the observed count.
 
 ### Task 8: Verify agents-eval isolation
+
+Extend the boundary test so it performs both checks: static scan of every agents `.py` file and `pyproject.toml`, plus a subprocess/import-hook smoke test that raises immediately on any `catalyst_eval` import while importing the public agents graph, attribution, runtime assurance, trace, and retrieval modules. Merely checking `sys.modules` after one module import is insufficient.
 
 ```bash
 .venv/bin/python -m pytest packages/agents/tests/test_package_boundaries.py -q
@@ -850,17 +1050,25 @@ Expected: PASS (no eval imports in agents).
 10. **Assurance self-certifies** — corrupt one citation ID, one visibility set, and one cutoff timestamp independently; each mutation must turn the corresponding assurance check red.
 11. **Agents retrieval opens SQLite** — `catalyst_agents/retrieval/policy.py` and Miner must accept an injected B4 Retriever; `rg "sqlite3|default_db_path|\.connect\(" packages/agents/catalyst_agents/retrieval packages/agents/catalyst_agents/nodes/miner.py` must return zero production matches.
 12. **Unversioned relationship edge** — reject missing/expired edges, unknown relationship types, duplicate `edge_id`, or a manifest whose computed canonical hash does not equal `manifest_id`.
+13. **Foundation-only completion** — `test_b5_integration.py` must execute the production graph and runner; the task matrix may not mark B5 complete based only on Tasks 0–6.
+14. **Assurance returned but not persisted** — after each terminal graph run, query `run_assurance` and assert exactly one canonical record; an in-memory object alone fails.
+15. **Parallel legacy workflow survives** — source and behavioral tests prove there is one Miner retrieval body, one ranking body, one canonical OutputStatus enum, and one graph entry path.
+16. **Normal call budget drifts** — counting stub asserts exactly two normal model calls and at most one exceptional Validator repair.
+17. **Hollow integration fixtures** — expected statuses, node order, assurance JSON, and corruption outcomes are literal test data and are never generated from production serializers/check functions.
 
 ## 9. Verification Ladder
 
 ```bash
 # 1. New focused tests
+.venv/bin/python -m pytest packages/agents/tests/test_attribution_fixtures.py -q
 .venv/bin/python -m pytest packages/agents/tests/test_context_builder.py -q
 .venv/bin/python -m pytest packages/agents/tests/test_hypothesis_gates.py -q
 .venv/bin/python -m pytest packages/agents/tests/test_ranking.py -q
 .venv/bin/python -m pytest packages/agents/tests/test_output_status.py -q
 .venv/bin/python -m pytest packages/agents/tests/test_runtime_assurance.py -q
 .venv/bin/python -m pytest packages/agents/tests/test_trace_version.py -q
+.venv/bin/python -m pytest packages/agents/tests/test_cost_tracker.py -q
+.venv/bin/python -m pytest packages/agents/tests/test_b5_integration.py -q
 
 # 2. Existing node tests
 .venv/bin/python -m pytest packages/agents/tests/test_critic.py -q
@@ -880,7 +1088,7 @@ Expected: PASS (no eval imports in agents).
 .venv/bin/python -m pytest packages/agents/tests/test_package_boundaries.py -q
 
 # 5. Dependency regression
-.venv/bin/python -m pytest packages/data-core -q
+HF_HUB_OFFLINE=1 .venv/bin/python -m pytest packages/data-core -q
 .venv/bin/python -m pytest packages/eval -q
 .venv/bin/python -m pytest packages/app -q
 
@@ -901,16 +1109,36 @@ git diff --check
 - [list]
 
 ### Focused Test Counts
+- test_attribution_fixtures: X passed
 - test_context_builder: X passed
 - test_hypothesis_gates: X passed
 - test_ranking: X passed
 - test_output_status: X passed
 - test_runtime_assurance: X passed
+- test_trace_version: X passed
+- test_cost_tracker: X passed
+- test_b5_integration: X passed
+
+### Required Task Matrix
+- Task 0 fixtures: COMPLETE
+- Task 1 Context Builder: COMPLETE
+- Task 2 hypothesis/gates: COMPLETE
+- Task 3 ranking: COMPLETE
+- Task 4 statuses: COMPLETE
+- Task 5 assurance checks: COMPLETE
+- Task 6 trace version: COMPLETE
+- Task 7A retrieval/cutoff wiring: COMPLETE
+- Task 7B graph wiring: COMPLETE
+- Task 7C node contracts: COMPLETE
+- Task 7D assurance persistence: COMPLETE
+- Task 7E status/cost compatibility: COMPLETE
+- Task 7F end-to-end runtime: COMPLETE
+- Task 8 package boundary: COMPLETE
 
 ### Canonical Counts
-- agents: X passed (was 237)
-- data-core: X passed (was 758)
-- eval: X passed (was 93)
+- agents: X passed (B4 baseline 237)
+- data-core: X passed (B4 baseline 942 passed, 1 skipped, 1 xfailed; run offline)
+- eval: X passed (B4 baseline 115)
 - app: X passed (was 128)
 
 ### Boundary Check

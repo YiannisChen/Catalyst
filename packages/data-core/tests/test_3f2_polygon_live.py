@@ -42,12 +42,13 @@ def _make_db(db_path: str, *, with_checkpoints: bool = False) -> sqlite3.Connect
     return conn
 
 
-def _make_article(**overrides):
+def _make_article(date=None, **overrides):
     """Build a minimal Polygon article dict that passes orchestrator validation."""
+    pub_utc = f"{date}T12:00:00Z" if date else "2026-06-29T12:00:00Z"
     base = {
         "id": "art_1",
         "title": "Test Article",
-        "published_utc": "2026-06-29T12:00:00Z",
+        "published_utc": pub_utc,
         "article_url": "https://example.com/1",
         "publisher": {"name": "Reuters"},
         "tickers": ["AAPL"],
@@ -301,7 +302,7 @@ class TestCheckpointResume:
             from catalyst_data.connectors.base import FetchResult
             return FetchResult(
                 status=200,
-                data={"results": [_make_article()]},
+                data={"results": [_make_article(date=date)]},
                 source_label=endpoint,
             )
 

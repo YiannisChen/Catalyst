@@ -16,6 +16,68 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
+def _quote_identifier(value: str) -> str:
+    return '"' + value.replace('"', '""') + '"'
+
+
+def _reconcile_clean_assets_foreign_key(conn: sqlite3.Connection) -> None:
+    """Replace the legacy clean-id foreign key with the raw provenance key."""
+    foreign_keys = conn.execute("PRAGMA foreign_key_list(clean_assets)").fetchall()
+    has_legacy_fk = any(
+        row[2] == "raw_assets" and row[3] == "asset_id" and row[4] == "asset_id"
+        for row in foreign_keys
+    )
+    if not has_legacy_fk:
+        return
+
+    columns = conn.execute("PRAGMA table_info(clean_assets)").fetchall()
+    column_names = [row[1] for row in columns]
+    if "raw_asset_id" not in column_names:
+        raise sqlite3.OperationalError(
+            "legacy clean_assets table is missing raw_asset_id"
+        )
+
+    declarations: list[str] = []
+    for _, name, column_type, not_null, default_value, primary_key in columns:
+        declaration = _quote_identifier(name)
+        if column_type:
+            declaration += f" {column_type}"
+        if not_null:
+            declaration += " NOT NULL"
+        if default_value is not None:
+            declaration += f" DEFAULT {default_value}"
+        if primary_key:
+            declaration += " PRIMARY KEY"
+        declarations.append(declaration)
+    declarations.append(
+        "FOREIGN KEY (raw_asset_id) REFERENCES raw_assets(asset_id)"
+    )
+
+    conn.execute(
+        f"CREATE TABLE clean_assets_v11 ({', '.join(declarations)})"
+    )
+    quoted_columns = ", ".join(_quote_identifier(name) for name in column_names)
+    conn.execute(
+        f"INSERT INTO clean_assets_v11 ({quoted_columns}) "
+        f"SELECT {quoted_columns} FROM clean_assets"
+    )
+    conn.execute("DROP TABLE clean_assets")
+    conn.execute("ALTER TABLE clean_assets_v11 RENAME TO clean_assets")
+
+    if {"ticker", "reference_date"}.issubset(column_names):
+        conn.execute(
+            "CREATE INDEX idx_clean_ticker_date "
+            "ON clean_assets(ticker, reference_date)"
+        )
+    if "title_hash" in column_names:
+        conn.execute(
+            "CREATE INDEX idx_clean_title_hash ON clean_assets(title_hash)"
+        )
+    conn.execute(
+        "CREATE INDEX idx_clean_raw_asset ON clean_assets(raw_asset_id)"
+    )
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -300,6 +362,264 @@ MIGRATIONS: list[Migration] = [
         END""",
     ]),
 
+    Migration(version=9, name="b3_corpus_tables", statements=[
+        """CREATE TABLE IF NOT EXISTS corpus_chunks (
+            chunk_id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            chunk_profile_version TEXT NOT NULL CHECK (chunk_profile_version IN ('news_v2','filing_v2')),
+            section_key TEXT NOT NULL,
+            ordinal TEXT NOT NULL CHECK (length(ordinal) = 4 AND ordinal GLOB '[0-9][0-9][0-9][0-9]'),
+            content_text TEXT NOT NULL CHECK (length(content_text) > 0),
+            content_hash TEXT NOT NULL CHECK (length(content_hash) = 64 AND lower(content_hash) = content_hash),
+            metadata_hash TEXT NOT NULL CHECK (length(metadata_hash) = 64 AND lower(metadata_hash) = metadata_hash),
+            source_class TEXT NOT NULL CHECK (source_class IN (
+                'structured_market_data','official_government','issuer_disclosure',
+                'corporate_press_release','reported_news','analysis_opinion','aggregated_unknown'
+            )),
+            dedup_cluster_id TEXT,
+            cluster_first_available_at TEXT,
+            representative_document_id TEXT,
+            available_at TEXT NOT NULL,
+            ticker_associations TEXT NOT NULL CHECK (json_valid(ticker_associations)),
+            eligibility TEXT NOT NULL CHECK (eligibility IN ('eligible','ineligible')),
+            manifest_id TEXT,
+            status TEXT NOT NULL CHECK (status IN ('active','pending_embedding','embedded','metadata_only','tombstoned')),
+            boundary_kind TEXT NOT NULL CHECK (boundary_kind IN ('document_end','paragraph','sentence','token_fallback')),
+            body_token_start INTEGER NOT NULL CHECK (body_token_start >= 0),
+            body_token_end INTEGER NOT NULL CHECK (body_token_end > body_token_start),
+            body_overlap_tokens INTEGER NOT NULL CHECK (body_overlap_tokens BETWEEN 0 AND 48),
+            prefix_token_count INTEGER NOT NULL CHECK (prefix_token_count BETWEEN 0 AND 64),
+            prefix_truncated INTEGER NOT NULL CHECK (prefix_truncated IN (0,1)),
+            section_parse_degraded INTEGER NOT NULL DEFAULT 0 CHECK (section_parse_degraded IN (0,1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(document_id, chunk_profile_version, section_key, ordinal),
+            FOREIGN KEY (manifest_id) REFERENCES corpus_manifest(manifest_id)
+        )""",
+
+        """CREATE TABLE IF NOT EXISTS corpus_tombstones (
+            chunk_id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            reason TEXT NOT NULL CHECK (reason IN (
+                'document_removed','eligibility_lost','profile_version_replaced',
+                'disappeared_child','dedup_cluster_reassigned'
+            )),
+            previous_content_hash TEXT,
+            previous_metadata_hash TEXT,
+            replacement_chunk_id TEXT,
+            manifest_id TEXT NOT NULL,
+            tombstoned_at TEXT NOT NULL,
+            FOREIGN KEY (manifest_id) REFERENCES corpus_manifest(manifest_id)
+        )""",
+
+        """CREATE TABLE IF NOT EXISTS corpus_manifest (
+            manifest_id TEXT PRIMARY KEY CHECK (length(manifest_id) = 64 AND lower(manifest_id) = manifest_id),
+            manifest_json TEXT NOT NULL CHECK (json_valid(manifest_json)),
+            is_current INTEGER NOT NULL CHECK (is_current IN (0,1)),
+            created_at TEXT NOT NULL
+        )""",
+
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_manifest_current ON corpus_manifest(is_current) WHERE is_current = 1",
+
+        "ALTER TABLE articles ADD COLUMN source_class TEXT",
+        "ALTER TABLE articles ADD COLUMN dedup_cluster_id TEXT",
+        "ALTER TABLE articles ADD COLUMN cluster_first_available_at TEXT",
+        "ALTER TABLE articles ADD COLUMN representative_document_id TEXT",
+
+        "ALTER TABLE index_state ADD COLUMN metadata_hash TEXT",
+        "ALTER TABLE index_state ADD COLUMN is_tombstone INTEGER NOT NULL DEFAULT 0 CHECK (is_tombstone IN (0,1))",
+
+        "CREATE INDEX IF NOT EXISTS idx_corpus_chunks_document ON corpus_chunks(document_id)",
+        "CREATE INDEX IF NOT EXISTS idx_corpus_chunks_available ON corpus_chunks(available_at, chunk_id)",
+        "CREATE INDEX IF NOT EXISTS idx_corpus_chunks_source_class ON corpus_chunks(source_class, available_at)",
+        "CREATE INDEX IF NOT EXISTS idx_corpus_chunks_manifest ON corpus_chunks(manifest_id, status)",
+        "CREATE INDEX IF NOT EXISTS idx_corpus_tombstones_manifest ON corpus_tombstones(manifest_id)",
+
+        """CREATE TRIGGER IF NOT EXISTS trg_corpus_chunks_insert_guard
+           BEFORE INSERT ON corpus_chunks
+           WHEN (
+               length(NEW.content_hash) != 64
+               OR NEW.content_hash != lower(NEW.content_hash)
+               OR NEW.content_hash GLOB '*[^0-9a-f]*'
+               OR length(NEW.metadata_hash) != 64
+               OR NEW.metadata_hash != lower(NEW.metadata_hash)
+               OR NEW.metadata_hash GLOB '*[^0-9a-f]*'
+               OR length(NEW.ordinal) != 4
+               OR NEW.ordinal NOT GLOB '[0-9][0-9][0-9][0-9]'
+               OR NOT json_valid(NEW.ticker_associations)
+               OR NEW.chunk_profile_version NOT IN ('news_v2','filing_v2')
+               OR NEW.source_class NOT IN (
+                   'structured_market_data','official_government','issuer_disclosure',
+                   'corporate_press_release','reported_news','analysis_opinion','aggregated_unknown'
+               )
+               OR NEW.eligibility NOT IN ('eligible','ineligible')
+               OR NEW.status NOT IN ('active','pending_embedding','embedded','metadata_only','tombstoned')
+               OR NEW.boundary_kind NOT IN ('document_end','paragraph','sentence','token_fallback')
+               OR NEW.body_token_start < 0
+               OR NEW.body_token_end <= NEW.body_token_start
+               OR NEW.body_overlap_tokens < 0 OR NEW.body_overlap_tokens > 48
+               OR NEW.prefix_token_count < 0 OR NEW.prefix_token_count > 64
+               OR NEW.prefix_truncated NOT IN (0,1)
+               OR NEW.section_parse_degraded NOT IN (0,1)
+           )
+        BEGIN
+            SELECT RAISE(ABORT, 'corpus_chunk_contract');
+        END""",
+
+        """CREATE TRIGGER IF NOT EXISTS trg_corpus_chunks_update_guard
+           BEFORE UPDATE ON corpus_chunks
+           WHEN OLD.status = 'embedded'
+              AND (
+                  OLD.chunk_id != NEW.chunk_id
+                  OR OLD.document_id != NEW.document_id
+                  OR OLD.chunk_profile_version != NEW.chunk_profile_version
+                  OR OLD.section_key != NEW.section_key
+                  OR OLD.ordinal != NEW.ordinal
+                  OR OLD.content_text != NEW.content_text
+              )
+        BEGIN
+            SELECT RAISE(ABORT, 'corpus_chunk_identity_immutable');
+        END""",
+
+        """CREATE TRIGGER IF NOT EXISTS trg_corpus_manifest_current_guard
+           BEFORE INSERT ON corpus_manifest
+           WHEN NEW.is_current = 1
+              AND (SELECT COUNT(*) FROM corpus_manifest WHERE is_current = 1) >= 1
+        BEGIN
+            SELECT RAISE(ABORT, 'corpus_manifest_current_unique');
+        END""",
+
+        """CREATE TRIGGER IF NOT EXISTS trg_corpus_manifest_current_guard_update
+           BEFORE UPDATE ON corpus_manifest
+           WHEN NEW.is_current = 1
+              AND (SELECT COUNT(*) FROM corpus_manifest WHERE is_current = 1 AND manifest_id != NEW.manifest_id) >= 1
+        BEGIN
+            SELECT RAISE(ABORT, 'corpus_manifest_current_unique');
+        END""",
+
+        """CREATE TRIGGER IF NOT EXISTS trg_corpus_tombstone_insert_guard
+           BEFORE INSERT ON corpus_tombstones
+           WHEN (
+               NEW.manifest_id IS NULL
+               OR NEW.reason NOT IN (
+                   'document_removed','eligibility_lost','profile_version_replaced',
+                   'disappeared_child','dedup_cluster_reassigned'
+               )
+               OR length(NEW.manifest_id) != 64
+               OR NEW.manifest_id != lower(NEW.manifest_id)
+               OR NEW.manifest_id GLOB '*[^0-9a-f]*'
+               OR NOT EXISTS (
+                   SELECT 1 FROM corpus_manifest
+                   WHERE manifest_id = NEW.manifest_id
+               )
+               OR (NEW.previous_content_hash IS NOT NULL
+                   AND (length(NEW.previous_content_hash) != 64
+                        OR NEW.previous_content_hash != lower(NEW.previous_content_hash)
+                        OR NEW.previous_content_hash GLOB '*[^0-9a-f]*'))
+               OR (NEW.previous_metadata_hash IS NOT NULL
+                   AND (length(NEW.previous_metadata_hash) != 64
+                        OR NEW.previous_metadata_hash != lower(NEW.previous_metadata_hash)
+                        OR NEW.previous_metadata_hash GLOB '*[^0-9a-f]*'))
+           )
+        BEGIN
+            SELECT RAISE(ABORT, 'corpus_tombstone_contract');
+        END""",
+    ], reversible=False),
+
+    Migration(version=10, name="b4_lexical_index", statements=[
+        """CREATE TABLE IF NOT EXISTS lexical_index_state (
+            singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+            schema_version TEXT NOT NULL CHECK (schema_version = '1.0.0'),
+            corpus_manifest_id TEXT NOT NULL,
+            mode_served TEXT NOT NULL CHECK (mode_served IN ('fts5', 'sql_like')),
+            fallback_reason TEXT CHECK (fallback_reason IN ('fts5_unavailable', 'fts5_missing', 'fts5_stale')),
+            row_count INTEGER NOT NULL CHECK (row_count >= 0),
+            built_at TEXT NOT NULL,
+            FOREIGN KEY (corpus_manifest_id) REFERENCES corpus_manifest(manifest_id)
+        )""",
+
+        """CREATE VIRTUAL TABLE IF NOT EXISTS corpus_chunks_fts USING fts5(
+            manifest_id UNINDEXED,
+            chunk_id UNINDEXED,
+            content_text,
+            tokenize = 'unicode61 remove_diacritics 2'
+        )""",
+    ], reversible=False),
+
+    Migration(version=11, name="b2o_full_cell_identity_and_fundamentals", statements=[
+        "ALTER TABLE source_checkpoints ADD COLUMN cell_id TEXT",
+        "ALTER TABLE source_checkpoints ADD COLUMN window_start TEXT",
+        "ALTER TABLE source_checkpoints ADD COLUMN window_end TEXT",
+        "ALTER TABLE source_checkpoints ADD COLUMN endpoint_name TEXT",
+        "ALTER TABLE source_checkpoints ADD COLUMN provider_profile_version TEXT",
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_source_checkpoints_run_cell_id
+           ON source_checkpoints(run_id, cell_id)
+           WHERE cell_id IS NOT NULL""",
+        """CREATE TRIGGER IF NOT EXISTS trg_b2o_checkpoint_cell_identity_insert
+           BEFORE INSERT ON source_checkpoints
+           WHEN NEW.cell_id IS NOT NULL
+              AND (NEW.window_start IS NULL
+                   OR NEW.window_end IS NULL
+                   OR NEW.endpoint_name IS NULL
+                   OR NEW.provider_profile_version IS NULL
+                   OR NEW.date != NEW.window_start
+                   OR length(NEW.cell_id) != 64
+                   OR NEW.cell_id != lower(NEW.cell_id)
+                   OR NEW.cell_id GLOB '*[^0-9a-f]*')
+        BEGIN
+            SELECT RAISE(ABORT, 'b2o_checkpoint_cell_identity_contract');
+        END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_b2o_checkpoint_cell_identity_update
+           BEFORE UPDATE ON source_checkpoints
+           WHEN OLD.cell_id IS NOT NULL
+              AND (OLD.cell_id IS NOT NEW.cell_id
+                   OR OLD.window_start IS NOT NEW.window_start
+                   OR OLD.window_end IS NOT NEW.window_end
+                   OR OLD.endpoint_name IS NOT NEW.endpoint_name
+                   OR OLD.provider_profile_version IS NOT NEW.provider_profile_version
+                   OR NEW.date IS NOT NEW.window_start)
+        BEGIN
+            SELECT RAISE(ABORT, 'b2o_checkpoint_cell_identity_immutable');
+        END""",
+        """CREATE TRIGGER IF NOT EXISTS trg_b2o_checkpoint_cell_identity_update_contract
+           BEFORE UPDATE ON source_checkpoints
+           WHEN OLD.cell_id IS NULL
+              AND NEW.cell_id IS NOT NULL
+              AND (NEW.window_start IS NULL
+                   OR NEW.window_end IS NULL
+                   OR NEW.endpoint_name IS NULL
+                   OR NEW.provider_profile_version IS NULL
+                   OR NEW.date IS NOT NEW.window_start
+                   OR length(NEW.cell_id) != 64
+                   OR NEW.cell_id != lower(NEW.cell_id)
+                   OR NEW.cell_id GLOB '*[^0-9a-f]*')
+        BEGIN
+            SELECT RAISE(ABORT, 'b2o_checkpoint_cell_identity_contract');
+        END""",
+        """CREATE TABLE IF NOT EXISTS fundamental_statements (
+            statement_id TEXT PRIMARY KEY,
+            raw_asset_id TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            ticker TEXT NOT NULL,
+            statement_type TEXT NOT NULL,
+            fiscal_date TEXT NOT NULL,
+            fiscal_period TEXT,
+            reported_currency TEXT,
+            available_at TEXT,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(raw_asset_id) REFERENCES raw_assets(asset_id),
+            CHECK(provider = 'fmp'),
+            CHECK(statement_type IN (
+                'income_statement',
+                'balance_sheet',
+                'cash_flow'
+            ))
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_statements_ticker_date ON fundamental_statements(ticker, fiscal_date)",
+        "CREATE INDEX IF NOT EXISTS idx_fundamental_statements_ticker_type_date ON fundamental_statements(ticker, statement_type, fiscal_date)",
+    ], reversible=False),
+
 ]
 
 
@@ -332,22 +652,44 @@ def run_migrations(conn: sqlite3.Connection) -> int:
             logger.info("Applied migration v%d (%s)", migration.version, migration.name)
             continue
 
-        for stmt in migration.statements:
-            if stmt.strip().startswith("--"):
-                continue
-            try:
-                conn.execute(stmt)
-            except sqlite3.OperationalError as exc:
-                err = str(exc).lower()
-                if "duplicate column name" in err or "already exists" in err:
-                    logger.debug(
-                        "Migration v%d: column already exists, skipping: %s",
-                        migration.version, stmt[:80],
-                    )
+        savepoint = f"migration_v{migration.version}"
+        conn.execute(f"SAVEPOINT {savepoint}")
+        try:
+            if migration.version == 11:
+                _reconcile_clean_assets_foreign_key(conn)
+            for stmt in migration.statements:
+                normalized_stmt = " ".join(stmt.split()).lower()
+                if stmt.strip().startswith("--"):
                     continue
-                raise
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError as exc:
+                    err = str(exc).lower()
+                    is_v10_fts_statement = (
+                        migration.version == 10
+                        and normalized_stmt.startswith(
+                            "create virtual table if not exists corpus_chunks_fts using fts5("
+                        )
+                    )
+                    if is_v10_fts_statement and err == "no such module: fts5":
+                        logger.warning(
+                            "Migration v10: FTS5 unavailable, creating metadata-only index"
+                        )
+                        continue
+                    if "duplicate column name" in err or "already exists" in err:
+                        logger.debug(
+                            "Migration v%d: column already exists, skipping: %s",
+                            migration.version, stmt[:80],
+                        )
+                        continue
+                    raise
 
-        conn.execute(f"PRAGMA user_version = {migration.version}")
+            conn.execute(f"PRAGMA user_version = {migration.version}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except sqlite3.Error:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
         logger.info("Applied migration v%d (%s)", migration.version, migration.name)
 
     return conn.execute("PRAGMA user_version").fetchone()[0]

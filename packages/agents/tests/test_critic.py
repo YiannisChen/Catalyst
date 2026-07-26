@@ -476,7 +476,7 @@ def test_insufficient_handler_cause_category_unknown():
 def test_insufficient_handler_cause_text():
     state = {**BASE_STATE, "graded_evidence": []}
     result = insufficient_handler(state)
-    assert "Insufficient evidence" in result["causes"][0]["text"]
+    assert "Abstained" in result["causes"][0]["text"]
 
 
 def test_insufficient_handler_grounding_rate_none():

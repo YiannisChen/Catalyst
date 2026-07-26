@@ -6,6 +6,7 @@ at the end of each LangGraph node after the LLM response is received.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 from typing import Any
 
@@ -22,15 +23,29 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "gemini-2.5-flash-nothink":   {"input": 0.15,  "output": 0.60},
     "claude-opus-4-6":            {"input": 15.0,  "output": 75.0},
     "deepseek-v4-flash":          {"input": 0.20,  "output": 0.60},
-    "qwen3.6-flash":              {"input": 0.0,   "output": 0.0},
-    "qwen-turbo":                 {"input": 0.0,   "output": 0.0},
     "deepseek-v3":                {"input": 0.27,  "output": 1.10},
-    "coding-minimax-m2.7-free":   {"input": 0.0,   "output": 0.0},
-    "qwen3.6-plus-preview-free":  {"input": 0.0,   "output": 0.0},
 }
 
-# Fallback pricing when model_id is not in MODEL_PRICING
-_ZERO_PRICING: dict[str, float] = {"input": 0.0, "output": 0.0}
+@dataclass(frozen=True)
+class CostEstimate:
+    model_id: str
+    tokens_prompt: int
+    tokens_completion: int
+    cost_status: str
+    cost_usd: float | None
+
+    def __init__(self, *, model_id: str, tokens_prompt: int, tokens_completion: int) -> None:
+        object.__setattr__(self, "model_id", model_id)
+        object.__setattr__(self, "tokens_prompt", tokens_prompt)
+        object.__setattr__(self, "tokens_completion", tokens_completion)
+        pricing = MODEL_PRICING.get(model_id)
+        if pricing is None:
+            object.__setattr__(self, "cost_status", "unknown")
+            object.__setattr__(self, "cost_usd", None)
+        else:
+            cost = (tokens_prompt * pricing["input"] + tokens_completion * pricing["output"]) / 1_000_000
+            object.__setattr__(self, "cost_status", "known")
+            object.__setattr__(self, "cost_usd", cost)
 
 
 def _extract_usage(response: Any) -> tuple[int, int, int]:
@@ -85,15 +100,10 @@ def track_cost(state: dict[str, Any], node: str, response: Any) -> None:
                   token-usage formats.  Falls back to zero when unavailable.
     """
     model_id = state.get("model_id", "unknown")
-    pricing = MODEL_PRICING.get(model_id, _ZERO_PRICING)
-    if model_id not in MODEL_PRICING:
-        log.warning("No pricing entry for model '%s'; cost recorded as $0", model_id)
-
     inp_tok, out_tok, total_tok = _extract_usage(response)
-
-    cost = (
-        inp_tok * pricing["input"] + out_tok * pricing["output"]
-    ) / 1_000_000
+    estimate = CostEstimate(model_id=model_id, tokens_prompt=inp_tok, tokens_completion=out_tok)
+    if estimate.cost_status == "unknown":
+        log.warning("No pricing entry for model '%s'; cost recorded as unknown", model_id)
 
     state["cost_breakdown"].append(
         {
@@ -101,8 +111,14 @@ def track_cost(state: dict[str, Any], node: str, response: Any) -> None:
             "input_tokens": inp_tok,
             "output_tokens": out_tok,
             "model_id": model_id,
-            "cost_usd": cost,
+            "cost_status": estimate.cost_status,
+            "cost_usd": estimate.cost_usd,
         }
     )
-    state["total_cost_usd"] += cost
+    if estimate.cost_status == "unknown" or state.get("cost_status") == "unknown":
+        state["cost_status"] = "unknown"
+        state["total_cost_usd"] = None
+    else:
+        state["cost_status"] = "known"
+        state["total_cost_usd"] = float(state.get("total_cost_usd", 0.0) or 0.0) + float(estimate.cost_usd or 0.0)
     state["total_tokens"] += total_tok

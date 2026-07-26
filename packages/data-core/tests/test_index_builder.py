@@ -286,6 +286,69 @@ class TestBuildIndexRecords:
         conn.close()
 
 
+def test_build_corpus_wires_profiles_reconciliation_and_manifest(tmp_path: Path):
+    """The B3 entrypoint persists contract chunks and publishes one manifest."""
+    from catalyst_data.index_builder import build_corpus
+
+    conn = _make_db(str(tmp_path / "b3-corpus.db"))
+    result = build_corpus(
+        conn,
+        certified_snapshot_identity="test-snapshot",
+    )
+
+    assert result.chunks
+    assert all(":news_v2:body:" in chunk.chunk_id for chunk in result.chunks)
+    assert all("::l1" not in chunk.chunk_id for chunk in result.chunks)
+    current = conn.execute(
+        "SELECT manifest_id FROM corpus_manifest WHERE is_current = 1"
+    ).fetchone()
+    assert current[0] == result.manifest_id
+    assert conn.execute(
+        "SELECT COUNT(*) FROM corpus_chunks WHERE manifest_id = ?",
+        (result.manifest_id,),
+    ).fetchone()[0] == len(result.chunks)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM articles WHERE source_class IS NULL"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM index_state WHERE chunk_id LIKE '%::l1'"
+    ).fetchone()[0] == 0
+
+    repeated = build_corpus(
+        conn,
+        certified_snapshot_identity="test-snapshot",
+    )
+    assert repeated.manifest_id == result.manifest_id
+    assert conn.execute(
+        "SELECT COUNT(*) FROM corpus_manifest WHERE is_current = 1"
+    ).fetchone()[0] == 1
+    conn.close()
+
+
+def test_build_corpus_keeps_reassigned_active_chunk_searchable(tmp_path: Path):
+    """A dedup lineage tombstone must not deactivate its active replacement."""
+    from catalyst_data.index_builder import build_corpus
+
+    conn = _make_db(str(tmp_path / "b3-reassignment.db"))
+    first = build_corpus(conn, certified_snapshot_identity="snapshot-1")
+    chunk_id = next(
+        chunk.chunk_id for chunk in first.chunks if chunk.document_id == "poly:a1"
+    )
+    conn.execute(
+        "UPDATE articles SET dedup_cluster_id = 'reassigned' WHERE article_id = 'poly:a1'"
+    )
+    conn.commit()
+
+    second = build_corpus(conn, certified_snapshot_identity="snapshot-2")
+    assert second.manifest_id != first.manifest_id
+    assert conn.execute(
+        "SELECT status FROM corpus_chunks WHERE chunk_id = ?", (chunk_id,)
+    ).fetchone()[0] != "tombstoned"
+    assert conn.execute(
+        "SELECT is_tombstone FROM index_state WHERE chunk_id = ?", (chunk_id,)
+    ).fetchone()[0] == 0
+
+
 class TestIndexSummary:
     def test_summary_counts(self, tmp_path: Path):
         conn = _make_db(str(tmp_path / "test.db"))

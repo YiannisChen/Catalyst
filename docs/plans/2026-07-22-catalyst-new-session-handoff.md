@@ -4,10 +4,12 @@
 - Repository: `/Users/yiannischen/Desktop/Catalyst`
 - Branch: `ws4b/article-level-data`
 - HEAD at handoff: `4d4e3a938ac6ee4720f13586c5b281217d75308d`
-- Immediate status: **B2 has not started**
-- Next executable package: **B2 — Data Update and Provenance**
+- Original immediate status: **historical pre-B2 handoff; superseded by the Post-B2 note below**
+- Current next executable package: **B3 — Corpus and Chunking**
 
 This file is the starting point for the next session. Read it before older plans or reports. Do not reconstruct project status from the full chat transcript unless a fact below needs verification.
+
+> **Post-B2 superseding note:** The original handoff below was written before B2. B2 implementation and repository cleanup are now complete on stacked branches `b2/update-provenance` and `chore/repo-prune-superseded-artifacts`; B3 work starts from `b3/corpus-chunking`. For B3 execution, do **not** use the B2 prompt in §8. Use `docs/plans/2026-07-22-b3-corpus-chunking.md` plus `docs/plans/2026-07-21-b2-b7-technical-contracts.md` §5 as the binding contract. Protected DB SHAs remain the identities in §5 unless explicitly re-pinned by the user.
 
 ## 1. Responsibility Model
 
@@ -208,9 +210,9 @@ Never stage:
 
 After B2 passes Codex review, Codex will prepare an exact staging proposal. The user must authorize commits. Commit messages use Conventional Commits and must not mention assistants or generated content.
 
-## 8. Immediate Next Action — Start dscodex B2 Goal
+## 8. Historical Pre-B2 Action — Do Not Use For B3
 
-B2 has not started. Start it with:
+This section is preserved only as historical context for the original B2 handoff. It is superseded by the Post-B2 note near the top of this document. Do not use this prompt for B3.
 
 ```text
 /goal Execute and independently verify Catalyst B2 only from docs/plans/2026-07-22-b2-data-update-provenance.md using the main .venv and strict TDD. Do not stage, commit, push, inspect secrets, call live providers, mutate canonical databases, or start B3. Complete Tasks 0-11, but for Task 11 implement and test only the authorization guard with fake transport; never execute the authorized live-canary path. Stop and pause after producing the complete B2 evidence report.

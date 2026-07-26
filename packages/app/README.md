@@ -1,9 +1,9 @@
 # catalyst-app
 
-FastAPI backend for the Catalyst live attribution workbench.
+FastAPI boundary for the local Catalyst attribution workbench.
 
-Serves the runtime API for agent execution, trace streaming, workbench data queries,
-and artifact projection. Designed to be run alongside the `apps/workbench` frontend.
+It exposes local corpus data, attribution-run lifecycle operations, trace artifacts,
+runtime health, and sanitized model configuration. It is not a hosted SaaS service.
 
 ---
 
@@ -38,6 +38,9 @@ Interactive API docs available at `http://localhost:8000/docs`.
 | `GET` | `/api/tickers` | Available ticker symbols |
 | `GET` | `/api/range-local` | Local OHLCV date range |
 | `GET` | `/api/ohlcv/{ticker}` | Candlestick data for a ticker |
+| `GET` | `/api/news/{ticker}` | News available for a ticker and date window |
+| `GET` | `/api/fundamentals/{ticker}` | Stored fundamental snapshots |
+| `GET` | `/api/session/{ticker}` | Combined local workbench context |
 
 **Live runs** (`/api/live-runs/`):
 
@@ -47,8 +50,12 @@ Interactive API docs available at `http://localhost:8000/docs`.
 | `GET` | `/api/live-runs/{run_id}` | Run summary and status |
 | `GET` | `/api/live-runs/{run_id}/events` | Node-level trace events |
 | `GET` | `/api/live-runs/{run_id}/artifacts` | Run artifacts (evidence, scores) |
+| `GET` | `/api/live-runs/{run_id}/workspace` | Projected analyst workspace state |
 | `POST` | `/api/live-runs/{run_id}/retry` | Retry a failed run |
+| `POST` | `/api/live-runs/{run_id}/cancel` | Request cancellation |
 | `GET` | `/api/health/runtime` | Runtime health check |
+| `GET` | `/api/models/catalog` | Sanitized provider/model catalog |
+| `POST` | `/api/models/validate` | Validate a BYOK model configuration |
 
 ---
 
@@ -68,20 +75,20 @@ catalyst_app/
 
 ---
 
-## Environment Variables
+## Configuration
 
 | Variable | Description |
 |----------|-------------|
 | `CATALYST_DB_PATH` | SQLite database path |
-| `AIHUBMIX_API_KEY` | LLM proxy key (or use provider keys directly) |
-| `OPENAI_API_KEY` | OpenAI-compatible provider key |
-| `ANTHROPIC_API_KEY` | Anthropic Claude key |
+| Provider API keys | Optional server-environment credentials; values never appear in API responses |
+
+Browser-supplied BYOK credentials are held in process memory for the run and are
+not persisted in SQLite. Provider identifiers and model metadata may be persisted.
 
 ---
 
 ## Running Tests
 
 ```bash
-cd packages/app
-python -m pytest tests/ -q
+.venv/bin/python -m pytest packages/app -q
 ```

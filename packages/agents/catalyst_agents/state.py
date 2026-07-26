@@ -8,24 +8,20 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Literal, TypedDict
 
+from catalyst_agents.attribution.output_status import OutputStatus
+
 
 class Phase(str, Enum):
     PARSER = "parser"
     RETRIEVAL_L1 = "retrieval_l1"
     RETRIEVAL_L2 = "retrieval_l2"
+    CONTEXT_BUILDER = "context_builder"
     MINER = "miner"
     CRITIC = "critic"
     ROUTER = "router"
     JUDGE = "judge"
     VALIDATOR = "validator"
     FINALIZER = "finalizer"
-
-
-class OutputStatus(str, Enum):
-    SUFFICIENT = "SUFFICIENT"
-    PARTIAL = "PARTIAL"
-    INSUFFICIENT = "INSUFFICIENT"
-    SYSTEM_ERROR = "SYSTEM_ERROR"
 
 
 @dataclass(frozen=True)
@@ -84,6 +80,21 @@ class AttributionState(TypedDict):
     max_expansions: int
     current_layer: str | None
     retrieval_metadata: object | None
+    context_artifact: dict | None
+    context_artifact_sha256: str | None
+    cutoff: str | None
+    context_cutoff: str | None
+    retrieval_cutoff: str | None
+    validator_cutoff: str | None
+    corpus_manifest_id: str | None
+    index_manifest_id: str | None
+    hypothesis_drafts: list[dict]
+    hypotheses: list[dict]
+    ranked_hypotheses: list[dict]
+    source_support_flags: dict
+    cost_status: str
+    retry_count: int
+    repair_count: int
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------

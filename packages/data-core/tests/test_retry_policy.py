@@ -12,7 +12,9 @@ def test_polygon_retry_policy_matches_plan():
     assert policy.server_error.base_seconds == 5.0
     assert policy.server_error.max_seconds == 60.0
     assert policy.server_error.max_retries == 5
-    assert policy.timeout.max_retries == 1
+    assert policy.timeout.max_retries == 3
+    assert policy.timeout.base_seconds == 5.0
+    assert policy.timeout.max_seconds == 20.0
 
 
 def test_fmp_retry_policy_matches_plan():

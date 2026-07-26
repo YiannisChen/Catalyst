@@ -56,6 +56,7 @@ def build_retrieval_fixture(tmp_path: Path) -> Path:
     db_path = tmp_path / "retrieval_fixture.db"
     conn = sqlite3.connect(db_path)
     init_db(conn)
+    conn.execute("DROP VIEW corpus_items")
 
     for row in FIXTURE_ROWS:
         asset_id = compute_asset_id(row["ticker"], row["reference_date"], row["source_type"])

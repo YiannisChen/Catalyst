@@ -12,13 +12,14 @@ from catalyst_agents.runtime.status import failure_payload_from_rows, normalize_
 from catalyst_agents.runtime.validation import validate_live_run_request
 from catalyst_agents.trace.artifacts import read_node_artifacts
 from catalyst_agents.trace.schema import init_trace_db
+from catalyst_agents.runtime.assurance.record import RunAssuranceRecord
 
 
 _TERMINAL_STATUSES = {
     "SUFFICIENT",
     "SUCCEEDED",
     "PARTIAL",
-    "INSUFFICIENT",
+    "ABSTAIN",
     "SYSTEM_ERROR",
     "FAILED_SYSTEM",
     "FAILED_REQUEST",
@@ -208,7 +209,20 @@ class LiveRunService:
         query += " ORDER BY event_seq ASC"
         rows = conn.execute(query, tuple(params)).fetchall()
         conn.close()
-        return [dict(row) for row in rows]
+        events = [dict(row) for row in rows]
+        for event in events:
+            for field in ("status_before", "status_after"):
+                if event.get(field) == "INSUFFICIENT":
+                    event[field] = "ABSTAIN"
+        return events
+
+    def get_assurance(self, run_id: str) -> RunAssuranceRecord | None:
+        conn = self._connect()
+        row = conn.execute("SELECT record_json FROM run_assurance WHERE run_id = ?", (run_id,)).fetchone()
+        conn.close()
+        if row is None:
+            return None
+        return RunAssuranceRecord.model_validate_json(row["record_json"])
 
     def get_artifacts(
         self,

@@ -72,3 +72,55 @@ def test_clean_py_uses_dedup_hard(monkeypatch):
         {"title": "A", "published_utc": "2026-01-15T10:30:00Z"},
     ]}, "polygon_news")
     assert len(calls) == 1  # dedup.hard was called
+
+
+def test_representative_change_does_not_alter_novelty():
+    """Changing representative_document_id does not change cluster_first_available_at."""
+    from catalyst_data.dedup.cross_source import compute_cluster_fields
+
+    cluster = [
+        {"document_id": "poly:a", "available_at": "2026-01-01T08:00:00Z",
+         "source_class": "aggregated_unknown"},
+        {"document_id": "poly:b", "available_at": "2026-01-01T09:00:00Z",
+         "source_class": "reported_news"},
+    ]
+    result1 = compute_cluster_fields(cluster)
+    first_available = result1["cluster_first_available_at"]
+
+    # Same cluster, same result
+    result2 = compute_cluster_fields(cluster)
+    assert result2["cluster_first_available_at"] == first_available
+    # Representative may differ but not novelty
+    assert result2["representative_document_id"] is not None
+
+
+def test_cluster_first_available_is_earliest():
+    """cluster_first_available_at is the earliest timestamp in the cluster."""
+    from catalyst_data.dedup.cross_source import compute_cluster_fields
+
+    cluster = [
+        {"document_id": "poly:late", "available_at": "2026-02-01T00:00:00Z",
+         "source_class": "reported_news"},
+        {"document_id": "poly:early", "available_at": "2026-01-01T00:00:00Z",
+         "source_class": "aggregated_unknown"},
+        {"document_id": "poly:mid", "available_at": "2026-01-15T00:00:00Z",
+         "source_class": "reported_news"},
+    ]
+    result = compute_cluster_fields(cluster)
+    assert result["cluster_first_available_at"] == "2026-01-01T00:00:00Z"
+
+
+def test_cluster_representative_tie_break_is_order_independent():
+    """Equal source and availability ranks use document_id as a stable tie-break."""
+    from catalyst_data.dedup.cross_source import compute_cluster_fields
+
+    members = [
+        {"document_id": "poly:z", "available_at": "2026-01-01T00:00:00Z",
+         "source_class": "reported_news"},
+        {"document_id": "poly:a", "available_at": "2026-01-01T00:00:00Z",
+         "source_class": "reported_news"},
+    ]
+    forward = compute_cluster_fields(members)
+    reverse = compute_cluster_fields(list(reversed(members)))
+    assert forward == reverse
+    assert forward["representative_document_id"] == "poly:a"

@@ -61,14 +61,14 @@ def _check_env_key(var_name: str) -> str:
 # Builder functions — one per provider
 # ---------------------------------------------------------------------------
 
-def build_polygon_fetcher() -> tuple[Callable, TokenBucketLimiter]:
+def build_polygon_fetcher(*, trust_env: bool = True) -> tuple[Callable, TokenBucketLimiter]:
     """Build a Polygon.io news fetcher with rate limiter (async)."""
     key = _check_env_key("POLYGON_API_KEY")
     policy = RatePolicy(min_interval_sec=12.0, max_concurrent=1, daily_budget=None)
     limiter = TokenBucketLimiter(policy)
 
     import httpx
-    client = httpx.AsyncClient(timeout=30.0)
+    client = httpx.AsyncClient(timeout=30.0, trust_env=trust_env)
     from catalyst_data.connectors.polygon import create_polygon_fetcher
     fetcher = create_polygon_fetcher(api_key=key, limiter=limiter, client=client)
 
@@ -76,14 +76,14 @@ def build_polygon_fetcher() -> tuple[Callable, TokenBucketLimiter]:
     return fetcher, limiter
 
 
-def build_finnhub_fetcher() -> tuple[Callable, TokenBucketLimiter]:
+def build_finnhub_fetcher(*, trust_env: bool = True) -> tuple[Callable, TokenBucketLimiter]:
     """Build a Finnhub company-news fetcher with rate limiter (async)."""
     key = _check_env_key("FINNHUB_API_KEY")
     policy = RatePolicy(min_interval_sec=1.0, max_concurrent=3, daily_budget=None)
     limiter = TokenBucketLimiter(policy)
 
     import httpx
-    client = httpx.AsyncClient(timeout=30.0)
+    client = httpx.AsyncClient(timeout=30.0, trust_env=trust_env)
     from catalyst_data.connectors.finnhub import create_finnhub_fetcher
     fetcher_ns = create_finnhub_fetcher(api_key=key, limiter=limiter, client=client)
 
@@ -91,14 +91,14 @@ def build_finnhub_fetcher() -> tuple[Callable, TokenBucketLimiter]:
     return fetcher_ns.fetch, limiter
 
 
-def build_sec_fetcher() -> tuple[Any, TokenBucketLimiter]:
+def build_sec_fetcher(*, trust_env: bool = True) -> tuple[Any, TokenBucketLimiter]:
     """Build an SEC EDGAR fetcher with rate limiter (async)."""
     user_agent = _check_env_key("SEC_USER_AGENT")
     policy = RatePolicy(min_interval_sec=0.2, max_concurrent=3, daily_budget=None)
     limiter = TokenBucketLimiter(policy)
 
     import httpx
-    client = httpx.AsyncClient(timeout=60.0, headers={"User-Agent": user_agent})
+    client = httpx.AsyncClient(timeout=60.0, headers={"User-Agent": user_agent}, trust_env=trust_env)
     from catalyst_data.connectors.sec import create_sec_fetcher
     fetcher_ns = create_sec_fetcher(user_agent=user_agent, limiter=limiter, client=client)
 
@@ -106,14 +106,14 @@ def build_sec_fetcher() -> tuple[Any, TokenBucketLimiter]:
     return fetcher_ns, limiter
 
 
-def build_fred_fetcher() -> tuple[Callable, TokenBucketLimiter]:
+def build_fred_fetcher(*, trust_env: bool = True) -> tuple[Callable, TokenBucketLimiter]:
     """Build a FRED macro fetcher with rate limiter (async)."""
     key = _check_env_key("FRED_API_KEY")
     policy = RatePolicy(min_interval_sec=0.5, max_concurrent=3, daily_budget=None)
     limiter = TokenBucketLimiter(policy)
 
     import httpx
-    client = httpx.AsyncClient(timeout=30.0)
+    client = httpx.AsyncClient(timeout=30.0, trust_env=trust_env)
     from catalyst_data.connectors.fred import create_fred_fetcher
     fetcher = create_fred_fetcher(api_key=key, limiter=limiter, client=client)
 

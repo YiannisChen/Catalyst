@@ -5,15 +5,16 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 import json
+import os
 from pathlib import Path
 import sqlite3
 import time
 from typing import Any, Iterator
 from uuid import uuid4
 
-from catalyst_data.config import db_path as default_db_path
-
 from catalyst_agents.trace.schema import init_trace_db
+from catalyst_agents.runtime.assurance.checks import canonical_created_at, compute_source_flags, run_all_checks
+from catalyst_agents.runtime.assurance.record import RunAssuranceRecord
 
 _CURRENT_WRITER: ContextVar["TraceWriter | None"] = ContextVar("catalyst_trace_writer", default=None)
 
@@ -50,7 +51,7 @@ class TraceWriter:
     ) -> None:
         self.run_id = run_id or uuid4().hex
         self.trace_id = trace_id or uuid4().hex
-        self.db_path = Path(db_path) if db_path is not None else default_db_path()
+        self.db_path = Path(db_path) if db_path is not None else Path(os.environ.get("CATALYST_TRACE_DB_PATH", ".catalyst/agent_trace.db"))
         self.ticker = ticker
         self.trade_date = trade_date
         self.config = config
@@ -178,6 +179,123 @@ class TraceWriter:
             total_cost_usd=final_state.get("total_cost_usd"),
             model_id_per_role=json.dumps(model_ids, sort_keys=True) if model_ids else None,
         )
+        self.persist_assurance(final_state)
+
+    def persist_assurance(self, final_state: dict[str, Any]) -> None:
+        evidence = final_state.get("retrieved_chunks") or []
+        hypotheses = final_state.get("hypotheses") or []
+        event_rows = self.conn.execute(
+            "SELECT event_seq, trace_id, node, model_id, error_type FROM trace_events WHERE run_id = ? ORDER BY event_seq",
+            (self.run_id,),
+        ).fetchall()
+        nodes = [row[2] for row in event_rows]
+        event_sequences = [int(row[0]) for row in event_rows]
+        trace_complete = bool(event_rows) and event_sequences == list(range(1, len(event_rows) + 1)) and all(
+            row[1] == self.trace_id for row in event_rows
+        )
+        allowed_transitions = {
+            "context_builder": {"miner"},
+            "miner": {"critic", "baseline_prepare_evidence"},
+            "critic": {"decision_router"},
+            "decision_router": {"judge", "expand_macro", "insufficient_handler", "system_error_handler"},
+            "expand_macro": {"miner"},
+            "baseline_prepare_evidence": {"judge"},
+            "judge": {"validator"},
+            "validator": {"finalizer"},
+            "insufficient_handler": {"finalizer"},
+            "system_error_handler": {"finalizer"},
+        }
+        legal_path_ok = all(right in allowed_transitions.get(left, set()) for left, right in zip(nodes, nodes[1:]))
+        output_status = _status_name(final_state.get("output_status")) or "SYSTEM_ERROR"
+        if output_status == "SYSTEM_ERROR" and any(row[4] for row in event_rows):
+            legal_path_ok = legal_path_ok and True
+        else:
+            legal_path_ok = legal_path_ok and bool(nodes) and nodes[-1] == "finalizer"
+
+        retrieval_corpus_ids = {chunk.get("corpus_manifest_id") for chunk in evidence if chunk.get("corpus_manifest_id")}
+        retrieval_index_ids = {chunk.get("index_manifest_id") for chunk in evidence if chunk.get("index_manifest_id")}
+        metadata = final_state.get("retrieval_metadata")
+        retrieval_corpus_id = next(iter(retrieval_corpus_ids), None) if len(retrieval_corpus_ids) <= 1 else "__multiple__"
+        if retrieval_corpus_id is None and metadata is not None:
+            retrieval_corpus_id = getattr(metadata, "requested_manifest_id", None)
+        retrieval_index_id = next(iter(retrieval_index_ids), None) if len(retrieval_index_ids) <= 1 else "__multiple__"
+
+        supporting_evidence: list[dict[str, Any]] = []
+        for hypothesis in hypotheses:
+            for item in hypothesis.get("supporting_evidence", []) or []:
+                available_at = item.get("available_at")
+                supporting_evidence.append({
+                    **item,
+                    "valid_support": bool(
+                        float(item.get("relevance", 0.0) or 0.0) > 0.5
+                        and item.get("temporal_match") is True
+                        and available_at
+                        and final_state.get("cutoff")
+                        and available_at <= final_state["cutoff"]
+                    ),
+                })
+        created_at = canonical_created_at()
+        artifacts = {
+            "run_id": self.run_id,
+            "trace_id": self.trace_id,
+            "output_status": output_status,
+            "cutoff": final_state.get("cutoff"),
+            "cutoff_observations": tuple(
+                final_state.get(name)
+                for name in ("context_cutoff", "retrieval_cutoff", "validator_cutoff")
+                if final_state.get(name)
+            ),
+            "citations": [
+                evidence_id
+                for hypothesis in hypotheses
+                for evidence_id in hypothesis.get("supporting_evidence_ids", [])
+            ],
+            "judge_visible_ids": (
+                list(final_state["judge_evidence"].keys())
+                if final_state.get("judge_evidence") is not None else None
+            ),
+            "gate_results": [
+                (h.get("cause_label"), h.get("prerequisite_gate_passed"), h.get("prerequisite_gate_reason"))
+                for h in final_state.get("hypotheses", []) or []
+            ] or [("not_applicable", True, "no hypotheses")],
+            "legal_path_ok": legal_path_ok,
+            "trace_complete": trace_complete,
+            "corpus_manifest_id": final_state.get("corpus_manifest_id"),
+            "index_manifest_id": final_state.get("index_manifest_id"),
+            "retrieval_corpus_manifest_id": retrieval_corpus_id,
+            "retrieval_index_manifest_id": retrieval_index_id,
+            "model_ids": sorted({row[3] for row in event_rows if row[3]}),
+            "prompt_versions": sorted({f"{row[2]}:b5" for row in event_rows if row[2] in {"critic", "judge", "validator"} and row[3]}),
+            "retry_count": int(final_state.get("retry_count", 0) or 0),
+            "repair_count": int(final_state.get("repair_count", final_state.get("validator_attempts", 0)) or 0),
+            "budget_exhausted": bool(final_state.get("budget_exhausted", False)),
+            "is_degraded": bool(final_state.get("is_degraded", False) or any(chunk.get("is_degraded") for chunk in evidence)),
+            "context_artifact": final_state.get("context_artifact"),
+            "checked_at": created_at,
+            "evidence": [
+                {"chunk_id": chunk.get("asset_id"), "source_class": chunk.get("source_class") or chunk.get("source_type")}
+                for chunk in evidence
+            ],
+        }
+        checks = run_all_checks(self.run_id, artifacts)
+        record = RunAssuranceRecord(
+            run_id=self.run_id,
+            trace_id=self.trace_id,
+            output_status=artifacts["output_status"] if artifacts["output_status"] in {"SUFFICIENT", "PARTIAL", "ABSTAIN", "SYSTEM_ERROR"} else "SYSTEM_ERROR",
+            cutoff=artifacts["cutoff"] or "",
+            corpus_manifest_id=artifacts["corpus_manifest_id"],
+            index_manifest_id=artifacts["index_manifest_id"],
+            model_ids=artifacts["model_ids"],
+            prompt_versions=artifacts["prompt_versions"],
+            checks=checks,
+            source_support_flags=compute_source_flags(supporting_evidence),
+            retry_count=artifacts["retry_count"],
+            repair_count=artifacts["repair_count"],
+            budget_exhausted=artifacts["budget_exhausted"],
+            is_degraded=artifacts["is_degraded"],
+            created_at=created_at,
+        )
+        persist_assurance_record(self.conn, record)
 
     def _finalize_status(
         self,
@@ -196,7 +314,7 @@ class TraceWriter:
             SET status = ?,
                 ended_at = ?,
                 total_latency_ms = ?,
-                total_cost_usd = COALESCE(?, total_cost_usd),
+                total_cost_usd = ?,
                 model_id_per_role = COALESCE(?, model_id_per_role),
                 error_type = ?,
                 error_message = ?
@@ -220,3 +338,30 @@ def _status_name(value: Any) -> str | None:
     if value is None:
         return None
     return getattr(value, "name", None) or str(value)
+
+
+class AssuranceConflictError(RuntimeError):
+    pass
+
+
+def _canonical_record_json(record: RunAssuranceRecord) -> str:
+    return json.dumps(record.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def persist_assurance_record(conn: sqlite3.Connection, record: RunAssuranceRecord) -> None:
+    record_json = _canonical_record_json(record)
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        existing = conn.execute("SELECT record_json FROM run_assurance WHERE run_id = ?", (record.run_id,)).fetchone()
+        if existing is not None:
+            if existing[0] != record_json:
+                raise AssuranceConflictError(f"assurance record conflict for run_id={record.run_id}")
+        else:
+            conn.execute(
+                "INSERT INTO run_assurance (run_id, schema_version, record_json, created_at) VALUES (?, ?, ?, ?)",
+                (record.run_id, record.schema_version, record_json, record.created_at),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise

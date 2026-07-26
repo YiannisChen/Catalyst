@@ -1,10 +1,10 @@
-> Supporting reference; canonical source: `docs/superpowers/specs/2026-04-27-catalyst-fullversion-strategy.md` (strategy), `docs/full-version-execution-spec.md` (technical), `docs/current_situation.md` (status).
-
 # ADR-001: SQLite over PostgreSQL
 
 **Status:** Accepted
 **Date:** 2026-04-02
 **Decision:** Use SQLite (WAL mode) as the sole relational database for all Catalyst packages.
+
+Current migration ownership and frozen-write protections are binding in `docs/plans/2026-07-21-b2-b7-technical-contracts.md`.
 
 ## Context
 

@@ -1,230 +1,160 @@
-"""Tests for validator/finalizer control-plane behavior."""
 from __future__ import annotations
 
-import json
-
-import pytest
-
+from attribution_fixtures import RecordingCutoffPolicy
 from catalyst_agents.nodes.validator import validator
-from catalyst_agents.state import CriticDecision, OutputStatus
+from catalyst_agents.state import OutputStatus
 
 
-class MockUsage:
-    def __init__(self, input_tokens: int = 2000, output_tokens: int = 300) -> None:
-        self.input_tokens = input_tokens
-        self.output_tokens = output_tokens
-        self.total_tokens = input_tokens + output_tokens
+class _RepairResponse:
+    content = ""
+    usage_metadata = {"input_tokens": 10, "output_tokens": 5}
 
 
-class MockResponse:
-    def __init__(self, content: str) -> None:
-        self.content = content
-        self.usage = MockUsage()
-
-
-class SequenceLLM:
-    def __init__(self, responses: list[str] | None = None, *, error: Exception | None = None) -> None:
-        self._responses = responses or []
-        self._error = error
+class _RepairLLM:
+    def __init__(self, payload):
+        import json
+        self.payload = json.dumps(payload)
         self.calls = 0
 
-    def invoke(self, prompt: str) -> MockResponse:
+    def invoke(self, prompt):
         self.calls += 1
-        if self._error is not None:
-            raise self._error
-        idx = min(self.calls - 1, len(self._responses) - 1)
-        return MockResponse(self._responses[idx])
+        response = _RepairResponse()
+        response.content = self.payload
+        return response
 
 
-def _base_state() -> dict:
+def _state():
     return {
         "ticker": "AAPL",
         "trade_date": "2026-01-15",
-        "query": None,
-        "price_move_pct": -4.2,
-        "retrieved_chunks": [],
+        "cutoff": "2026-01-15T21:00:00Z",
+        "context_artifact": {"benchmark_return_pct": -1.0, "sector_return_pct": -2.0},
         "reranked_chunks": [
             {
                 "asset_id": "c1",
-                "reference_date": "2026-01-14",
-                "content_md": "China export restrictions tightened.",
-                "source_type": "polygon_news",
-            },
-            {
-                "asset_id": "c2",
-                "reference_date": "2026-01-15",
-                "content_md": "Apple suppliers warned on demand.",
-                "source_type": "polygon_news",
-            },
-        ],
-        "graded_evidence": [
-            {
-                "chunk_id": "c1",
-                "relevance": 0.9,
-                "category": "geopolitical",
-                "temporal_match": True,
-                "reasoning": "Direct cause",
-            },
-            {
-                "chunk_id": "c2",
-                "relevance": 0.8,
-                "category": "sector",
-                "temporal_match": True,
-                "reasoning": "Supporting context",
-            },
-        ],
-        "critic_reasoning": "Enough evidence to proceed, but not complete coverage.",
-        "critic_decision": CriticDecision(
-            sufficiency="partial",
-            next_action="proceed",
-            magnitude_coverage=0.65,
-            reasoning="Two grounded pieces of evidence support a partial answer.",
-        ),
-        "causes": [
-            {
-                "text": "China export restrictions hurt sentiment",
-                "category": "geopolitical",
-                "confidence": 0.8,
-                "evidence_ids": ["c1"],
-                "direction": "negative",
+                "document_id": "d1",
+                "available_at": "2026-01-15T18:00:00Z",
+                "content_md": "Guidance cut",
+                "source_class": "reported_news",
+                "ticker_associations": ("AAPL",),
+                "dedup_cluster_id": "cluster-1",
+                "is_novel": True,
+                "corpus_manifest_id": "corpus-fixture-v1",
+                "index_manifest_id": "index-fixture-v1",
             }
         ],
-        "summary_md": "AAPL fell after [c1] export restrictions tightened.",
-        "grounding_rate": 1.0,
-        "cost_breakdown": [],
-        "total_cost_usd": 0.0,
-        "total_tokens": 0,
-        "model_id": "claude-sonnet-4-20250514",
+        "graded_evidence": [{"chunk_id": "c1", "relevance": 0.9, "category": "earnings", "temporal_match": True, "reasoning": "Direct"}],
+        "hypothesis_drafts": [
+            {
+                "cause_label": "earnings_guidance",
+                "direction": "negative",
+                "transmission_mechanism": "Guidance weakness reduced expectations",
+                "supporting_evidence_ids": ["c1"],
+                "counter_evidence_ids": [],
+                "missing_evidence": [],
+                "change_condition": "Reassess if guidance improves",
+                "facts": ["Guidance was reduced"],
+                "calculations": [],
+                "inferences": ["Investors priced lower forward revenue"],
+                "unavailable_evidence": [],
+            }
+        ],
+        "summary_md": "AAPL dropped after [c1] guidance weakness.",
     }
 
 
-def test_validator_passes_valid_output_without_regeneration():
-    state = _base_state()
+def test_validator_computes_gate_and_ranking_fields_from_draft():
+    result = validator(_state())
+    h = result["hypotheses"][0]
+    assert h["prerequisite_gate_passed"] is True
+    assert h["direct_support_exists"] is True
+    assert h["independent_supporting_cluster_count"] == 1
+    assert h["max_supporting_critic_relevance"] == 0.9
+    assert h["is_novel"] is True
+    assert result["output_status"] == OutputStatus.SUFFICIENT
+
+
+def test_validator_resolves_missing_evidence_id_to_abstain():
+    state = _state()
+    state["hypothesis_drafts"][0]["supporting_evidence_ids"] = ["missing"]
+    result = validator(state)
+    assert result["validation_error"] == "evidence_id_missing"
+    assert result["output_status"] == OutputStatus.ABSTAIN
+
+
+def test_validator_detects_cutoff_violation():
+    state = _state()
+    state["reranked_chunks"][0]["available_at"] = "2026-01-15T22:00:00Z"
+    result = validator(state)
+    assert result["validation_error"] == "cutoff_violation"
+    assert result["output_status"] == OutputStatus.ABSTAIN
+
+
+def test_validator_uses_injected_cutoff_policy_once():
+    policy = RecordingCutoffPolicy()
+    result = validator(_state(), cutoff_policy=policy)
+    assert policy.calls == [("AAPL", "2026-01-15", "attribution")]
+    assert result["output_status"] == OutputStatus.SUFFICIENT
+
+
+def test_validator_legacy_schema_failure_can_repair_at_most_once():
+    state = _state()
+    state["hypothesis_drafts"] = []
+    state["causes"] = [{"text": "bad", "category": "macro", "confidence": 1.5, "evidence_ids": ["missing"], "direction": "negative"}]
+    result = validator(state, llm=None)
+    assert result["validator_attempts"] == 0
+    assert result["output_status"] == OutputStatus.PARTIAL
+
+
+def test_validator_repairs_invalid_hypothesis_once():
+    state = _state()
+    state.update({
+        "cost_breakdown": [],
+        "total_cost_usd": 0.0,
+        "cost_status": "known",
+        "total_tokens": 0,
+        "model_id": "claude-sonnet-4-20250514",
+    })
+    state["hypothesis_drafts"][0]["supporting_evidence_ids"] = ["missing"]
+    repaired = {"hypotheses": _state()["hypothesis_drafts"], "summary_md": "Repaired [c1]."}
+    llm = _RepairLLM(repaired)
+
+    result = validator(state, llm=llm)
+
+    assert llm.calls == 1
+    assert result["validator_attempts"] == 1
+    assert result["repair_count"] == 1
+    assert result["output_status"] == OutputStatus.SUFFICIENT
+
+
+def test_unexplained_gate_fails_when_an_explanatory_gate_passes():
+    state = _state()
+    unexplained = {
+        **state["hypothesis_drafts"][0],
+        "cause_label": "unexplained",
+        "supporting_evidence_ids": [],
+        "transmission_mechanism": "No supported explanation",
+    }
+    state["hypothesis_drafts"].append(unexplained)
 
     result = validator(state)
+    by_cause = {item["cause_label"]: item for item in result["hypotheses"]}
 
-    assert result["output_status"] == OutputStatus.PARTIAL
-    assert result["validation_error"] is None
-    assert result["validator_attempts"] == 0
-    assert result["causes"] == state["causes"]
-
-
-def test_validator_retries_once_then_downgrades_partial_for_missing_evidence_id():
-    state = _base_state()
-    state["causes"] = [
-        {
-            "text": "Invented citation",
-            "category": "geopolitical",
-            "confidence": 0.8,
-            "evidence_ids": ["missing-id"],
-            "direction": "negative",
-        }
-    ]
-    invalid_retry = json.dumps(
-        {
-            "causes": state["causes"],
-            "summary_md": "AAPL fell due to [missing-id] unsupported evidence.",
-            "self_grounding_check": {"total_claims": 1, "grounded_claims": 0, "ungrounded_claims": 1},
-        }
-    )
-
-    result = validator(state, llm=SequenceLLM([invalid_retry]))
-
-    assert result["output_status"] == OutputStatus.PARTIAL
-    assert result["validation_error"] == "evidence_id_missing"
-    assert result["validator_attempts"] == 1
+    assert by_cause["earnings_guidance"]["prerequisite_gate_passed"] is True
+    assert by_cause["unexplained"]["prerequisite_gate_passed"] is False
 
 
-def test_validator_retries_once_then_downgrades_partial_for_time_window_violation():
-    state = _base_state()
-    state["reranked_chunks"][0]["reference_date"] = "2026-01-25"
-    retry_output = json.dumps(
-        {
-            "causes": state["causes"],
-            "summary_md": state["summary_md"],
-            "self_grounding_check": {"total_claims": 1, "grounded_claims": 1, "ungrounded_claims": 0},
-        }
-    )
+def test_structured_market_direction_mismatch_fails_gate():
+    state = _state()
+    state["context_artifact"]["market_component"] = -1.0
+    state["hypothesis_drafts"][0].update({
+        "cause_label": "market",
+        "direction": "positive",
+        "supporting_evidence_ids": [],
+    })
 
-    result = validator(state, llm=SequenceLLM([retry_output]))
+    result = validator(state)
+    hypothesis = result["hypotheses"][0]
 
-    assert result["output_status"] == OutputStatus.PARTIAL
-    assert result["validation_error"] == "time_window_violation"
-    assert result["validator_attempts"] == 1
-
-
-def test_validator_retries_once_then_downgrades_partial_for_schema_failure():
-    state = _base_state()
-    state["causes"][0]["confidence"] = 1.5
-    retry_output = json.dumps(
-        {
-            "causes": state["causes"],
-            "summary_md": state["summary_md"],
-            "self_grounding_check": {"total_claims": 1, "grounded_claims": 1, "ungrounded_claims": 0},
-        }
-    )
-
-    result = validator(state, llm=SequenceLLM([retry_output]))
-
-    assert result["output_status"] == OutputStatus.PARTIAL
-    assert result["validation_error"] == "schema_invalid"
-    assert result["validator_attempts"] == 1
-
-
-def test_validator_retries_once_then_downgrades_partial_for_magnitude_failure():
-    state = _base_state()
-    state["critic_decision"] = CriticDecision(
-        sufficiency="sufficient",
-        next_action="proceed",
-        magnitude_coverage=0.45,
-        reasoning="Claimed complete coverage, but support is weak.",
-    )
-
-    corrected_partial = json.dumps(
-        {
-            "causes": state["causes"],
-            "summary_md": state["summary_md"],
-            "self_grounding_check": {"total_claims": 1, "grounded_claims": 1, "ungrounded_claims": 0},
-        }
-    )
-
-    result = validator(state, llm=SequenceLLM([corrected_partial]))
-
-    assert result["output_status"] == OutputStatus.PARTIAL
-    assert result["validation_error"] == "magnitude_sanity_failed"
-    assert result["validator_attempts"] == 1
-
-
-def test_validator_returns_system_error_when_correction_call_fails():
-    state = _base_state()
-    state["causes"][0]["evidence_ids"] = ["missing-id"]
-
-    result = validator(state, llm=SequenceLLM(error=RuntimeError("validator timeout")))
-
-    assert result["output_status"] == OutputStatus.SYSTEM_ERROR
-    assert result["validation_error"] == "model_timeout"
-    assert result["validator_attempts"] == 1
-
-
-def test_validator_returns_raw_llm_response_on_successful_correction():
-    state = _base_state()
-    state["causes"][0]["evidence_ids"] = ["missing-id"]
-    corrected = json.dumps(
-        {
-            "causes": [
-                {
-                    "text": "China export restrictions hurt sentiment",
-                    "category": "geopolitical",
-                    "confidence": 0.8,
-                    "evidence_ids": ["c1"],
-                    "direction": "negative",
-                }
-            ],
-            "summary_md": "AAPL fell after [c1] export restrictions tightened.",
-            "self_grounding_check": {"total_claims": 1, "grounded_claims": 1, "ungrounded_claims": 0},
-        }
-    )
-
-    result = validator(state, llm=SequenceLLM([corrected]))
-
-    assert result["validator_raw_llm_response"] == corrected
+    assert hypothesis["prerequisite_gate_passed"] is False
+    assert "direction_mismatch" in hypothesis["validation_violations"]

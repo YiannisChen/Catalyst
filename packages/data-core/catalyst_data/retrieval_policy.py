@@ -12,6 +12,13 @@ from __future__ import annotations
 
 from typing import Any
 
+
+def retrieve_lexical(*args, **kwargs):
+    """Compatibility facade for the canonical data-core retrieval package."""
+    from catalyst_data.retrieval.fts5 import retrieve_lexical as canonical_retrieve
+
+    return canonical_retrieve(*args, **kwargs)
+
 # Default tier multipliers
 DEFAULT_TIER_BOOST: dict[int, float] = {
     1: 1.5,

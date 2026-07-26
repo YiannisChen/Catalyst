@@ -1,28 +1,19 @@
-# Frozen DB v2 Manifest
+# Frozen Evaluation Fixture v2
 
-This note records the provenance anchor for the P1 consumption artifact **`data/catalyst_eval_frozen_v2.db`**.
+- Status: retained compatibility fixture, not the evolving product corpus
+- Path: `data/catalyst_eval_frozen_v2.db`
+- Current local SHA-256: `0d97a7ec61b6ec8fb5f9263b0b37b0efc9755812739d7afead7f720c3567e8dd`
+- Current `clean_assets` count: 13,474
 
-- Source lineage anchor: **`data/catalyst_eval_frozen.db`** (immutable; not modified)
-- P1 consumption artifact: **`data/catalyst_eval_frozen_v2.db`**
-- Canonical machine-readable provenance artifact:
-  - [frozen_db_v2_manifest_20260505_164525.json](/Users/yiannischen/Desktop/Catalyst/data/eval_reports/frozen_db_v2_manifest_20260505_164525.json)
+The original byte-level canonical artifact is no longer available locally. The current fixture has matching recorded source counts and content-level checks but must not be described as byte-identical to the lost artifact. It remains useful for compatibility, deterministic read tests, and zero-network fixtures; it is not the evolving Dev corpus and is not the source for new provider coverage.
 
-Current auditable claim from that JSON artifact:
+Rules:
 
-- `source_db_sha256 = 3d8a1ee3a86b216779dfd9cc2e6ccd45090326c65b08e4a19e7b89d25935e491`
-- `target_db_sha256 = 14231853db606cf5c422ba333a0c1fdf599ffb3b845f15bd3de9456694b7223f`
-- `source_clean_assets = 10092`
-- `target_clean_assets = 13474`
-- `source_raw_assets = 10092`
-- `target_raw_assets = 13474`
-- `clean_assets_superset = true`
-- `raw_assets_superset = true`
-- `ohlcv_superset = true`
+1. never open this path writable;
+2. reject its realpath before a writable SQLite connection or PRAGMA;
+3. never run schema migrations against it;
+4. use disposable copies for guard tests;
+5. bind any result pack to the exact SHA it actually consumed;
+6. do not silently re-pin or overwrite the fixture.
 
-This document is intentionally brief. The JSON artifact remains the source of record for:
-
-- row-count deltas
-- backfill window
-- provider assumptions
-- rate-limit assumptions
-- key-fingerprint provenance notes
+The evolving product corpus is `data/catalyst_dev_ws4b.db`. Backend plans must verify both database SHAs before and after tests that are expected to be read-only.

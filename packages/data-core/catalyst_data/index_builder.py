@@ -19,9 +19,27 @@ It is a pure data-structuring module.
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 import unicodedata
+from dataclasses import dataclass
 from typing import Any
+
+
+def _dict_rows(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
+    columns = [item[0] for item in cursor.description]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone() is not None
 
 
 def compute_content_hash(title: str, description: str | None) -> str:
@@ -185,6 +203,204 @@ def build_index_records(
     article_records = build_article_records(conn, min_l2_chars=min_l2_chars)
     filing_records = build_filing_records(conn, min_l2_chars=min_l2_chars)
     return article_records + filing_records
+
+
+@dataclass(frozen=True)
+class CorpusBuildResult:
+    manifest_id: str
+    chunks: list[Any]
+    reconciliation: Any
+
+
+@dataclass(frozen=True)
+class CorpusAndLexicalBuildResult:
+    corpus: CorpusBuildResult
+    lexical: Any
+
+
+def build_corpus(
+    conn: sqlite3.Connection,
+    *,
+    certified_snapshot_identity: str,
+    normalization_version: str = "1.0.0",
+) -> CorpusBuildResult:
+    """Build and atomically publish the B3 corpus from canonical documents."""
+    from catalyst_data.corpus.filing_v2 import FilingV2Profile
+    from catalyst_data.corpus.manifest import (
+        build_manifest,
+        compute_manifest_id,
+        reconcile_and_publish,
+    )
+    from catalyst_data.corpus.news_v2 import NewsV2Profile
+    from catalyst_data.corpus.source_classifier import CLASSIFIER_VERSION, classify
+    from catalyst_data.corpus.tokenizer import TOKENIZER_REVISION
+
+    active_chunks: dict[str, dict[str, Any]] = {}
+    produced_chunks: list[Any] = []
+    article_columns = _table_columns(conn, "articles")
+    provider_expr = "a.provider" if "provider" in article_columns else "COALESCE(a.source, 'polygon')"
+    source_type_expr = "a.source_type" if "source_type" in article_columns else "'polygon_news'"
+    publisher_expr = "a.publisher_name" if "publisher_name" in article_columns else "a.publisher"
+    dedup_group_expr = "a.dedup_group_id" if "dedup_group_id" in article_columns else "NULL"
+    eligibility_predicates = []
+    if "is_canonical" in article_columns:
+        eligibility_predicates.append("a.is_canonical = 1")
+    if "is_rag_eligible" in article_columns:
+        eligibility_predicates.append("a.is_rag_eligible = 1")
+    where_clause = " AND ".join(eligibility_predicates) or "1 = 1"
+    article_rows = _dict_rows(conn.execute(f"""
+        SELECT
+            a.article_id, {provider_expr} AS provider,
+            {source_type_expr} AS source_type, a.published_utc,
+            a.title, a.description, a.article_url,
+            {publisher_expr} AS publisher_name,
+            {dedup_group_expr} AS dedup_group_id,
+            a.source_class, a.dedup_cluster_id,
+            a.cluster_first_available_at, a.representative_document_id,
+            GROUP_CONCAT(at.ticker, ',') AS tickers_csv
+        FROM articles a
+        LEFT JOIN article_tickers at ON at.article_id = a.article_id
+        WHERE {where_clause}
+        GROUP BY a.article_id
+        ORDER BY a.article_id
+    """))
+    news_profile = NewsV2Profile()
+    for row in article_rows:
+        tickers = sorted({item for item in (row["tickers_csv"] or "").split(",") if item})
+        ticker_associations = json.dumps(tickers, separators=(",", ":"))
+        source_class = row["source_class"] or classify(
+            row["source_type"],
+            article_url=row["article_url"],
+            publisher=row["publisher_name"],
+        )
+        cluster_id = row["dedup_cluster_id"] or row["dedup_group_id"]
+        first_available = row["cluster_first_available_at"] or row["published_utc"]
+        representative = row["representative_document_id"] or row["article_id"]
+        conn.execute(
+            """UPDATE articles SET source_class = ?, dedup_cluster_id = ?,
+               cluster_first_available_at = ?, representative_document_id = ?
+               WHERE article_id = ?""",
+            (source_class, cluster_id, first_available, representative, row["article_id"]),
+        )
+        document = {
+            "document_id": row["article_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "available_at": row["published_utc"],
+            "ticker_associations": ticker_associations,
+            "source_class": source_class,
+            "dedup_cluster_id": cluster_id,
+            "cluster_first_available_at": first_available,
+            "representative_document_id": representative,
+            "eligibility": "eligible",
+        }
+        for chunk in news_profile.chunk(document):
+            produced_chunks.append(chunk)
+            active_chunks[chunk.chunk_id] = {
+                **vars(chunk),
+                "dedup_cluster_id": cluster_id,
+                "cluster_first_available_at": first_available,
+                "representative_document_id": representative,
+                "source_kind": "article",
+                "provider": row["provider"],
+                "source_type": row["source_type"],
+            }
+
+    filing_rows = _dict_rows(conn.execute("""
+        SELECT
+            f.filing_id, f.form_type, f.filed_at, f.ticker,
+            f.dedup_group_id, fd.document_url, fd.document_type, fd.text
+        FROM filings f
+        JOIN filing_documents fd ON fd.filing_id = f.filing_id
+        WHERE f.is_canonical = 1 AND f.is_rag_eligible = 1
+          AND fd.extraction_status = 'success' AND length(trim(fd.text)) > 0
+        ORDER BY f.filing_id, fd.document_type, fd.document_url
+    """)) if _table_exists(conn, "filings") and _table_exists(conn, "filing_documents") else []
+    filing_profile = FilingV2Profile()
+    for row in filing_rows:
+        document_type = row["document_type"] or "primary_doc"
+        is_exhibit = document_type.lower().startswith("exhibit_99")
+        declared_type = (
+            document_type.lower().replace("exhibit_", "EX-").replace("_", ".")
+            if is_exhibit else row["form_type"]
+        )
+        document_id = (
+            f"{row['filing_id']}:{document_type.lower()}"
+            if is_exhibit else row["filing_id"]
+        )
+        document = {
+            "document_id": document_id,
+            "filing_type": declared_type,
+            "raw_text": row["text"],
+            "available_at": row["filed_at"],
+            "ticker_associations": json.dumps([row["ticker"]], separators=(",", ":")),
+            "source_class": "official_government",
+            "dedup_cluster_id": row["dedup_group_id"],
+            "cluster_first_available_at": row["filed_at"],
+            "representative_document_id": document_id,
+            "eligibility": "eligible",
+        }
+        for chunk in filing_profile.chunk(document):
+            produced_chunks.append(chunk)
+            active_chunks[chunk.chunk_id] = {
+                **vars(chunk),
+                "dedup_cluster_id": row["dedup_group_id"],
+                "cluster_first_available_at": row["filed_at"],
+                "representative_document_id": document_id,
+                "source_kind": "filing",
+                "provider": "sec",
+                "source_type": "sec_filing",
+            }
+
+    inventory_fields = (
+        "chunk_id", "document_id", "chunk_profile_version", "section_key",
+        "ordinal", "content_hash", "metadata_hash", "available_at",
+        "source_class", "dedup_cluster_id", "cluster_first_available_at",
+        "representative_document_id", "eligibility",
+    )
+    inventory = [
+        {field: chunk[field] for field in inventory_fields}
+        for chunk in active_chunks.values()
+    ]
+    manifest = build_manifest(
+        normalization_version=normalization_version,
+        chunk_profile_versions={"news": "news_v2", "filing": "filing_v2"},
+        source_classifier_version=CLASSIFIER_VERSION,
+        certified_snapshot_identity=certified_snapshot_identity,
+        active_chunk_inventory=inventory,
+        tokenizer_revision=TOKENIZER_REVISION,
+        embedding_revision=None,
+    )
+    manifest_id = compute_manifest_id(manifest)
+    manifest_json = json.dumps(
+        manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    reconciliation = reconcile_and_publish(
+        conn,
+        next_manifest_id=manifest_id,
+        next_manifest_json=manifest_json,
+        active_chunks=active_chunks,
+    )
+    return CorpusBuildResult(manifest_id, produced_chunks, reconciliation)
+
+
+def build_corpus_and_lexical_index(
+    conn: sqlite3.Connection,
+    *,
+    certified_snapshot_identity: str,
+    clock,
+    normalization_version: str = "1.0.0",
+) -> CorpusAndLexicalBuildResult:
+    """Publish the B3 corpus, then build the B4 index for that exact manifest."""
+    from catalyst_data.retrieval.fts5_builder import build_fts5_index
+
+    corpus = build_corpus(
+        conn,
+        certified_snapshot_identity=certified_snapshot_identity,
+        normalization_version=normalization_version,
+    )
+    lexical = build_fts5_index(conn, corpus.manifest_id, clock=clock)
+    return CorpusAndLexicalBuildResult(corpus=corpus, lexical=lexical)
 
 def index_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Return aggregate summary of built index records.

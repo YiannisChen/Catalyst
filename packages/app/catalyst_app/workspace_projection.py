@@ -158,6 +158,7 @@ def _map_stage_status(
         "SUFFICIENT": "complete",
         "SUCCEEDED": "complete",
         "PARTIAL": "warning",
+        "ABSTAIN": "skipped",
         "INSUFFICIENT": "skipped",
         "FAILED_SYSTEM": "error",
         "FAILED_REQUEST": "error",

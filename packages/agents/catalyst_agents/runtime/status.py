@@ -6,7 +6,8 @@ from typing import Any, Mapping
 _STATUS_MAP = {
     "SUFFICIENT": "SUCCEEDED",
     "PARTIAL": "PARTIAL",
-    "INSUFFICIENT": "INSUFFICIENT",
+    "ABSTAIN": "ABSTAIN",
+    "INSUFFICIENT": "ABSTAIN",
     "SYSTEM_ERROR": "FAILED_SYSTEM",
     "FAILED_REQUEST": "FAILED_REQUEST",
     "QUEUED": "QUEUED",
@@ -23,7 +24,7 @@ _REQUEST_FAILURE_REASONS = {
     "invalid_trade_date",
 }
 
-_NON_RETRYABLE_INSUFFICIENT = {"NON_MATERIAL_MOVE"}
+_NON_RETRYABLE_ABSTAIN = {"NON_MATERIAL_MOVE"}
 _RETRYABLE_PARTIAL = {"INCONCLUSIVE"}
 
 
@@ -49,8 +50,8 @@ def is_retryable(status: Any, *, sub_reason: str | None = None) -> bool:
         return True
     if top_level == "PARTIAL":
         return sub_reason in _RETRYABLE_PARTIAL
-    if top_level == "INSUFFICIENT":
-        return sub_reason not in _NON_RETRYABLE_INSUFFICIENT
+    if top_level == "ABSTAIN":
+        return sub_reason not in _NON_RETRYABLE_ABSTAIN
     return False
 
 

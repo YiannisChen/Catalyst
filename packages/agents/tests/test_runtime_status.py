@@ -13,13 +13,14 @@ def test_normalize_run_status_maps_internal_outputs_to_frontend_statuses():
         "sub_reason": None,
     }
     assert normalize_run_status("PARTIAL") == {"status": "PARTIAL", "sub_reason": None}
-    assert normalize_run_status("INSUFFICIENT") == {"status": "INSUFFICIENT", "sub_reason": None}
+    assert normalize_run_status("ABSTAIN") == {"status": "ABSTAIN", "sub_reason": None}
+    assert normalize_run_status("INSUFFICIENT") == {"status": "ABSTAIN", "sub_reason": None}
     assert normalize_run_status("SYSTEM_ERROR") == {"status": "FAILED_SYSTEM", "sub_reason": "system_error"}
 
 
 def test_non_material_move_and_inconclusive_remain_sub_reasons():
     assert normalize_run_status("INSUFFICIENT", sub_reason="NON_MATERIAL_MOVE") == {
-        "status": "INSUFFICIENT",
+        "status": "ABSTAIN",
         "sub_reason": "NON_MATERIAL_MOVE",
     }
     assert normalize_run_status("PARTIAL", sub_reason="INCONCLUSIVE") == {
@@ -52,6 +53,7 @@ def test_retryable_rules_for_lifecycle_and_terminal_statuses():
     assert is_retryable("FAILED_SYSTEM", sub_reason="system_error") is True
     assert is_retryable("FAILED_REQUEST", sub_reason="unsupported_ticker") is False
     assert is_retryable("INSUFFICIENT", sub_reason="NON_MATERIAL_MOVE") is False
+    assert is_retryable("ABSTAIN", sub_reason="NON_MATERIAL_MOVE") is False
     assert is_retryable("PARTIAL", sub_reason="INCONCLUSIVE") is True
     assert is_retryable("SUCCEEDED") is False
 
@@ -115,3 +117,44 @@ def test_failure_payload_from_sqlite_row_objects():
     assert event_payload["status"] == "FAILED_SYSTEM"
     assert event_payload["sub_reason"] == "model_timeout"
     assert event_payload["node"] == "critic"
+
+
+def test_service_get_run_normalizes_persisted_insufficient(tmp_path):
+    from catalyst_agents.runtime.service import LiveRunService
+
+    service = LiveRunService(db_path=tmp_path / "trace.db", graph_factory=lambda **_: None)
+    conn = service._connect()
+    conn.execute(
+        """INSERT INTO agent_runs
+        (run_id, trace_id, ticker, trade_date, status, queued_at, config, error_type)
+        VALUES ('legacy', 'trace-legacy', 'AAPL', '2026-01-15', 'INSUFFICIENT',
+                '2026-01-15T21:00:00Z', '{}', 'no_evidence')"""
+    )
+    conn.commit()
+    conn.close()
+
+    run = service.get_run("legacy")
+    assert run["status"] == "ABSTAIN"
+    assert run["sub_reason"] == "no_evidence"
+
+
+def test_service_get_events_normalizes_historical_insufficient(tmp_path):
+    from catalyst_agents.runtime.service import LiveRunService
+
+    service = LiveRunService(db_path=tmp_path / "trace.db", graph_factory=lambda **_: None)
+    conn = service._connect()
+    conn.execute(
+        "INSERT INTO agent_runs (run_id, trace_id, status) VALUES ('legacy', 'trace-legacy', 'INSUFFICIENT')"
+    )
+    conn.execute(
+        """INSERT INTO trace_events
+        (run_id, trace_id, event_seq, node, started_at, ended_at, latency_ms, status_before, status_after)
+        VALUES ('legacy', 'trace-legacy', 1, 'finalizer', '2026-01-15T00:00:00Z',
+                '2026-01-15T00:00:01Z', 1, 'PARTIAL', 'INSUFFICIENT')"""
+    )
+    conn.commit()
+    conn.close()
+
+    event = service.get_events("legacy")[0]
+    assert event["status_before"] == "PARTIAL"
+    assert event["status_after"] == "ABSTAIN"

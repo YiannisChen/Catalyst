@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 from fastapi.testclient import TestClient
 
@@ -87,11 +88,20 @@ def _prepare_db(path):
     conn.close()
 
 
+def _wait_for_terminal(client: TestClient, run_id: str, timeout_seconds: float = 1.0):
+    deadline = time.monotonic() + timeout_seconds
+    response = client.get(f"/api/live-runs/{run_id}")
+    while response.json()["status"] in {"QUEUED", "RUNNING"} and time.monotonic() < deadline:
+        time.sleep(0.01)
+        response = client.get(f"/api/live-runs/{run_id}")
+    return response
+
+
 def test_live_runtime_smoke_end_to_end(tmp_path):
     db_path = tmp_path / "runtime_smoke.db"
     _prepare_db(db_path)
 
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: FastGraph(db_path))
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: FastGraph(db_path))
     app = create_app(
         service_override=service,
         dependency_loader_override=FakeLoader(),
@@ -113,7 +123,7 @@ def test_live_runtime_smoke_end_to_end(tmp_path):
     run_id = create_resp.json()["run_id"]
     assert create_resp.json()["status"] == "QUEUED"
 
-    run_resp = client.get(f"/api/live-runs/{run_id}")
+    run_resp = _wait_for_terminal(client, run_id)
     assert run_resp.status_code == 200
     run_payload = run_resp.json()
     assert run_payload["status"] != "QUEUED"
@@ -138,7 +148,7 @@ def test_live_runtime_smoke_end_to_end(tmp_path):
     retry_payload = retry_resp.json()
     assert retry_payload["ok"] is True
     assert retry_payload["run_id"] != run_id
-    retry_run_resp = client.get(f"/api/live-runs/{retry_payload['run_id']}")
+    retry_run_resp = _wait_for_terminal(client, retry_payload["run_id"])
     assert retry_run_resp.status_code == 200
     assert retry_run_resp.json()["status"] != "QUEUED"
 

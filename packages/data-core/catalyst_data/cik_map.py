@@ -1,4 +1,4 @@
-"""SEC CIK ↔ ticker map for the 10-ticker WS4B universe.
+"""SEC CIK ↔ ticker map for the ratified B2-O 40-ticker universe.
 
 Loads from a pinned CSV asset.  Provides forward and reverse lookups.
 Can refresh from the live SEC company_tickers.json when explicitly invoked.
@@ -15,7 +15,10 @@ _ASSET_DIR = Path(__file__).resolve().parent.parent / "data" / "cik_map"
 _CSV_PATH = _ASSET_DIR / "cik_ticker_map.csv"
 
 SUPPORTED_TICKERS = frozenset([
-    "AAPL", "AMD", "AMZN", "GOOGL", "JPM", "META", "MSFT", "NVDA", "TSLA", "UNH"
+    "AAPL", "AMD", "AMZN", "GOOGL", "JPM", "META", "MSFT", "NVDA", "TSLA", "UNH",
+    "INTC", "QCOM", "TSM", "MU", "LRCX", "ASML", "DELL", "HPQ", "CRM", "ADBE",
+    "NOW", "ORCL", "PINS", "RDDT", "SNAP", "WMT", "TGT", "COST", "DASH", "F",
+    "LCID", "GM", "RIVN", "C", "GS", "BAC", "MS", "CNC", "HUM", "CI",
 ])
 
 _ticker_to_cik: dict[str, str] = {}
@@ -65,7 +68,7 @@ def cik_to_ticker(cik: str) -> str:
 def refresh_cik_map(output_path: str | None = None) -> dict[str, str]:
     """Fetch SEC company_tickers.json, validate, and write CSV.
 
-    Returns {ticker: cik} for all 10 SUPPORTED_TICKERS.
+    Returns {ticker: cik} for all SUPPORTED_TICKERS.
     Raises RuntimeError if any ticker is missing from the SEC source.
     """
     url = "https://www.sec.gov/files/company_tickers.json"

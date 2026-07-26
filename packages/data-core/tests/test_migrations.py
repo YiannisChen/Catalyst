@@ -31,6 +31,7 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS article_tickers (article_id TEXT, ticker TEXT, reference_date TEXT, PRIMARY KEY (article_id, ticker))")
         conn.execute("CREATE TABLE IF NOT EXISTS clean_assets (asset_id TEXT PRIMARY KEY, reference_date TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS ohlcv (symbol TEXT, date TEXT, source TEXT, PRIMARY KEY (symbol, date, source))")
+        conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
         v1 = run_migrations(conn)
         v2 = run_migrations(conn)
@@ -49,10 +50,11 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS article_tickers (article_id TEXT, ticker TEXT, reference_date TEXT, PRIMARY KEY (article_id, ticker))")
         conn.execute("CREATE TABLE IF NOT EXISTS clean_assets (asset_id TEXT PRIMARY KEY, reference_date TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS ohlcv (symbol TEXT, date TEXT, source TEXT, PRIMARY KEY (symbol, date, source))")
+        conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
         v = run_migrations(conn)
-        assert v == 8
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert v == 11
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
         conn.close()
 
     def test_per_statement_catch(self, tmp_path: Path):
@@ -76,6 +78,7 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS article_tickers (article_id TEXT, ticker TEXT, reference_date TEXT, PRIMARY KEY (article_id, ticker))")
         conn.execute("CREATE TABLE IF NOT EXISTS clean_assets (asset_id TEXT PRIMARY KEY, reference_date TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS ohlcv (symbol TEXT, date TEXT, source TEXT, PRIMARY KEY (symbol, date, source))")
+        conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
         conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS raw_assets (asset_id TEXT PRIMARY KEY, ticker TEXT NOT NULL, source_type TEXT NOT NULL, reference_date TEXT NOT NULL, fetched_at TEXT NOT NULL, data_version TEXT NOT NULL DEFAULT 'v1', content_raw BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}')")
@@ -83,9 +86,10 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS article_tickers (article_id TEXT, ticker TEXT, reference_date TEXT, PRIMARY KEY (article_id, ticker))")
         conn.execute("CREATE TABLE IF NOT EXISTS clean_assets (asset_id TEXT PRIMARY KEY, reference_date TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS ohlcv (symbol TEXT, date TEXT, source TEXT, PRIMARY KEY (symbol, date, source))")
+        conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
         v = run_migrations(conn)
-        assert v == 8
+        assert v == 11
         conn.close()
 
     def test_duplicate_column_skipped(self, tmp_path: Path):
@@ -111,6 +115,7 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS article_tickers (article_id TEXT, ticker TEXT, reference_date TEXT, PRIMARY KEY (article_id, ticker))")
         conn.execute("CREATE TABLE IF NOT EXISTS clean_assets (asset_id TEXT PRIMARY KEY, reference_date TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS ohlcv (symbol TEXT, date TEXT, source TEXT, PRIMARY KEY (symbol, date, source))")
+        conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
         # All v1 columns exist → should skip all 6 ALTER statements without error
         v = run_migrations(conn)
@@ -619,3 +624,201 @@ class TestMigrationV8Contract:
         cols = _table_columns(db, "ingestion_runs")
         assert "parent_run_id" in cols
         db.close()
+
+
+class TestMigrationV9:
+    """B3 corpus tables migration tests."""
+
+    def test_v9_adds_corpus_tables(self):
+        """v9 creates corpus_chunks, corpus_tombstones, corpus_manifest."""
+        from conftest import _fresh_db_at_version, _table_columns, _table_names
+        from db_fixtures import apply_migration_v9
+
+        db = _fresh_db_at_version(8)
+        apply_migration_v9(db)
+
+        for table in ["corpus_chunks", "corpus_tombstones", "corpus_manifest"]:
+            assert table in _table_names(db)
+
+        chunk_columns = _table_columns(db, "corpus_chunks")
+        assert "manifest_id" in chunk_columns
+
+    def test_v9_extends_articles(self):
+        """v9 adds source_class, dedup_cluster_id, cluster_first_available_at,
+        representative_document_id to articles."""
+        from conftest import _fresh_db_at_version, _table_columns
+        from db_fixtures import apply_migration_v9
+
+        db = _fresh_db_at_version(8)
+        apply_migration_v9(db)
+        cols = _table_columns(db, "articles")
+        for col in ["source_class", "dedup_cluster_id",
+                     "cluster_first_available_at", "representative_document_id"]:
+            assert col in cols, f"Missing column: {col}"
+
+    def test_v9_extends_index_state(self):
+        """v9 adds metadata_hash and is_tombstone to index_state."""
+        from conftest import _fresh_db_at_version, _table_columns
+        from db_fixtures import apply_migration_v9
+
+        db = _fresh_db_at_version(8)
+        apply_migration_v9(db)
+        cols = _table_columns(db, "index_state")
+        for col in ["metadata_hash", "is_tombstone"]:
+            assert col in cols, f"Missing column: {col}"
+
+    def test_v9_corpus_chunks_check_constraints(self):
+        """corpus_chunks CHECK constraints reject invalid data."""
+        import sqlite3
+        from conftest import _fresh_db_at_version
+        from db_fixtures import apply_migration_v9
+
+        db = _fresh_db_at_version(8)
+        apply_migration_v9(db)
+
+        # Invalid chunk_profile_version
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("""
+                INSERT INTO corpus_chunks
+                (chunk_id, document_id, chunk_profile_version, section_key,
+                 ordinal, content_text, content_hash, metadata_hash,
+                 source_class, available_at, ticker_associations, eligibility,
+                 status, boundary_kind, body_token_start, body_token_end,
+                 body_overlap_tokens, prefix_token_count, prefix_truncated,
+                 created_at, updated_at)
+                VALUES ('test', 'doc', 'invalid_profile', 'body', '0001',
+                        'text', 'a'*64, 'b'*64,
+                        'reported_news', '2026-01-01T00:00:00Z', '["AAPL"]',
+                        'eligible', 'active', 'paragraph', 0, 5, 0, 0, 0,
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+            """)
+
+        # Invalid source_class
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("""
+                INSERT INTO corpus_chunks
+                (chunk_id, document_id, chunk_profile_version, section_key,
+                 ordinal, content_text, content_hash, metadata_hash,
+                 source_class, available_at, ticker_associations, eligibility,
+                 status, boundary_kind, body_token_start, body_token_end,
+                 body_overlap_tokens, prefix_token_count, prefix_truncated,
+                 created_at, updated_at)
+                VALUES ('test2', 'doc', 'news_v2', 'body', '0001',
+                        'text', 'a'*64, 'b'*64,
+                        'invalid_source', '2026-01-01T00:00:00Z', '["AAPL"]',
+                        'eligible', 'active', 'paragraph', 0, 5, 0, 0, 0,
+                        '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+            """)
+
+    def test_v9_manifest_current_index(self):
+        """corpus_manifest has unique partial index on is_current=1."""
+        from conftest import _fresh_db_at_version
+        from db_fixtures import apply_migration_v9
+
+        db = _fresh_db_at_version(8)
+        apply_migration_v9(db)
+
+        # Verify the unique partial index exists
+        indexes = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+            "AND name='idx_corpus_manifest_current'"
+        ).fetchall()
+        assert len(indexes) == 1
+
+    def test_v9_tombstone_check_constraints(self):
+        """corpus_tombstones CHECK constraints reject invalid reasons."""
+        import sqlite3
+        from conftest import _fresh_db_at_version
+        from db_fixtures import apply_migration_v9
+
+        db = _fresh_db_at_version(8)
+        apply_migration_v9(db)
+
+        # Seed a valid manifest first for FK
+        db.execute("""
+            INSERT INTO corpus_manifest (manifest_id, manifest_json, is_current, created_at)
+            VALUES ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '{}', 1, '2026-01-01T00:00:00Z')
+        """)
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute("""
+                INSERT INTO corpus_tombstones
+                (chunk_id, document_id, reason, manifest_id, tombstoned_at)
+                VALUES ('test', 'doc', 'invalid_reason', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '2026-01-01T00:00:00Z')
+            """)
+
+    def test_v9_guards_return_contract_abort_codes(self):
+        """Trigger-owned validation reports stable contract error codes."""
+        import sqlite3
+        from conftest import _fresh_db_at_version
+        from db_fixtures import apply_migration_v9
+
+        db = _fresh_db_at_version(8)
+        apply_migration_v9(db)
+        manifest_id = "a" * 64
+        db.execute(
+            "INSERT INTO corpus_manifest VALUES (?, '{}', 0, ?)",
+            (manifest_id, "2026-01-01T00:00:00Z"),
+        )
+
+        with pytest.raises(sqlite3.IntegrityError, match="corpus_chunk_contract"):
+            db.execute("""
+                INSERT INTO corpus_chunks (
+                    chunk_id, document_id, chunk_profile_version, section_key,
+                    ordinal, content_text, content_hash, metadata_hash,
+                    source_class, available_at, ticker_associations, eligibility,
+                    status, boundary_kind, body_token_start, body_token_end,
+                    body_overlap_tokens, prefix_token_count, prefix_truncated,
+                    created_at, updated_at
+                ) VALUES (
+                    'poly:a:news_v2:body:0001', 'poly:a', 'news_v2', 'body',
+                    '0001', 'text', ?, ?, 'invalid', ?, '[]', 'eligible',
+                    'active', 'document_end', 0, 1, 0, 0, 0, ?, ?
+                )
+            """, ("1" * 64, "2" * 64, "2026-01-01T00:00:00Z",
+                    "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z"))
+
+        with pytest.raises(sqlite3.IntegrityError, match="corpus_tombstone_contract"):
+            db.execute("""
+                INSERT INTO corpus_tombstones (
+                    chunk_id, document_id, reason, manifest_id, tombstoned_at
+                ) VALUES ('poly:a:news_v2:body:0001', 'poly:a', 'invalid', ?, ?)
+            """, (manifest_id, "2026-01-01T00:00:00Z"))
+
+    def test_v9_identity_and_current_manifest_guards_return_abort_codes(self):
+        import sqlite3
+        from conftest import _fresh_db_at_version
+        from db_fixtures import apply_migration_v9
+
+        db = _fresh_db_at_version(8)
+        apply_migration_v9(db)
+        timestamp = "2026-01-01T00:00:00Z"
+        db.execute(
+            "INSERT INTO corpus_manifest VALUES (?, '{}', 1, ?)",
+            ("a" * 64, timestamp),
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="corpus_manifest_current_unique"):
+            db.execute(
+                "INSERT INTO corpus_manifest VALUES (?, '{}', 1, ?)",
+                ("b" * 64, timestamp),
+            )
+
+        db.execute("""
+            INSERT INTO corpus_chunks (
+                chunk_id, document_id, chunk_profile_version, section_key,
+                ordinal, content_text, content_hash, metadata_hash,
+                source_class, available_at, ticker_associations, eligibility,
+                status, boundary_kind, body_token_start, body_token_end,
+                body_overlap_tokens, prefix_token_count, prefix_truncated,
+                created_at, updated_at
+            ) VALUES (
+                'poly:a:news_v2:body:0001', 'poly:a', 'news_v2', 'body',
+                '0001', 'text', ?, ?, 'reported_news', ?, '[]', 'eligible',
+                'embedded', 'document_end', 0, 1, 0, 0, 0, ?, ?
+            )
+        """, ("1" * 64, "2" * 64, timestamp, timestamp, timestamp))
+        with pytest.raises(sqlite3.IntegrityError, match="corpus_chunk_identity_immutable"):
+            db.execute(
+                "UPDATE corpus_chunks SET content_text = 'changed' WHERE chunk_id = ?",
+                ("poly:a:news_v2:body:0001",),
+            )

@@ -109,6 +109,312 @@ def run_coverage_audit(
     return report
 
 
+
+def _resolve_b2_lineage(
+    db_path: str,
+    terminal_run_id: str,
+    *,
+    plan_hash: str | None = None,
+    expected_plan_hash: str | None = None,
+) -> list[str]:
+    """Resolve B2 run lineage from terminal_run_id back to root.
+
+    Returns list of run_ids ordered [terminal, ..., root].
+    Raises ValueError with specific messages for: missing run, missing parent,
+    cycle, plan_hash drift, expected_plan_hash drift.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA query_only = ON")
+    try:
+        row = conn.execute(
+            "SELECT plan_hash, expected_plan_hash, parent_run_id FROM ingestion_runs WHERE run_id = ?",
+            (terminal_run_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"terminal run not found: {terminal_run_id}")
+        stored_plan, stored_expected, stored_parent = row[0], row[1], row[2]
+        if plan_hash is not None and stored_plan != plan_hash:
+            raise ValueError("terminal run plan_hash drift")
+        if expected_plan_hash is not None and stored_expected != expected_plan_hash:
+            raise ValueError("terminal run expected_plan_hash drift")
+
+        lineage: list[str] = [terminal_run_id]
+        current = stored_parent
+        seen: set[str] = {terminal_run_id}
+        while current:
+            if current in seen:
+                raise ValueError("cycle in terminal run lineage")
+            seen.add(current)
+            lineage.append(current)
+            prow = conn.execute(
+                "SELECT plan_hash, expected_plan_hash, parent_run_id FROM ingestion_runs WHERE run_id = ?",
+                (current,),
+            ).fetchone()
+            if prow is None:
+                raise ValueError(f"parent run not found: {current}")
+            if plan_hash is not None and prow[0] != plan_hash:
+                raise ValueError(
+                    f"ancestor {current} plan_hash drift: expected {plan_hash}, got {prow[0]}"
+                )
+            if expected_plan_hash is not None and prow[1] != expected_plan_hash:
+                raise ValueError(
+                    f"ancestor {current} expected_plan_hash drift: expected {expected_plan_hash}, got {prow[1]}"
+                )
+            current = prow[2]
+        return lineage
+    finally:
+        conn.close()
+
+
+def run_b2o_readiness_audit(
+    db_path: str,
+    *,
+    universe_manifest,
+    plan=None,
+    output_dir: str | None = None,
+    terminal_run_id: str,
+) -> dict:
+    """Run existing coverage audit once, then add B2-O readiness fields."""
+    if not terminal_run_id or not terminal_run_id.strip():
+        raise ValueError("terminal_run_id must not be empty")
+    report = run_coverage_audit(db_path, output_dir=None)
+    manifest_dict = (
+        universe_manifest.to_dict()
+        if hasattr(universe_manifest, "to_dict")
+        else dict(universe_manifest)
+    )
+    source_scopes = []
+    if plan is not None:
+        config = getattr(plan, "config", None) or {}
+        raw_scopes = config.get("source_scopes") or []
+        source_scopes = list(raw_scopes.values()) if isinstance(raw_scopes, dict) else list(raw_scopes)
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA query_only = ON")
+    try:
+        # Resolve terminal run lineage (required for B2-O path)
+        plan_hash_val = getattr(plan, "plan_hash", None) or None
+        expected_val = getattr(plan, "expected_plan_hash", None) or plan_hash_val
+        lineage_run_ids = _resolve_b2_lineage(
+            db_path,
+            terminal_run_id,
+            plan_hash=plan_hash_val or None,
+            expected_plan_hash=expected_val or None,
+        )
+        completed: list[dict] = []
+        uncovered: list[dict] = []
+        partial_or_error: list[dict] = []
+        exact_counts: dict[str, int] = {}
+        canonical_news_status: dict[str, dict[str, list[bool]]] = {}
+        mandatory_missing_ids: list[str] = []
+        optional_incomplete_ids: list[str] = []
+        invalid_provenance_ids: list[str] = []
+        for scope in source_scopes:
+            source_type = scope["source_type"]
+            exact_counts[source_type] = 0
+            subjects = scope.get("subjects", [])
+            cells = _b2o_scope_cells(scope)
+            for subject in subjects:
+                for cell in [c for c in cells if c["subject"] == subject]:
+                    window_start, window_end = cell["window_start"], cell["window_end"]
+                    exact_counts[source_type] += 1
+                    placeholders = ",".join("?" for _ in lineage_run_ids)
+                    row = conn.execute(
+                        f"""SELECT status, COALESCE(is_complete, 0), raw_asset_id,
+                                  COALESCE(items_count, 0), COALESCE(request_count, 0),
+                                  cell_id, endpoint_name, window_start, window_end,
+                                  logical_fetch_id
+                           FROM source_checkpoints
+                           WHERE cell_id = ? AND run_id IN ({placeholders})
+                           ORDER BY rowid DESC LIMIT 1""",
+                        [cell["cell_id"]] + lineage_run_ids,
+                    ).fetchone()
+                    if not row:
+                        item = {**cell, "status": "missing"}
+                        uncovered.append(item)
+                        if source_type != "fmp_fundamentals":
+                            mandatory_missing_ids.append(cell["cell_id"])
+                        else:
+                            optional_incomplete_ids.append(cell["cell_id"])
+                        continue
+                    status, is_complete, raw_asset_id, items_count, request_count, stored_cell_id, endpoint_name, stored_start, stored_end, cp_logical_fetch_id = row
+                    identity_matches = (
+                        stored_cell_id == cell["cell_id"]
+                        and endpoint_name == cell["endpoint_name"]
+                        and stored_start == window_start
+                        and stored_end == window_end
+                    )
+                    item = {**cell, "status": status, "is_complete": bool(is_complete), "identity_matches": identity_matches}
+                    checkpoint_terminal = (
+                        status in {"success", "success_empty"}
+                        and bool(is_complete)
+                        and identity_matches
+                    )
+                    # Use the logical_fetch_id from the same checkpoint row (already fetched above)
+                    prov_lfid = cp_logical_fetch_id
+                    provenance_valid = (
+                        checkpoint_terminal
+                        and prov_lfid is not None
+                        and _b2o_cell_provenance_is_valid(
+                            conn,
+                            logical_fetch_id=prov_lfid,
+                            request_count=request_count,
+                            items_count=items_count,
+                        )
+                    )
+                    item["provenance_valid"] = provenance_valid
+                    terminal = checkpoint_terminal and provenance_valid
+                    if terminal:
+                        completed.append(item)
+                    else:
+                        partial_or_error.append(item)
+                        if checkpoint_terminal and not provenance_valid:
+                            invalid_provenance_ids.append(cell["cell_id"])
+                        if source_type != "fmp_fundamentals":
+                            mandatory_missing_ids.append(cell["cell_id"])
+                        else:
+                            optional_incomplete_ids.append(cell["cell_id"])
+                    if source_type in {"polygon_news", "finnhub_company_news"} and window_end >= "2025-08-01":
+                        canonical_news_status.setdefault(subject, {}).setdefault(source_type, []).append(terminal)
+        missing_subjects = [
+            ticker
+            for ticker in manifest_dict.get("tickers", [])
+            if not (
+                canonical_news_status.get(ticker, {}).get("polygon_news")
+                and all(canonical_news_status.get(ticker, {}).get("polygon_news", []))
+                and canonical_news_status.get(ticker, {}).get("finnhub_company_news")
+                and all(canonical_news_status.get(ticker, {}).get("finnhub_company_news", []))
+            )
+        ]
+        gate_status = "complete" if not missing_subjects and manifest_dict.get("tickers") else "incomplete"
+        overall_status = "complete" if not mandatory_missing_ids and source_scopes else "incomplete"
+        report["b2o_readiness"] = {
+            "planned_windows": source_scopes,
+            "completed_windows": completed,
+            "uncovered_ranges": uncovered,
+            "partial_or_error_status": partial_or_error,
+            "required_provenance": {
+                "status": "complete" if not invalid_provenance_ids else "incomplete",
+                "missing_or_invalid_cell_ids": invalid_provenance_ids,
+            },
+            "overall_readiness": {
+                "status": overall_status,
+                "missing_or_incomplete_cell_ids": mandatory_missing_ids,
+            },
+            "canonical_news_comparable_gate": {
+                "status": gate_status,
+                "missing_tickers": missing_subjects,
+                "missing_or_incomplete_cell_ids": mandatory_missing_ids,
+            },
+            "optional_source_status": {
+                "fmp_fundamentals": {
+                    "status": "complete" if not optional_incomplete_ids else "degraded",
+                    "missing_or_incomplete_cell_ids": optional_incomplete_ids,
+                }
+            },
+            "comparable_gate": {"status": gate_status, "missing_tickers": missing_subjects},
+            "exact_cell_counts": exact_counts,
+        }
+    finally:
+        conn.close()
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+        path = os.path.join(output_dir, "b2o_readiness_audit.json")
+        with open(path, "w") as fh:
+            json.dump(report, fh, indent=2, default=str)
+        report["b2o_readiness"]["report_path"] = path
+    return report
+
+
+def _b2o_cell_provenance_is_valid(
+    conn: sqlite3.Connection,
+    *,
+    logical_fetch_id: str | None,
+    request_count: int,
+    items_count: int,
+) -> bool:
+    if not logical_fetch_id or request_count < 1:
+        return False
+    rows = conn.execute(
+        """SELECT a.status, a.raw_asset_id, a.response_sha256,
+                  r.asset_id, r.response_sha256
+           FROM provider_request_attempts AS a
+           LEFT JOIN raw_assets AS r ON r.asset_id = a.raw_asset_id
+           WHERE a.logical_fetch_id = ?
+           ORDER BY a.page_no, a.attempt_no""",
+        (logical_fetch_id,),
+    ).fetchall()
+    if len(rows) != request_count:
+        return False
+    succeeded = [row for row in rows if row[0] == "SUCCEEDED"]
+    if not succeeded:
+        return False
+    if any(
+        not row[1]
+        or not row[2]
+        or row[3] != row[1]
+        or row[4] != row[2]
+        for row in succeeded
+    ):
+        return False
+    if items_count <= 0:
+        return True
+    provenance_count = conn.execute(
+        """SELECT COUNT(*)
+           FROM provider_request_attempts AS a
+           JOIN normalized_provenance AS p ON p.raw_asset_id = a.raw_asset_id
+           WHERE a.logical_fetch_id = ? AND a.status = 'SUCCEEDED'""",
+        (logical_fetch_id,),
+    ).fetchone()[0]
+    return provenance_count > 0
+
+
+def _b2o_scope_windows(scope: dict) -> list[tuple[str, str]]:
+    from datetime import date as _date, timedelta
+
+    if scope["date_domain"] == "as_of":
+        return [(scope["end_date"], scope["end_date"])]
+    start = _date.fromisoformat(scope["start_date"])
+    end = _date.fromisoformat(scope["end_date"])
+    window_days = int(scope.get("request_window_days") or 1)
+    windows = []
+    cur = start
+    while cur <= end:
+        win_end = min(end, cur + timedelta(days=window_days - 1))
+        windows.append((cur.isoformat(), win_end.isoformat()))
+        cur = win_end + timedelta(days=1)
+    return windows
+
+
+def _b2o_scope_cells(scope: dict) -> list[dict]:
+    from catalyst_data.manifests.universe import SourceCell
+
+    endpoint_names = scope.get("endpoint_names") or []
+    cells = []
+    for subject in scope.get("subjects", []):
+        endpoints = endpoint_names
+        if scope["source_type"] == "fred_macro" and not endpoints:
+            endpoints = [subject]
+        if not endpoints:
+            endpoints = [scope["source_type"]]
+        for window_start, window_end in _b2o_scope_windows(scope):
+            for endpoint_name in endpoints:
+                cell = SourceCell.create(
+                    scope["stage"],
+                    scope["source_type"],
+                    endpoint_name,
+                    subject,
+                    window_start,
+                    window_end,
+                    scope["date_domain"],
+                    scope.get("provider_profile_version", "v1"),
+                    page_cap=scope.get("page_cap"),
+                    item_cap=scope.get("item_cap"),
+                )
+                cells.append(cell.to_identity())
+    return cells
+
+
 # ---------------------------------------------------------------------------
 # D1 — Per-source per-table counts
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ from typing import Any
 
 
 _NODE_ARTIFACT_TYPES: dict[str, list[str]] = {
+    "context_builder": ["context_artifact", "state_snapshot"],
     "miner": ["arm_b_evidence", "retrieved_chunks", "reranked_chunks", "state_snapshot"],
     "critic": ["graded_evidence", "all_graded_chunks", "critic_decision", "raw_llm_response", "state_snapshot"],
     "decision_router": ["state_snapshot"],
@@ -170,6 +171,8 @@ def _project_payload(artifact_type: str, merged_state: dict[str, Any], result: d
             "per_asset": abe.get("per_asset", {}),
             "sha256": abe.get("sha256", ""),
         }
+    if artifact_type == "context_artifact":
+        return {"artifact": _clean_value(merged_state.get("context_artifact", {})), "sha256": merged_state.get("context_artifact_sha256")}
     if artifact_type == "retrieved_chunks":
         chunks = merged_state.get("retrieved_chunks", [])[:_MAX_RETRIEVED]
         return {"chunks": [_project_chunk(chunk, include_rerank=False) for chunk in chunks]}

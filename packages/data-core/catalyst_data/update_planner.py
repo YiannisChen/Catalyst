@@ -17,10 +17,11 @@ import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from catalyst_data.config import HISTORICAL_START, TICKER_UNIVERSE
 from catalyst_data.freshness import latest_local_ohlcv_date
+from catalyst_data.manifests.universe import RATIFIED_TICKERS
 from catalyst_data.trading_calendar import (
     CalendarCoverageError,
     calendar_trading_days,
@@ -144,6 +145,10 @@ def _canonical_json(plan: UpdatePlan) -> str:
     d.pop("plan_hash", None)
     d.pop("db_path", None)  # path varies; DB is identified by content SHA
     d.pop("expected_plan_hash", None)  # runtime drift-compare field; DB is identified by content SHA
+    if (plan.config or {}).get("source_scopes") is not None:
+        d.pop("db_sha256", None)
+        d.pop("warnings", None)
+        d.pop("estimates", None)
     return json.dumps(d, sort_keys=True, default=str)
 
 
@@ -245,6 +250,7 @@ def plan_update(
     to_date: str | None = None,
     reference_today: str | None = None,
     use_ohlcv_universe: bool = False,
+    source_scopes: Mapping[str, Any] | None = None,
 ) -> UpdatePlan:
     """Compute an UpdatePlan from DB state.  NEVER writes.
 
@@ -286,6 +292,91 @@ def plan_update(
 
         # ── Sources ──
         srcs = sources or ["polygon_news"]
+
+        if source_scopes is not None:
+            scope_items = []
+            all_cells: list[dict[str, Any]] = []
+            for source_type in (
+                "polygon_ohlcv", "polygon_news", "finnhub_company_news",
+                "sec_filings", "fmp_fundamentals", "fred_macro",
+            ):
+                scope = source_scopes.get(source_type)
+                if scope is None:
+                    continue
+                identity = scope.to_identity() if hasattr(scope, "to_identity") else dict(scope)
+                scope_items.append(identity)
+                expanded = scope.expand_cells() if hasattr(scope, "expand_cells") else []
+                for cell in expanded:
+                    cell_identity = cell.to_identity() if hasattr(cell, "to_identity") else dict(cell)
+                    if _should_plan_source_cell(conn, cell_identity):
+                        all_cells.append(cell_identity)
+            stage_rank = {"market": 0, "evidence": 1}
+            source_rank = {
+                "polygon_ohlcv": 0, "polygon_news": 1, "finnhub_company_news": 2,
+                "sec_filings": 3, "fmp_fundamentals": 4, "fred_macro": 5,
+            }
+            all_cells.sort(
+                key=lambda c: (
+                    stage_rank.get(c["stage"], 99),
+                    source_rank.get(c["source_type"], 99),
+                    c["subject"],
+                    c.get("endpoint_name", ""),
+                    c["window_start"],
+                    c["window_end"],
+                )
+            )
+            market_cells = [c for c in all_cells if c["stage"] == "market"]
+            evidence_cells = [c for c in all_cells if c["stage"] == "evidence"]
+            per_source: dict[str, int] = {}
+            for cell in all_cells:
+                per_source[cell["source_type"]] = per_source.get(cell["source_type"], 0) + 1
+            scope_subjects = {
+                s for scope in scope_items for s in scope.get("subjects", [])
+                if isinstance(s, str)
+            }
+            subjects = [ticker for ticker in RATIFIED_TICKERS if ticker in scope_subjects]
+            fd = min(scope["start_date"] for scope in scope_items)
+            td = max(scope["end_date"] for scope in scope_items)
+            plan = UpdatePlan(
+                created_at=datetime.now(timezone.utc).isoformat(),
+                db_path=logical_path,
+                db_sha256=db_sha,
+                db_user_version=db_ver,
+                config={
+                    "source_scopes": scope_items,
+                    "sources": [s["source_type"] for s in scope_items],
+                    "from_date": fd,
+                    "to_date": td,
+                    "reference_today": ref_today_str,
+                    "stage_order": ["market", "evidence"],
+                    "provider_profile_versions": {
+                        s["source_type"]: s.get("provider_profile_version", "v1")
+                        for s in scope_items
+                    },
+                    "request_page_caps": {
+                        s["source_type"]: {
+                            "request_window_days": s.get("request_window_days"),
+                            "page_cap": s.get("page_cap"),
+                            "request_cap": s.get("request_cap"),
+                        }
+                        for s in scope_items
+                    },
+                    "calendar_revision": "trading_calendar_v1",
+                    "fallback_policy": "b2o_no_yfinance_certified",
+                    "allow_stale_ohlcv": False,
+                },
+                universe={"tickers": subjects, "provenance": "source_scopes"},
+                reference_today=ref_today_str,
+                latest_closed_session=latest,
+                stages={
+                    "market": {"cells": market_cells, "count": len(market_cells)},
+                    "evidence": {"cells": evidence_cells, "count": len(evidence_cells), "provisional": False},
+                },
+                estimates={"requests": per_source, "duration_range": None},
+                warnings=[],
+            )
+            plan.plan_hash = compute_plan_hash(plan)
+            return plan
 
         # ── Universe ──
         universe_tickers, provenance, warns = _resolve_universe(conn, tickers, use_ohlcv_universe=use_ohlcv_universe)
@@ -483,3 +574,29 @@ def _should_plan_cell(
         )
 
     return True
+
+
+def _should_plan_source_cell(conn: sqlite3.Connection, cell: Mapping[str, Any]) -> bool:
+    if cell.get("cell_id"):
+        row = conn.execute(
+            """SELECT status, COALESCE(is_complete, 0)
+               FROM source_checkpoints
+               WHERE cell_id = ?
+               ORDER BY rowid DESC LIMIT 1""",
+            (cell["cell_id"],),
+        ).fetchone()
+        if row is None:
+            return True
+        status, is_complete = row
+        return not (status in {"success", "success_empty"} and bool(is_complete))
+    row = conn.execute(
+        """SELECT status, COALESCE(is_complete, 0)
+           FROM source_checkpoints
+           WHERE source_type = ? AND ticker = ? AND date = ?
+           ORDER BY rowid DESC LIMIT 1""",
+        (cell["source_type"], cell["subject"], cell["window_start"]),
+    ).fetchone()
+    if row is None:
+        return True
+    status, is_complete = row
+    return not (status in {"success", "success_empty"} and bool(is_complete))

@@ -174,7 +174,7 @@ def test_attribution_state_instantiation():
 def test_output_status_enum_has_expected_names():
     from catalyst_agents.state import OutputStatus
 
-    assert {"SUFFICIENT", "PARTIAL", "INSUFFICIENT", "SYSTEM_ERROR"} == {
+    assert {"SUFFICIENT", "PARTIAL", "ABSTAIN", "SYSTEM_ERROR"} == {
         status.name for status in OutputStatus
     }
 

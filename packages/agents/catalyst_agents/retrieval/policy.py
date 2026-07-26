@@ -1,37 +1,15 @@
-"""Retrieval policy for Layer 1 + Layer 2 with SQL fallback for P0."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-import sqlite3
 from typing import Any, Literal
 
-from catalyst_data.config import db_path as default_db_path
-from catalyst_data.storage.lancedb_store import DEFAULT_RERANK_TOP_K, hybrid_search, _apply_reranker
 
-MAX_LAYERS_P0 = 2
-MAX_EXPANSIONS = 2
-DEFAULT_TOP_K = 12
-DEFAULT_GEO_CORPUS_TIER = 2
-DEFAULT_LANCEDB_DIR = Path(__file__).resolve().parents[4] / "data" / "lancedb_gold" / "eval_frozen"
-
-DIRECT_SOURCE_TYPES = (
-    "polygon_news",
-    "fmp_news",
-    "finnhub_company_news",
-    "fmp_fundamentals",
-    "sec_filing",
-)
-MACRO_SOURCE_TYPES = (
-    "macro_news",
-    "market_news",
-    "geopolitical_news",
-    "fred_rates",
-    "fred_macro",
-    "gdelt_news",
-    "policy_news",
-)
+MAX_LAYERS_P0 = 1
+MAX_EXPANSIONS = 0
+DEFAULT_TOP_K = 8
+DEFAULT_CANDIDATE_DEPTH = 20
 
 
 class Layer(str, Enum):
@@ -44,190 +22,48 @@ class Layer(str, Enum):
 class RetrievalMetadata:
     ticker: str
     trade_date: str
-    date_range: tuple[str, str]
-    db_path: Path | None = None
-    top_k: int = DEFAULT_TOP_K
+    date_range: tuple[str, str] | None = None
+    cutoff: str | None = None
+    db_path: Path | str | None = None
+    lancedb_dir: Path | str | None = None
     table: Any = None
     embedding_fn: Any = None
-    lancedb_dir: Path = DEFAULT_LANCEDB_DIR
+    requested_manifest_id: str = "corpus-fixture-v1"
+    retriever: Any = None
+    top_k: int = DEFAULT_TOP_K
+    candidate_depth: int = DEFAULT_CANDIDATE_DEPTH
     layers_attempted: list[Layer] = field(default_factory=list)
     expansion_reasons: list[str] = field(default_factory=list)
-    stop_reason: Literal[
-        "sufficiency_reached",
-        "expansions_exhausted",
-        "layer3_not_implemented",
-        "system_error",
-    ] | None = None
+    stop_reason: Literal["sufficiency_reached", "expansions_exhausted", "layer3_not_implemented", "system_error"] | None = None
     hit_counts_per_layer: dict[Layer, int] = field(default_factory=dict)
-    geo_corpus_tier: Literal[2] = DEFAULT_GEO_CORPUS_TIER
     total_unique_evidence: int = 0
-    max_layers: int = MAX_LAYERS_P0
-    max_expansions: int = MAX_EXPANSIONS
-    _seen_asset_ids: set[str] = field(default_factory=set, repr=False)
 
 
-def _source_types_for_layer(layer: Layer) -> tuple[str, ...]:
-    if layer == Layer.DIRECT:
-        return DIRECT_SOURCE_TYPES
-    if layer == Layer.MACRO:
-        return MACRO_SOURCE_TYPES
-    raise NotImplementedError("layer3_not_implemented")
+class RetrievalDependencyError(RuntimeError):
+    pass
 
 
-def _record_attempt(metadata: RetrievalMetadata, layer: Layer) -> None:
+def check_sufficiency(chunks: list[dict[str, Any]], min_count: int = 1, min_mean_score: float = 0.0) -> bool:
+    return len(chunks) >= min_count
+
+
+def retrieve(query: str, layer: Layer, metadata: RetrievalMetadata, *, rerank: Any = None) -> list[Any]:
+    if metadata.retriever is None:
+        raise RetrievalDependencyError("B5 Miner requires an injected Retriever")
     metadata.layers_attempted.append(layer)
     if not metadata.expansion_reasons:
         metadata.expansion_reasons.append("initial")
-    elif layer == Layer.MACRO and "critic_expand_macro" not in metadata.expansion_reasons:
-        metadata.expansion_reasons.append("critic_expand_macro")
-
-
-def _sql_fallback_query(layer: Layer, metadata: RetrievalMetadata) -> list[dict[str, Any]]:
-    """Retrieve evidence from SQL — prefers corpus_items VIEW, falls back to clean_assets.
-
-    S3 Data Belt: corpus_items is the canonical retrieval surface.
-    Frozen DB compat: when corpus_items VIEW is absent (frozen DB), queries clean_assets
-    directly and records fallback_surface='clean_assets'.
-    """
-    db_path = str(metadata.db_path or default_db_path())
-    conn = sqlite3.connect(db_path)
-    start, end = metadata.date_range
-    source_types = _source_types_for_layer(layer)
-
-    # Determine surface: corpus_items VIEW or clean_assets fallback
-    # S3 Data Belt: corpus_items is the canonical retrieval surface.
-    # Fallback to clean_assets ONLY when the VIEW is absent (frozen DB).
-    # Do NOT use COUNT(*) — an empty corpus_items VIEW must return zero rows.
-    view_exists = conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='view' AND name='corpus_items'"
-    ).fetchone() is not None
-
-    if view_exists:
-        clauses = [
-            "reference_date >= ?",
-            "reference_date <= ?",
-            f"source_type IN ({','.join('?' for _ in source_types)})",
-        ]
-        params: list[Any] = [start, end, *source_types]
-
-        if layer == Layer.DIRECT:
-            clauses.insert(0, "ticker = ?")
-            params.insert(0, metadata.ticker)
-
-        rows = conn.execute(
-            f"""
-            SELECT corpus_item_id AS asset_id, ticker, source_type, reference_date, content_md
-            FROM corpus_items
-            WHERE {' AND '.join(clauses)}
-            ORDER BY reference_date DESC, asset_id ASC
-            LIMIT ?
-            """,
-            (*params, metadata.top_k),
-        ).fetchall()
-        fallback_surface = "corpus_items"
-    else:
-        # Frozen DB fallback — clean_assets only
-        clauses = [
-            "reference_date >= ?",
-            "reference_date <= ?",
-            f"source_type IN ({','.join('?' for _ in source_types)})",
-            "COALESCE(is_duplicate, 0) = 0",
-        ]
-        params = [start, end, *source_types]
-
-        if layer == Layer.DIRECT:
-            clauses.insert(0, "ticker = ?")
-            params.insert(0, metadata.ticker)
-
-        rows = conn.execute(
-            f"""
-            SELECT asset_id, ticker, source_type, reference_date, content_md
-            FROM clean_assets
-            WHERE {' AND '.join(clauses)}
-            ORDER BY reference_date DESC, asset_id ASC
-            LIMIT ?
-            """,
-            (*params, metadata.top_k),
-        ).fetchall()
-        fallback_surface = "clean_assets"
-
-    conn.close()
-
-    results = []
-    for idx, row in enumerate(rows, start=1):
-        results.append(
-            {
-                "asset_id": row[0],
-                "ticker": row[1],
-                "source_type": row[2],
-                "reference_date": row[3],
-                "content_md": row[4],
-                "rrf_score": 1.0 / idx,
-                "_fallback_surface": fallback_surface,
-            }
-        )
-    return results
-
-
-def _lancedb_available(metadata: RetrievalMetadata) -> bool:
-    return metadata.table is not None and metadata.lancedb_dir.exists()
-
-
-def _hybrid_path(query: str, layer: Layer, metadata: RetrievalMetadata) -> list[dict[str, Any]]:
-    results = hybrid_search(
-        table=metadata.table,
-        query=query,
-        ticker=metadata.ticker if layer == Layer.DIRECT else None,
-        date_range=metadata.date_range,
+    if metadata.cutoff is None:
+        raise RetrievalDependencyError("B5 Miner requires a canonical cutoff")
+    results = list(metadata.retriever.retrieve(
+        query,
+        ticker=metadata.ticker,
+        cutoff=metadata.cutoff,
+        requested_manifest_id=metadata.requested_manifest_id,
         top_k=metadata.top_k,
-        embedding_fn=metadata.embedding_fn,
-    )
-    allowed_sources = set(_source_types_for_layer(layer))
-    return [row for row in results if row.get("source_type") in allowed_sources][: metadata.top_k]
-
-
-def _update_metadata(metadata: RetrievalMetadata, layer: Layer, results: list[dict[str, Any]]) -> None:
+        candidate_depth=metadata.candidate_depth,
+    ))
     metadata.hit_counts_per_layer[layer] = len(results)
-    metadata._seen_asset_ids.update(row.get("asset_id", "") for row in results if row.get("asset_id"))
-    metadata.total_unique_evidence = len(metadata._seen_asset_ids)
-
-
-def check_sufficiency(
-    chunks: list[dict[str, Any]],
-    min_count: int = 5,
-    min_mean_score: float = 0.02,
-) -> bool:
-    if len(chunks) < min_count:
-        return False
-
-    scores: list[float] = []
-    for chunk in chunks:
-        raw_score = chunk.get("rrf_score", 0.0)
-        try:
-            scores.append(float(raw_score))
-        except (TypeError, ValueError):
-            scores.append(0.0)
-
-    mean_rrf = sum(scores) / len(scores) if scores else 0.0
-    return mean_rrf >= min_mean_score
-
-
-def retrieve(query: str, layer: Layer, metadata: RetrievalMetadata, *, rerank: Any = None) -> list[dict[str, Any]]:
-    """Retrieve evidence for the requested layer, falling back to SQL when needed."""
-    _record_attempt(metadata, layer)
-
-    if layer == Layer.RELATED:
-        metadata.stop_reason = "layer3_not_implemented"
-        raise NotImplementedError("layer3_not_implemented")
-
-    results = (
-        _hybrid_path(query, layer, metadata)
-        if _lancedb_available(metadata)
-        else _sql_fallback_query(layer, metadata)
-    )
-    _update_metadata(metadata, layer, results)
-    metadata.stop_reason = "sufficiency_reached" if check_sufficiency(results) else "expansions_exhausted"
-
-    if rerank is not None and results:
-        return _apply_reranker(list(results), query, rerank, top_k=DEFAULT_RERANK_TOP_K)
+    metadata.total_unique_evidence = len({getattr(item, "chunk_id", None) for item in results})
+    metadata.stop_reason = "sufficiency_reached" if results else "expansions_exhausted"
     return results

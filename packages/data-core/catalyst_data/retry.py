@@ -45,9 +45,9 @@ RETRY_POLICIES = {
             jitter=False,
         ),
         timeout=RetryRule(
-            base_seconds=0.0,
-            max_seconds=0.0,
-            max_retries=1,
+            base_seconds=5.0,
+            max_seconds=20.0,
+            max_retries=3,
             jitter=False,
         ),
     ),

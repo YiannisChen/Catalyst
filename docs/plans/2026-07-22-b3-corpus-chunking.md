@@ -144,13 +144,100 @@ Deliver the B3 corpus and chunking package that passes Core Exit Gate B (Corpus 
 
 ### Owned SQLite Migration
 
-**v9** (owned by B3):
+**v9** (owned by B3) is a contract migration, not a loose table sketch. Use these names, columns, checks, indexes, and trigger abort codes so drift is machine-checkable.
 
-- `corpus_chunks` — `(chunk_id TEXT PK, document_id, chunk_profile_version, section_key, ordinal, content_text, content_hash, metadata_hash, source_class, dedup_cluster_id, cluster_first_available_at, representative_document_id, available_at, ticker_associations, eligibility, manifest_id, status TEXT, created_at, updated_at)`
-- `corpus_tombstones` — `(chunk_id TEXT PK, document_id, reason TEXT, tombstoned_at)`
-- `corpus_manifest` — `(manifest_id TEXT PK, manifest_json TEXT, is_current INTEGER, created_at)`
-- Extend `articles`: `source_class`, `dedup_cluster_id`, `cluster_first_available_at`, `representative_document_id`
-- Extend `index_state`: `metadata_hash`, `is_tombstone`
+`corpus_chunks`:
+
+```sql
+CREATE TABLE IF NOT EXISTS corpus_chunks (
+  chunk_id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  chunk_profile_version TEXT NOT NULL CHECK (chunk_profile_version IN ('news_v2','filing_v2')),
+  section_key TEXT NOT NULL,
+  ordinal TEXT NOT NULL CHECK (length(ordinal) = 4 AND ordinal GLOB '[0-9][0-9][0-9][0-9]'),
+  content_text TEXT NOT NULL CHECK (length(content_text) > 0),
+  content_hash TEXT NOT NULL CHECK (length(content_hash) = 64 AND lower(content_hash) = content_hash),
+  metadata_hash TEXT NOT NULL CHECK (length(metadata_hash) = 64 AND lower(metadata_hash) = metadata_hash),
+  source_class TEXT NOT NULL CHECK (source_class IN (
+    'structured_market_data','official_government','issuer_disclosure',
+    'corporate_press_release','reported_news','analysis_opinion','aggregated_unknown'
+  )),
+  dedup_cluster_id TEXT,
+  cluster_first_available_at TEXT,
+  representative_document_id TEXT,
+  available_at TEXT NOT NULL,
+  ticker_associations TEXT NOT NULL CHECK (json_valid(ticker_associations)),
+  eligibility TEXT NOT NULL CHECK (eligibility IN ('eligible','ineligible')),
+  manifest_id TEXT,
+  status TEXT NOT NULL CHECK (status IN ('active','pending_embedding','embedded','metadata_only','tombstoned')),
+  boundary_kind TEXT NOT NULL CHECK (boundary_kind IN ('document_end','paragraph','sentence','token_fallback')),
+  body_token_start INTEGER NOT NULL CHECK (body_token_start >= 0),
+  body_token_end INTEGER NOT NULL CHECK (body_token_end > body_token_start),
+  body_overlap_tokens INTEGER NOT NULL CHECK (body_overlap_tokens BETWEEN 0 AND 48),
+  prefix_token_count INTEGER NOT NULL CHECK (prefix_token_count BETWEEN 0 AND 64),
+  prefix_truncated INTEGER NOT NULL CHECK (prefix_truncated IN (0,1)),
+  section_parse_degraded INTEGER NOT NULL DEFAULT 0 CHECK (section_parse_degraded IN (0,1)),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(document_id, chunk_profile_version, section_key, ordinal),
+  FOREIGN KEY (manifest_id) REFERENCES corpus_manifest(manifest_id)
+);
+```
+
+`corpus_tombstones`:
+
+```sql
+CREATE TABLE IF NOT EXISTS corpus_tombstones (
+  chunk_id TEXT PRIMARY KEY,
+  document_id TEXT NOT NULL,
+  reason TEXT NOT NULL CHECK (reason IN (
+    'document_removed','eligibility_lost','profile_version_replaced',
+    'disappeared_child','dedup_cluster_reassigned'
+  )),
+  previous_content_hash TEXT,
+  previous_metadata_hash TEXT,
+  replacement_chunk_id TEXT,
+  manifest_id TEXT NOT NULL,
+  tombstoned_at TEXT NOT NULL,
+  FOREIGN KEY (manifest_id) REFERENCES corpus_manifest(manifest_id)
+);
+```
+
+`corpus_manifest`:
+
+```sql
+CREATE TABLE IF NOT EXISTS corpus_manifest (
+  manifest_id TEXT PRIMARY KEY CHECK (length(manifest_id) = 64 AND lower(manifest_id) = manifest_id),
+  manifest_json TEXT NOT NULL CHECK (json_valid(manifest_json)),
+  is_current INTEGER NOT NULL CHECK (is_current IN (0,1)),
+  created_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_corpus_manifest_current
+  ON corpus_manifest(is_current) WHERE is_current = 1;
+```
+
+Extend `articles` with nullable `source_class`, `dedup_cluster_id`, `cluster_first_available_at`, and `representative_document_id`. New B3 writes populate all four; compatibility reads tolerate null legacy rows by deriving `source_class` at read time and leaving dedup fields null.
+
+Extend `index_state` with `metadata_hash TEXT` and `is_tombstone INTEGER NOT NULL DEFAULT 0 CHECK (is_tombstone IN (0,1))`.
+
+Required indexes:
+
+```sql
+CREATE INDEX IF NOT EXISTS idx_corpus_chunks_document ON corpus_chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_corpus_chunks_available ON corpus_chunks(available_at, chunk_id);
+CREATE INDEX IF NOT EXISTS idx_corpus_chunks_source_class ON corpus_chunks(source_class, available_at);
+CREATE INDEX IF NOT EXISTS idx_corpus_chunks_manifest ON corpus_chunks(manifest_id, status);
+CREATE INDEX IF NOT EXISTS idx_corpus_tombstones_manifest ON corpus_tombstones(manifest_id);
+```
+
+Required trigger names and abort codes:
+
+| Trigger | Timing/event | Reject condition | Abort code |
+|---|---|---|---|
+| `trg_corpus_chunks_insert_guard` | BEFORE INSERT | hash, ordinal, JSON, token, source-class, or status contract violated | `corpus_chunk_contract` |
+| `trg_corpus_chunks_update_guard` | BEFORE UPDATE | `chunk_id`, `document_id`, `chunk_profile_version`, `section_key`, `ordinal`, or `content_text` changes after status is `embedded` | `corpus_chunk_identity_immutable` |
+| `trg_corpus_manifest_current_guard` | BEFORE INSERT/UPDATE | more than one row would have `is_current=1` | `corpus_manifest_current_unique` |
+| `trg_corpus_tombstone_insert_guard` | BEFORE INSERT | unknown tombstone reason, missing manifest, or malformed hash | `corpus_tombstone_contract` |
 
 ### Owned Artifacts
 
@@ -224,7 +311,9 @@ Before Task 1, define `TOKENIZER_REVISION = "5617a9f61b028005a4858fdac845db406ae
 
 `corpus_fixtures.py` must expose nine named reconciliation cases, each with an independent exact oracle: new chunk, unchanged chunk, content change, metadata-only change, document removal, eligibility loss, profile-version replacement, disappeared child, and dedup-cluster reassignment.
 
-It must also expose deterministic splitter fixtures and literal oracles used by Tasks 3–4: `deterministic_boundary_article_fixture`, `long_title_article_fixture`, `no_boundary_article_fixture`, `raw_8k_duplicate_item_fixture`, `exhibit_99_1_fixture`, `EXPECTED_BOUNDARY_CHUNK_TEXTS`, `EXPECTED_BOUNDARY_KINDS`, `EXPECTED_BODY_STARTS`, `EXPECTED_BODY_ENDS`, `EXPECTED_BODY_OVERLAPS`, and `EXPECTED_EXHIBIT_BOUNDARY_KINDS`. The expected values are hand-authored from contract §§5.2–5.3 and may not call production chunking or boundary-selection code. Define the small test-only `stable_unique()` helper here as encounter-order deduplication. It must also expose `base_params`: a dict of every `build_manifest` keyword argument except `active_chunk_inventory` (`normalization_version`, `chunk_profile_versions`, `source_classifier_version`, `certified_snapshot_identity`, `tokenizer_revision=TOKENIZER_REVISION`, `embedding_revision=None`), used by the manifest tests so only the chunk inventory varies between cases.
+It must also expose deterministic splitter fixtures and literal oracles used by Tasks 3–4: `deterministic_boundary_article_fixture`, `long_title_article_fixture`, `no_boundary_article_fixture`, `raw_8k_duplicate_item_fixture`, `exhibit_99_1_fixture`, `EXPECTED_BOUNDARY_CHUNK_TEXTS`, `EXPECTED_BOUNDARY_KINDS`, `EXPECTED_BODY_STARTS`, `EXPECTED_BODY_ENDS`, `EXPECTED_BODY_OVERLAPS`, and `EXPECTED_EXHIBIT_BOUNDARY_KINDS`. The expected values are hand-authored from contract §§5.2–5.3 and may not call production chunking or boundary-selection code. Define the small test-only `stable_unique()` helper here as encounter-order deduplication.
+
+Manifest tests use a test-only `inventory_item(chunk_id, *, content_hash, metadata_hash, **overrides)` helper that returns a complete canonical active-inventory object with all contract fields: `chunk_id`, `document_id`, `chunk_profile_version`, `section_key`, `ordinal`, `content_hash`, `metadata_hash`, `available_at`, `source_class`, `dedup_cluster_id`, `cluster_first_available_at`, `representative_document_id`, and `eligibility`. It must parse the four-part suffix from contract chunk IDs rather than inventing a second ID grammar. `base_params` is a dict of every `build_manifest` keyword argument except `active_chunk_inventory` (`normalization_version`, `chunk_profile_versions`, `source_classifier_version`, `certified_snapshot_identity`, `tokenizer_revision=TOKENIZER_REVISION`, `embedding_revision=None`), used by the manifest tests so only the chunk inventory varies between cases.
 
 ### Task 1: Pinned tokenizer accessor
 
@@ -248,13 +337,15 @@ def test_tokenizer_is_pinned_revision():
     text = "Hello world, this is a test."
     count = count_tokens(text)
     assert count > 0
-    # Determistic: same text → same count
+    # Deterministic: same text -> same count
     assert count == count_tokens(text)
 
 
 def test_tokenizer_revision_in_manifest():
     """Tokenizer model ID and bare revision are persisted separately."""
-    from catalyst_data.corpus.tokenizer import TOKENIZER_MODEL_ID, TOKENIZER_REVISION
+    from catalyst_data.corpus.tokenizer import (
+        TOKENIZER_MODEL_ID, TOKENIZER_REVISION, tokenizer_identity,
+    )
     manifest = tokenizer_identity()
     assert manifest == {
         "model_id": TOKENIZER_MODEL_ID,
@@ -331,7 +422,7 @@ Expected: FAIL.
 
 **Step 3: Implement v9 migration**
 
-Add `MIGRATION_9_SQL` with full DDL. Register in migration registry.
+Add `MIGRATION_9_SQL` with the full DDL, indexes, and triggers from §5. Register in the migration registry. Migration tests must assert the trigger names from `sqlite_master`, exact abort codes for at least one invalid insert per corpus table, the single-current-manifest invariant, and that temporary v8 databases reach `PRAGMA user_version = 9`.
 
 **Step 4: Run tests**
 
@@ -379,7 +470,7 @@ def test_long_article_split_with_overlap():
     from catalyst_data.corpus.tokenizer import count_tokens
 
     profile = NewsV2Profile()
-    # Generate text that's ~800 tokens
+    # Generate text that is long enough to exceed 384 pinned-tokenizer tokens.
     long_text = "Sentence one. " * 200
     article = {"document_id": "poly:art2", "title": "Long Report",
                "description": long_text, "available_at": "2026-01-01T09:00:00Z"}
@@ -537,6 +628,7 @@ def test_filing_chunks_never_cross_sections():
             {"section_key": "item_2.03", "title": "Item 2.03", "text": "Creation of Direct Financial Obligation. " * 60},
         ],
         "available_at": "2026-01-01T09:00:00Z"
+    }
     chunks = profile.chunk(filing)
     # Each chunk's section_key matches its source section
     for c in chunks:
@@ -590,7 +682,7 @@ def test_parse_failure_produces_degraded_chunks():
     assert len(chunks) >= 1
     for c in chunks:
         assert c.section_key == "unknown_000"
-        assert c.is_degraded
+        assert c.section_parse_degraded is True
 
 
 def test_raw_8k_item_detection_and_duplicate_suffixes_are_exact():
@@ -713,6 +805,16 @@ Expected: FAIL.
 - `CLASSIFIER_VERSION` pinned string
 - `classify(source_kind, article_url=None, publisher=None) → str` — static algorithm per contract
 - 7 classes: `structured_market_data`, `official_government`, `issuer_disclosure`, `corporate_press_release`, `reported_news`, `analysis_opinion`, `aggregated_unknown`
+- Exact precedence:
+  1. normalize `source_kind`, URL host, and publisher to lowercase; strip leading `www.`;
+  2. source kind wins for non-news: `ohlcv` and `market_data` -> `structured_market_data`; `sec`, `sec_filing`, and `fred` -> `official_government`; `issuer_ir` and `issuer_release` -> `issuer_disclosure`;
+  3. host mapping wins before publisher fallback:
+     - corporate press release: `globenewswire.com`, `prnewswire.com`, `businesswire.com`;
+     - reported news: `cnbc.com`, `marketwatch.com`, `reuters.com`, `apnews.com`, `bloomberg.com`, `wsj.com`, `investors.com`, `barrons.com`;
+     - analysis/opinion: `seekingalpha.com`, `fool.com`, `zacks.com`, `chartmill.com`, `fintel.io`;
+     - aggregated unknown: `finance.yahoo.com`, `yahoo.com`, `finnhub.io`;
+  4. publisher fallback uses the same names: `GlobeNewswire`, `PR Newswire`, `Business Wire`, `CNBC`, `MarketWatch`, `Reuters`, `Associated Press`, `Bloomberg`, `Wall Street Journal`, `Barron's`, `Investor's Business Daily`, `Seeking Alpha`, `The Motley Fool`, `Zacks`, `ChartMill`, `Fintel`, `Yahoo`, `Finnhub`;
+  5. unresolved news returns `aggregated_unknown` and sets `origin_unknown=true` in returned metadata when the implementation exposes metadata.
 
 **Step 4: Run tests**
 
@@ -731,12 +833,12 @@ Expected: all PASS.
 
 def test_document_id_is_provider_native():
     """document_id uses provider-native canonical identity."""
-    # Polygon article → "poly:{article_id}"
+    # Polygon article → "poly:{article_id}" because B2 canonical writes use provider namespace "poly".
     # SEC filing → "sec:{accession_number}:{document_type}"
     # Already implemented, verify no regression
     from catalyst_data.articles import compute_article_id
-    aid = compute_article_id("polygon", "abc123")
-    assert aid == "polygon:abc123"
+    aid = compute_article_id("poly", "abc123")
+    assert aid == "poly:abc123"
 
 
 def test_content_hash_is_embedding_text_sha256():
@@ -869,11 +971,11 @@ def test_reconciliation_detects_removed_chunks():
     db = _fresh_db_at_version(9)
     # Seed index_state with a chunk that no longer exists
     db.execute("INSERT INTO index_state (chunk_id, document_id, status) VALUES (?, ?, 'active')",
-               ("poly:old:v1::001", "poly:old"))
+               ("poly:old:news_v2:body:0001", "poly:old"))
 
     active_chunks = {}  # empty — old chunk removed
-    tombstones = reconcile(db, active_chunks, manifest_id="manifest-v1")
-    assert any(t.chunk_id == "poly:old:v1::001" for t in tombstones)
+    result = reconcile(db, active_chunks, manifest_id="manifest-v1")
+    assert any(t.chunk_id == "poly:old:news_v2:body:0001" for t in result.tombstones)
 
 
 def test_reconciliation_detects_content_changes():
@@ -882,11 +984,17 @@ def test_reconciliation_detects_content_changes():
 
     db = _fresh_db_at_version(9)
     db.execute("INSERT INTO index_state (chunk_id, document_id, content_hash, status) VALUES (?, ?, ?, 'embedded')",
-               ("poly:ch1:v1::001", "poly:ch1", "oldhash"))
+               ("poly:ch1:news_v2:body:0001", "poly:ch1", "oldhash"))
 
-    active_chunks = {"poly:ch1:v1::001": {"content_hash": "newhash", "metadata_hash": "same"}}
-    to_reembed = reconcile(db, active_chunks, manifest_id="manifest-v1")
-    assert "poly:ch1:v1::001" in to_reembed.to_embed
+    active_chunks = {
+        "poly:ch1:news_v2:body:0001": {
+            "content_hash": "newhash",
+            "metadata_hash": "same",
+            "eligibility": "eligible",
+        }
+    }
+    result = reconcile(db, active_chunks, manifest_id="manifest-v1")
+    assert "poly:ch1:news_v2:body:0001" in result.to_embed
 
 
 def test_reconciliation_metadata_only_no_reembed():
@@ -895,12 +1003,18 @@ def test_reconciliation_metadata_only_no_reembed():
 
     db = _fresh_db_at_version(9)
     db.execute("INSERT INTO index_state (chunk_id, document_id, content_hash, metadata_hash, status) VALUES (?, ?, ?, ?, 'embedded')",
-               ("poly:m1:v1::001", "poly:m1", "samehash", "oldmeta"))
+               ("poly:m1:news_v2:body:0001", "poly:m1", "samehash", "oldmeta"))
 
-    active_chunks = {"poly:m1:v1::001": {"content_hash": "samehash", "metadata_hash": "newmeta"}}
+    active_chunks = {
+        "poly:m1:news_v2:body:0001": {
+            "content_hash": "samehash",
+            "metadata_hash": "newmeta",
+            "eligibility": "eligible",
+        }
+    }
     result = reconcile(db, active_chunks, manifest_id="manifest-v1")
-    assert "poly:m1:v1::001" not in result.to_embed  # no re-embedding
-    assert "poly:m1:v1::001" in result.to_update_metadata
+    assert "poly:m1:news_v2:body:0001" not in result.to_embed  # no re-embedding
+    assert "poly:m1:news_v2:body:0001" in result.to_update_metadata
 
 
 def test_profile_version_change_tombstones_old():
@@ -909,12 +1023,18 @@ def test_profile_version_change_tombstones_old():
 
     db = _fresh_db_at_version(9)
     db.execute("INSERT INTO index_state (chunk_id, document_id, status) VALUES (?, ?, 'embedded')",
-               ("poly:art:v1::001", "poly:art"))
+               ("poly:art:news_v1:body:0001", "poly:art"))
 
-    active_chunks = {"poly:art:v2::001": {"content_hash": "newhash", "metadata_hash": "newmeta"}}
-    tombstones = reconcile(db, active_chunks, manifest_id="manifest-v2")
-    assert any(t.chunk_id == "poly:art:v1::001" for t in tombstones)
-    assert "poly:art:v2::001" not in {t.chunk_id for t in tombstones}
+    active_chunks = {
+        "poly:art:news_v2:body:0001": {
+            "content_hash": "newhash",
+            "metadata_hash": "newmeta",
+            "eligibility": "eligible",
+        }
+    }
+    result = reconcile(db, active_chunks, manifest_id="manifest-v2")
+    assert any(t.chunk_id == "poly:art:news_v1:body:0001" for t in result.tombstones)
+    assert "poly:art:news_v2:body:0001" not in {t.chunk_id for t in result.tombstones}
 
 
 @pytest.mark.parametrize("case_name", NINE_RECONCILIATION_CASE_NAMES)
@@ -942,8 +1062,9 @@ Expected: FAIL.
 **Step 3: Implement `catalyst_data/corpus/reconciliation.py`**
 
 - `reconcile(db, active_chunks, manifest_id) → ReconciliationResult`
-- Compare active_chunks dict against index_state
-- Emit tombstones for removed/ineligible/superseded-profile chunks
+- `active_chunks` is keyed by contract `chunk_id` and each value must include `document_id`, `chunk_profile_version`, `section_key`, `ordinal`, `content_hash`, `metadata_hash`, `available_at`, `source_class`, `dedup_cluster_id`, `cluster_first_available_at`, `representative_document_id`, and `eligibility`
+- Compare `active_chunks` against `index_state` and `corpus_chunks` inside a single transaction
+- Emit tombstones for removed, ineligible, superseded-profile, disappeared-child, and dedup-cluster-reassigned chunks
 - Return lists: `to_embed`, `to_update_metadata`, `tombstones`
 
 **Step 4: Run tests**
@@ -971,7 +1092,10 @@ def test_manifest_id_matches_contract():
         chunk_profile_versions={"news": "news_v2", "filing": "filing_v2"},
         source_classifier_version="1.0.0",
         certified_snapshot_identity="snap-abc",
-        active_chunk_inventory=["poly:a:v1::001", "sec:b:v1::001"],
+        active_chunk_inventory=[
+            inventory_item("poly:a:news_v2:body:0001", content_hash="0" * 64, metadata_hash="1" * 64),
+            inventory_item("sec:b:filing_v2:item_1.01:0001", content_hash="2" * 64, metadata_hash="3" * 64),
+        ],
         tokenizer_revision=TOKENIZER_REVISION,
         embedding_revision=None,
     )
@@ -984,7 +1108,10 @@ def test_manifest_id_matches_contract():
         chunk_profile_versions={"news": "news_v2", "filing": "filing_v2"},
         source_classifier_version="1.0.0",
         certified_snapshot_identity="snap-abc",
-        active_chunk_inventory=["poly:a:v1::001", "sec:b:v1::001"],
+        active_chunk_inventory=[
+            inventory_item("sec:b:filing_v2:item_1.01:0001", content_hash="2" * 64, metadata_hash="3" * 64),
+            inventory_item("poly:a:news_v2:body:0001", content_hash="0" * 64, metadata_hash="1" * 64),
+        ],
         tokenizer_revision=TOKENIZER_REVISION,
         embedding_revision=None,
     )
@@ -995,8 +1122,12 @@ def test_manifest_different_chunks_different_id():
     """Different chunk inventory → different manifest_id."""
     from catalyst_data.corpus.manifest import build_manifest, compute_manifest_id
 
-    m1 = build_manifest(active_chunk_inventory=["a", "b"], **base_params)
-    m2 = build_manifest(active_chunk_inventory=["a", "c"], **base_params)
+    m1 = build_manifest(active_chunk_inventory=[
+        inventory_item("poly:a:news_v2:body:0001", content_hash="0" * 64, metadata_hash="1" * 64),
+    ], **base_params)
+    m2 = build_manifest(active_chunk_inventory=[
+        inventory_item("poly:a:news_v2:body:0001", content_hash="f" * 64, metadata_hash="1" * 64),
+    ], **base_params)
     assert compute_manifest_id(m1) != compute_manifest_id(m2)
 
 
@@ -1034,6 +1165,7 @@ Expected: FAIL.
 - `build_manifest(...) → dict`
 - `compute_manifest_id(manifest) → str` — per contract §5.5
 - `publish_manifest(db, manifest_id, manifest_json) → None` — sets `is_current=1`, clears others
+- `active_chunk_inventory` contains full canonical inventory objects, not strings. The builder sorts by `chunk_id ASC`; callers may pass any order. The manifest body includes `tokenizer_model_id="BAAI/bge-m3"` and `tokenizer_revision`, while `manifest_id` uses the exact formula in the technical contract.
 
 **Step 4: Run tests**
 
@@ -1081,7 +1213,7 @@ def test_compatibility_read_old_raw_ids():
 .venv/bin/python -m pytest packages/data-core/tests/test_reconciliation.py -k "integration" -q
 ```
 
-Expected: all PASS.
+Expected: FAIL before Step 3, because `build_corpus`, `should_chunk`, and compatibility reads are not wired to the new profiles yet.
 
 **Step 3: Wire into `index_builder.py`**
 
@@ -1164,7 +1296,7 @@ git diff --check
 - test_manifest: X passed
 
 ### Canonical Package Counts
-- data-core: X passed (was 758)
+- data-core: X passed (current B2 baseline was 827 passed, 1 skipped, 1 xfailed)
 - agents: X passed (was 237)
 - eval: X passed (was 93)
 - app: X passed (was 128)

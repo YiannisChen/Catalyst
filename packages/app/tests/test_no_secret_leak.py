@@ -27,6 +27,7 @@ from catalyst_app.runtime_credential_store import RuntimeCredentialStore
 from catalyst_agents.trace.schema import init_trace_db
 from catalyst_agents.runtime.service import LiveRunService
 from catalyst_app.schemas import ModelConfig, CreateRunRequest
+from runtime_fixture import prepare_runtime_db
 
 TEST_API_KEY = "sk-test-secret-leak-key-xyz789"
 
@@ -54,6 +55,7 @@ def _make_client(db_path: Path):
     """Create a TestClient with overridden service and credential store."""
     cred_store = RuntimeCredentialStore()
     service = _make_service(db_path, cred_store)
+    service.run_one = lambda run_id: {"run_id": run_id, "status": "SUCCEEDED"}
     app = create_app(service_override=service)
     app.dependency_overrides[get_credential_store] = lambda: cred_store
     # Also override workbench_store to avoid DB requirement
@@ -65,6 +67,7 @@ def _make_client(db_path: Path):
 def test_create_run_response_no_api_key():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
+        prepare_runtime_db(db_path)
         client, _, cred_store, _ = _make_client(db_path)
 
         resp = client.post("/api/live-runs", json={
@@ -80,7 +83,7 @@ def test_create_run_response_no_api_key():
         body = resp.json()
         body_str = json.dumps(body)
 
-        assert resp.status_code in (200, 422)
+        assert resp.status_code == 200
         assert TEST_API_KEY not in body_str
         for key in body:
             assert key != "api_key", f"CreateRunResponse has key: {key}"
@@ -90,6 +93,7 @@ def test_create_run_response_no_api_key():
 def test_agent_runs_config_no_api_key():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
+        prepare_runtime_db(db_path)
         client, db_path, cred_store, _ = _make_client(db_path)
 
         resp = client.post("/api/live-runs", json={
@@ -102,9 +106,7 @@ def test_agent_runs_config_no_api_key():
                 "base_url": "https://api.openai.com/v1",
             },
         })
-        if resp.status_code == 422:
-            print("SKIP: create_run returned 422 (no OHLCV data in temp DB)")
-            return
+        assert resp.status_code == 200
 
         body = resp.json()
         run_id = body.get("run_id")
@@ -116,7 +118,7 @@ def test_agent_runs_config_no_api_key():
             "SELECT config FROM agent_runs WHERE run_id = ?", (run_id,)
         ).fetchone()
         conn.close()
-        config_str = row["config"] if row else "{}"
+        config_str = row[0] if row else "{}"
 
         assert TEST_API_KEY not in config_str
         assert "api_key" not in config_str.lower() or '"api_key"' not in config_str

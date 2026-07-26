@@ -13,9 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from catalyst_agents.state import AttributionState, Phase
+from catalyst_agents.attribution.hypothesis import HypothesisDraft
 from catalyst_agents.cost_tracker import track_cost
 from catalyst_agents.nodes.critic import insufficient_handler
 from catalyst_agents.backoff import invoke_with_retries, MAX_RETRIES
+from pydantic import BaseModel, ConfigDict, Field
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -23,6 +25,13 @@ from catalyst_agents.backoff import invoke_with_retries, MAX_RETRIES
 
 _PROMPT_PATH = Path(__file__).parent.parent / "prompts" / "judge.md"
 MAX_CAUSES = 5
+
+
+class JudgeResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    hypotheses: list[HypothesisDraft]
+    summary_md: str = Field(min_length=1)
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +146,9 @@ def _parse_judge_response(text: str) -> dict:
         # Drop the opening fence line and any trailing closing fence
         inner_lines = lines[1:-1] if lines[-1].strip() == "```" else lines[1:]
         cleaned = "\n".join(inner_lines)
-    return json.loads(cleaned)
+    payload = json.loads(cleaned)
+    validated = JudgeResponse.model_validate(payload)
+    return validated.model_dump(mode="json")
 
 
 def _compute_grounding_rate(causes: list[dict], evidence_ids_available: set[str]) -> float:
@@ -157,7 +168,7 @@ def _compute_grounding_rate(causes: list[dict], evidence_ids_available: set[str]
         return 0.0
     grounded = sum(
         1 for c in causes
-        if any(eid in evidence_ids_available for eid in c.get("evidence_ids", []))
+        if any(eid in evidence_ids_available for eid in (c.get("supporting_evidence_ids") or c.get("evidence_ids") or []))
     )
     return grounded / len(causes)
 
@@ -211,7 +222,16 @@ def judge(state: AttributionState, *, llm: Any = None) -> dict:
             llm, prompt, parse_fn=_parse_judge_response, node_name="Judge",
         )
         track_cost(state, "judge", response)
-        causes = parsed.get("causes", [])[:MAX_CAUSES]
+        drafts = parsed.get("hypotheses", [])[:MAX_CAUSES]
+        causes = [
+            {
+                "text": draft.get("transmission_mechanism", ""),
+                "category": draft.get("cause_label", "unexplained"),
+                "evidence_ids": list(draft.get("supporting_evidence_ids", [])),
+                "direction": draft.get("direction", "unknown"),
+            }
+            for draft in drafts
+        ]
 
         # Compute grounding rate from our side (independent of LLM's self-check)
         available_ids = {ev.get("chunk_id", "") for ev in graded}
@@ -219,6 +239,7 @@ def judge(state: AttributionState, *, llm: Any = None) -> dict:
 
         return {
             "causes": causes,
+            "hypothesis_drafts": drafts,
             "summary_md": parsed.get("summary_md", ""),
             "grounding_rate": grounding,
             "judge_raw_llm_response": str(response.content),

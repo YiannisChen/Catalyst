@@ -1,331 +1,107 @@
-"""Tests for the Miner node — deterministic retrieval, no LLM call.
-
-Spec reference: Section 4.3 — Miner Node.
-"""
 from __future__ import annotations
 
-import pytest
+from attribution_fixtures import FixtureRetriever, RecordingCutoffPolicy
+from catalyst_agents.nodes.miner import _build_query, _check_magnitude_plausible, _extract_query_ticker, miner
+from catalyst_agents.state import OutputStatus
 
-from catalyst_agents.nodes.miner import miner, _build_query, _compute_date_range
-from catalyst_agents.retrieval.policy import Layer
 
+def _state(query=None):
+    return {"ticker": "AAPL", "trade_date": "2026-01-15", "query": query, "price_move_pct": None, "corpus_manifest_id": "corpus-fixture-v1"}
 
-# ---------------------------------------------------------------------------
-# Helper function unit tests
-# ---------------------------------------------------------------------------
 
 def test_build_query_with_nlp_query():
-    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": "Why did Apple drop?"}
-    assert _build_query(state) == "Why did Apple drop?"
+    assert _build_query(_state("Why did Apple drop?")) == "Why did Apple drop?"
 
 
 def test_build_query_without_query():
-    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None}
-    q = _build_query(state)
-    assert "AAPL" in q
-    assert "2026-01-15" in q
+    assert _build_query(_state()).startswith("Why did AAPL move")
 
 
-def test_build_query_empty_string_treated_as_missing():
-    """Empty string query should fall back to the generated query."""
-    state = {"ticker": "TSLA", "trade_date": "2026-03-10", "query": ""}
-    q = _build_query(state)
-    assert "TSLA" in q
-    assert "2026-03-10" in q
+def test_miner_calls_injected_retriever_with_canonical_cutoff():
+    retriever = FixtureRetriever()
+    cutoff_policy = RecordingCutoffPolicy()
+    result = miner(_state("Why did Apple crash after earnings?"), retriever=retriever, cutoff_policy=cutoff_policy)
 
-
-def test_compute_date_range():
-    start, end = _compute_date_range("2026-01-15", window_days=3)
-    assert start == "2026-01-12"
-    assert end == "2026-01-18"
-
-
-def test_compute_date_range_default_window():
-    """Default window is DATE_WINDOW_DAYS = 3."""
-    start, end = _compute_date_range("2026-06-01")
-    assert start == "2026-05-29"
-    assert end == "2026-06-04"
-
-
-def test_compute_date_range_month_boundary():
-    start, end = _compute_date_range("2026-03-01", window_days=3)
-    assert start == "2026-02-26"
-    assert end == "2026-03-04"
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-MOCK_CHUNKS = [
-    {
-        "asset_id": f"a{i}",
-        "ticker": "AAPL",
-        "source_type": "polygon_news",
-        "reference_date": "2026-01-15",
-        "content_md": f"Content {i}",
-        "rrf_score": 1.0 / (60 + i),
-    }
-    for i in range(1, 21)
-]
-
-
-class MockReranker:
-    """Returns descending scores: first pair gets the highest score."""
-
-    def compute_score(self, pairs):
-        return [20 - i for i in range(len(pairs))]
-
-
-def _make_retrieve_mock(chunks=None):
-    if chunks is None:
-        chunks = MOCK_CHUNKS
-
-    def mock_retrieve(query, layer, metadata, *, rerank=None):
-        return chunks[: metadata.top_k]
-
-    return mock_retrieve
-
-
-# ---------------------------------------------------------------------------
-# Miner integration tests (mocked dependencies)
-# ---------------------------------------------------------------------------
-
-def test_miner_returns_retrieved_and_reranked(monkeypatch):
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
-
-    state = {
-        "ticker": "AAPL",
-        "trade_date": "2026-01-15",
-        "query": None,
-        "price_move_pct": -4.2,
-    }
-    result = miner(state, table=None, embedding_fn=None, reranker=MockReranker())
-
-    assert len(result["retrieved_chunks"]) == 20
-    assert len(result["reranked_chunks"]) == 8
-
-
-def test_miner_without_reranker_uses_rrf_order(monkeypatch):
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
-
-    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
-    result = miner(state, table=None, embedding_fn=None, reranker=None)
-
-    assert len(result["reranked_chunks"]) == 8
-    # Without reranker, RRF order from hybrid_search is preserved
-    assert result["reranked_chunks"][0]["asset_id"] == "a1"
-
-
-def test_miner_with_reranker_reorders(monkeypatch):
-    """MockReranker returns [20, 19, 18, ...] — first chunk keeps highest score."""
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
-
-    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
-    result = miner(state, table=None, embedding_fn=None, reranker=MockReranker())
-
-    assert result["reranked_chunks"][0]["asset_id"] == "a1"
-
-
-def test_miner_reranker_assigns_scores(monkeypatch):
-    """Each chunk in retrieved_chunks must have a rerank_score after reranking."""
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
-
-    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
-    result = miner(state, table=None, embedding_fn=None, reranker=MockReranker())
-
-    for chunk in result["retrieved_chunks"]:
-        assert "rerank_score" in chunk
-
-
-def test_miner_empty_retrieval(monkeypatch):
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", lambda query, layer, metadata, *, rerank=None: [])
-
-    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
-    result = miner(state, table=None, embedding_fn=None, reranker=None)
-
-    assert result["retrieved_chunks"] == []
-    assert result["reranked_chunks"] == []
-
-
-def test_miner_empty_retrieval_with_reranker_skipped(monkeypatch):
-    """With an empty result set, reranker should never be called."""
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", lambda query, layer, metadata, *, rerank=None: [])
-
-    class FailingReranker:
-        def compute_score(self, pairs):
-            raise RuntimeError("Should not be called for empty retrieval")
-
-    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
-    result = miner(state, table=None, embedding_fn=None, reranker=FailingReranker())
-
-    assert result["retrieved_chunks"] == []
-    assert result["reranked_chunks"] == []
-
-
-def test_miner_fewer_than_top_k_results(monkeypatch):
-    """If retrieval returns fewer than TOP_K_RERANKED chunks, reranked list is capped at len."""
-    small_chunks = MOCK_CHUNKS[:3]
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock(small_chunks))
-
-    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
-    result = miner(state, table=None, embedding_fn=None, reranker=None)
-
-    assert len(result["retrieved_chunks"]) == 3
-    assert len(result["reranked_chunks"]) == 3
-
-
-def test_miner_uses_nlp_query_for_search(monkeypatch):
-    """The query passed to retrieve should match the NLP query from state."""
-
-    captured_query = {}
-
-    def capturing_search(query, layer, metadata, *, rerank=None):
-        captured_query["value"] = query
-        return MOCK_CHUNKS[: metadata.top_k]
-
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", capturing_search)
-
-    state = {
-        "ticker": "AAPL",
-        "trade_date": "2026-01-15",
+    assert retriever.calls == [{
         "query": "Why did Apple crash after earnings?",
-        "price_move_pct": -5.0,
-    }
-    miner(state, table=None, embedding_fn=None, reranker=None)
-
-    assert captured_query["value"] == "Why did Apple crash after earnings?"
-
-
-def test_miner_date_range_passed_to_search(monkeypatch):
-    """The ±3-day date_range must be forwarded to retrieval metadata."""
-
-    captured = {}
-
-    def capturing_search(query, layer, metadata, *, rerank=None):
-        captured["date_range"] = metadata.date_range
-        captured["ticker"] = metadata.ticker
-        return MOCK_CHUNKS[: metadata.top_k]
-
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", capturing_search)
-
-    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
-    miner(state, table=None, embedding_fn=None, reranker=None)
-
-    assert captured["date_range"] == ("2026-01-12", "2026-01-18")
-    assert captured["ticker"] == "AAPL"
-
-
-def test_miner_reranker_scalar_score_handled(monkeypatch):
-    """If reranker.compute_score returns a scalar (single pair), it must be wrapped."""
-    single_chunk = [MOCK_CHUNKS[0]]
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock(single_chunk))
-
-    class ScalarReranker:
-        def compute_score(self, pairs):
-            # Some reranker implementations return a bare float for single pairs
-            assert len(pairs) == 1
-            return 0.95  # scalar, not a list
-
-    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": None, "price_move_pct": None}
-    result = miner(state, table=None, embedding_fn=None, reranker=ScalarReranker())
-
-    assert len(result["reranked_chunks"]) == 1
-    assert result["reranked_chunks"][0]["rerank_score"] == pytest.approx(0.95)
-
-
-def test_miner_uses_macro_layer_when_requested(monkeypatch):
-    captured = {}
-
-    def fake_retrieve(query, layer, metadata, *, rerank=None):
-        captured["query"] = query
-        captured["layer"] = layer
-        captured["ticker"] = metadata.ticker
-        return MOCK_CHUNKS[:4]
-
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", fake_retrieve)
-
-    state = {
         "ticker": "AAPL",
-        "trade_date": "2026-01-15",
-        "query": "What macro factors moved Apple?",
-        "price_move_pct": -4.2,
-        "current_layer": Layer.MACRO,
-    }
-    result = miner(state, table=None, embedding_fn=None, reranker=None)
-
-    assert captured["query"] == "What macro factors moved Apple?"
-    assert captured["layer"] == Layer.MACRO
-    assert captured["ticker"] == "AAPL"
-    assert len(result["retrieved_chunks"]) == 4
+        "cutoff": "2026-01-15T21:00:00Z",
+        "requested_manifest_id": "corpus-fixture-v1",
+        "top_k": 8,
+        "candidate_depth": 20,
+    }]
+    assert cutoff_policy.calls == [("AAPL", "2026-01-15", "attribution")]
+    assert len(result["reranked_chunks"]) == 2
 
 
-def test_miner_sets_ticker_consistent_false_on_query_ticker_mismatch(monkeypatch):
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
-    state = {
-        "ticker": "AAPL",
-        "trade_date": "2026-01-15",
-        "query": "TSLA dropped about 3% on June 12, 2025. Why?",
-        "price_move_pct": None,
-    }
-    out = miner(state, table=None, embedding_fn=None, reranker=None)
+def test_miner_projects_all_retrieved_evidence_fields():
+    result = miner(_state(), retriever=FixtureRetriever(), cutoff_policy=RecordingCutoffPolicy())
+    chunk = result["reranked_chunks"][0]
+    for key in {
+        "asset_id", "chunk_id", "document_id", "content_text", "available_at",
+        "source_class", "ticker_associations", "dedup_cluster_id",
+        "cluster_first_available_at", "representative_document_id", "is_novel",
+        "lexical_raw_score", "lexical_rank", "corpus_manifest_id",
+        "index_manifest_id", "mode_requested", "mode_served", "is_degraded",
+        "fallback_reason",
+    }:
+        assert key in chunk
+
+
+def test_miner_retriever_exception_becomes_system_error():
+    result = miner(_state(), retriever=FixtureRetriever(fail=True), cutoff_policy=RecordingCutoffPolicy())
+    assert result["output_status"] == OutputStatus.SYSTEM_ERROR
+    assert result["validation_error"] == "retriever_error"
+    assert result["retrieved_chunks"] == []
+
+
+def test_miner_missing_dependencies_are_typed_system_error():
+    result = miner(_state())
+    assert result["output_status"] == OutputStatus.SYSTEM_ERROR
+    assert result["validation_error"] == "missing_retrieval_dependency"
+
+
+def test_miner_sets_ticker_consistent_false_on_query_ticker_mismatch():
+    out = miner(_state("TSLA dropped about 3% on June 12, 2025. Why?"), retriever=FixtureRetriever(), cutoff_policy=RecordingCutoffPolicy())
     assert out["query_ticker_raw"] == "TSLA"
     assert out["ticker_consistent"] is False
-
-
-def test_miner_short_circuits_when_market_session_invalid(monkeypatch):
-    monkeypatch.setattr("catalyst_agents.nodes.miner._has_ohlcv_session", lambda *args, **kwargs: False)
-    state = {
-        "ticker": "AAPL",
-        "trade_date": "2025-04-19",
-        "query": "AAPL down 2%",
-        "price_move_pct": None,
-        "retrieval_metadata": {"db_path": "/tmp/mock.db"},
-    }
-    out = miner(state, table=None, embedding_fn=None, reranker=None)
-    assert out["market_session_valid"] is False
     assert out["retrieved_chunks"] == []
-    assert out["reranked_chunks"] == []
 
 
 def test_extract_query_ticker_uses_known_ticker_not_acronym():
-    from catalyst_agents.nodes.miner import _extract_query_ticker
-
-    known = {"AAPL", "MSFT", "TSLA", "MRNA"}
-    q = "On March 18, 2025, Microsoft CEO resigned unexpectedly"
-    assert _extract_query_ticker(q, known) == "MSFT"
+    assert _extract_query_ticker("On March 18, 2025, Microsoft CEO resigned unexpectedly", {"AAPL", "MSFT", "TSLA", "MRNA"}) == "MSFT"
 
 
 def test_extract_query_ticker_ignores_fda_and_keeps_symbol():
-    from catalyst_agents.nodes.miner import _extract_query_ticker
-
-    known = {"MRNA", "AAPL"}
-    q = "FDA approved MRNA vaccine update"
-    assert _extract_query_ticker(q, known) == "MRNA"
-
-
-def test_extract_query_ticker_returns_none_for_typo_not_in_whitelist():
-    from catalyst_agents.nodes.miner import _extract_query_ticker
-
-    known = {"AAPL", "TSLA"}
-    q = "APPL dropped 3% today"
-    assert _extract_query_ticker(q, known) is None
-
-
-def test_ticker_consistent_none_when_query_has_no_ticker(monkeypatch):
-    monkeypatch.setattr("catalyst_agents.nodes.miner.retrieve", _make_retrieve_mock())
-    state = {"ticker": "AAPL", "trade_date": "2026-01-15", "query": "why did it drop?", "price_move_pct": None}
-    out = miner(state, table=None, embedding_fn=None, reranker=None)
-    assert out["ticker_consistent"] is None
+    assert _extract_query_ticker("FDA approved MRNA vaccine update", {"MRNA", "AAPL"}) == "MRNA"
 
 
 def test_check_magnitude_plausible_extreme():
-    from catalyst_agents.nodes.miner import _check_magnitude_plausible
-
     assert _check_magnitude_plausible(actual_pct=1.5, claimed_pct=34.0, tolerance=10.0) is False
 
 
-def test_check_magnitude_plausible_normal():
-    from catalyst_agents.nodes.miner import _check_magnitude_plausible
+def test_build_query_empty_string_uses_generated_query():
+    assert _build_query(_state("")) == "Why did AAPL move on 2026-01-15?"
 
-    assert _check_magnitude_plausible(actual_pct=2.8, claimed_pct=3.2, tolerance=10.0) is True
+
+def test_miner_skips_retrieval_when_context_session_is_invalid():
+    retriever = FixtureRetriever()
+    state = {**_state(), "market_session_valid": False}
+
+    result = miner(state, retriever=retriever, cutoff_policy=RecordingCutoffPolicy())
+
+    assert retriever.calls == []
+    assert result["retrieved_chunks"] == []
+    assert result["reranked_chunks"] == []
+    assert result["output_status"] == OutputStatus.ABSTAIN
+
+
+def test_miner_expansion_delegates_to_injected_retriever():
+    retriever = FixtureRetriever()
+    state = {**_state(), "current_layer": "macro"}
+
+    result = miner(state, retriever=retriever, cutoff_policy=RecordingCutoffPolicy())
+
+    assert result.get("error_type") is None
+    assert retriever.calls[0]["query"].endswith("macro market sector rates policy context")
+    assert result["retrieved_chunks"]

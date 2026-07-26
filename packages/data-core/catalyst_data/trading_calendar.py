@@ -119,3 +119,60 @@ def trading_days_through(
         )
     end = max(filter(None, [max_date, through_date]))
     return sorted(set(ohlcv_trading_days(conn)) | set(calendar_trading_days(min_date, end)))
+
+
+# ── B4: Session close times ──────────────────────────────────────────────────
+
+from datetime import datetime, time, timezone
+from zoneinfo import ZoneInfo
+
+ET = ZoneInfo("America/New_York")
+UTC = timezone.utc
+
+REGULAR_CLOSE = time(16, 0)
+EARLY_CLOSE = time(13, 0)
+
+# Complete early-close set for 2024-2027 per §0.1
+EARLY_CLOSE_DATES: frozenset[str] = frozenset({
+    "2024-07-03", "2024-11-29", "2024-12-24",
+    "2025-07-03", "2025-11-28", "2025-12-24",
+    "2026-07-02", "2026-11-27", "2026-12-24",
+    "2027-07-02", "2027-11-26", "2027-12-23",
+})
+
+
+def is_trading_day(session_date: str) -> bool:
+    """Return True if session_date is a US equities trading day."""
+    try:
+        d = date.fromisoformat(session_date)
+    except ValueError:
+        return False
+
+    year = d.year
+    if year < CALENDAR_YEARS[0] or year > CALENDAR_YEARS[1]:
+        return False
+
+    if d.weekday() >= 5:
+        return False
+
+    if session_date in US_MARKET_HOLIDAYS:
+        return False
+
+    return True
+
+
+def session_close_utc(session_date: str) -> str:
+    """Return the canonical UTC close timestamp for a trading session.
+
+    Uses the production holiday calendar and early-close schedule.
+    Returns second-resolution UTC: YYYY-MM-DDTHH:MM:SSZ.
+    """
+    if not is_trading_day(session_date):
+        raise ValueError(f"not_a_trading_session: {session_date}")
+
+    d = date.fromisoformat(session_date)
+    close_time = EARLY_CLOSE if session_date in EARLY_CLOSE_DATES else REGULAR_CLOSE
+
+    close_et = datetime.combine(d, close_time, tzinfo=ET)
+    close_utc = close_et.astimezone(UTC)
+    return close_utc.strftime("%Y-%m-%dT%H:%M:%SZ")

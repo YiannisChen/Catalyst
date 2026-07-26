@@ -10,7 +10,7 @@ from catalyst_app.llm_factory import build_llm, SUPPORTED_MODELS, DEFAULT_MODEL
 def test_build_llm_returns_chat_openai_instance():
     """build_llm returns a ChatOpenAI configured for aihubmix."""
     with patch.dict(os.environ, {"AIHUBMIX_API_KEY": "sk-test-key-123"}):
-        llm = build_llm("gemini-2.5-flash-nothink")
+        llm = build_llm("gemini-2.5-flash-nothink", provider="aihubmix")
         assert llm.model_name == "gemini-2.5-flash-nothink"
         assert "aihubmix.com" in str(llm.openai_api_base)
 
@@ -34,8 +34,13 @@ def test_default_model_is_gemini_flash():
     assert DEFAULT_MODEL == "gemini-2.5-flash-nothink"
 
 
-def test_build_llm_rejects_unknown_model():
-    """build_llm raises ValueError for model IDs not in SUPPORTED_MODELS."""
-    with patch.dict(os.environ, {"AIHUBMIX_API_KEY": "sk-test-key-123"}):
-        with pytest.raises(ValueError, match="not supported"):
-            build_llm("gpt-4-turbo-not-real")
+def test_build_llm_allows_provider_specific_model_ids():
+    with patch("catalyst_app.llm_factory.ChatOpenAI") as chat_openai:
+        build_llm(
+            "provider-specific-model",
+            provider="custom_openai_compatible",
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+        )
+
+    assert chat_openai.call_args.kwargs["model"] == "provider-specific-model"

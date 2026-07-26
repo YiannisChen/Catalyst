@@ -111,7 +111,7 @@ class BoomGraph:
 def test_create_run_persists_queued_without_executing_graph(tmp_path):
     db_path = _db_path(tmp_path)
     graph = RecordingGraph(db_path)
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: graph)
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph)
 
     created = service.create_run(ticker="AAPL", trade_date="2026-01-15", query=None)
 
@@ -129,7 +129,7 @@ def test_create_run_persists_queued_without_executing_graph(tmp_path):
 def test_validation_failure_creates_failed_request_without_graph_execution(tmp_path):
     db_path = _db_path(tmp_path)
     graph = RecordingGraph(db_path)
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: graph)
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph)
 
     created = service.create_run(ticker="TSLA", trade_date="2026-01-15", query=None)
 
@@ -144,7 +144,7 @@ def test_validation_failure_creates_failed_request_without_graph_execution(tmp_p
 def test_runner_executes_fake_graph_with_precreated_run_id(tmp_path):
     db_path = _db_path(tmp_path)
     graph = RecordingGraph(db_path)
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: graph)
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph)
     created = service.create_run(ticker="AAPL", trade_date="2026-01-15", query="explain")
 
     result = service.run_next()
@@ -155,12 +155,15 @@ def test_runner_executes_fake_graph_with_precreated_run_id(tmp_path):
     run = service.get_run(created["run_id"])
     assert run["status"] == "SUCCEEDED"
     assert run["last_completed_node"] == "miner"
+    assurance = service.get_assurance(created["run_id"])
+    assert assurance is not None
+    assert assurance.run_id == created["run_id"]
 
 
 def test_event_and_artifact_polling_after_fake_graph_completion(tmp_path):
     db_path = _db_path(tmp_path)
     graph = RecordingGraph(db_path)
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: graph)
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph)
     created = service.create_run(ticker="AAPL", trade_date="2026-01-15", query=None)
     service.run_next()
 
@@ -177,7 +180,7 @@ def test_event_and_artifact_polling_after_fake_graph_completion(tmp_path):
 def test_retry_rejects_running_and_accepts_terminal_with_lineage(tmp_path):
     db_path = _db_path(tmp_path)
     graph = RecordingGraph(db_path)
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: graph)
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph)
     queued = service.create_run(ticker="AAPL", trade_date="2026-01-15", query=None)
     conn = sqlite3.connect(db_path)
     conn.execute("UPDATE agent_runs SET status = 'RUNNING' WHERE run_id = ?", (queued["run_id"],))
@@ -207,7 +210,7 @@ def test_retry_rejects_running_and_accepts_terminal_with_lineage(tmp_path):
 def test_timeout_marks_run_failed_system_timeout(tmp_path):
     db_path = _db_path(tmp_path)
     graph = SleepingGraph()
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: graph, timeout_seconds=0.01)
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph, timeout_seconds=0.01)
     created = service.create_run(ticker="AAPL", trade_date="2026-01-15", query=None)
 
     result = service.run_next()
@@ -221,7 +224,7 @@ def test_timeout_marks_run_failed_system_timeout(tmp_path):
 def test_timeout_late_success_does_not_override_terminal_timeout(tmp_path):
     db_path = _db_path(tmp_path)
     graph = LateSuccessGraph(db_path)
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: graph, timeout_seconds=0.01)
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph, timeout_seconds=0.01)
     created = service.create_run(ticker="AAPL", trade_date="2026-01-15", query=None)
 
     service.run_next()
@@ -235,7 +238,7 @@ def test_timeout_late_success_does_not_override_terminal_timeout(tmp_path):
 def test_graph_exception_marks_failed_system_and_does_not_leave_queued(tmp_path):
     db_path = _db_path(tmp_path)
     graph = BoomGraph()
-    service = LiveRunService(db_path=db_path, graph_factory=lambda: graph)
+    service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph)
     created = service.create_run(ticker="AAPL", trade_date="2026-01-15", query=None)
 
     result = service.run_next()

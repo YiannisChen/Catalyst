@@ -110,7 +110,7 @@ def test_redacted_config_echo():
         try:
             captured = io.StringIO()
             sys.stdout = captured
-            fetcher, limiter = build_polygon_fetcher()
+            fetcher, limiter = build_polygon_fetcher(trust_env=False)
             output = captured.getvalue()
         finally:
             sys.stdout = saved_stdout
@@ -131,7 +131,7 @@ def test_polygon_fetcher_constructed():
     from catalyst_data.rate_limiter import TokenBucketLimiter
 
     with mock.patch.dict(os.environ, {"POLYGON_API_KEY": "test_key_12345"}):
-        fetcher, limiter = build_polygon_fetcher()
+        fetcher, limiter = build_polygon_fetcher(trust_env=False)
 
     assert callable(fetcher)
     assert isinstance(limiter, TokenBucketLimiter)
@@ -147,7 +147,7 @@ def test_finnhub_fetcher_constructed():
     from catalyst_data.rate_limiter import TokenBucketLimiter
 
     with mock.patch.dict(os.environ, {"FINNHUB_API_KEY": "test_key_67890"}):
-        fetcher, limiter = build_finnhub_fetcher()
+        fetcher, limiter = build_finnhub_fetcher(trust_env=False)
 
     assert callable(fetcher)
     assert isinstance(limiter, TokenBucketLimiter)

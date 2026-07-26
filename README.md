@@ -1,196 +1,78 @@
 # Catalyst
 
-**An evidence-bounded financial event attribution system.**
+Catalyst is a local, evidence-bounded RAG and attribution workbench. It uses a difficult financial-event use case to demonstrate reliable data ingestion, temporal retrieval, reranking, structured agent workflows, runtime assurance, and reproducible engineering evaluation.
 
-Catalyst answers the question *"why did this stock move?"* by retrieving relevant evidence, scoring it under explicit quality constraints, and refusing to answer when evidence is insufficient — rather than hallucinating a confident-sounding explanation.
+Catalyst is not an investment product, trading system, SaaS service, multi-agent framework, or replacement for general web-search assistants. Current capabilities and limitations are described honestly; planned work is tracked in [`docs/plans/2026-07-21-catalyst-roadmap.md`](docs/plans/2026-07-21-catalyst-roadmap.md).
 
-Built as a graduation project demonstrating agent engineering principles: evidence validity, refusal quality, replayability, and failure governance over one-shot LLM fluency.
+## Architecture
 
----
-
-## How It Works
-
-```
-User query: "Why did AAPL move -3.2% on 2025-11-14?"
-        │
-        ▼
-┌─────────────────────────────────────────────────────────┐
-│                    Catalyst Pipeline                     │
-│                                                         │
-│  Parser → RetrievalPolicy → Miner → Critic              │
-│                                    │                    │
-│                              DecisionRouter             │
-│                              ┌─────┴─────┐             │
-│                           Judge       Refuse            │
-│                              │                          │
-│                          Validator → Finalizer          │
-└─────────────────────────────────────────────────────────┘
-        │
-        ▼
-Output status: SUFFICIENT | PARTIAL | INSUFFICIENT | SYSTEM_ERROR
-+ Evidence-referenced attribution report
+```text
+Providers
+  → Raw Source Archive
+  → Canonical Domain Store
+  → Retrieval Corpus
+  → FTS5 / Dense / RRF / Reranker
+  → Miner → Critic → DecisionRouter → Judge → Validator → Finalizer
+  → Trace + Runtime Assurance
+  → Local API / Workbench
 ```
 
-Every output carries an explicit status. `INSUFFICIENT` and `SYSTEM_ERROR` are first-class responses — the system refuses rather than fabricates when evidence does not support a conclusion.
+The current graph is a multi-stage LLM workflow with two normal model calls, not a multi-agent system.
 
----
+## Packages
 
-## Repository Structure
+| Package | Responsibility |
+|---|---|
+| `packages/data-core` | Provider ingestion, SQLite storage, update planning, provenance, corpus, and retrieval primitives |
+| `packages/agents` | Attribution workflow, deterministic routing, runtime service, trace, and assurance |
+| `packages/eval` | Agent-agnostic benchmark schemas, metrics, result packs, and replay gates |
+| `packages/app` | Local FastAPI contracts, BYOK model wiring, run lifecycle, and workbench queries |
 
-```
-Catalyst/
-├── packages/
-│   ├── data-core/      # Multi-source financial data ingestion + storage
-│   ├── agents/         # LangGraph MCJ attribution pipeline
-│   ├── eval/           # Evaluation framework (5 metrics + experiment harness)
-│   └── app/            # FastAPI runtime backend
-├── apps/
-│   └── workbench/      # React attribution workbench UI
-├── scripts/            # Evaluation, ablation, and diagnostic scripts
-├── docs/
-│   ├── ADR/            # Architecture Decision Records (12 decisions)
-│   ├── API_Documentation/  # Data provider API references
-│   └── plans/          # Implementation plans and design docs
-└── data/               # Evaluation database (gitignored at runtime)
-```
+Dependency direction is `data-core → agents → app`. Eval consumes persisted artifacts and plain state through eval-owned adapters; agents never imports eval.
 
----
+## Current Providers
 
-## Quick Start
+| Provider | Role |
+|---|---|
+| Polygon | News and OHLCV |
+| Finnhub | Supplemental company news |
+| FMP | Fundamentals snapshots |
+| SEC EDGAR | Filing metadata and documents |
+| FRED | Macro observations |
+| yfinance | OHLCV fallback |
 
-**Prerequisites:** Python ≥ 3.11, Node.js ≥ 18
+## Development
 
-### 1. Clone and install
+Python 3.11 or newer is required.
 
 ```bash
-git clone https://github.com/YianniChen/Catalyst.git
-cd Catalyst
-
-python -m venv .venv && source .venv/bin/activate
-
-# Install packages in dependency order
+python -m venv .venv
+source .venv/bin/activate
 pip install -e "packages/data-core[dev]"
-pip install -e packages/eval
 pip install -e packages/agents
+pip install -e packages/eval
 pip install -e packages/app
 ```
 
-### 2. Configure API keys
+Run canonical tests from the repository root:
 
 ```bash
-cp packages/data-core/.env.template .env
+.venv/bin/python -m pytest packages/data-core -q
+.venv/bin/python -m pytest packages/agents -q
+.venv/bin/python -m pytest packages/eval -q
+.venv/bin/python -m pytest packages/app -q
 ```
 
-Edit `.env`:
+Tests and offline fixtures do not require live provider calls. Never commit provider credentials, raw licensed payloads, databases, embeddings, or local run artifacts.
 
-```env
-POLYGON_API_KEY=your_polygon_key
-FMP_API_KEY=your_fmp_key
-FRED_API_KEY=your_fred_key
-AIHUBMIX_API_KEY=your_llm_proxy_key   # or set OPENAI_API_KEY / ANTHROPIC_API_KEY directly
-```
+## Design
 
-Data providers: [Polygon.io](https://polygon.io) (free tier available), [FMP](https://financialmodelingprep.com), [FRED](https://fred.stlouisfed.org/docs/api/fred/) (free).
-
-### 3. Verify S1 evaluation pipeline
-
-```bash
-# Run S1 metric, harness, and ruler tests (no network required)
-.venv/bin/python -m pytest \
-  packages/eval/tests/test_s1_rebuild_eval_ruler.py \
-  packages/eval/tests/test_s1_three_arm.py \
-  packages/eval/tests/test_metrics.py \
-  packages/eval/tests/test_harness.py \
-  -q
-```
-
-### 4. Start the workbench
-
-```bash
-# Terminal 1 — backend
-uvicorn catalyst_app.main:app --reload --port 8000
-
-# Terminal 2 — frontend
-cd apps/workbench
-npm install && npm run dev
-# → http://localhost:5173
-```
-
----
-
-## Evaluation
-
-Catalyst is evaluated against a frozen golden set of 65 financial events
-with ground-truth attribution labels:
-
-| File | Cases | Purpose |
-|------|-------|--------|
-| `packages/eval/golden_set/v1_3_answerable.jsonl` | 50 | Expected to produce an attribution |
-| `packages/eval/golden_set/v1_3_unanswerable.jsonl` | 15 | Expected to trigger a refusal |
-| **Total** | **65** | |
-
-### S1 metrics
-
-- CauseMatch — precision/recall over attributed event causes
-- CitationFaithfulness — fraction of claims with valid evidence references
-- DirectionAccuracy — correctness of predicted price-move direction
-- RefusalCorrectness — accuracy of refusal decisions on unanswerable cases
-
-### Three-arm evaluation design
-
-- **Arm A:** closed-book (LLM only, no evidence)
-- **Arm B:** same pre-Critic miner evidence
-- **Arm C:** full MCJ pipeline
-
-The 65-case API baseline runner has not yet been implemented on this branch.
-S1 pipeline integrity is verified by the test suite (see Quick Start above).
-
-### Legacy runners
-
-```bash
-# Legacy T-13b/v1.2 frozen eval (requires data/)
-python packages/eval/scripts/run_frozen_eval.py
-```
-
-See [docs/ADR/ADR-010-golden-set-expansion-and-statistical-power.md](docs/ADR/ADR-010-golden-set-expansion-and-statistical-power.md) for evaluation design history.
-
-## Key Design Decisions
-
-All major technical choices are documented as Architecture Decision Records:
-
-| ADR | Decision |
-|-----|----------|
-| [ADR-001](docs/ADR/ADR-001-sqlite-over-postgresql.md) | SQLite (WAL) over PostgreSQL — zero-config, portable |
-| [ADR-002](docs/ADR/ADR-002-hybrid-rag-retrieval.md) | Hybrid RAG (BM25 + vector + cross-encoder rerank) |
-| [ADR-003](docs/ADR/ADR-003-miner-critic-judge-workflow.md) | Miner-Critic-Judge over single-agent or debate |
-| [ADR-005](docs/ADR/ADR-005-output-status-contract-and-downgrade-policy.md) | 4-state output status contract |
-| [ADR-009](docs/ADR/ADR-009-two-level-chunking-and-reranker.md) | Two-level chunking with cross-encoder reranking |
-| [ADR-010](docs/ADR/ADR-010-critic-k-sufficient-recalibration.md) | Critic sufficiency threshold calibration |
-
-→ [Full ADR index](docs/ADR/)
-
----
-
-## Data Sources
-
-| Provider | Data | Tier |
-|----------|------|------|
-| [Polygon.io](https://polygon.io) | OHLCV, news | Free / paid |
-| [FMP](https://financialmodelingprep.com) | Fundamentals (income, balance sheet, cash flow) | Free tier |
-| [FRED](https://fred.stlouisfed.org) | Macro indicators (rates, CPI, unemployment) | Free |
-| [GDELT](https://www.gdeltproject.org) | Global news events | Free |
-| [yfinance](https://github.com/ranaroussi/yfinance) | OHLCV fallback | Free |
-
----
-
-## Documentation
-
-- [Project Whitepaper](docs/catalyst_whitepaper.md)
-- [Architecture Decision Records](docs/ADR/)
-- [P1 Architecture Plan](docs/plans/2026-05-04-p1-p2-architecture-plan.md)
-- [API Provider Documentation](docs/API_Documentation/)
-
----
+- [Final workbench design](docs/plans/2026-07-19-catalyst-open-source-workbench-design.md)
+- [Provider provenance and chunking](docs/plans/2026-07-19-catalyst-provider-provenance-and-chunking-design.md)
+- [Package architecture](docs/plans/2026-07-19-catalyst-final-package-architecture.md)
+- [Evaluation architecture](docs/plans/2026-07-19-catalyst-evaluation-architecture-review.md)
+- [B2–B7 technical contracts](docs/plans/2026-07-21-b2-b7-technical-contracts.md)
+- [Delivery roadmap](docs/plans/2026-07-21-catalyst-roadmap.md)
 
 ## License
 
