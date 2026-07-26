@@ -1446,538 +1446,421 @@ class TestExecuteUpdateDrift:
 
 
 
+
 class TestFmpListNormalization:
-    """FMP returns top-level JSON arrays for income_statement, balance_sheet, cash_flow.
-    The normalizer must handle list-shaped responses, not just dict-wrapped ones."""
+    """FMP normalization: strict RED→GREEN contract for list-shaped responses.
 
-    @pytest.mark.asyncio
-    async def test_income_statement_top_level_list(self):
-        """income_statement response is a list of statement dicts."""
+    Seven scenarios covering every payload shape, ledger transition,
+    checkpoint assertion, and idempotency guarantee.
+    """
+
+    # ── helpers ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_plan(db_version=11, ticker="AAPL", endpoint="income_statement",
+                   date="2026-01-14", cell_suffix="1"):
         from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
-        from catalyst_data.update_pipeline import execute_update
-        from conftest import _fresh_db_at_version
-
-        db = _fresh_db_at_version(11)
         plan = UpdatePlan(
-            universe={"tickers": ["AAPL"]},
+            universe={"tickers": [ticker]},
             reference_today="2026-01-15",
             latest_closed_session="2026-01-14",
             config={"sources": ["fmp_fundamentals"]},
             stages={
                 "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "income_statement", "subject": "AAPL", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"}], "count": 1},
+                "evidence": {"cells": [{
+                    "stage": "evidence",
+                    "source_type": "fmp_fundamentals",
+                    "endpoint_name": endpoint,
+                    "subject": ticker,
+                    "window_start": date,
+                    "window_end": date,
+                    "date_domain": "as_of",
+                    "provider_profile_version": "v1",
+                    "page_cap": None,
+                    "item_cap": None,
+                    "cell_id": "a" * 63 + cell_suffix,
+                }], "count": 1},
             },
         )
         plan.plan_hash = compute_plan_hash(plan)
         plan.expected_plan_hash = plan.plan_hash
+        return plan
 
-        # Top-level list — the actual FMP response shape
-        list_payload = [
-            {
-                "date": "2025-09-30",
-                "period": "FY",
-                "reportedCurrency": "USD",
-                "revenue": 383290000000,
-                "netIncome": 96995000000,
-            },
-            {
-                "date": "2024-09-30",
-                "period": "FY",
-                "reportedCurrency": "USD",
-                "revenue": 391030000000,
-                "netIncome": 93736000000,
-            },
-        ]
-
-        async def fake_transport(provider, method, url, **kwargs):
+    @staticmethod
+    def _fake_transport(payload):
+        async def _transport(provider, method, url, **kwargs):
             class FakeResponse:
                 status_code = 200
                 def json(self):
-                    return list_payload
+                    return payload
             return FakeResponse()
+        return _transport
 
-        report = await execute_update(db=db, plan=plan, transport=fake_transport)
+    # ── scenario 1: valid list → SUCCEEDED ──────────────────────────────
 
-        # Verify fundamental_statements rows were written
-        row_count = db.execute(
-            "SELECT COUNT(*) FROM fundamental_statements WHERE ticker='AAPL' AND statement_type='income_statement'"
-        ).fetchone()[0]
-        assert row_count == 2, f"Expected 2 statement rows, got {row_count}"
+    @pytest.mark.asyncio
+    async def test_scenario_1_valid_list_succeeded(self):
+        """Valid top-level list: SUCCEEDED, is_complete=1, statements + provenance."""
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
 
-        # Verify provenance was recorded
-        prov_count = db.execute(
-            "SELECT COUNT(*) FROM normalized_provenance WHERE entity_type='fundamental_snapshot'"
-        ).fetchone()[0]
-        assert prov_count == 2, f"Expected 2 provenance rows, got {prov_count}"
+        db = _fresh_db_at_version(11)
+        plan = self._make_plan()
 
-        # Verify raw asset exists
-        raw_count = db.execute("SELECT COUNT(*) FROM raw_assets WHERE data_version='v2'").fetchone()[0]
-        assert raw_count == 1
+        payload = [
+            {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD",
+             "revenue": 383290000000, "netIncome": 96995000000},
+            {"date": "2024-09-30", "period": "FY", "reportedCurrency": "USD",
+             "revenue": 391030000000, "netIncome": 93736000000},
+        ]
 
-        # Verify statement identity fields
+        report = await execute_update(db=db, plan=plan,
+                                       transport=self._fake_transport(payload))
+
+        # Ledger: terminal state
+        attempts = db.execute(
+            "SELECT status FROM provider_request_attempts").fetchall()
+        for a in attempts:
+            assert a["status"] == "SUCCEEDED",                 f"Expected SUCCEEDED, got {a['status']}"
+
+        # Checkpoint: precise assertion
+        cp = db.execute(
+            "SELECT status, is_complete, items_received FROM source_checkpoints"
+        ).fetchone()
+        assert cp["status"] == "success"
+        assert cp["is_complete"] == 1
+        assert cp["items_received"] == 2
+
+        # Statements
         stmts = db.execute(
-            "SELECT fiscal_date, fiscal_period, reported_currency FROM fundamental_statements WHERE ticker='AAPL' ORDER BY fiscal_date"
+            "SELECT ticker, statement_type, fiscal_date, fiscal_period, "
+            "reported_currency FROM fundamental_statements "
+            "ORDER BY fiscal_date"
         ).fetchall()
+        assert len(stmts) == 2
+        assert stmts[0]["ticker"] == "AAPL"
+        assert stmts[0]["statement_type"] == "income_statement"
         assert stmts[0]["fiscal_date"] == "2024-09-30"
         assert stmts[0]["fiscal_period"] == "FY"
         assert stmts[0]["reported_currency"] == "USD"
         assert stmts[1]["fiscal_date"] == "2025-09-30"
 
-        db.close()
-
-    @pytest.mark.asyncio
-    async def test_balance_sheet_top_level_list(self):
-        """balance_sheet response is a list of statement dicts."""
-        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
-        from catalyst_data.update_pipeline import execute_update
-        from conftest import _fresh_db_at_version
-
-        db = _fresh_db_at_version(11)
-        plan = UpdatePlan(
-            universe={"tickers": ["NVDA"]},
-            reference_today="2026-01-15",
-            latest_closed_session="2026-01-14",
-            config={"sources": ["fmp_fundamentals"]},
-            stages={
-                "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "balance_sheet", "subject": "NVDA", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2"}], "count": 1},
-            },
-        )
-        plan.plan_hash = compute_plan_hash(plan)
-        plan.expected_plan_hash = plan.plan_hash
-
-        list_payload = [
-            {"date": "2025-01-31", "period": "FY", "reportedCurrency": "USD", "totalAssets": 100000000},
-        ]
-
-        async def fake_transport(provider, method, url, **kwargs):
-            class FakeResponse:
-                status_code = 200
-                def json(self):
-                    return list_payload
-            return FakeResponse()
-
-        await execute_update(db=db, plan=plan, transport=fake_transport)
-
-        row_count = db.execute(
-            "SELECT COUNT(*) FROM fundamental_statements WHERE ticker='NVDA' AND statement_type='balance_sheet'"
-        ).fetchone()[0]
-        assert row_count == 1
-        db.close()
-
-    @pytest.mark.asyncio
-    async def test_cash_flow_top_level_list(self):
-        """cash_flow response is a list of statement dicts."""
-        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
-        from catalyst_data.update_pipeline import execute_update
-        from conftest import _fresh_db_at_version
-
-        db = _fresh_db_at_version(11)
-        plan = UpdatePlan(
-            universe={"tickers": ["MSFT"]},
-            reference_today="2026-01-15",
-            latest_closed_session="2026-01-14",
-            config={"sources": ["fmp_fundamentals"]},
-            stages={
-                "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "cash_flow", "subject": "MSFT", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3"}], "count": 1},
-            },
-        )
-        plan.plan_hash = compute_plan_hash(plan)
-        plan.expected_plan_hash = plan.plan_hash
-
-        list_payload = [
-            {"date": "2025-06-30", "period": "FY", "reportedCurrency": "USD", "operatingCashFlow": 50000000},
-        ]
-
-        async def fake_transport(provider, method, url, **kwargs):
-            class FakeResponse:
-                status_code = 200
-                def json(self):
-                    return list_payload
-            return FakeResponse()
-
-        await execute_update(db=db, plan=plan, transport=fake_transport)
-
-        row_count = db.execute(
-            "SELECT COUNT(*) FROM fundamental_statements WHERE ticker='MSFT' AND statement_type='cash_flow'"
-        ).fetchone()[0]
-        assert row_count == 1
-        db.close()
-
-    @pytest.mark.asyncio
-    async def test_list_and_dict_both_work(self):
-        """Existing dict-wrapped payloads still normalize correctly."""
-        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
-        from catalyst_data.update_pipeline import execute_update
-        from conftest import _fresh_db_at_version
-
-        db = _fresh_db_at_version(11)
-        plan = UpdatePlan(
-            universe={"tickers": ["AAPL"]},
-            reference_today="2026-01-15",
-            latest_closed_session="2026-01-14",
-            config={"sources": ["fmp_fundamentals"]},
-            stages={
-                "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "income_statement", "subject": "AAPL", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"}], "count": 1},
-            },
-        )
-        plan.plan_hash = compute_plan_hash(plan)
-        plan.expected_plan_hash = plan.plan_hash
-
-        # Dict-wrapped (old shape) must still work
-        dict_payload = {"revenue": 100}
-
-        async def fake_transport(provider, method, url, **kwargs):
-            class FakeResponse:
-                status_code = 200
-                def json(self):
-                    return dict_payload
-            return FakeResponse()
-
-        await execute_update(db=db, plan=plan, transport=fake_transport)
-
-        # Dict payload without statements/data/results wrappers: normalization
-        # produces no statement rows, but raw was received.
-        # Current behavior: no statements extracted, count=0
-        stmt_count = db.execute(
-            "SELECT COUNT(*) FROM fundamental_statements"
-        ).fetchone()[0]
-        assert stmt_count == 0
-        db.close()
-
-    @pytest.mark.asyncio
-    async def test_non_list_non_dict_raises_cleanly(self):
-        """Non-list, non-dict FMP responses must not silently succeed."""
-        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
-        from catalyst_data.update_pipeline import execute_update
-        from conftest import _fresh_db_at_version
-
-        db = _fresh_db_at_version(11)
-        plan = UpdatePlan(
-            universe={"tickers": ["AAPL"]},
-            reference_today="2026-01-15",
-            latest_closed_session="2026-01-14",
-            config={"sources": ["fmp_fundamentals"]},
-            stages={
-                "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "income_statement", "subject": "AAPL", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"}], "count": 1},
-            },
-        )
-        plan.plan_hash = compute_plan_hash(plan)
-        plan.expected_plan_hash = plan.plan_hash
-
-        async def fake_transport(provider, method, url, **kwargs):
-            class FakeResponse:
-                status_code = 200
-                def json(self):
-                    return "invalid string response"
-            return FakeResponse()
-
-        # Should not crash; should handle gracefully (provenance recorded, no statement rows)
-        report = await execute_update(db=db, plan=plan, transport=fake_transport)
-
-        # Should not crash — raw was received but normalization produced no rows
-        # Verify no crash occurred (report.plan_hash present)
-        assert report.get("plan_hash") is not None
-
-        # No fundamental statements for invalid data
-        stmt_count = db.execute("SELECT COUNT(*) FROM fundamental_statements").fetchone()[0]
-        assert stmt_count == 0
-        db.close()
-
-    @pytest.mark.asyncio
-    async def test_list_normalization_is_idempotent(self):
-        """Replaying the same list payload produces identical statements."""
-        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
-        from catalyst_data.update_pipeline import execute_update
-        from conftest import _fresh_db_at_version
-
-        list_payload = [
-            {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD", "revenue": 100},
-        ]
-
-        async def fake_transport(provider, method, url, **kwargs):
-            class FakeResponse:
-                status_code = 200
-                def json(self):
-                    return list_payload
-            return FakeResponse()
-
-        # First run
-        db1 = _fresh_db_at_version(11)
-        plan1 = UpdatePlan(
-            universe={"tickers": ["AAPL"]},
-            reference_today="2026-01-15",
-            latest_closed_session="2026-01-14",
-            config={"sources": ["fmp_fundamentals"]},
-            stages={
-                "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "income_statement", "subject": "AAPL", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"}], "count": 1},
-            },
-        )
-        plan1.plan_hash = compute_plan_hash(plan1)
-        plan1.expected_plan_hash = plan1.plan_hash
-        await execute_update(db=db1, plan=plan1, transport=fake_transport)
-
-        # Second run (simulated — same payload, same DB state)
-        db2 = _fresh_db_at_version(11)
-        plan2 = UpdatePlan(
-            universe={"tickers": ["AAPL"]},
-            reference_today="2026-01-15",
-            latest_closed_session="2026-01-14",
-            config={"sources": ["fmp_fundamentals"]},
-            stages={
-                "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "income_statement", "subject": "AAPL", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"}], "count": 1},
-            },
-        )
-        plan2.plan_hash = compute_plan_hash(plan2)
-        plan2.expected_plan_hash = plan2.plan_hash
-        await execute_update(db=db2, plan=plan2, transport=fake_transport)
-
-        # Compare statement IDs (should be identical)
-        stmts1 = db1.execute(
-            "SELECT statement_id, fiscal_date FROM fundamental_statements ORDER BY fiscal_date"
-        ).fetchall()
-        stmts2 = db2.execute(
-            "SELECT statement_id, fiscal_date FROM fundamental_statements ORDER BY fiscal_date"
-        ).fetchall()
-        assert stmts1 == stmts2, f"Idempotency violation: {stmts1} != {stmts2}"
-
-        db1.close()
-        db2.close()
-
-
-    @pytest.mark.asyncio
-    async def test_list_response_preserves_raw_when_no_rows_extracted(self):
-        """Raw asset must be persisted even when normalization extracts zero rows."""
-        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
-        from catalyst_data.update_pipeline import execute_update
-        from conftest import _fresh_db_at_version
-
-        db = _fresh_db_at_version(11)
-        plan = UpdatePlan(
-            universe={"tickers": ["AAPL"]},
-            reference_today="2026-01-15",
-            latest_closed_session="2026-01-14",
-            config={"sources": ["fmp_fundamentals"]},
-            stages={
-                "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "income_statement", "subject": "AAPL", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}], "count": 1},
-            },
-        )
-        plan.plan_hash = compute_plan_hash(plan)
-        plan.expected_plan_hash = plan.plan_hash
-
-        # Empty list — zero rows but raw still received
-        list_payload = []
-
-        async def fake_transport(provider, method, url, **kwargs):
-            class FakeResponse:
-                status_code = 200
-                def json(self):
-                    return list_payload
-            return FakeResponse()
-
-        await execute_update(db=db, plan=plan, transport=fake_transport)
-
-        # Raw asset must be preserved
-        raw_count = db.execute("SELECT COUNT(*) FROM raw_assets WHERE data_version='v2'").fetchone()[0]
-        assert raw_count == 1, "Raw must be preserved even with zero rows"
-
-        # No statements for empty list
-        stmt_count = db.execute("SELECT COUNT(*) FROM fundamental_statements").fetchone()[0]
-        assert stmt_count == 0
-
-        # Checkpoint must NOT have is_complete=1 when normalization produced no rows
-        cp = db.execute(
-            "SELECT status, is_complete FROM source_checkpoints"
+        # Provenance
+        prov = db.execute(
+            "SELECT COUNT(*) as n FROM normalized_provenance "
+            "WHERE entity_type='fundamental_snapshot'"
         ).fetchone()
-        assert cp is not None
-        # The cell ran without crashing, but produced zero items
-        assert cp["is_complete"] == 0 or cp["status"] == "success_empty"
+        assert prov["n"] == 2
+
+        # Raw preserved
+        raw = db.execute(
+            "SELECT COUNT(*) as n FROM raw_assets WHERE data_version='v2'"
+        ).fetchone()
+        assert raw["n"] == 1
 
         db.close()
 
+    # ── scenario 2: legally empty list → success_empty ───────────────────
+
     @pytest.mark.asyncio
-    async def test_cell_checkpoint_not_complete_when_no_rows(self):
-        """A cell that runs HTTP 200 but extracts zero rows must not be marked is_complete=1."""
-        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
+    async def test_scenario_2_empty_list_success_empty(self):
+        """Empty list from FMP: success_empty, is_complete=1, raw preserved,
+        zero normalized rows, attempt SUCCEEDED."""
         from catalyst_data.update_pipeline import execute_update
         from conftest import _fresh_db_at_version
 
         db = _fresh_db_at_version(11)
-        plan = UpdatePlan(
-            universe={"tickers": ["AAPL"]},
-            reference_today="2026-01-15",
-            latest_closed_session="2026-01-14",
-            config={"sources": ["fmp_fundamentals"]},
-            stages={
-                "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "balance_sheet", "subject": "AAPL", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc1"}], "count": 1},
-            },
-        )
-        plan.plan_hash = compute_plan_hash(plan)
-        plan.expected_plan_hash = plan.plan_hash
+        plan = self._make_plan(endpoint="balance_sheet", cell_suffix="2")
 
-        # Empty list
-        async def fake_transport(provider, method, url, **kwargs):
-            class FakeResponse:
-                status_code = 200
-                def json(self):
-                    return []
-            return FakeResponse()
+        report = await execute_update(db=db, plan=plan,
+                                       transport=self._fake_transport([]))
 
-        await execute_update(db=db, plan=plan, transport=fake_transport)
-
-        cp = db.execute("SELECT is_complete FROM source_checkpoints").fetchone()
-        assert cp is not None
-        assert cp["is_complete"] == 1, "is_complete must be 1 for processed cell (even empty)"
-
-        db.close()
-
-    @pytest.mark.asyncio
-    async def test_ledger_attempt_not_left_started_on_list_response(self):
-        """HTTP 200 + list normalization must complete the ledger attempt, not leave STARTED."""
-        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
-        from catalyst_data.update_pipeline import execute_update
-        from conftest import _fresh_db_at_version
-
-        db = _fresh_db_at_version(11)
-        plan = UpdatePlan(
-            universe={"tickers": ["AAPL"]},
-            reference_today="2026-01-15",
-            latest_closed_session="2026-01-14",
-            config={"sources": ["fmp_fundamentals"]},
-            stages={
-                "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "income_statement", "subject": "AAPL", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd1"}], "count": 1},
-            },
-        )
-        plan.plan_hash = compute_plan_hash(plan)
-        plan.expected_plan_hash = plan.plan_hash
-
-        list_payload = [
-            {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD", "revenue": 100},
-        ]
-
-        async def fake_transport(provider, method, url, **kwargs):
-            class FakeResponse:
-                status_code = 200
-                def json(self):
-                    return list_payload
-            return FakeResponse()
-
-        report = await execute_update(db=db, plan=plan, transport=fake_transport)
-
-        # Ledger attempt must be completed (not STARTED)
+        # Attempt must be terminal
         attempts = db.execute(
-            "SELECT status FROM provider_request_attempts"
-        ).fetchall()
+            "SELECT status FROM provider_request_attempts").fetchall()
         for a in attempts:
-            assert a["status"] != "STARTED",                 f"Ledger attempt left STARTED: {dict(a)}"
+            assert a["status"] != "STARTED"
 
-        # Checkpoint status must be terminal
-        cp = db.execute("SELECT status FROM source_checkpoints").fetchone()
-        assert cp["status"] in ("success", "success_empty"),             f"Checkpoint status not terminal: {cp['status']}"
+        # Checkpoint: success_empty, is_complete=1
+        cp = db.execute(
+            "SELECT status, is_complete, items_received FROM source_checkpoints"
+        ).fetchone()
+        assert cp["status"] == "success_empty"
+        assert cp["is_complete"] == 1
+        assert cp["items_received"] == 0
+
+        # Zero statement rows
+        stmt_count = db.execute(
+            "SELECT COUNT(*) as n FROM fundamental_statements").fetchone()["n"]
+        assert stmt_count == 0
+
+        # Raw preserved
+        raw = db.execute(
+            "SELECT COUNT(*) as n FROM raw_assets WHERE data_version='v2'"
+        ).fetchone()
+        assert raw["n"] == 1
 
         db.close()
 
+    # ── scenario 3: non-list/non-dict → PARSE_ERROR ─────────────────────
+
     @pytest.mark.asyncio
-    async def test_provenance_fields_complete_for_list_normalization(self):
-        """Normalized provenance records must have complete fields for list-shaped data."""
-        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
+    async def test_scenario_3_non_list_non_dict_parse_error(self):
+        """String payload: PARSE_ERROR, is_complete=0, raw preserved, zero projection."""
         from catalyst_data.update_pipeline import execute_update
         from conftest import _fresh_db_at_version
 
         db = _fresh_db_at_version(11)
-        plan = UpdatePlan(
-            universe={"tickers": ["AAPL"]},
-            reference_today="2026-01-15",
-            latest_closed_session="2026-01-14",
-            config={"sources": ["fmp_fundamentals"]},
-            stages={
-                "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "income_statement", "subject": "AAPL", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee1"}], "count": 1},
-            },
-        )
-        plan.plan_hash = compute_plan_hash(plan)
-        plan.expected_plan_hash = plan.plan_hash
+        plan = self._make_plan(cell_suffix="3")
 
-        list_payload = [
-            {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD", "revenue": 100},
-        ]
+        report = await execute_update(db=db, plan=plan,
+                                       transport=self._fake_transport("invalid"))
 
-        async def fake_transport(provider, method, url, **kwargs):
-            class FakeResponse:
-                status_code = 200
-                def json(self):
-                    return list_payload
-            return FakeResponse()
+        # Attempt must be PARSE_ERROR
+        attempts = db.execute(
+            "SELECT status FROM provider_request_attempts").fetchall()
+        for a in attempts:
+            assert a["status"] == "PARSE_ERROR",                 f"Expected PARSE_ERROR, got {a['status']}"
 
-        await execute_update(db=db, plan=plan, transport=fake_transport)
+        # Checkpoint: failed, is_complete=0
+        cp = db.execute(
+            "SELECT status, is_complete, items_received FROM source_checkpoints"
+        ).fetchone()
+        assert cp["status"] == "failed"
+        assert cp["is_complete"] == 0
+        assert cp["items_received"] == 0
 
-        # Check provenance records
-        prov_rows = db.execute(
-            "SELECT entity_type, entity_id, entity_version, raw_asset_id FROM normalized_provenance WHERE entity_type='fundamental_snapshot'"
-        ).fetchall()
-        assert len(prov_rows) == 1
+        # Zero statement rows
+        stmt_count = db.execute(
+            "SELECT COUNT(*) as n FROM fundamental_statements").fetchone()["n"]
+        assert stmt_count == 0
 
-        prov = prov_rows[0]
-        assert prov["entity_type"] == "fundamental_snapshot"
-        assert len(prov["entity_id"]) == 64, "entity_id must be 64-char hex"
-        assert len(prov["entity_version"]) == 64
-        assert prov["raw_asset_id"] is not None
+        # Zero provenance
+        prov_count = db.execute(
+            "SELECT COUNT(*) as n FROM normalized_provenance").fetchone()["n"]
+        assert prov_count == 0
+
+        # Raw preserved
+        raw = db.execute(
+            "SELECT COUNT(*) as n FROM raw_assets WHERE data_version='v2'"
+        ).fetchone()
+        assert raw["n"] == 1
 
         db.close()
 
+    # ── scenario 4: non-empty list, all rows invalid → PARSE_ERROR ───────
+
     @pytest.mark.asyncio
-    async def test_raw_asset_fields_correct_for_list_data(self):
-        """raw_asset_id, ticker, statement_type, and dates must be correct for list-shaped data."""
-        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
+    async def test_scenario_4_all_rows_invalid_parse_error(self):
+        """Every row missing fiscal_date: PARSE_ERROR, is_complete=0,
+        zero projection, raw preserved. Must NOT be success_empty."""
         from catalyst_data.update_pipeline import execute_update
         from conftest import _fresh_db_at_version
 
         db = _fresh_db_at_version(11)
-        plan = UpdatePlan(
-            universe={"tickers": ["AAPL"]},
-            reference_today="2026-01-15",
-            latest_closed_session="2026-01-14",
-            config={"sources": ["fmp_fundamentals"]},
-            stages={
-                "market": {"cells": [], "count": 0},
-                "evidence": {"cells": [{"stage": "evidence", "source_type": "fmp_fundamentals", "endpoint_name": "cash_flow", "subject": "AAPL", "window_start": "2026-01-14", "window_end": "2026-01-14", "date_domain": "as_of", "provider_profile_version": "v1", "page_cap": None, "item_cap": None, "cell_id": "fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff1"}], "count": 1},
-            },
-        )
-        plan.plan_hash = compute_plan_hash(plan)
-        plan.expected_plan_hash = plan.plan_hash
+        plan = self._make_plan(endpoint="cash_flow", cell_suffix="4")
 
-        list_payload = [
-            {"date": "2025-06-30", "period": "FY", "reportedCurrency": "USD", "operatingCashFlow": 50000000},
+        # All rows lack date/fiscal_date — every row skipped
+        payload = [
+            {"period": "FY", "reportedCurrency": "USD", "value": 100},
+            {"period": "Q1", "reportedCurrency": "USD", "value": 200},
         ]
 
-        async def fake_transport(provider, method, url, **kwargs):
-            class FakeResponse:
-                status_code = 200
-                def json(self):
-                    return list_payload
-            return FakeResponse()
+        report = await execute_update(db=db, plan=plan,
+                                       transport=self._fake_transport(payload))
 
-        await execute_update(db=db, plan=plan, transport=fake_transport)
+        # Attempt must be PARSE_ERROR (not SUCCEEDED, not success_empty)
+        attempts = db.execute(
+            "SELECT status FROM provider_request_attempts").fetchall()
+        for a in attempts:
+            assert a["status"] == "PARSE_ERROR",                 f"Expected PARSE_ERROR, got {a['status']}"
 
-        stmts = db.execute(
-            "SELECT statement_id, ticker, statement_type, fiscal_date, fiscal_period, reported_currency FROM fundamental_statements"
-        ).fetchall()
-        assert len(stmts) == 1
+        # Checkpoint: failed, is_complete=0
+        cp = db.execute(
+            "SELECT status, is_complete, items_received FROM source_checkpoints"
+        ).fetchone()
+        assert cp["status"] == "failed"
+        assert cp["is_complete"] == 0
 
-        s = stmts[0]
-        assert s["ticker"] == "AAPL"
-        assert s["statement_type"] == "cash_flow"
-        assert s["fiscal_date"] == "2025-06-30"
-        assert s["fiscal_period"] == "FY"
-        assert s["reported_currency"] == "USD"
-        assert len(s["statement_id"]) == 64
+        # Zero statement rows (no partial projection)
+        stmt_count = db.execute(
+            "SELECT COUNT(*) as n FROM fundamental_statements").fetchone()["n"]
+        assert stmt_count == 0
+
+        # Zero provenance
+        prov_count = db.execute(
+            "SELECT COUNT(*) as n FROM normalized_provenance").fetchone()["n"]
+        assert prov_count == 0
+
+        # Raw preserved
+        raw = db.execute(
+            "SELECT COUNT(*) as n FROM raw_assets WHERE data_version='v2'"
+        ).fetchone()
+        assert raw["n"] == 1
 
         db.close()
+
+    # ── scenario 5: mid-normalization exception → atomic rollback ────────
+
+    @pytest.mark.asyncio
+    async def test_scenario_5_mid_normalization_exception_atomic(self):
+        """If normalization fails partway through rows, all statement/provenance
+        projection must be atomically rolled back. Raw preserved.
+        Attempt → PARSE_ERROR, checkpoint failed/is_complete=0."""
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(11)
+        plan = self._make_plan(cell_suffix="5")
+
+        # First row valid, second row is not a dict → should fail atomically
+        payload = [
+            {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD",
+             "revenue": 100},
+            "not-a-dict",
+        ]
+
+        report = await execute_update(db=db, plan=plan,
+                                       transport=self._fake_transport(payload))
+
+        # Attempt must be PARSE_ERROR
+        attempts = db.execute(
+            "SELECT status FROM provider_request_attempts").fetchall()
+        for a in attempts:
+            assert a["status"] == "PARSE_ERROR",                 f"Expected PARSE_ERROR, got {a['status']}"
+
+        # Checkpoint: failed/is_complete=0
+        cp = db.execute(
+            "SELECT status, is_complete, items_received FROM source_checkpoints"
+        ).fetchone()
+        assert cp["status"] == "failed"
+        assert cp["is_complete"] == 0
+
+        # Zero statement rows — atomic, no partial first row
+        stmt_count = db.execute(
+            "SELECT COUNT(*) as n FROM fundamental_statements").fetchone()["n"]
+        assert stmt_count == 0
+
+        # Zero provenance
+        prov_count = db.execute(
+            "SELECT COUNT(*) as n FROM normalized_provenance").fetchone()["n"]
+        assert prov_count == 0
+
+        # Raw preserved
+        raw = db.execute(
+            "SELECT COUNT(*) as n FROM raw_assets WHERE data_version='v2'"
+        ).fetchone()
+        assert raw["n"] == 1
+
+        db.close()
+
+    # ── scenario 6: true same-DB idempotent replay ───────────────────────
+
+    @pytest.mark.asyncio
+    async def test_scenario_6_true_idempotent_replay_same_db(self):
+        """Execute same cell+payload twice on the SAME database.
+        Second execution must not insert duplicate statement rows
+        or provenance rows. Row counts must stay identical."""
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(11)
+        plan = self._make_plan(cell_suffix="6")
+
+        payload = [
+            {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD",
+             "revenue": 100},
+        ]
+        transport = self._fake_transport(payload)
+
+        # First execution
+        await execute_update(db=db, plan=plan, transport=transport)
+
+        stmt_ids_1 = sorted(
+            r[0] for r in db.execute(
+                "SELECT statement_id FROM fundamental_statements").fetchall()
+        )
+        prov_ids_1 = sorted(
+            r[0] for r in db.execute(
+                "SELECT entity_id FROM normalized_provenance "
+                "WHERE entity_type='fundamental_snapshot'").fetchall()
+        )
+        assert len(stmt_ids_1) == 1
+        assert len(prov_ids_1) == 1
+
+        # Second execution — same DB, same plan, same payload
+        await execute_update(db=db, plan=plan, transport=transport)
+
+        stmt_ids_2 = sorted(
+            r[0] for r in db.execute(
+                "SELECT statement_id FROM fundamental_statements").fetchall()
+        )
+        prov_ids_2 = sorted(
+            r[0] for r in db.execute(
+                "SELECT entity_id FROM normalized_provenance "
+                "WHERE entity_type='fundamental_snapshot'").fetchall()
+        )
+
+        # Statement row count must stay at 1 (INSERT OR IGNORE)
+        assert len(stmt_ids_2) == 1,             f"Idempotency violation: {len(stmt_ids_2)} statement rows (was 1)"
+
+        # Provenance rows: 2 is correct (one per raw_asset per execution)
+        # Each execution creates its own raw_asset_id
+        assert len(prov_ids_2) == 2,             f"Expected 2 provenance rows (one per execution), got {len(prov_ids_2)}"
+
+        # Statement IDs must be identical (same statement_id from identity hash)
+        assert stmt_ids_1 == stmt_ids_2,             f"Statement IDs changed across replay: {stmt_ids_1} → {stmt_ids_2}"
+        # Provenance IDs: first-execution ids must be subset of second-execution
+        assert set(prov_ids_1).issubset(set(prov_ids_2)),             f"Provenance from first execution not preserved: {prov_ids_1} not subset of {prov_ids_2}"
+
+        db.close()
+
+    # ── scenario 7: three-endpoint coverage ──────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_scenario_7_all_three_endpoints_normalize_correctly(self):
+        """income_statement, balance_sheet, cash_flow each produce
+        correctly-typed fundamental_statements rows."""
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        endpoints = {
+            "income_statement": [
+                {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD",
+                 "revenue": 100},
+            ],
+            "balance_sheet": [
+                {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD",
+                 "totalAssets": 1000},
+            ],
+            "cash_flow": [
+                {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD",
+                 "operatingCashFlow": 200},
+            ],
+        }
+
+        ep_suffixes = {"income_statement": "a", "balance_sheet": "b", "cash_flow": "c"}
+        ep_dates = {"income_statement": "2026-01-14", "balance_sheet": "2026-01-15", "cash_flow": "2026-01-16"}
+        for ep, payload in endpoints.items():
+            db = _fresh_db_at_version(11)
+            plan = self._make_plan(
+                endpoint=ep, cell_suffix=ep_suffixes[ep],
+                date=ep_dates[ep],
+            )
+
+            await execute_update(db=db, plan=plan,
+                                 transport=self._fake_transport(payload))
+
+            # Each endpoint produces exactly 1 statement row
+            stmts = db.execute(
+                "SELECT statement_type FROM fundamental_statements").fetchall()
+            assert len(stmts) == 1
+            assert stmts[0]["statement_type"] == ep
+
+            # Checkpoint is success/is_complete=1
+            cp = db.execute(
+                "SELECT status, is_complete FROM source_checkpoints").fetchone()
+            assert cp["status"] == "success"
+            assert cp["is_complete"] == 1
+
+            db.close()

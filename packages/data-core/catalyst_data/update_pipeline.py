@@ -766,7 +766,7 @@ def _record_b2_entity(
     source: str,
     ticker: str,
     date: str,
-    data: dict[str, Any],
+    data: Any,  # FMP returns list; other providers return dict
     raw_asset_id: str,
     endpoint_name: str | None = None,
     window_end: str | None = None,
@@ -901,54 +901,90 @@ def _record_b2_entity(
                 entity_version=entity_version, raw_asset_id=raw_asset_id,
             )
             return 1
+
+        # ── payload extraction ──────────────────────────────────────────
         if isinstance(data, list):
             rows = data
         elif isinstance(data, dict):
             rows = data.get("statements") or data.get("data") or data.get("results") or []
         else:
-            rows = []
+            raise ValueError(
+                f"FMP {statement_type}: expected list or dict, got {type(data).__name__}"
+            )
+
         if isinstance(rows, dict):
             rows = [rows]
-        count = 0
-        for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict):
-                continue
-            fiscal_date = row.get("date") or row.get("fiscal_date") or row.get("fillingDate")
-            if not fiscal_date:
-                continue
-            fiscal_period = row.get("period") or row.get("fiscal_period")
-            currency = row.get("reportedCurrency") or row.get("reported_currency")
-            statement_identity = {
-                "provider": "fmp",
-                "ticker": ticker,
-                "statement_type": statement_type,
-                "fiscal_date": fiscal_date,
-                "fiscal_period": fiscal_period,
-                "reported_currency": currency,
-            }
-            statement_id = hashlib.sha256(
-                json.dumps(statement_identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-            ).hexdigest()
-            payload_json = json.dumps(row, sort_keys=True, separators=(",", ":"), default=str)
-            conn.execute(
-                """INSERT OR REPLACE INTO fundamental_statements
-                   (statement_id, raw_asset_id, provider, ticker, statement_type,
-                    fiscal_date, fiscal_period, reported_currency, available_at,
-                    payload_json, created_at)
-                   VALUES (?, ?, 'fmp', ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    statement_id, raw_asset_id, ticker, statement_type,
-                    fiscal_date, fiscal_period, currency,
-                    row.get("acceptedDate") or row.get("available_at") or date,
-                    payload_json, _utc_now_z(),
-                ),
+
+        if not isinstance(rows, list):
+            raise ValueError(
+                f"FMP {statement_type}: rows must be list, got {type(rows).__name__}"
             )
-            entity_version = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
-            record_provenance(
-                conn, entity_type="fundamental_snapshot", entity_id=statement_id,
-                entity_version=entity_version, raw_asset_id=raw_asset_id,
-            )
-            count += 1
+
+        total_input = len(rows)
+        if total_input == 0:
+            # Legally empty: no statement rows, return 0
+            return 0
+
+        # ── projection (atomic via SAVEPOINT) ──────────────────────────
+        conn.execute("SAVEPOINT _fmp_normalize")
+        try:
+            count = 0
+            valid_row_seen = False
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise ValueError(
+                        f"FMP {statement_type}: non-dict row in list at position {count}"
+                    )
+                fiscal_date = row.get("date") or row.get("fiscal_date") or row.get("fillingDate")
+                if not fiscal_date:
+                    continue
+                valid_row_seen = True
+                fiscal_period = row.get("period") or row.get("fiscal_period")
+                currency = row.get("reportedCurrency") or row.get("reported_currency")
+                statement_identity = {
+                    "provider": "fmp",
+                    "ticker": ticker,
+                    "statement_type": statement_type,
+                    "fiscal_date": fiscal_date,
+                    "fiscal_period": fiscal_period,
+                    "reported_currency": currency,
+                }
+                statement_id = hashlib.sha256(
+                    json.dumps(statement_identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+                ).hexdigest()
+                payload_json = json.dumps(row, sort_keys=True, separators=(",", ":"), default=str)
+                conn.execute(
+                    """INSERT OR IGNORE INTO fundamental_statements
+                       (statement_id, raw_asset_id, provider, ticker, statement_type,
+                        fiscal_date, fiscal_period, reported_currency, available_at,
+                        payload_json, created_at)
+                       VALUES (?, ?, 'fmp', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        statement_id, raw_asset_id, ticker, statement_type,
+                        fiscal_date, fiscal_period, currency,
+                        row.get("acceptedDate") or row.get("available_at") or date,
+                        payload_json, _utc_now_z(),
+                    ),
+                )
+                entity_version = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+                record_provenance(
+                    conn, entity_type="fundamental_snapshot", entity_id=statement_id,
+                    entity_version=entity_version, raw_asset_id=raw_asset_id,
+                )
+                count += 1
+
+            # Non-empty input but zero valid rows: fail, don't success_empty
+            if not valid_row_seen:
+                raise ValueError(
+                    f"FMP {statement_type}: {total_input} rows, none had fiscal_date"
+                )
+
+            conn.execute("RELEASE _fmp_normalize")
+        except Exception:
+            conn.execute("ROLLBACK TO _fmp_normalize")
+            conn.execute("RELEASE _fmp_normalize")
+            raise
+
         return count
 
     if source == "sec_filings":
@@ -1657,16 +1693,55 @@ async def _execute_b2_cell(
             if len(data) > remaining:
                 page_data = data[:remaining]
                 incomplete_due_to_cap = True
-        entity_result = _record_b2_entity(
-            conn,
-            source=source,
-            ticker=ticker,
-            date=date,
-            data=page_data,
-            raw_asset_id=raw_asset_id,
-            endpoint_name=endpoint,
-            window_end=cell["window_end"],
-        )
+        try:
+            entity_result = _record_b2_entity(
+                conn,
+                source=source,
+                ticker=ticker,
+                date=date,
+                data=page_data,
+                raw_asset_id=raw_asset_id,
+                endpoint_name=endpoint,
+                window_end=cell["window_end"],
+            )
+        except ValueError as norm_err:
+            transition_attempt(
+                conn,
+                request_id,
+                "PARSE_ERROR",
+                http_status=status_code,
+                items_count=0,
+                raw_asset_id=raw_asset_id,
+                response_sha256=response_sha256,
+                response_bytes=len(raw_body),
+            )
+            conn.commit()
+            _write_b2_checkpoint(
+                conn,
+                run_id=run_id,
+                source=source,
+                ticker=ticker,
+                date=date,
+                status="failed",
+                logical_fetch_id=logical_fetch_id,
+                items_count=0,
+                http_status=status_code,
+                is_complete=0,
+                raw_asset_id=raw_asset_id,
+                error_class="normalization_error",
+                cell={**cell, "endpoint_name": endpoint},
+                request_count=request_count_total,
+                pages_received=pages_received,
+            )
+            return {
+                "ticker": ticker,
+                "date": date,
+                "source": source,
+                "status": "failed",
+                "items_count": 0,
+                "raw_asset_id": raw_asset_id,
+                "error_class": "normalization_error",
+            }
         if isinstance(entity_result, dict):
             page_items = entity_result["items_written"]
             if entity_result.get("rejected_count", 0) > 0:
