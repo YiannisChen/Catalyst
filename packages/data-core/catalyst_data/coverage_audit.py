@@ -391,14 +391,12 @@ def _b2o_scope_cells(scope: dict) -> list[dict]:
 
     endpoint_names = scope.get("endpoint_names") or []
     cells = []
-    for subject in scope.get("subjects", []):
-        endpoints = endpoint_names
-        if scope["source_type"] == "fred_macro" and not endpoints:
-            endpoints = [subject]
-        if not endpoints:
-            endpoints = [scope["source_type"]]
-        for window_start, window_end in _b2o_scope_windows(scope):
-            for endpoint_name in endpoints:
+    if scope["source_type"] == "fred_macro":
+        # FRED: each series is its own subject AND endpoint (one-to-one).
+        # Must NOT iterate subject×endpoint_names cartesian product.
+        for subject in scope.get("subjects", []):
+            endpoint_name = subject
+            for window_start, window_end in _b2o_scope_windows(scope):
                 cell = SourceCell.create(
                     scope["stage"],
                     scope["source_type"],
@@ -412,6 +410,26 @@ def _b2o_scope_cells(scope: dict) -> list[dict]:
                     item_cap=scope.get("item_cap"),
                 )
                 cells.append(cell.to_identity())
+    else:
+        for subject in scope.get("subjects", []):
+            endpoints = endpoint_names
+            if not endpoints:
+                endpoints = [scope["source_type"]]
+            for window_start, window_end in _b2o_scope_windows(scope):
+                for endpoint_name in endpoints:
+                    cell = SourceCell.create(
+                        scope["stage"],
+                        scope["source_type"],
+                        endpoint_name,
+                        subject,
+                        window_start,
+                        window_end,
+                        scope["date_domain"],
+                        scope.get("provider_profile_version", "v1"),
+                        page_cap=scope.get("page_cap"),
+                        item_cap=scope.get("item_cap"),
+                    )
+                    cells.append(cell.to_identity())
     return cells
 
 

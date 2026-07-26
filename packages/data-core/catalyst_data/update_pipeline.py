@@ -41,6 +41,18 @@ from catalyst_data.storage.sqlite import (
 from catalyst_data.quality import ensure_ingestion_quality_tables
 from catalyst_data.trading_calendar import trading_days_for_window
 
+
+
+class FMPNormalizationError(ValueError):
+    """Typed normalization failure for FMP fundamentals.
+
+    Raised when the raw payload cannot be extracted or projected into
+    fundamental_statements.  The caller must transition the attempt to
+    PARSE_ERROR, write a failed checkpoint with is_complete=0, and
+    preserve the raw asset without partial projection.
+    """
+
+
 logger = logging.getLogger(__name__)
 
 # Type for async fetch functions
@@ -887,52 +899,59 @@ def _record_b2_entity(
         return {"items_written": count, "rejected_count": rejected}
 
     if source == "fmp_fundamentals":
+        # ── gate: fundamental_statements table must exist ──────────────
         table_exists = conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fundamental_statements'"
         ).fetchone() is not None
-        statement_type = endpoint_name or (data.get("statement_type") if isinstance(data, dict) else None)
-        if not table_exists or statement_type not in {"income_statement", "balance_sheet", "cash_flow"}:
-            entity_id = f"{source}:{ticker}:{date}"
-            entity_version = hashlib.sha256(
-                json.dumps(data, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
-            ).hexdigest()
-            record_provenance(
-                conn, entity_type="fundamental_snapshot", entity_id=entity_id,
-                entity_version=entity_version, raw_asset_id=raw_asset_id,
+        if not table_exists:
+            raise FMPNormalizationError(
+                "fundamental_statements table does not exist"
             )
-            return 1
 
-        # ── payload extraction ──────────────────────────────────────────
+        # ── gate: valid endpoint ──────────────────────────────────────
+        statement_type = endpoint_name or (data.get("statement_type") if isinstance(data, dict) else None)
+        if statement_type not in {"income_statement", "balance_sheet", "cash_flow"}:
+            raise FMPNormalizationError(
+                f"invalid FMP statement_type: {statement_type!r}"
+            )
+
+        # ── payload extraction ────────────────────────────────────────
         if isinstance(data, list):
             rows = data
         elif isinstance(data, dict):
-            rows = data.get("statements") or data.get("data") or data.get("results") or []
+            # Only accept explicit wrapper keys
+            rows = data.get("statements") or data.get("data") or data.get("results")
+            if rows is None:
+                raise FMPNormalizationError(
+                    f"FMP {statement_type}: dict missing statements/data/results keys"
+                )
         else:
-            raise ValueError(
+            raise FMPNormalizationError(
                 f"FMP {statement_type}: expected list or dict, got {type(data).__name__}"
             )
 
         if isinstance(rows, dict):
-            rows = [rows]
+            raise FMPNormalizationError(
+                f"FMP {statement_type}: wrapper value is dict, expected list"
+            )
 
         if not isinstance(rows, list):
-            raise ValueError(
+            raise FMPNormalizationError(
                 f"FMP {statement_type}: rows must be list, got {type(rows).__name__}"
             )
 
         total_input = len(rows)
         if total_input == 0:
-            # Legally empty: no statement rows, return 0
             return 0
 
-        # ── projection (atomic via SAVEPOINT) ──────────────────────────
+        # ── projection (atomic via SAVEPOINT) ─────────────────────────
         conn.execute("SAVEPOINT _fmp_normalize")
         try:
             count = 0
             valid_row_seen = False
             for row in rows:
                 if not isinstance(row, dict):
-                    raise ValueError(
+                    raise FMPNormalizationError(
                         f"FMP {statement_type}: non-dict row in list at position {count}"
                     )
                 fiscal_date = row.get("date") or row.get("fiscal_date") or row.get("fillingDate")
@@ -952,7 +971,23 @@ def _record_b2_entity(
                 statement_id = hashlib.sha256(
                     json.dumps(statement_identity, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
                 ).hexdigest()
-                payload_json = json.dumps(row, sort_keys=True, separators=(",", ":"), default=str)
+                new_payload_json = json.dumps(row, sort_keys=True, separators=(",", ":"), default=str)
+                new_payload_hash = hashlib.sha256(new_payload_json.encode("utf-8")).hexdigest()
+
+                # ── payload conflict detection ────────────────────────
+                existing = conn.execute(
+                    "SELECT payload_json FROM fundamental_statements WHERE statement_id = ?",
+                    (statement_id,),
+                ).fetchone()
+                if existing is not None:
+                    existing_payload_hash = hashlib.sha256(
+                        existing[0].encode("utf-8")
+                    ).hexdigest()
+                    if existing_payload_hash != new_payload_hash:
+                        raise FMPNormalizationError(
+                            f"FMP {statement_type}: payload conflict for {statement_id}"
+                        )
+
                 conn.execute(
                     """INSERT OR IGNORE INTO fundamental_statements
                        (statement_id, raw_asset_id, provider, ticker, statement_type,
@@ -963,19 +998,18 @@ def _record_b2_entity(
                         statement_id, raw_asset_id, ticker, statement_type,
                         fiscal_date, fiscal_period, currency,
                         row.get("acceptedDate") or row.get("available_at") or date,
-                        payload_json, _utc_now_z(),
+                        new_payload_json, _utc_now_z(),
                     ),
                 )
-                entity_version = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
+                entity_version = new_payload_hash
                 record_provenance(
                     conn, entity_type="fundamental_snapshot", entity_id=statement_id,
                     entity_version=entity_version, raw_asset_id=raw_asset_id,
                 )
                 count += 1
 
-            # Non-empty input but zero valid rows: fail, don't success_empty
             if not valid_row_seen:
-                raise ValueError(
+                raise FMPNormalizationError(
                     f"FMP {statement_type}: {total_input} rows, none had fiscal_date"
                 )
 
@@ -1704,7 +1738,7 @@ async def _execute_b2_cell(
                 endpoint_name=endpoint,
                 window_end=cell["window_end"],
             )
-        except ValueError as norm_err:
+        except (ValueError, FMPNormalizationError) as norm_err:
             transition_attempt(
                 conn,
                 request_id,

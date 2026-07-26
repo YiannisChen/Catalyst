@@ -1354,7 +1354,7 @@ class TestExecuteUpdateDrift:
         [
             ("polygon_news", "evidence", {"results": [{"id": "p1", "title": "P", "published_utc": "2026-01-14T00:00:00Z", "article_url": "https://x/p", "tickers": ["AAPL"], "publisher": {"name": "P"}}], "next_url": None}, "polygon"),
             ("finnhub_company_news", "evidence", {"data": [{"id": "fh1", "headline": "H"}]}, "finnhub"),
-            ("fmp_fundamentals", "evidence", {"revenue": 100}, "fmp"),
+            ("fmp_fundamentals", "evidence", [{"date": "2025-01-01", "period": "FY", "reportedCurrency": "USD", "revenue": 100}], "fmp"),
             ("fred_macro", "evidence", {"observations": [{"date": "2026-01-14", "value": "1"}]}, "fred"),
             ("sec_filings", "evidence", {"filings": {"recent": {"accessionNumber": []}}}, "sec"),
             ("yfinance_ohlcv", "market", {"open": 10, "high": 11, "low": 9, "close": 10, "volume": 100}, "yfinance"),
@@ -1368,12 +1368,27 @@ class TestExecuteUpdateDrift:
         from catalyst_data.update_pipeline import execute_update
         from conftest import _fresh_db_at_version
 
-        db = _fresh_db_at_version(8)
+        db = _fresh_db_at_version(11) if source == 'fmp_fundamentals' else _fresh_db_at_version(8)
         stages = {
             "market": {"cells": [], "count": 0},
             "evidence": {"cells": [], "count": 0, "provisional": True},
         }
-        stages[stage]["cells"] = [("AAPL", "2026-01-14", source)]
+        if source == "fmp_fundamentals":
+            stages[stage]["cells"] = [{
+                "stage": stage,
+                "source_type": "fmp_fundamentals",
+                "endpoint_name": "income_statement",
+                "subject": "AAPL",
+                "window_start": "2026-01-14",
+                "window_end": "2026-01-14",
+                "date_domain": "as_of",
+                "provider_profile_version": "v1",
+                "page_cap": None,
+                "item_cap": None,
+                "cell_id": "f" * 63 + "1",
+            }]
+        else:
+            stages[stage]["cells"] = [("AAPL", "2026-01-14", source)]
         stages[stage]["count"] = 1
         plan = UpdatePlan(
             universe={"tickers": ["AAPL"]},
@@ -1864,3 +1879,157 @@ class TestFmpListNormalization:
             assert cp["is_complete"] == 1
 
             db.close()
+
+    # ── strict contracts (FMPNormalizationError) ───────────────────────
+
+    @pytest.mark.asyncio
+    async def test_scenario_8_dict_missing_wrapper_keys_fails(self):
+        """Dict without statements/data/results → FMPNormalizationError, not success_empty."""
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(11)
+        plan = self._make_plan(cell_suffix="8")
+
+        # Dict with unexpected key, no statements/data/results
+        payload = {"unexpected": [{"date": "2025-01-01", "revenue": 100}]}
+
+        report = await execute_update(db=db, plan=plan,
+                                       transport=self._fake_transport(payload))
+
+        # Must be PARSE_ERROR
+        attempts = db.execute(
+            "SELECT status FROM provider_request_attempts").fetchall()
+        for a in attempts:
+            assert a["status"] == "PARSE_ERROR",                 f"Expected PARSE_ERROR, got {a['status']}"
+
+        # Checkpoint: failed, is_complete=0
+        cp = db.execute(
+            "SELECT status, is_complete FROM source_checkpoints").fetchone()
+        assert cp["status"] == "failed"
+        assert cp["is_complete"] == 0
+
+        # Zero statements — NOT success_empty
+        stmt_count = db.execute(
+            "SELECT COUNT(*) as n FROM fundamental_statements").fetchone()["n"]
+        assert stmt_count == 0
+
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_scenario_9_dict_wrapper_value_not_list_fails(self):
+        """Dict with statements/data/results = non-list → FMPNormalizationError."""
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(11)
+        plan = self._make_plan(cell_suffix="9")
+
+        # statements key exists but value is a dict, not a list
+        payload = {"statements": {"date": "2025-01-01", "revenue": 100}}
+
+        report = await execute_update(db=db, plan=plan,
+                                       transport=self._fake_transport(payload))
+
+        # Must be PARSE_ERROR
+        attempts = db.execute(
+            "SELECT status FROM provider_request_attempts").fetchall()
+        for a in attempts:
+            assert a["status"] == "PARSE_ERROR",                 f"Expected PARSE_ERROR, got {a['status']}"
+
+        cp = db.execute(
+            "SELECT status, is_complete FROM source_checkpoints").fetchone()
+        assert cp["status"] == "failed"
+        assert cp["is_complete"] == 0
+
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_scenario_10_payload_conflict_different_data_same_identity(self):
+        """Same statement identity but different payload → statement_conflict, PARSE_ERROR."""
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(11)
+        plan = self._make_plan(cell_suffix="a")
+
+        # First execution
+        payload1 = [
+            {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD",
+             "revenue": 100, "netIncome": 50},
+        ]
+        await execute_update(db=db, plan=plan,
+                             transport=self._fake_transport(payload1))
+
+        # Verify first execution succeeded
+        stmt_count = db.execute(
+            "SELECT COUNT(*) as n FROM fundamental_statements").fetchone()["n"]
+        assert stmt_count == 1
+
+        # Second execution with DIFFERENT payload but same identity
+        payload2 = [
+            {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD",
+             "revenue": 999, "netIncome": 888},  # different values
+        ]
+        report = await execute_update(db=db, plan=plan,
+                                       transport=self._fake_transport(payload2))
+
+        # Second attempt must be PARSE_ERROR
+        attempts = db.execute(
+            "SELECT request_id, status FROM provider_request_attempts "
+            "ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        assert attempts["status"] == "PARSE_ERROR",             f"Expected PARSE_ERROR for conflict, got {attempts['status']}"
+
+        # Statement count must still be 1 (not 2, not overwritten)
+        stmt_count2 = db.execute(
+            "SELECT COUNT(*) as n FROM fundamental_statements").fetchone()["n"]
+        assert stmt_count2 == 1
+
+        # Verify original payload unchanged
+        orig = db.execute(
+            "SELECT payload_json FROM fundamental_statements").fetchone()
+        assert "revenue" in orig[0]
+        assert "100" in orig[0]
+
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_scenario_11_payload_conflict_checkpoint_failed(self):
+        """Payload conflict must set checkpoint failed/is_complete=0, raw preserved."""
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(11)
+        plan = self._make_plan(cell_suffix="b")
+
+        await execute_update(db=db, plan=plan,
+                             transport=self._fake_transport([
+                                 {"date": "2025-09-30", "period": "FY",
+                                  "reportedCurrency": "USD", "revenue": 100}
+                             ]))
+
+        # Second with different payload
+        await execute_update(db=db, plan=plan,
+                             transport=self._fake_transport([
+                                 {"date": "2025-09-30", "period": "FY",
+                                  "reportedCurrency": "USD", "revenue": 200}
+                             ]))
+
+        # Checkpoint from second execution must be failed
+        cps = db.execute(
+            "SELECT status, is_complete, error_class FROM source_checkpoints "
+            "ORDER BY rowid DESC"
+        ).fetchall()
+        # At least one checkpoint is failed
+        failed_cps = [cp for cp in cps if cp["status"] == "failed"]
+        assert len(failed_cps) >= 1, f"No failed checkpoint found: {cps}"
+        assert failed_cps[0]["is_complete"] == 0
+
+        # Raw preserved
+        raw_count = db.execute(
+            "SELECT COUNT(*) as n FROM raw_assets WHERE data_version='v2'"
+        ).fetchone()["n"]
+        assert raw_count >= 2  # one per execution
+
+        db.close()

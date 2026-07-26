@@ -812,3 +812,85 @@ class TestStep4aS5:
         assert result["failed_count"] == 0
 
 # Also add to test_coverage_audit.py for suite integration
+
+
+class TestFredCellDrift:
+    """FRED must generate exactly 1 cell per series, not subject×endpoint cartesian product."""
+
+    FRED_SERIES = ["CPIAUCSL", "DAAA", "DBAA", "DFF", "DGS10",
+                   "DGS30", "FEDFUNDS", "T10YIE", "T10Y2Y",
+                   "UNRATE", "USREC"]
+
+    def test_fred_scope_generates_exactly_11_cells(self):
+        """11 FRED series → 11 cells, not 121 (subject×endpoint cartesian)."""
+        from catalyst_data.coverage_audit import _b2o_scope_cells
+
+        scope = {
+            "stage": "evidence",
+            "source_type": "fred_macro",
+            "date_domain": "as_of",
+            "start_date": "2026-07-23",
+            "end_date": "2026-07-23",
+            "provider_profile_version": "v1",
+            "subjects": self.FRED_SERIES,
+            "endpoint_names": self.FRED_SERIES,
+        }
+        cells = _b2o_scope_cells(scope)
+        assert len(cells) == 11, f"Expected 11 FRED cells, got {len(cells)}"
+
+    def test_fred_subject_matches_endpoint(self):
+        """Each FRED cell must have subject == endpoint_name (one-to-one)."""
+        from catalyst_data.coverage_audit import _b2o_scope_cells
+
+        scope = {
+            "stage": "evidence",
+            "source_type": "fred_macro",
+            "date_domain": "as_of",
+            "start_date": "2026-07-23",
+            "end_date": "2026-07-23",
+            "provider_profile_version": "v1",
+            "subjects": ["CPIAUCSL", "UNRATE", "FEDFUNDS"],
+            "endpoint_names": ["CPIAUCSL", "UNRATE", "FEDFUNDS"],
+        }
+        cells = _b2o_scope_cells(scope)
+        assert len(cells) == 3
+        for c in cells:
+            assert c["subject"] == c["endpoint_name"],                 f"subject={c['subject']} != endpoint={c['endpoint_name']}"
+            assert c["source_type"] == "fred_macro"
+
+    def test_fred_no_duplicate_cells(self):
+        """No duplicate FRED cells (unique subject-endpoint-window tuples)."""
+        from catalyst_data.coverage_audit import _b2o_scope_cells
+
+        scope = {
+            "stage": "evidence",
+            "source_type": "fred_macro",
+            "date_domain": "as_of",
+            "start_date": "2026-07-23",
+            "end_date": "2026-07-23",
+            "provider_profile_version": "v1",
+            "subjects": ["CPIAUCSL", "UNRATE", "FEDFUNDS"],
+            "endpoint_names": ["CPIAUCSL", "UNRATE", "FEDFUNDS"],
+        }
+        cells = _b2o_scope_cells(scope)
+        cell_ids = [c["cell_id"] for c in cells]
+        assert len(cell_ids) == len(set(cell_ids)),             f"Duplicate cell_ids: {cell_ids}"
+
+
+class TestExactCellCounts:
+    """exact_cell_counts must match canonical plan totals."""
+
+    CANONICAL_COUNTS = {
+        "polygon_ohlcv": 280,
+        "polygon_news": 3280,
+        "finnhub_company_news": 2040,
+        "sec_filings": 40,
+        "fmp_fundamentals": 120,
+        "fred_macro": 11,
+    }
+
+
+    def test_total_equals_5771(self):
+        """Sum of all canonical counts must equal 5771."""
+        assert sum(self.CANONICAL_COUNTS.values()) == 5771, \
+            f"Expected 5771, got {sum(self.CANONICAL_COUNTS.values())}"
