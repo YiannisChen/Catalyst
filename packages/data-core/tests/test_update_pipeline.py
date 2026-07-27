@@ -1880,6 +1880,196 @@ class TestFmpListNormalization:
 
             db.close()
 
+
+    # ── exception boundary tests (Task 1) ─────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_scenario_a_provenance_runtime_error_handled(self, monkeypatch):
+        """RuntimeError from record_provenance mid-projection: PARSE_ERROR,
+        atomic rollback, zero statements, raw preserved."""
+        from catalyst_data.update_pipeline import execute_update, FMPNormalizationError
+        from catalyst_data.ingestion import provenance as prov_mod
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(11)
+        plan = self._make_plan(cell_suffix="d")
+
+        payload = [
+            {"date": "2025-06-30", "period": "FY", "reportedCurrency": "USD",
+             "revenue": 100},
+            {"date": "2025-09-30", "period": "FY", "reportedCurrency": "USD",
+             "revenue": 200},
+        ]
+
+        # Throw RuntimeError on the SECOND provenance call
+        call_count = [0]
+        real_record = prov_mod.record_provenance
+        def failing_record(*args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] >= 2:
+                raise RuntimeError("simulated storage failure")
+            return real_record(*args, **kwargs)
+
+        monkeypatch.setattr(prov_mod, "record_provenance", failing_record)
+
+        report = await execute_update(db=db, plan=plan,
+                                       transport=self._fake_transport(payload))
+
+        # Attempt must be PARSE_ERROR
+        attempts = db.execute(
+            "SELECT status FROM provider_request_attempts").fetchall()
+        for a in attempts:
+            assert a["status"] == "PARSE_ERROR",                 f"Expected PARSE_ERROR, got {a['status']}"
+
+        # Checkpoint: failed, is_complete=0, error_class=projection_error
+        cp = db.execute(
+            "SELECT status, is_complete, error_class FROM source_checkpoints"
+        ).fetchone()
+        assert cp["status"] == "failed"
+        assert cp["is_complete"] == 0
+        assert cp["error_class"] == "projection_error",             f"Expected projection_error, got {cp['error_class']}"
+
+        # Zero statements (atomic rollback, even first row undone)
+        stmt_count = db.execute(
+            "SELECT COUNT(*) as n FROM fundamental_statements"
+        ).fetchone()["n"]
+        assert stmt_count == 0, f"Expected 0 statements after rollback, got {stmt_count}"
+
+        # Zero provenance
+        prov_count = db.execute(
+            "SELECT COUNT(*) as n FROM normalized_provenance"
+        ).fetchone()["n"]
+        assert prov_count == 0
+
+        # Raw preserved
+        raw_count = db.execute(
+            "SELECT COUNT(*) as n FROM raw_assets WHERE data_version='v2'"
+        ).fetchone()["n"]
+        assert raw_count == 1
+
+        # No STARTED attempts
+        started = db.execute(
+            "SELECT COUNT(*) as n FROM provider_request_attempts WHERE status='STARTED'"
+        ).fetchone()["n"]
+        assert started == 0
+
+        monkeypatch.undo()
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_scenario_b_sqlite_projection_error_handled(self):
+        """sqlite3.IntegrityError during fundamental_statements insert:
+        PARSE_ERROR, atomic rollback, raw preserved."""
+        from catalyst_data.update_pipeline import execute_update
+        from conftest import _fresh_db_at_version
+
+        db = _fresh_db_at_version(11)
+        plan = self._make_plan(cell_suffix="e")
+
+        payload = [
+            {"date": "2025-06-30", "period": "FY", "reportedCurrency": "USD",
+             "revenue": 300},
+        ]
+
+        # Install a trigger that rejects inserts to simulate sqlite3 failure
+        db.executescript("""
+            CREATE TRIGGER IF NOT EXISTS _test_fmp_reject_insert
+            BEFORE INSERT ON fundamental_statements
+            BEGIN
+                SELECT RAISE(ABORT, 'fmp_projection_rejection_test');
+            END;
+        """)
+        db.commit()
+
+        report = await execute_update(db=db, plan=plan,
+                                       transport=self._fake_transport(payload))
+
+        # Drop the trigger
+        db.executescript("DROP TRIGGER IF EXISTS _test_fmp_reject_insert;")
+        db.commit()
+
+        # Attempt must be PARSE_ERROR
+        attempts = db.execute(
+            "SELECT status FROM provider_request_attempts").fetchall()
+        for a in attempts:
+            assert a["status"] == "PARSE_ERROR",                 f"Expected PARSE_ERROR, got {a['status']}"
+
+        # Checkpoint: failed, is_complete=0
+        cp = db.execute(
+            "SELECT status, is_complete, error_class FROM source_checkpoints"
+        ).fetchone()
+        assert cp["status"] == "failed"
+        assert cp["is_complete"] == 0
+        assert cp["error_class"] == "projection_error",             f"Expected projection_error, got {cp['error_class']}"
+
+        # Zero statements
+        stmt_count = db.execute(
+            "SELECT COUNT(*) as n FROM fundamental_statements"
+        ).fetchone()["n"]
+        assert stmt_count == 0
+
+        # Raw preserved
+        raw_count = db.execute(
+            "SELECT COUNT(*) as n FROM raw_assets WHERE data_version='v2'"
+        ).fetchone()["n"]
+        assert raw_count == 1
+
+        # No STARTED
+        started = db.execute(
+            "SELECT COUNT(*) as n FROM provider_request_attempts WHERE status='STARTED'"
+        ).fetchone()["n"]
+        assert started == 0
+
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_scenario_c_non_fmp_valueerror_not_misclassified(self, monkeypatch):
+        """A ValueError from non-FMP _record_b2_entity must propagate as ValueError,
+        not be silently caught as FMPNormalizationError."""
+        from catalyst_data.update_pipeline import execute_update, _record_b2_entity
+        from conftest import _fresh_db_at_version
+        import pytest as _pytest
+        from catalyst_data.update_planner import UpdatePlan, compute_plan_hash
+
+        # Monkeypatch _record_b2_entity to raise bare ValueError for polygon_news
+        real_record = _record_b2_entity
+        def fail_for_polygon(*args, **kwargs):
+            source = kwargs.get('source', args[2] if len(args) > 2 else '')
+            if source == 'polygon_news':
+                raise ValueError('non-FMP domain rejection')
+            return real_record(*args, **kwargs)
+
+        monkeypatch.setattr(
+            'catalyst_data.update_pipeline._record_b2_entity',
+            fail_for_polygon,
+        )
+
+        db = _fresh_db_at_version(8)
+        plan = UpdatePlan(
+            universe={"tickers": ["AAPL"]},
+            reference_today="2026-01-15",
+            latest_closed_session="2026-01-14",
+            config={"sources": ["polygon_news"]},
+            stages={
+                "market": {"cells": [], "count": 0},
+                "evidence": {"cells": [("AAPL", "2026-01-14", "polygon_news")], "count": 1},
+            },
+        )
+        plan.plan_hash = compute_plan_hash(plan)
+        plan.expected_plan_hash = plan.plan_hash
+
+        async def working_transport(provider, method, url, **kwargs):
+            class FakeResponse:
+                status_code = 200
+                def json(self):
+                    return {"results": [{"id": "x", "title": "T"}]}
+            return FakeResponse()
+
+        with _pytest.raises(ValueError, match="non-FMP domain rejection"):
+            await execute_update(db=db, plan=plan, transport=working_transport)
+
+        monkeypatch.undo()
+        db.close()
     # ── strict contracts (FMPNormalizationError) ───────────────────────
 
     @pytest.mark.asyncio

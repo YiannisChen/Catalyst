@@ -894,3 +894,97 @@ class TestExactCellCounts:
         """Sum of all canonical counts must equal 5771."""
         assert sum(self.CANONICAL_COUNTS.values()) == 5771, \
             f"Expected 5771, got {sum(self.CANONICAL_COUNTS.values())}"
+
+
+class TestOperatorSummary:
+    """Operator-facing progress must report exact canonical counts."""
+
+    CANONICAL = {
+        "polygon_ohlcv": 280,
+        "polygon_news": 3280,
+        "finnhub_company_news": 2040,
+        "sec_filings": 40,
+        "fmp_fundamentals": 120,
+        "fred_macro": 11,
+    }
+
+    def test_canonical_totals(self):
+        completed = sum(v for k, v in self.CANONICAL.items()
+                       if k in ("polygon_ohlcv", "polygon_news",
+                                "finnhub_company_news", "sec_filings"))
+        remaining = sum(v for k, v in self.CANONICAL.items()
+                       if k in ("fmp_fundamentals", "fred_macro"))
+        total = sum(self.CANONICAL.values())
+        assert total == 5771
+        assert completed == 5640
+        assert remaining == 131
+
+    def test_selected_lineage_correct_scope(self):
+        import sqlite3
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[3]
+        db_path_file = repo_root / "data" / "manifests" / "b2o_working_db_path.txt"
+        if not db_path_file.exists():
+            import pytest
+            pytest.skip("working DB path file not found")
+        db_path = db_path_file.read_text().strip()
+        if not Path(db_path).exists():
+            import pytest
+            pytest.skip(f"working DB not found: {db_path}")
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        terminal_run = "b2-785612e267d14043a8e2b1ccc90be6c4"
+
+        lineage = [terminal_run]
+        current = terminal_run
+        seen = {terminal_run}
+        while True:
+            parent = conn.execute(
+                "SELECT parent_run_id FROM ingestion_runs WHERE run_id = ?",
+                (current,),
+            ).fetchone()
+            if not parent or not parent[0]:
+                break
+            if parent[0] in seen:
+                break
+            seen.add(parent[0])
+            lineage.append(parent[0])
+            current = parent[0]
+
+        ph = ",".join("?" for _ in lineage)
+        rows = conn.execute(
+            f"""SELECT source_type,
+                      COUNT(*) as total,
+                      SUM(CASE WHEN is_complete = 1 AND status IN ('success','success_empty')
+                               THEN 1 ELSE 0 END) as done
+               FROM source_checkpoints
+               WHERE run_id IN ({ph})
+               GROUP BY source_type
+               ORDER BY source_type""",
+            lineage,
+        ).fetchall()
+
+        by_source = {r["source_type"]: (r["total"], r["done"]) for r in rows}
+
+        # Must NOT output polygon_news=792; must use canonical 3280
+        pn = by_source.get("polygon_news")
+        assert pn is not None and pn[1] == 3280,             f"polygon_news done: expected 3280, got {pn}"
+
+        po = by_source.get("polygon_ohlcv")
+        assert po is not None and po[1] == 280,             f"polygon_ohlcv done: expected 280, got {po}"
+
+        for src in ("finnhub_company_news", "sec_filings"):
+            s = by_source.get(src)
+            assert s is not None and s[1] == self.CANONICAL[src],                 f"{src} done: expected {self.CANONICAL[src]}, got {s}"
+
+        for src in ("fmp_fundamentals", "fred_macro"):
+            s = by_source.get(src)
+            assert s is None or s[1] == 0,                 f"{src}: expected 0 done, got {s}"
+
+        total_done = sum(d for _, d in by_source.values())
+        assert total_done == 5640,             f"Lineage total done: expected 5640, got {total_done}"
+
+        conn.close()

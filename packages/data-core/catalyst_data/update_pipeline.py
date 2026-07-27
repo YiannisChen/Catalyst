@@ -46,11 +46,20 @@ from catalyst_data.trading_calendar import trading_days_for_window
 class FMPNormalizationError(ValueError):
     """Typed normalization failure for FMP fundamentals.
 
-    Raised when the raw payload cannot be extracted or projected into
-    fundamental_statements.  The caller must transition the attempt to
-    PARSE_ERROR, write a failed checkpoint with is_complete=0, and
-    preserve the raw asset without partial projection.
+    error_class is one of:
+      - "normalization_error" — payload shape, missing keys, invalid endpoint
+      - "statement_conflict"  — same identity, different payload
+      - "projection_error"    — SQLite/RuntimeError during statement insert or provenance
+
+    The caller must transition the attempt to PARSE_ERROR, write a failed
+    checkpoint with is_complete=0 using this error_class, and preserve the
+    raw asset without partial projection.
     """
+
+    def __init__(self, message: str, error_class: str = "normalization_error"):
+        super().__init__(message)
+        self.error_class = error_class
+
 
 
 logger = logging.getLogger(__name__)
@@ -985,7 +994,8 @@ def _record_b2_entity(
                     ).hexdigest()
                     if existing_payload_hash != new_payload_hash:
                         raise FMPNormalizationError(
-                            f"FMP {statement_type}: payload conflict for {statement_id}"
+                            f"FMP {statement_type}: payload conflict for {statement_id}",
+                            error_class="statement_conflict",
                         )
 
                 conn.execute(
@@ -1014,10 +1024,15 @@ def _record_b2_entity(
                 )
 
             conn.execute("RELEASE _fmp_normalize")
-        except Exception:
+        except FMPNormalizationError:
             conn.execute("ROLLBACK TO _fmp_normalize")
             conn.execute("RELEASE _fmp_normalize")
             raise
+        except Exception as exc:
+            conn.execute("ROLLBACK TO _fmp_normalize")
+            conn.execute("RELEASE _fmp_normalize")
+            msg = f"FMP {statement_type}: projection failed — {type(exc).__name__}"
+            raise FMPNormalizationError(msg, error_class="projection_error") from exc
 
         return count
 
@@ -1738,7 +1753,7 @@ async def _execute_b2_cell(
                 endpoint_name=endpoint,
                 window_end=cell["window_end"],
             )
-        except (ValueError, FMPNormalizationError) as norm_err:
+        except FMPNormalizationError as norm_err:
             transition_attempt(
                 conn,
                 request_id,
@@ -1762,7 +1777,7 @@ async def _execute_b2_cell(
                 http_status=status_code,
                 is_complete=0,
                 raw_asset_id=raw_asset_id,
-                error_class="normalization_error",
+                error_class=norm_err.error_class,
                 cell={**cell, "endpoint_name": endpoint},
                 request_count=request_count_total,
                 pages_received=pages_received,
@@ -1774,7 +1789,7 @@ async def _execute_b2_cell(
                 "status": "failed",
                 "items_count": 0,
                 "raw_asset_id": raw_asset_id,
-                "error_class": "normalization_error",
+                "error_class": norm_err.error_class,
             }
         if isinstance(entity_result, dict):
             page_items = entity_result["items_written"]
