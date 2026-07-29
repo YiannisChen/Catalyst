@@ -16,6 +16,10 @@ def persist_active_chunks(
     manifest_id: str,
 ) -> None:
     """Persist active chunks without committing the caller-owned transaction."""
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_index_state_chunk_id "
+        "ON index_state(chunk_id)"
+    )
     now = datetime.now(timezone.utc).isoformat()
     to_embed = set(result.to_embed)
     metadata_only = set(result.to_update_metadata)

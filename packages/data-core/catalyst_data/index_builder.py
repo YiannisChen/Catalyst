@@ -276,12 +276,6 @@ def build_corpus(
         cluster_id = row["dedup_cluster_id"] or row["dedup_group_id"]
         first_available = row["cluster_first_available_at"] or row["published_utc"]
         representative = row["representative_document_id"] or row["article_id"]
-        conn.execute(
-            """UPDATE articles SET source_class = ?, dedup_cluster_id = ?,
-               cluster_first_available_at = ?, representative_document_id = ?
-               WHERE article_id = ?""",
-            (source_class, cluster_id, first_available, representative, row["article_id"]),
-        )
         document = {
             "document_id": row["article_id"],
             "title": row["title"],

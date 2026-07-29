@@ -44,6 +44,10 @@ CLAUDE.md
 /data/run_reports/
 /packages/data-core/data/run_reports/
 
+# Generated data-snapshot artifacts and machine-local active pointer
+/data/manifests/active_data_snapshot.json
+/data/manifests/b2o_data_snapshot_*.json
+
 # Python packaging
 *.egg-info/
 

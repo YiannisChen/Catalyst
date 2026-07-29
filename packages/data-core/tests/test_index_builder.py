@@ -291,6 +291,11 @@ def test_build_corpus_wires_profiles_reconciliation_and_manifest(tmp_path: Path)
     from catalyst_data.index_builder import build_corpus
 
     conn = _make_db(str(tmp_path / "b3-corpus.db"))
+    article_state_before = conn.execute(
+        """SELECT article_id, source_class, dedup_cluster_id,
+                  cluster_first_available_at, representative_document_id
+           FROM articles ORDER BY article_id"""
+    ).fetchall()
     result = build_corpus(
         conn,
         certified_snapshot_identity="test-snapshot",
@@ -307,12 +312,19 @@ def test_build_corpus_wires_profiles_reconciliation_and_manifest(tmp_path: Path)
         "SELECT COUNT(*) FROM corpus_chunks WHERE manifest_id = ?",
         (result.manifest_id,),
     ).fetchone()[0] == len(result.chunks)
-    assert conn.execute(
-        "SELECT COUNT(*) FROM articles WHERE source_class IS NULL"
-    ).fetchone()[0] == 0
+    article_state_after = conn.execute(
+        """SELECT article_id, source_class, dedup_cluster_id,
+                  cluster_first_available_at, representative_document_id
+           FROM articles ORDER BY article_id"""
+    ).fetchall()
+    assert article_state_after == article_state_before
     assert conn.execute(
         "SELECT COUNT(*) FROM index_state WHERE chunk_id LIKE '%::l1'"
     ).fetchone()[0] == 0
+    assert conn.execute(
+        """SELECT 1 FROM sqlite_master
+           WHERE type = 'index' AND name = 'idx_index_state_chunk_id'"""
+    ).fetchone() is not None
 
     repeated = build_corpus(
         conn,

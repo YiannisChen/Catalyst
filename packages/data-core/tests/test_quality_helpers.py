@@ -182,6 +182,7 @@ CREATE TABLE IF NOT EXISTS source_checkpoints (
 """
 
 EXPECTED_COLUMNS = [
+    "checkpoint_id",
     "run_id", "source_type", "ticker", "date", "status",
     "error_class", "retries", "error_message_redacted", "http_status",
     "retry_after_seconds", "provider_latency_ms", "raw_asset_id", "items_count",

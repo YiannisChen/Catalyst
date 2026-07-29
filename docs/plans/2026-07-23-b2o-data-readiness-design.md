@@ -9,7 +9,7 @@ Scope: data readiness only. No B6 dense/reranker work starts here.
 B2-O produces an operationally promoted Catalyst working data snapshot that is:
 
 - bootstrapped from the protected Dev DB without mutating protected DBs;
-- migrated by the existing production migration registry through `PRAGMA user_version = 11`;
+- migrated by the existing production migration registry through `PRAGMA user_version = 12`;
 - filled through the existing B2 planner/run-control/execution path after explicit live authorization;
 - coverage-audited for the approved 40-ticker universe and the required source windows;
 - frozen as a deterministic `DataSnapshotManifest`;
@@ -27,7 +27,7 @@ B2-O is split into two resumable phases:
 
 B2-O reuses production modules instead of creating parallel systems.
 
-- SQLite migrations: use existing `catalyst_data.migrations.run_migrations(conn)` through v11. v11 owns B2-O full source-cell checkpoint identity and `fundamental_statements`; v8/v9/v10 remain unchanged.
+- SQLite migrations: use existing `catalyst_data.migrations.run_migrations(conn)` through v12. v11 introduces B2-O full source-cell identity fields and `fundamental_statements`; v12 replaces the legacy composite checkpoint primary key with `checkpoint_id`, while enforcing `UNIQUE(run_id, cell_id)` so the three FMP endpoints can coexist. v8/v9/v10 remain unchanged.
 - B2 planning: use existing `catalyst_data.update_planner.plan_update()` and `UpdatePlan.plan_hash`.
 - B2 execution: use existing
   `catalyst_data.update_pipeline.execute_update(db=conn, plan=plan,
@@ -316,7 +316,7 @@ Bootstrap sequence:
 4. `fsync` the candidate DB file and parent directory.
 5. Open the candidate DB read-write.
 6. Call existing `run_migrations(conn)`.
-7. Verify `PRAGMA user_version = 11`.
+7. Verify `PRAGMA user_version = 12`.
 8. Run `PRAGMA integrity_check`.
 9. Run `PRAGMA foreign_key_check`.
 10. Recompute and verify the protected Dev DB SHA-256 unchanged.
@@ -342,6 +342,11 @@ B3 corpus and B4 FTS publication:
 
 - build into candidate/current-manifest state atomically through existing transaction boundaries;
 - the previous current corpus manifest and lexical state remain served until the new build succeeds.
+- treat every table included in `DataSnapshotManifest` as immutable during
+  corpus publication; source classification and dedup fallbacks are computed
+  in memory and persisted only in corpus-owned tables;
+- create `idx_index_state_chunk_id` before per-chunk index-state upserts so
+  publication remains bounded and does not degrade into repeated table scans.
 
 Promotion:
 
@@ -380,7 +385,7 @@ The existing B3 implementation currently materializes active chunk metadata for 
 
 ## 13. Boundary Before GPU Work
 
-B2-O ends after the promoted v11 DB, `DataSnapshotManifest`, current B3 `CorpusManifest`, and B4 lexical state are verified. It does not create vectors.
+B2-O ends after the promoted v12 DB, `DataSnapshotManifest`, current B3 `CorpusManifest`, and B4 lexical state are verified. It does not create vectors.
 
 B6-L may then implement local dense/RRF/reranker adapters with deterministic fixtures and export a checksummed active-chunk bundle. B6-G is the first phase allowed to load BGE-M3 on the GPU server. Model inference may use FP16 internally, but persisted vectors remain float32 unless the binding B6 contract is explicitly amended.
 
@@ -393,7 +398,7 @@ B2-O completion requires B2-O-X evidence:
 - ratified tracked `UniverseSpec`;
 - generated runtime `UniverseManifest`;
 - protected DB SHA before and after unchanged;
-- candidate DB migrated to user_version 11;
+- candidate DB migrated to user_version 12;
 - B2 plan hash recorded and enforced;
 - live execution completed or resumed to terminal outcomes;
 - Polygon and Finnhub canonical coverage complete for all 40 tickers;

@@ -670,7 +670,8 @@ def test_domain_materialization_for_finnhub_sec_fred_and_failure_status(tmp_path
 def test_migration_v11_adds_full_cell_identity_and_fundamental_statements(tmp_path: Path):
     db_path = _file_db(tmp_path)
     conn = sqlite3.connect(db_path)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
+    from catalyst_data.migrations import CURRENT_SCHEMA_VERSION
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
     checkpoint_cols = {row[1] for row in conn.execute("PRAGMA table_info(source_checkpoints)")}
     assert {"cell_id", "window_start", "window_end", "endpoint_name", "provider_profile_version"}.issubset(checkpoint_cols)
     fundamental_cols = {row[1] for row in conn.execute("PRAGMA table_info(fundamental_statements)")}
@@ -823,7 +824,8 @@ def test_bootstrap_candidate_uses_readonly_backup_and_preserves_source(tmp_path:
     expected = sha256_file(source)
     candidate = tmp_path / "candidate.db"
     result = bootstrap_candidate(source_path=source, expected_source_sha256=expected, candidate_path=candidate, min_free_bytes=0)
-    assert result.user_version == 11
+    from catalyst_data.migrations import CURRENT_SCHEMA_VERSION
+    assert result.user_version == CURRENT_SCHEMA_VERSION
     assert result.source_sha256_before == result.source_sha256_after == expected
     cconn = sqlite3.connect(candidate)
     assert cconn.execute("SELECT COUNT(*) FROM ohlcv WHERE date<'2025-01-02'").fetchone()[0] == 1

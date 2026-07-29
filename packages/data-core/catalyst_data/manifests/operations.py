@@ -102,10 +102,14 @@ def bootstrap_candidate(
         _fsync_parent(tmp_path)
         conn = sqlite3.connect(tmp_path)
         try:
+            from catalyst_data.migrations import CURRENT_SCHEMA_VERSION
             run_migrations(conn)
             user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-            if user_version != 11:
-                raise RuntimeError(f"candidate reached user_version={user_version}, expected 11")
+            if user_version != CURRENT_SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"candidate reached user_version={user_version}, "
+                    f"expected {CURRENT_SCHEMA_VERSION}"
+                )
             integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
             if integrity != "ok":
                 raise RuntimeError(f"integrity_check failed: {integrity}")

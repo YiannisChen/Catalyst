@@ -1321,41 +1321,121 @@ def _write_b2_checkpoint(
     pages_received: int = 1,
     error_class: str | None = None,
 ) -> None:
+    """Write a source checkpoint with correct identity semantics.
+
+    v12+ schema: surrogate checkpoint_id PK + UNIQUE(run_id, cell_id).
+    Full identity: ON CONFLICT(run_id, cell_id) DO UPDATE (no INSERT OR REPLACE).
+    Legacy identity: SELECT-then-INSERT-or-UPDATE (partial index not ON CONFLICT compatible).
+    """
+    import hashlib
+
     checkpoint_cols = {
         row[1] for row in conn.execute("PRAGMA table_info(source_checkpoints)").fetchall()
     }
     has_full_identity = {
         "cell_id", "window_start", "window_end", "endpoint_name", "provider_profile_version",
     }.issubset(checkpoint_cols)
+    has_checkpoint_id = "checkpoint_id" in checkpoint_cols
+
     if cell is not None and cell.get("cell_id") and has_full_identity:
-        conn.execute(
-            """INSERT OR REPLACE INTO source_checkpoints
-               (run_id, source_type, ticker, date, status, logical_fetch_id,
-                request_count, pages_received, items_received, is_complete,
-                raw_asset_id, items_count, http_status, error_class, cell_id, window_start,
-                window_end, endpoint_name, provider_profile_version)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                run_id, source, ticker, date, status, logical_fetch_id,
-                request_count, pages_received, items_count, is_complete,
-                raw_asset_id, items_count, http_status, error_class,
-                cell["cell_id"], cell["window_start"], cell["window_end"],
-                cell["endpoint_name"], cell.get("provider_profile_version", "v1"),
-            ),
-        )
+        # ── Full identity (B2-O): ON CONFLICT DO UPDATE ──
+        id_parts = [run_id, source, ticker, date, str(cell.get("cell_id", ""))]
+        checkpoint_id = hashlib.sha256("|".join(id_parts).encode()).hexdigest()[:32]
+
+        if has_checkpoint_id:
+            # Mutable outcome fields only — identity fields are immutable per trigger
+            conn.execute(
+                """INSERT INTO source_checkpoints
+                   (checkpoint_id, run_id, source_type, ticker, date, status,
+                    logical_fetch_id, request_count, pages_received, items_received,
+                    is_complete, raw_asset_id, items_count, http_status, error_class,
+                    cell_id, window_start, window_end, endpoint_name,
+                    provider_profile_version)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(run_id, cell_id) DO UPDATE SET
+                       status=excluded.status,
+                       logical_fetch_id=excluded.logical_fetch_id,
+                       request_count=excluded.request_count,
+                       pages_received=excluded.pages_received,
+                       items_received=excluded.items_received,
+                       is_complete=excluded.is_complete,
+                       raw_asset_id=excluded.raw_asset_id,
+                       items_count=excluded.items_count,
+                       http_status=excluded.http_status,
+                       error_class=excluded.error_class""",
+                (
+                    checkpoint_id, run_id, source, ticker, date, status,
+                    logical_fetch_id, request_count, pages_received, items_count,
+                    is_complete, raw_asset_id, items_count, http_status, error_class,
+                    cell["cell_id"], cell["window_start"], cell["window_end"],
+                    cell["endpoint_name"], cell.get("provider_profile_version", "v1"),
+                ),
+            )
+        else:
+            # Pre-v12 fallback: old PK semantics (will be replaced by migration)
+            conn.execute(
+                """INSERT OR REPLACE INTO source_checkpoints
+                   (run_id, source_type, ticker, date, status, logical_fetch_id,
+                    request_count, pages_received, items_received, is_complete,
+                    raw_asset_id, items_count, http_status, error_class, cell_id,
+                    window_start, window_end, endpoint_name, provider_profile_version)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id, source, ticker, date, status, logical_fetch_id,
+                    request_count, pages_received, items_count, is_complete,
+                    raw_asset_id, items_count, http_status, error_class,
+                    cell["cell_id"], cell["window_start"], cell["window_end"],
+                    cell["endpoint_name"], cell.get("provider_profile_version", "v1"),
+                ),
+            )
     else:
-        conn.execute(
-            """INSERT OR REPLACE INTO source_checkpoints
-               (run_id, source_type, ticker, date, status, logical_fetch_id,
-                request_count, pages_received, items_received, is_complete,
-                raw_asset_id, items_count, http_status, error_class)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                run_id, source, ticker, date, status, logical_fetch_id,
-                request_count, pages_received, items_count, is_complete,
-                raw_asset_id, items_count, http_status, error_class,
-            ),
-        )
+        # ── Legacy identity: SELECT-then-INSERT-or-UPDATE ──
+        # Partial unique index on (run_id, source_type, ticker, date) WHERE cell_id IS NULL
+        # is not directly usable in ON CONFLICT, so we check existence first.
+        if has_checkpoint_id:
+            existing = conn.execute(
+                """SELECT checkpoint_id FROM source_checkpoints
+                   WHERE run_id=? AND source_type=? AND ticker=? AND date=?
+                   AND cell_id IS NULL""",
+                (run_id, source, ticker, date)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE source_checkpoints SET
+                       status=?, logical_fetch_id=?, request_count=?, pages_received=?,
+                       items_received=?, is_complete=?, raw_asset_id=?, items_count=?,
+                       http_status=?, error_class=?
+                       WHERE checkpoint_id=?""",
+                    (status, logical_fetch_id, request_count, pages_received,
+                     items_count, is_complete, raw_asset_id, items_count,
+                     http_status, error_class, existing[0]),
+                )
+            else:
+                id_parts = [run_id, source, ticker, date, ""]
+                checkpoint_id = hashlib.sha256("|".join(id_parts).encode()).hexdigest()[:32]
+                conn.execute(
+                    """INSERT INTO source_checkpoints
+                       (checkpoint_id, run_id, source_type, ticker, date, status,
+                        logical_fetch_id, request_count, pages_received, items_received,
+                        is_complete, raw_asset_id, items_count, http_status, error_class)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (checkpoint_id, run_id, source, ticker, date, status,
+                     logical_fetch_id, request_count, pages_received, items_count,
+                     is_complete, raw_asset_id, items_count, http_status, error_class),
+                )
+        else:
+            conn.execute(
+                """INSERT OR REPLACE INTO source_checkpoints
+                   (run_id, source_type, ticker, date, status, logical_fetch_id,
+                    request_count, pages_received, items_received, is_complete,
+                    raw_asset_id, items_count, http_status, error_class)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id, source, ticker, date, status, logical_fetch_id,
+                    request_count, pages_received, items_count, is_complete,
+                    raw_asset_id, items_count, http_status, error_class,
+                ),
+            )
     conn.commit()
 
 
@@ -2185,20 +2265,26 @@ def _remaining_b2_cells(
     for cell in cells:
         if cell.get("cell_id") and has_cell_id:
             row = conn.execute(
-                f"""SELECT status, COALESCE(is_complete, 0) FROM source_checkpoints
+                f"""SELECT status, COALESCE(is_complete, 0), http_status FROM source_checkpoints
                     WHERE run_id IN ({placeholders}) AND cell_id = ?
                     ORDER BY rowid DESC LIMIT 1""",
                 lineage + [cell["cell_id"]],
             ).fetchone()
         else:
             row = conn.execute(
-                f"""SELECT status, COALESCE(is_complete, 0) FROM source_checkpoints
+                f"""SELECT status, COALESCE(is_complete, 0), http_status FROM source_checkpoints
                     WHERE run_id IN ({placeholders}) AND source_type = ? AND ticker = ? AND date = ?
                     ORDER BY rowid DESC LIMIT 1""",
                 lineage + [cell["source_type"], cell["subject"], cell["window_start"]],
             ).fetchone()
-        if row and row[0] in {"success", "success_empty"} and bool(row[1]):
-            continue
+        if row:
+            # Skip completed cells (success or success_empty with is_complete=1)
+            if row[0] in {"success", "success_empty"} and bool(row[1]):
+                continue
+            # Skip entitlement-blocked optional FMP cells (HTTP 402 only)
+            if (row[0] == "failed" and row[2] == 402
+                    and cell.get("source_type") == "fmp_fundamentals"):
+                continue
         remaining.append(cell)
     return remaining
 

@@ -448,7 +448,7 @@ _TABLE_SOURCE_COL = {
     "clean_assets": "source_type",
     "articles": "source_type",
     "article_tickers": None,  # no source_type — count total only
-    "filings": "source_type",
+    "filings": None,  # no source_type column — count total only
     "filing_documents": None,
     "macro_observations": None,
     "index_state": "source_kind",

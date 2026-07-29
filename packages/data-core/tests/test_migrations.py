@@ -25,7 +25,7 @@ class TestMigrations:
         conn = sqlite3.connect(db)
         conn.execute("CREATE TABLE IF NOT EXISTS source_checkpoints (run_id TEXT)")
         conn.commit()
-        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT, plan_hash TEXT, expected_plan_hash TEXT, allow_stale_ohlcv INTEGER DEFAULT 0, allow_stale_ohlcv_overridden INTEGER DEFAULT 0, cancel_requested INTEGER DEFAULT 0, parent_run_id TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS raw_assets (asset_id TEXT PRIMARY KEY, ticker TEXT NOT NULL, source_type TEXT NOT NULL, reference_date TEXT NOT NULL, fetched_at TEXT NOT NULL, data_version TEXT NOT NULL DEFAULT 'v1', content_raw BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}')")
         conn.execute("CREATE TABLE IF NOT EXISTS articles (article_id TEXT PRIMARY KEY, published_utc TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS article_tickers (article_id TEXT, ticker TEXT, reference_date TEXT, PRIMARY KEY (article_id, ticker))")
@@ -42,9 +42,9 @@ class TestMigrations:
         db = str(tmp_path / "test.db")
         conn = sqlite3.connect(db)
         conn.execute("CREATE TABLE IF NOT EXISTS source_checkpoints (run_id TEXT)")
-        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT, plan_hash TEXT, expected_plan_hash TEXT, allow_stale_ohlcv INTEGER DEFAULT 0, allow_stale_ohlcv_overridden INTEGER DEFAULT 0, cancel_requested INTEGER DEFAULT 0, parent_run_id TEXT)")
         conn.commit()
-        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT, plan_hash TEXT, expected_plan_hash TEXT, allow_stale_ohlcv INTEGER DEFAULT 0, allow_stale_ohlcv_overridden INTEGER DEFAULT 0, cancel_requested INTEGER DEFAULT 0, parent_run_id TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS raw_assets (asset_id TEXT PRIMARY KEY, ticker TEXT NOT NULL, source_type TEXT NOT NULL, reference_date TEXT NOT NULL, fetched_at TEXT NOT NULL, data_version TEXT NOT NULL DEFAULT 'v1', content_raw BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}')")
         conn.execute("CREATE TABLE IF NOT EXISTS articles (article_id TEXT PRIMARY KEY, published_utc TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS article_tickers (article_id TEXT, ticker TEXT, reference_date TEXT, PRIMARY KEY (article_id, ticker))")
@@ -53,8 +53,8 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
         v = run_migrations(conn)
-        assert v == 11
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 11
+        assert v == 12
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 12
         conn.close()
 
     def test_per_statement_catch(self, tmp_path: Path):
@@ -69,10 +69,10 @@ class TestMigrations:
                 PRIMARY KEY (run_id, source_type, ticker, date)
             )
         """)
-        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT, plan_hash TEXT, expected_plan_hash TEXT, allow_stale_ohlcv INTEGER DEFAULT 0, allow_stale_ohlcv_overridden INTEGER DEFAULT 0, cancel_requested INTEGER DEFAULT 0, parent_run_id TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS raw_assets (asset_id TEXT PRIMARY KEY, ticker TEXT NOT NULL, source_type TEXT NOT NULL, reference_date TEXT NOT NULL, fetched_at TEXT NOT NULL, data_version TEXT NOT NULL DEFAULT 'v1', content_raw BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}')")
         conn.commit()
-        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT, plan_hash TEXT, expected_plan_hash TEXT, allow_stale_ohlcv INTEGER DEFAULT 0, allow_stale_ohlcv_overridden INTEGER DEFAULT 0, cancel_requested INTEGER DEFAULT 0, parent_run_id TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS raw_assets (asset_id TEXT PRIMARY KEY, ticker TEXT NOT NULL, source_type TEXT NOT NULL, reference_date TEXT NOT NULL, fetched_at TEXT NOT NULL, data_version TEXT NOT NULL DEFAULT 'v1', content_raw BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}')")
         conn.execute("CREATE TABLE IF NOT EXISTS articles (article_id TEXT PRIMARY KEY, published_utc TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS article_tickers (article_id TEXT, ticker TEXT, reference_date TEXT, PRIMARY KEY (article_id, ticker))")
@@ -80,7 +80,7 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS ohlcv (symbol TEXT, date TEXT, source TEXT, PRIMARY KEY (symbol, date, source))")
         conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
-        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT, plan_hash TEXT, expected_plan_hash TEXT, allow_stale_ohlcv INTEGER DEFAULT 0, allow_stale_ohlcv_overridden INTEGER DEFAULT 0, cancel_requested INTEGER DEFAULT 0, parent_run_id TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS raw_assets (asset_id TEXT PRIMARY KEY, ticker TEXT NOT NULL, source_type TEXT NOT NULL, reference_date TEXT NOT NULL, fetched_at TEXT NOT NULL, data_version TEXT NOT NULL DEFAULT 'v1', content_raw BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}')")
         conn.execute("CREATE TABLE IF NOT EXISTS articles (article_id TEXT PRIMARY KEY, published_utc TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS article_tickers (article_id TEXT, ticker TEXT, reference_date TEXT, PRIMARY KEY (article_id, ticker))")
@@ -89,7 +89,7 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
         v = run_migrations(conn)
-        assert v == 11
+        assert v == 12
         conn.close()
 
     def test_duplicate_column_skipped(self, tmp_path: Path):
@@ -106,10 +106,10 @@ class TestMigrations:
                 PRIMARY KEY (run_id, source_type, ticker, date)
             )
         """)
-        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT, plan_hash TEXT, expected_plan_hash TEXT, allow_stale_ohlcv INTEGER DEFAULT 0, allow_stale_ohlcv_overridden INTEGER DEFAULT 0, cancel_requested INTEGER DEFAULT 0, parent_run_id TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS raw_assets (asset_id TEXT PRIMARY KEY, ticker TEXT NOT NULL, source_type TEXT NOT NULL, reference_date TEXT NOT NULL, fetched_at TEXT NOT NULL, data_version TEXT NOT NULL DEFAULT 'v1', content_raw BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}')")
         conn.commit()
-        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT)")
+        conn.execute("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT, plan_hash TEXT, expected_plan_hash TEXT, allow_stale_ohlcv INTEGER DEFAULT 0, allow_stale_ohlcv_overridden INTEGER DEFAULT 0, cancel_requested INTEGER DEFAULT 0, parent_run_id TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS raw_assets (asset_id TEXT PRIMARY KEY, ticker TEXT NOT NULL, source_type TEXT NOT NULL, reference_date TEXT NOT NULL, fetched_at TEXT NOT NULL, data_version TEXT NOT NULL DEFAULT 'v1', content_raw BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}')")
         conn.execute("CREATE TABLE IF NOT EXISTS articles (article_id TEXT PRIMARY KEY, published_utc TEXT)")
         conn.execute("CREATE TABLE IF NOT EXISTS article_tickers (article_id TEXT, ticker TEXT, reference_date TEXT, PRIMARY KEY (article_id, ticker))")

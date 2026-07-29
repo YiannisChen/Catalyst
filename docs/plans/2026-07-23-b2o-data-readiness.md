@@ -15,7 +15,7 @@ No task may call providers, mutate protected DBs, stage, commit, push, create a 
 
 Before declaring any new module, inspect the actual production code and tests:
 
-- `packages/data-core/catalyst_data/migrations.py`: existing migration registry and `run_migrations(conn)`. v8/v9/v10 already exist and must not be reimplemented; v11 adds B2-O cell identity and FMP statement storage.
+- `packages/data-core/catalyst_data/migrations.py`: existing migration registry and `run_migrations(conn)`. v8/v9/v10 already exist and must not be reimplemented; v11 adds B2-O cell identity fields and FMP statement storage; v12 converges checkpoint persistence on `checkpoint_id` plus `UNIQUE(run_id, cell_id)`.
 - `packages/data-core/catalyst_data/update_planner.py`: existing `UpdatePlan`, `plan_update()`, `compute_plan_hash()`, and drift checking.
 - `packages/data-core/catalyst_data/update_pipeline.py`: existing
   `execute_update(db=conn, plan=plan, transport=live_transport)` is the sole
@@ -183,7 +183,7 @@ Production files:
 Characterization tests in
 `packages/data-core/tests/test_b2o_data_readiness.py`:
 
-- `test_existing_b2o_entrypoints_match_binding_contract` asserts v8/v9/v10/v11
+- `test_existing_b2o_entrypoints_match_binding_contract` asserts the migration registry through v12
   exist, `run_migrations()` is callable, `plan_update()` exists,
   `execute_update()` has keyword-only `db`, `plan`, and `transport`, and
   `build_corpus_and_lexical_index()` accepts
@@ -360,9 +360,9 @@ Production files:
 
 RED tests:
 
-- `test_bootstrap_uses_readonly_sqlite_backup_and_migrates_to_v11` verifies a
+- `test_bootstrap_uses_readonly_sqlite_backup_and_migrates_to_current_schema` verifies a
   URI `mode=ro` source connection, `sqlite3.Connection.backup()`, fsync,
-  existing `run_migrations()`, and `PRAGMA user_version = 11`.
+  existing `run_migrations()`, and `PRAGMA user_version = 12`.
 - `test_bootstrap_rejects_source_hash_drift` verifies the binding
   `expected_source_sha256`.
 - `test_bootstrap_failure_removes_only_incomplete_candidate` injects backup,
@@ -376,7 +376,7 @@ GREEN:
   3. create candidate snapshot;
   4. fsync candidate file and parent;
   5. call existing `run_migrations(conn)`;
-  6. verify `PRAGMA user_version = 11`;
+  6. verify `PRAGMA user_version = 12`;
   7. run `PRAGMA integrity_check`;
   8. run `PRAGMA foreign_key_check`;
   9. verify protected Dev DB SHA unchanged;
@@ -566,7 +566,9 @@ Evidence:
 - Create candidate through SQLite backup.
 - fsync file and parent directory.
 - Run existing `run_migrations(conn)`.
-- Verify `PRAGMA user_version = 11`, `integrity_check`, and `foreign_key_check`.
+- Verify `PRAGMA user_version = 12`, `integrity_check`, and `foreign_key_check`.
+- Verify corpus publication does not change any `DataSnapshotManifest` source
+  table hash and that `idx_index_state_chunk_id` exists before chunk upserts.
 - Verify protected Dev DB SHA unchanged.
 - Use the pre-snapshot path
   `data/candidates/catalyst_b2o_<universe_manifest_id>_<plan_hash>.working.db`;
@@ -578,7 +580,7 @@ Evidence:
 
 - candidate DB path;
 - before/after protected DB SHA;
-- user_version 11;
+- user_version 12;
 - historical rows retained.
 
 ### Task X3: Plan Preview

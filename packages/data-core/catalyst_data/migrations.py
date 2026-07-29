@@ -9,6 +9,7 @@ and skips "duplicate column name" errors.  Non-duplicate errors re-raise.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sqlite3
 from dataclasses import dataclass
@@ -76,14 +77,194 @@ def _reconcile_clean_assets_foreign_key(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX idx_clean_raw_asset ON clean_assets(raw_asset_id)"
     )
-
-
 @dataclass(frozen=True)
 class Migration:
     version: int
     name: str
     statements: list[str]
     reversible: bool = False
+
+
+def _apply_migration_v12(conn: sqlite3.Connection) -> int:
+    """Rebuild source_checkpoints with surrogate checkpoint_id PK.
+
+    Old: PRIMARY KEY (run_id, source_type, ticker, date)
+    New: checkpoint_id TEXT PRIMARY KEY (surrogate)
+         + UNIQUE(run_id, cell_id)  (B2-O identity; NULLs distinct per SQLite)
+         + UNIQUE(run_id, source_type, ticker, date) WHERE cell_id IS NULL  (legacy)
+
+    Preserves ALL DEFAULT values, indexes, and trigger contracts.
+    Executed within SAVEPOINT by run_migrations; on failure, v11 is restored.
+    """
+    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current_version >= 12:
+        return current_version
+
+    backup_count = conn.execute(
+        "SELECT COUNT(*) FROM source_checkpoints"
+    ).fetchone()[0]
+
+    # Create the v12 table with explicit canonical DDL.
+    conn.execute("""
+        CREATE TABLE source_checkpoints_v12 (
+            checkpoint_id        TEXT PRIMARY KEY,
+            run_id               TEXT NOT NULL,
+            source_type          TEXT NOT NULL,
+            ticker               TEXT NOT NULL,
+            date                 TEXT NOT NULL,
+            status               TEXT NOT NULL,
+            error_class          TEXT,
+            retries              INTEGER NOT NULL DEFAULT 0,
+            error_message_redacted TEXT,
+            http_status          INTEGER,
+            retry_after_seconds  REAL,
+            provider_latency_ms  REAL,
+            raw_asset_id         TEXT,
+            items_count          INTEGER,
+            fallback_provider    TEXT,
+            fallback_triggered   INTEGER DEFAULT 0,
+            empty_reason         TEXT,
+            logical_fetch_id     TEXT,
+            request_count        INTEGER NOT NULL DEFAULT 0,
+            pages_received       INTEGER NOT NULL DEFAULT 0,
+            items_received       INTEGER NOT NULL DEFAULT 0,
+            is_complete          INTEGER NOT NULL DEFAULT 0,
+            cell_id              TEXT,
+            window_start         TEXT,
+            window_end           TEXT,
+            endpoint_name        TEXT,
+            provider_profile_version TEXT,
+            UNIQUE(run_id, cell_id)
+        )
+    """)
+
+    # Copy data with deterministic checkpoint IDs.
+    col_names = [
+        "run_id", "source_type", "ticker", "date", "status", "error_class",
+        "retries", "error_message_redacted", "http_status", "retry_after_seconds",
+        "provider_latency_ms", "raw_asset_id", "items_count", "fallback_provider",
+        "fallback_triggered", "empty_reason", "logical_fetch_id", "request_count",
+        "pages_received", "items_received", "is_complete", "cell_id",
+        "window_start", "window_end", "endpoint_name", "provider_profile_version",
+    ]
+    quoted_cols = ", ".join(f'"{c}"' for c in col_names)
+    placeholders = ", ".join("?" for _ in col_names)
+
+    all_rows = conn.execute(
+        f"SELECT {quoted_cols} FROM source_checkpoints ORDER BY rowid"
+    ).fetchall()
+
+    insert_sql = (
+        f"INSERT INTO source_checkpoints_v12 (checkpoint_id, {quoted_cols}) "
+        f"VALUES (?, {placeholders})"
+    )
+
+    for row in all_rows:
+        row_dict = dict(zip(col_names, row))
+        id_parts = [
+            str(row_dict.get("run_id", "") or ""),
+            str(row_dict.get("source_type", "") or ""),
+            str(row_dict.get("ticker", "") or ""),
+            str(row_dict.get("date", "") or ""),
+            str(row_dict.get("cell_id", "") or ""),
+        ]
+        identity = "|".join(id_parts)
+        checkpoint_id = hashlib.sha256(identity.encode()).hexdigest()[:32]
+        conn.execute(insert_sql, (checkpoint_id, *row))
+
+    new_count = conn.execute(
+        "SELECT COUNT(*) FROM source_checkpoints_v12"
+    ).fetchone()[0]
+    if new_count != backup_count:
+        raise RuntimeError(
+            f"Migration v12: row count mismatch: {backup_count} -> {new_count}"
+        )
+
+    # Swap tables.
+    conn.execute("DROP TABLE source_checkpoints")
+    conn.execute(
+        "ALTER TABLE source_checkpoints_v12 RENAME TO source_checkpoints"
+    )
+
+    # Recreate indexes.
+    conn.execute(
+        "CREATE INDEX idx_source_checkpoints_run "
+        "ON source_checkpoints(run_id)"
+    )
+    conn.execute("""
+        CREATE UNIQUE INDEX idx_source_checkpoints_legacy_identity
+        ON source_checkpoints(run_id, source_type, ticker, date)
+        WHERE cell_id IS NULL
+    """)
+
+    # Recreate the v11 trigger contracts.
+    triggers = [
+        """CREATE TRIGGER trg_checkpoint_v2_insert_guard
+           BEFORE INSERT ON source_checkpoints
+           WHEN NEW.logical_fetch_id IS NOT NULL
+              AND (NEW.is_complete NOT IN (0, 1)
+                   OR NEW.request_count < 0
+                   OR NEW.pages_received < 0
+                   OR NEW.items_received < 0)
+        BEGIN
+            SELECT RAISE(ABORT, \'checkpoint_v2_contract\');
+        END""",
+        """CREATE TRIGGER trg_checkpoint_v2_update_guard
+           BEFORE UPDATE ON source_checkpoints
+           WHEN (NEW.request_count < 0
+                 OR NEW.pages_received < 0
+                 OR NEW.items_received < 0
+                 OR NEW.is_complete NOT IN (0, 1))
+        BEGIN
+            SELECT RAISE(ABORT, \'checkpoint_v2_contract\');
+        END""",
+        """CREATE TRIGGER trg_b2o_checkpoint_cell_identity_insert
+           BEFORE INSERT ON source_checkpoints
+           WHEN NEW.cell_id IS NOT NULL
+              AND (NEW.window_start IS NULL
+                   OR NEW.window_end IS NULL
+                   OR NEW.endpoint_name IS NULL
+                   OR NEW.provider_profile_version IS NULL
+                   OR NEW.date != NEW.window_start
+                   OR length(NEW.cell_id) != 64
+                   OR NEW.cell_id != lower(NEW.cell_id)
+                   OR NEW.cell_id GLOB \'*[^0-9a-f]*\')
+        BEGIN
+            SELECT RAISE(ABORT, \'b2o_checkpoint_cell_identity_contract\');
+        END""",
+        """CREATE TRIGGER trg_b2o_checkpoint_cell_identity_update
+           BEFORE UPDATE ON source_checkpoints
+           WHEN OLD.cell_id IS NOT NULL
+              AND (OLD.cell_id IS NOT NEW.cell_id
+                   OR OLD.window_start IS NOT NEW.window_start
+                   OR OLD.window_end IS NOT NEW.window_end
+                   OR OLD.endpoint_name IS NOT NEW.endpoint_name
+                   OR OLD.provider_profile_version IS NOT NEW.provider_profile_version
+                   OR NEW.date IS NOT NEW.window_start)
+        BEGIN
+            SELECT RAISE(ABORT, \'b2o_checkpoint_cell_identity_immutable\');
+        END""",
+        """CREATE TRIGGER trg_b2o_checkpoint_cell_identity_update_contract
+           BEFORE UPDATE ON source_checkpoints
+           WHEN OLD.cell_id IS NULL
+              AND NEW.cell_id IS NOT NULL
+              AND (NEW.window_start IS NULL
+                   OR NEW.window_end IS NULL
+                   OR NEW.endpoint_name IS NULL
+                   OR NEW.provider_profile_version IS NULL
+                   OR NEW.date IS NOT NEW.window_start
+                   OR length(NEW.cell_id) != 64
+                   OR NEW.cell_id != lower(NEW.cell_id)
+                   OR NEW.cell_id GLOB \'*[^0-9a-f]*\')
+        BEGIN
+            SELECT RAISE(ABORT, \'b2o_checkpoint_cell_identity_contract\');
+        END""",
+    ]
+    for trigger_sql in triggers:
+        conn.execute(trigger_sql)
+
+    return new_count
+
 
 
 MIGRATIONS: list[Migration] = [
@@ -619,8 +800,18 @@ MIGRATIONS: list[Migration] = [
         "CREATE INDEX IF NOT EXISTS idx_fundamental_statements_ticker_date ON fundamental_statements(ticker, fiscal_date)",
         "CREATE INDEX IF NOT EXISTS idx_fundamental_statements_ticker_type_date ON fundamental_statements(ticker, statement_type, fiscal_date)",
     ], reversible=False),
+    Migration(version=12, name="b2o_surrogate_checkpoint_pk", statements=[
+        "-- v12: surrogate checkpoint_id PK with explicit canonical DDL.",
+        "-- Applied via _apply_migration_v12() within SAVEPOINT.",
+        "-- Replaces PRIMARY KEY (run_id, source_type, ticker, date).",
+        "-- Adds UNIQUE(run_id, cell_id) for B2-O endpoint coexistence.",
+        "-- Preserves ALL DEFAULT values, indexes, and trigger contracts.",
+    ], reversible=False),
 
 ]
+
+# Bootstrap, snapshot, and tests derive the current schema from the registry.
+CURRENT_SCHEMA_VERSION: int = max(migration.version for migration in MIGRATIONS)
 
 
 def run_migrations(conn: sqlite3.Connection) -> int:
@@ -649,6 +840,19 @@ def run_migrations(conn: sqlite3.Connection) -> int:
             from catalyst_data.quality import _reconcile_source_checkpoints_check
             _reconcile_source_checkpoints_check(conn)
             conn.execute(f"PRAGMA user_version = {migration.version}")
+            logger.info("Applied migration v%d (%s)", migration.version, migration.name)
+            continue
+
+        if migration.version == 12:
+            conn.execute(f"SAVEPOINT migration_v{migration.version}")
+            try:
+                _apply_migration_v12(conn)
+                conn.execute(f"PRAGMA user_version = {migration.version}")
+                conn.execute(f"RELEASE SAVEPOINT migration_v{migration.version}")
+            except Exception:
+                conn.execute(f"ROLLBACK TO SAVEPOINT migration_v{migration.version}")
+                conn.execute(f"RELEASE SAVEPOINT migration_v{migration.version}")
+                raise
             logger.info("Applied migration v%d (%s)", migration.version, migration.name)
             continue
 

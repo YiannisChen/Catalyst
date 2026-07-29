@@ -24,9 +24,9 @@ SNAPSHOT_TABLE_INVENTORY: dict[str, dict[str, Any]] = {
     "fundamental_statements": {"key": ("statement_id",), "columns": None},
     "normalized_provenance": {"key": ("entity_type", "entity_id", "entity_version", "raw_asset_id"), "columns": None},
     "source_checkpoints": {
-        "key": ("run_id", "source_type", "ticker", "date"),
+        "key": ("checkpoint_id",),
         "columns": (
-            "run_id", "source_type", "ticker", "date", "status", "empty_reason",
+            "checkpoint_id", "run_id", "source_type", "ticker", "date", "status", "empty_reason",
             "logical_fetch_id", "request_count", "pages_received", "items_received",
             "is_complete", "raw_asset_id", "items_count", "http_status",
             "cell_id", "window_start", "window_end", "endpoint_name",
@@ -133,8 +133,12 @@ def build_data_snapshot_manifest(
     report_path: str | None = None,
 ) -> DataSnapshotManifest:
     db_user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    if db_user_version != 11:
-        raise ValueError(f"snapshot requires db user_version 11, got {db_user_version}")
+    from catalyst_data.migrations import CURRENT_SCHEMA_VERSION
+    if db_user_version != CURRENT_SCHEMA_VERSION:
+        raise ValueError(
+            f"snapshot requires db user_version {CURRENT_SCHEMA_VERSION}, "
+            f"got {db_user_version}"
+        )
     coverage = dict(coverage_states or {})
     if not coverage:
         raise ValueError("snapshot requires readiness coverage_states")
