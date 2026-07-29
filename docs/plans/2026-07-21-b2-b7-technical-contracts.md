@@ -11,13 +11,27 @@
 The binding document order is:
 
 1. this technical contract for formulas, state machines, identities, migration ownership, and B2–B7 sequencing;
+1b. `2026-07-29-pre-b6-evidence-convergence-design.md` for Pre-B6 SEC
+   (`sec_submissions` / `sec_filing_index` / frozen `inventory_id` /
+   `sec_document` as **three independent root plan families**),
+   **sec_source_ready** vs **sec_evidence_ready**, snapshot-before-corpus order,
+   **filing_v3 + migration v13 table rebuild**, persisted
+   `filing_documents.document_id`, SEC plan-cell record v2, composite
+   `convergence_plan_hash`, `plan_checkpoint_reconciliation`,
+   production `source_bundle_id`, and evaluation gates;
 2. `2026-07-19-catalyst-open-source-workbench-design.md` for product behavior and the Core Exit Gate;
 3. `2026-07-19-catalyst-final-package-architecture.md` for package ownership and dependency direction;
 4. `2026-07-19-catalyst-provider-provenance-and-chunking-design.md` for provider lineage and chunk profiles;
 5. `2026-07-19-catalyst-evaluation-architecture-review.md` for evaluation surfaces and result-pack governance;
 6. `2026-07-21-catalyst-roadmap.md` for package order and scope.
 
-Execution order remains B2 → B3 → B4 → B5 → B6 → B7. The Eval Foundation scaffold is created during B4 before any retrieval pool is persisted. B6 produces all retrieval-arm outputs and the union judgment pool. B7 performs human grading, freezes labels, computes metrics, makes component keep/kill decisions, and releases the backend.
+Execution order remains B2 → B3 → B4 → B5 → **B2-E (evidence convergence)** → B6-L → B6-G → B7.
+B2-O promoted a v12 snapshot that is **not** SEC-body-complete. B2-E must re-fetch SEC documents,
+repair FMP lineage, re-snapshot, republish corpus/FTS, and freeze lexical baselines before B6-G.
+The Eval Foundation scaffold is created during B4 before any comparison pool is persisted. B6
+produces all retrieval-arm outputs and the union judgment pool only against the post-B2-E corpus.
+B7 performs human grading, freezes labels, computes metrics, makes component keep/kill decisions,
+and releases the backend.
 
 ## 2. Cross-package invariants
 
@@ -32,7 +46,7 @@ Execution order remains B2 → B3 → B4 → B5 → B6 → B7. The Eval Foundati
 
 ## 3. Migration ownership
 
-The data-core migration registry currently contains v1–v7. The current Dev DB may still report `PRAGMA user_version=6`; applying v7 before later migrations is normal and must be tested on a copy.
+The data-core migration registry is ordered by `PRAGMA user_version`. Applying pending versions on a **copy** is normal and must be tested before candidates.
 
 | Version | Owner | Schema responsibility |
 |---|---|---|
@@ -40,7 +54,9 @@ The data-core migration registry currently contains v1–v7. The current Dev DB 
 | v8 | B2 | request-attempt ledger, request-scoped raw-response fields, normalized provenance, durable update-run control |
 | v9 | B3 | corpus documents/chunks, profile identity, corpus manifests, reconciliation and tombstones |
 | v10 | B4 | FTS5 lexical index and lexical-index metadata if persistent schema is required |
-| v11 | B2-O | full source-cell checkpoint identity and FMP `fundamental_statements` |
+| v11 | B2-O | full source-cell checkpoint identity fields (`cell_id`, windows, endpoint, profile) and FMP `fundamental_statements` |
+| v12 | B2-O | surrogate `checkpoint_id TEXT PRIMARY KEY`; `UNIQUE(run_id, cell_id)` for full-identity endpoint siblings (e.g. three FMP endpoints); partial unique `UNIQUE(run_id, source_type, ticker, date) WHERE cell_id IS NULL` for legacy rows; recreate v2 checkpoint guards and B2-O cell-identity triggers inside `_apply_migration_v12`; apply under `SAVEPOINT migration_v12` with rollback-to-savepoint on failure; migration registry marks `reversible=False` (no down-migration). `checkpoint_id = SHA256(run_id\|source_type\|ticker\|date\|cell_id_or_empty)[:32]` (lowercase hex). Full-identity writes use `ON CONFLICT(run_id, cell_id) DO UPDATE` on outcome fields only. |
+| v13 | B2-E | Always rebuild `corpus_chunks` to expand the profile CHECK and insert/update guards to `('news_v2','filing_v2','filing_v3')`; preserve existing `filing_v2` rows and full-row logical hashes; do not rewrite embedded filing_v2 identities. Add nullable, unique-partial, guarded `filing_documents.document_id` for new S4 SHA-256 identities while preserving legacy NULL rows. New SEC body chunks use **filing_v3** only; reconciliation may tombstone with `profile_version_replaced`; apply under `SAVEPOINT migration_v13` with full rollback on failure; `reversible=False`. Token contract for news_v2/filing_v3: max 384 / target 320 / overlap 48 / prefix ≤64 (pinned BGE-M3 tokenizer). |
 
 B5 does not add financial attribution tables to the corpus DB for the Core milestone. Benchmark, sector ETF, peer, and relationship configuration are versioned manifests plus existing OHLCV/domain records. B5 may add an additive trace-schema version for assurance records, but the agents trace DB must first gain an explicit schema-version registry; it must not borrow data-core `user_version` numbers.
 

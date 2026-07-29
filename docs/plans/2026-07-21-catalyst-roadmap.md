@@ -26,9 +26,38 @@ Create the minimal Eval Foundation schemas before any comparison pool is persist
 
 Add deterministic market, sector, and peer context. Add a new deterministic Context Builder ahead of the existing Miner → Critic → Router → Judge → Validator → Finalizer workflow, and strengthen that workflow with typed outputs, hypothesis prerequisites, counter-evidence, explicit abstention, and one RunAssuranceRecord per run.
 
+### B2-E. Pre-B6 evidence convergence (blocking)
+
+Binding: `2026-07-29-pre-b6-evidence-convergence-design.md` and
+`2026-07-29-pre-b6-evidence-convergence.md`.
+
+B2-O produced a v12 promoted snapshot with complete news/OHLCV/FRED cells but
+**without SEC filing body text** and with FMP lineage gaps. Before any GPU embedding:
+
+1. Migration **v13** table rebuild + persisted `filing_documents.document_id` +
+   **filing_v3** (max 384 / target 320 / overlap 48).
+2. SEC **three independent root plan families**: S1 submissions, S2 `sec_filing_index`,
+   S4 `sec_document` (each first run `parent_run_id=NULL`); SEC plan-cell record
+   v2 carries full endpoint identity; S3 freezes `inventory_id` + requiredness;
+   **sec_source_ready** then DataSnapshotManifest, then corpus, then
+   **sec_evidence_ready**.
+3. `plan_checkpoint_reconciliation` / `apply` (request_count only) on candidate.
+4. Composite `convergence_plan_hash` binds all three SEC plans, inventory and
+   reconciliation evidence; gates on candidate → **PROMOTE auth** → single
+   `promote_candidate()`; baseline SHA unchanged.
+5. 40 corpus coverage invariants + 40 lexical smoke probes; 12-case lexical baseline.
+6. B6-L **source_bundle_id** + explicit dense/RRF/rerank fixtures; B6-G only after GO.
+
+Do not describe Stage 1 as complete while SEC body readiness or evaluation
+baselines are missing.
+
 ### B6. Dense retrieval and reranker
 
-Build a pinned BGE-M3 index on the server, combine lexical and dense candidates with RRF, and run a reranker without changing the candidate universe. Persist all retrieval-arm outputs and generate the union judgment pool; the final keep/kill decision waits for B7 grading.
+GPU consumes a checksummed **source_bundle** of post-B2-E `corpus_chunks` (not
+legacy frozen `clean_assets`). Combine lexical and dense candidates with RRF,
+run a reranker without changing the candidate universe, persist retrieval-arm
+outputs, and generate the union judgment pool. Final keep/kill waits for B7
+under predeclared bootstrap gates (pilot n=12).
 
 ### B7. API, compact evaluation, and backend release
 

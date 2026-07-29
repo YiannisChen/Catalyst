@@ -1,8 +1,9 @@
 # B2-O Data Readiness Design
 
 Date: 2026-07-23
-Status: binding contract; 40-name universe ratified by the architect on 2026-07-23
+Status: binding contract for B2-O bootstrap/fill/promote; **partially superseded for SEC body-text readiness and Pre-B6 GO** by `2026-07-29-pre-b6-evidence-convergence-design.md` (2026-07-29 final convergence)
 Scope: data readiness only. No B6 dense/reranker work starts here.
+Supersession note: B2-O completes **sec_submissions** metadata only. Full SEC body readiness requires B2-E stages **sec_filing_index → inventory_id → sec_document (new root)** and per-document `sec_evidence_ready`. Submissions JSON does **not** fully enumerate EX-99. Empty `filing_documents` placeholders are never text-complete.
 
 ## 1. Outcome
 
@@ -231,7 +232,7 @@ The B2-O-X plan contains these exact source obligations:
 | Polygon | adjusted daily OHLCV | all 40 tickers, `2025-01-02` through latest complete session | mandatory |
 | Polygon | ticker news | all 40 tickers, degraded and canonical windows | mandatory |
 | Finnhub | company news | all 40 tickers, canonical window | mandatory |
-| SEC | submissions and filing-document metadata | all 40 tickers, per-ticker available history | mandatory |
+| SEC | submissions and filing-document **metadata only** (B2-O scope) | all 40 tickers, per-ticker available history | mandatory for B2-O **submission_metadata_complete** only; **not** sufficient for Pre-B6 SEC evidence (see 2026-07-29 design A) |
 | FRED | the existing curated 11-series manifest | series-specific history | mandatory global context |
 | FMP | annual income, balance sheet, and cash flow | per-ticker when the current account permits | optional supplemental data |
 | yfinance | diagnostic OHLCV fallback | operator diagnosis only | excluded from batch readiness |
@@ -261,7 +262,7 @@ B2-O always supplies it:
 | `polygon_ohlcv` | each approved ticker | inclusive, continuous, non-overlapping windows of at most 90 natural days from `2025-01-02` through canonical end; each provider request returns all exchange-session bars in the window |
 | `polygon_news` | each approved ticker | inclusive, continuous, non-overlapping calendar windows of at most 7 natural days from `2025-01-02` through canonical end; pagination continues until `next_url` is empty or an explicit cap is reached |
 | `finnhub_company_news` | each approved ticker | inclusive, continuous, non-overlapping calendar windows of at most 7 natural days from `2025-08-01` through canonical end |
-| `sec_filings` | each approved ticker | one as-of cell at canonical end; the connector retrieves available submissions history under the ticker's form profile |
+| `sec_filings` | each approved ticker | one as-of cell at canonical end with `endpoint_name=sec_submissions` only. **B2-O does not run sec_filing_index or sec_document.** Those endpoints, frozen `inventory_id`, and new-root document fetch are owned exclusively by Pre-B6 B2-E |
 | `fmp_fundamentals` | each approved ticker | three as-of cells at canonical end: `income_statement`, `balance_sheet`, and `cash_flow`; FMP is degraded optional |
 | `fred_macro` | each ID in the existing 11-series manifest | one as-of cell at canonical end; the connector retrieves the configured series history |
 
@@ -387,7 +388,7 @@ The existing B3 implementation currently materializes active chunk metadata for 
 
 B2-O ends after the promoted v12 DB, `DataSnapshotManifest`, current B3 `CorpusManifest`, and B4 lexical state are verified. It does not create vectors.
 
-B6-L may then implement local dense/RRF/reranker adapters with deterministic fixtures and export a checksummed active-chunk bundle. B6-G is the first phase allowed to load BGE-M3 on the GPU server. Model inference may use FP16 internally, but persisted vectors remain float32 unless the binding B6 contract is explicitly amended.
+**Amendment 2026-07-29 (final):** B2-O completion is **not** Pre-B6 GO. Post-B2-O corpus is news-dominated with empty SEC bodies. Before B6-G execute full B2-E per the 2026-07-29 design: migration v13, `sec_filing_index`, frozen `inventory_id`, `sec_document` **new root**, per-document readiness, filing_v3, FMP candidate-only reconciliation, re-promote, 40/40 probes, production **source_bundle_id** (no fake vectors). Legacy `build_embeddings_gpu.py` remains frozen-eval only.
 
 ## 14. Completion Gates
 

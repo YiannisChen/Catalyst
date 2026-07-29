@@ -9,6 +9,15 @@
 **Tech Stack:** Python 3.12+, FastAPI, pydantic, SQLite, pytest, Markdown generation
 
 **Binding Contract:** `docs/plans/2026-07-21-b2-b7-technical-contracts.md` §9
+**Pre-B6 evaluation amendments:** `docs/plans/2026-07-29-pre-b6-evidence-convergence-design.md` §I —
+40/40 probes require filing_v3 hit and **forbid documented-empty pass**; 12 cases =
+4 single-source + 2 multi-source + 2 abstain + 2 distractor + 2 look-ahead traps;
+retrieval arms = lexical/dense/hybrid/reranked only; B5 answer experiment freezes
+`aihubmix` / `gemini-2.5-flash-nothink` / temperature 0 / max_tokens 2048 or
+**BLOCKED_BY_MODEL_FREEZE**; gpt_same_evidence is reasoning control not a retrieval arm;
+**gpt_web required external comparison** (does not block reranker KEEP/KILL);
+reranker bootstrap seed=20260729 resamples=10000 pilot-only; protocol_continuity if
+10-ticker snapshot missing.
 
 ---
 
@@ -39,17 +48,25 @@ Deliver B7 that passes ALL Core Exit Gates (A–H) and completes Stage 1 (Backen
 - Local security: loopback bind, Host/Origin allowlists, CORS closed, key memory-only, sentinel key redaction
 
 **Stream B — Compact Evaluation (Gate F):**
-- Grade 12 BenchmarkCase records (6 answerable + 2 abstain + 4 retrieval-only)
-- Delayed second adjudication pass
-- Label/pool freeze
-- Recall@8, nDCG@8, primary_hit@8, unjudged@8 computation
-- Reranker deltas (Δ nDCG@8, Δ primary_hit@8, improved/regressed cases)
-- 2×2 answer/abstain matrix, abstain-reason match
-- MetricRecord and ResultPack generation
-- Markdown scorecard (deterministic)
-- Zero-network replay gate
-- Named-case component keep/kill decisions
-- Tie → cheaper configuration wins
+- Grade 12 BenchmarkCase records with **mutually exclusive** slots:
+  **4 single-source answerable + 2 multi-source answerable + 2 correct-abstain +
+  2 unsupported/distractor + 2 temporal look-ahead traps**
+- Exactly 40 ticker coverage probes: each must hit ≥1 ticker-eligible chunk **and**
+  ≥1 `filing_v3` chunk; documented empty is **fail**, not pass
+- Lexical baseline frozen **before** B6-G
+- Retrieval-metric arms only: lexical, dense, hybrid, reranked (Recall@8/20, nDCG@8,
+  candidate equality, look-ahead)
+- Answer experiment: same B5 workflow per arm; frozen model
+  `gemini-2.5-flash-nothink` via aihubmix; temperature 0.0; max_tokens 2048;
+  else **BLOCKED_BY_MODEL_FREEZE**
+- gpt_same_evidence: reasoning control on hybrid top-20; not a retrieval arm
+- **gpt_web required external comparison** (human); separate log; never merge scores;
+  does not block reranker KEEP/KILL
+- Reranker: bootstrap seed `20260729`, resamples `10000`, pilot claim only;
+  KEEP iff CI_lower(Δ nDCG@8)>0 ∧ equality=1.0 ∧ look_ahead=0 ∧ no abstention regression;
+  else KILL
+- If original 10-ticker system snapshot unrecoverable: `baseline_mode=protocol_continuity`
+- MetricRecord, ResultPack, Markdown scorecard, zero-network replay, named keep/kill
 
 **Stream C — Quickstarts and Release (Gate G):**
 - Key-free data quickstart (plan/plan_hash/corpus/cutoff-safe lexical query)

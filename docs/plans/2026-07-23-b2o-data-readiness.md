@@ -1,13 +1,14 @@
 # B2-O Data Readiness Implementation Plan
 
 Date: 2026-07-23
-Status: executable binding plan; 40-name universe ratified on 2026-07-23
-Design: `docs/plans/2026-07-23-b2o-data-readiness-design.md`
+Status: executable binding plan for B2-O; **SEC body-text, sec_filing_index, inventory_id, sec_document new root, filing_v3/v13, and Pre-B6 GO are out of scope** — owned by `2026-07-29-pre-b6-evidence-convergence.md`
+Design: `docs/plans/2026-07-23-b2o-data-readiness-design.md` (SEC submissions-only; amended 2026-07-29 final)
 
 This plan is split into B2-O-I and B2-O-X.
 
 - B2-O-I is implementation plus offline verification. It may finish without live authorization, but it must report only `B2-O-I COMPLETE`.
 - B2-O-X is authorized operational execution. It is required for `B2-O COMPLETE` and is not deferred to another plan.
+- **`B2-O COMPLETE` ≠ Pre-B6 GO.** After B2-O, execute B2-E (evidence convergence) before B6-G.
 
 No task may call providers, mutate protected DBs, stage, commit, push, create a PR, access a GPU server, or start B6 unless the task explicitly says it is the B2-O-X live authorization step.
 
@@ -595,8 +596,9 @@ Evidence:
     windows in the `evidence` stage;
   - Finnhub company news for all 40 tickers from `2025-08-01` through the
     latest complete session in the `evidence` stage;
-  - SEC submissions and filing-document metadata for all 40 tickers using
-    each ticker's ratified form profile;
+  - SEC submissions (`endpoint_name=sec_submissions`) metadata only for all
+    40 tickers — **not** `sec_filing_index`, **not** `sec_document`, **not**
+    body text (B2-E owns discovery + new-root document fetch);
   - the existing curated 11 FRED series as mandatory global context;
   - FMP annual income, balance sheet, and cash-flow cells as optional
     supplemental evidence;

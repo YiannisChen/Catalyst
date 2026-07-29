@@ -2,25 +2,31 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Build a pinned BGE-M3 dense index on the server, combine lexical and dense candidates with RRF (k=60), run a reranker without changing the candidate universe, persist all retrieval-arm outputs, and generate the union judgment pool. B6 does not make the final keep/kill decision (deferred to B7 grading).
+**Goal:** Build a pinned BGE-M3 dense index on the server from the **post-B2-E** `corpus_chunks` table, combine lexical and dense candidates with RRF (k=60), run a reranker without changing the candidate universe, persist all retrieval-arm outputs, and generate the union judgment pool. B6 does not make the final keep/kill decision (deferred to B7 grading under predeclared metrics).
 
-**Architecture:** Extract and adapt the existing LanceDB/RRF/reranker implementation behind the B4 retrieval interfaces instead of creating a second algorithm. Mac runs deterministic fixture-scale adapter tests; an exact-revision model load and full index build are separately authorized server steps. IndexManifest binds vectors to corpus and model identities.
+**Architecture:** Extract and adapt the existing LanceDB/RRF/reranker implementation behind the B4 retrieval interfaces instead of creating a second algorithm. Mac runs deterministic fixture-scale adapter tests (B6-L); an exact-revision model load and full index build are separately authorized server steps (B6-G). IndexManifest binds vectors to **corpus_manifest_id**, content_hash, tombstones, and model identities.
 
 **Tech Stack:** Python 3.12+, BGE-M3 (pinned revision), LanceDB, FlagEmbedding (optional extra), pytest
 
 **Binding Contract:** `docs/plans/2026-07-21-b2-b7-technical-contracts.md` §8
+**Pre-B6 supersession:** `docs/plans/2026-07-29-pre-b6-evidence-convergence-design.md` §H —
+B6-G forbidden until Pre-B6 GO; GPU consumes **source_bundle_id** of `corpus_chunks`
+(not frozen `clean_assets`); production bundles **must not** contain fake vectors;
+VRAM uses measured preflight (not static formula as safety gate).
 
 ---
 
 ## 0. Execution Rules
 
-- B4 and B5 must be independently verified first. B6 changes retrieval only and does not alter agent workflow behavior.
+- B4 and B5 must be independently verified first. **B2-E Pre-B6 evidence convergence must reach GO before B6-G.** B6-L fixture work may proceed in parallel with B2-E-I offline tasks but must not embed the pre-repair baseline corpus as production.
+- B6 changes retrieval only and does not alter agent workflow behavior.
 - Existing `reciprocal_rank_fusion()`, reranker loading, and LanceDB search in `storage/lancedb_store.py` are the migration source, not dead code. Extract or wrap them with compatibility tests; do not duplicate them.
 - Do not stage, commit, push, download models, call providers, access a GPU server, or mutate canonical DB files without separate authorization.
 - Pin BGE-M3 to the locally verified snapshot `5617a9f61b028005a4858fdac845db406aefb181` and BGE reranker v2-m3 to `953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e`. Placeholders, tags, branches, and abbreviated SHAs are invalid.
 - Every retrieval adapter returns one documented `RetrievalResultSet`; tests may not alternate between list and object APIs.
 - Cosine similarity is validated in `[-1, 1]`. Candidate-set preservation compares exact sets and cardinality before taking the top-8 presentation slice.
 - Fixture tests use injected deterministic embedders/rerankers; they do not load heavyweight model dependencies.
+- **`packages/data-core/scripts/build_embeddings_gpu.py` is LEGACY_FROZEN_EVAL only** (reads `clean_assets` from `catalyst_eval_frozen_v2.db`). Current B6 uses production **source_bundle_id** export + GPU import of float32 vectors bound to that bundle (Pre-B6 design §H).
 
 
 ## 1. Objective
@@ -47,7 +53,7 @@ Deliver B6 that passes Core Exit Gate C (Retrieval — dense, hybrid, reranker p
 | Component | File | Status |
 |---|---|---|
 | LanceDB store | `catalyst_data/storage/lancedb_store.py` | implemented — needs BGE-M3 adaptation |
-| Embedding builder (GPU) | `packages/data-core/scripts/build_embeddings_gpu.py` | implemented — needs revision pin |
+| Embedding builder (GPU) | `packages/data-core/scripts/build_embeddings_gpu.py` | **legacy frozen-eval only** — do not use for B2-O/B2-E corpus; replace with corpus_chunks embedder |
 | Index builder | `packages/data-core/catalyst_data/index_builder.py` | implemented — needs RRF/reranker |
 | `index_state` table | `catalyst_data/storage/sqlite.py` | implemented |
 | Source tier filter | `catalyst_data/source_tier.py` | implemented |
@@ -177,20 +183,24 @@ packages/data-core/tests/retrieval_model_fixtures.py
 
 ```
 packages/data-core/catalyst_data/storage/lancedb_store.py        — BGE-M3 adaptation
-packages/data-core/scripts/build_embeddings_gpu.py               — revision pin, manifest
+packages/data-core/scripts/build_embeddings_gpu.py               — LEGACY_FROZEN_EVAL banner only
+packages/data-core/scripts/build_corpus_embeddings_gpu.py        — NEW B6-G driver (corpus_chunks)
+packages/data-core/catalyst_data/retrieval/embedder.py           — NEW corpus_chunks embedder
 packages/data-core/catalyst_data/index_builder.py                — incremental embed, hybrid
 packages/data-core/catalyst_data/retrieval/result.py             — extend with new score fields
 packages/data-core/tests/test_lancedb.py                         — BGE-M3 fixture tests
 packages/data-core/tests/test_index_builder.py                   — dense path tests
-packages/data-core/catalyst_data/config.py                       — BGE-M3 revision constant
+packages/data-core/tests/test_corpus_embedder.py                 — NEW grain tests
+packages/data-core/catalyst_data/config.py                       — BGE-M3 / reranker revision constants
 ```
 
 ### Files Explicitly Forbidden
 
 - `data/catalyst_eval_frozen_v2.db` — frozen
+- promoted baseline snapshot in-place mutation (`catalyst_b2o_d5e5f7fe…`)
+- B6-G production index on pre-B2-E corpus without explicit debug override
 - `packages/agents/` — B5 domain
-- `packages/eval/` — B7 domain
-- GPU server without operator authorization
+- GPU server without operator authorization **and** Pre-B6 GO
 - Embedding model downloaded without pinned revision
 
 ## 7. TDD Tasks
@@ -663,6 +673,34 @@ Expected: FAIL.
 ```
 
 Expected: all PASS.
+
+### Task 6b: source_bundle + corpus_chunks grain (Pre-B6 mandatory)
+
+**Supersedes** any instruction to use `build_embeddings_gpu.py` as the current B6 path
+or to place fake vectors in production export bundles.
+
+**Files:**
+- Create: `packages/data-core/catalyst_data/retrieval/source_bundle.py`
+- Create: `packages/data-core/catalyst_data/retrieval/embedder.py`
+- Create: `packages/data-core/scripts/build_corpus_embeddings_gpu.py` (B6-G only)
+- Create: `packages/data-core/tests/test_source_bundle.py`
+- Create: `packages/data-core/tests/test_corpus_embedder_grain.py`
+- Modify: `packages/data-core/catalyst_data/config.py` (pins)
+- Modify: `packages/data-core/scripts/build_embeddings_gpu.py` (LEGACY_FROZEN_EVAL banner only)
+
+**RED tests (names):**
+- `test_source_bundle_id_formula`
+- `test_export_sorted_excludes_tombstones`
+- `test_export_contains_no_vectors_field`
+- `test_embedder_reads_corpus_chunks_not_clean_assets`
+- `test_fake_vectors_only_in_test_helper_not_export_api`
+- `test_index_manifest_binds_source_bundle_id_and_revisions`
+- `test_import_verifies_source_bundle_id_order_count_checksums`
+
+**GREEN:** production export is text+hashes only; fake embedder remains test-only.
+
+**B6-G gate:** Pre-B6 GO + frozen source_bundle_id + B6-L green + GPU authorization;
+batch=1 CUDA memory preflight; OOM halves batch; batch=1 OOM hard-fails; no silent CPU fallback.
 
 ### Task 7: Incremental embedding
 
