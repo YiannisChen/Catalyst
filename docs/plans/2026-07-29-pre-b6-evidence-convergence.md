@@ -528,16 +528,32 @@ apply_checkpoint_reconciliation(candidate, plan, expected_plan_hash=plan.hash, d
    composite binds S1/S2/inventory/S4/v13/readiness policy and excludes timestamps/paths
 3. `build_data_snapshot_manifest(plan_hash=convergence_plan_hash)` →
    **new `snapshot_id`** (coverage uses sec_source_ready)
-4. `publish_corpus_with_resource_gate` / `build_corpus_and_lexical_index` with
-   `certified_snapshot_identity=snapshot_id` (filing_v3)
-5. FTS / `lexical_index_state`
-6. Confirm **`sec_evidence_ready=true`**
-7. 40 corpus coverage invariants + 40 lexical smoke probes
-8. integrity_check / FK / hash / identity
-9. Obtain **PROMOTE** authorization
-10. Call **`promote_candidate()` once** (versioned snapshot + active pointer)
-11. Verify active pointer, new snapshot SHA, baseline SHA == `7cc49ba1…`
-12. Candidate path gone / final path exists
+4. `publish_corpus_with_resource_gate` exclusively invokes the build-scoped
+   streaming publisher with `certified_snapshot_identity=snapshot_id`; source
+   documents use deterministic keyset order, <=100-document/UTF-8 source bounds,
+   and <=500-chunk/UTF-8 chunk-text bounds
+5. Resume committed checkpoints, compute the legacy-compatible manifest identity
+   from normalized binary-ordered rows, reconcile via SQL deltas, and append
+   unpublished FTS rows in <=500-row transactions
+6. A short `BEGIN IMMEDIATE` validates frozen counts/digests/readiness and selects
+   the matching corpus+lexical pair; failures keep the old pair selected
+7. Confirm **`sec_evidence_ready=true`**
+8. 40 corpus coverage invariants + 40 lexical smoke probes
+   - production command requires `--probe-cutoff` and `--probe-output`
+   - persist deterministic `pre_b6_probe_report_v1`; paths/timestamps excluded
+   - promotion response references `probe_report_id` and report path
+9. integrity_check / FK / hash / identity
+10. Obtain **PROMOTE** authorization
+11. Call **`promote_candidate()` once** (versioned snapshot + active pointer)
+12. Verify active pointer, new snapshot SHA, baseline SHA == `7cc49ba1…`
+13. Candidate path gone / final path exists
+
+The resource estimate uses exact eligibility and UTF-8 units. Required headroom
+is the maximum bounded phase (tokenizer/cache, SQLite cache, largest eligible
+document, source/chunk buffers, reconciliation, FTS, cutover), and the gate stays
+`instantaneous RSS + required headroom < 6 GiB`. Oversized documents raise typed
+resumable resource stops. Derived staging does not change source schema v13 or
+`DataSnapshotManifest` identity. See the 2026-08-01 streaming design amendment.
 
 **Forbidden:** separate invent-publish API; promote before step 9 authorization;
 corpus before snapshot_id.
@@ -555,6 +571,15 @@ corpus before snapshot_id.
 ---
 
 ### Task 18 — B6-L production source_bundle export
+
+After corpus/FTS, run the identity-bound postbuild readiness audit before probes.
+`export_source_bundle()` requires both that audit report with
+`postbuild_evidence_ready=true` and the certified Pre-B6 probe report path.
+Validate their deterministic identities, exact mandatory-document and ordered
+40/40 evidence, snapshot, corpus, lexical, universe, inventory, source-snapshot,
+and terminal-run bindings; include `postbuild_readiness_id` and
+`probe_report_id` in `source_bundle_id` and the bundle manifest. No
+bypass/default proof is allowed.
 
 **Authorization:** none.
 

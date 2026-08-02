@@ -702,8 +702,10 @@ changes the identity; timestamps and file paths do not.
  8  sec_source_ready MUST be true
  9  compute convergence_plan_hash; build DataSnapshotManifest → snapshot_id
     (coverage binds sec_source_ready; plan_hash=convergence_plan_hash)
-10  build filing_v3 corpus with certified_snapshot_identity=snapshot_id
-11  build FTS / lexical_index_state (one transaction)
+10  resumably stage filing_v3 + news_v2 corpus in bounded derived batches;
+    compute the legacy-compatible identity from normalized inventory rows
+11  build unpublished manifest-scoped FTS in <=500-row transactions; a short
+    BEGIN IMMEDIATE validates readiness and selects the matching corpus+lexical pair
 12  sec_evidence_ready MUST be true
 13  40 ticker corpus coverage invariant + lexical index smoke probes
 14  integrity_check / FK / hash / identity verification
@@ -721,6 +723,12 @@ active pointer. There is **no** separate publish-then-promote API this wave.
 Failure must not leave a half-updated pointer. Baseline snapshot file never moves.
 
 Any failure before step 16 → no `promote_candidate`.
+
+Steps 10-11 are governed by
+`2026-08-01-pre-b6-streaming-publication-design.md`. Source schema remains v13;
+build-scoped derived staging is excluded from `DataSnapshotManifest`. Failure or
+resource stop preserves the old selected corpus+lexical pair and leaves staging
+resumable. The official instantaneous-RSS-plus-headroom gate remains below 6 GiB.
 
 ---
 
@@ -751,16 +759,22 @@ available_at, ticker_associations, corpus_manifest_id, chunk_profile_version
 
 ```text
 source_bundle_id = SHA256(canonical_json({
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "corpus_manifest_id": corpus_manifest_id,
   "snapshot_id": snapshot_id,
+  "postbuild_readiness_id": postbuild_readiness_id,
+  "probe_report_id": probe_report_id,
   "ordered_chunk_record_hashes": [SHA256(each_line_canonical), ...]
 }))
 ```
 
 Export rules: sort by chunk_id; exclude tombstones; only frozen
 corpus_manifest_id; no API keys, raw payloads, request ledger, or whole SQLite DB;
-verify counts and content hashes.
+verify counts and content hashes. The identity-bound postbuild readiness audit runs
+after corpus/FTS and before probes; probes and export both require
+`postbuild_evidence_ready=true` and validate its snapshot, corpus, lexical,
+universe, inventory, source-snapshot, and terminal-run bindings against their
+actual inputs.
 
 ### H.3 GPU return contract (for later B6-G; design only here)
 
@@ -838,6 +852,32 @@ Deterministic construction (not a quality metric):
 
 This is **index/coverage smoke only**. Real retrieval quality is measured by
 the 12 attribution cases (I.2+).
+
+The production owner is `catalyst_data.pre_b6_probes`; `catalyst_eval.probes`
+may only delegate to that implementation. `pre-b6-promote` requires both
+`--probe-cutoff YYYY-MM-DDTHH:MM:SSZ` and `--probe-output PATH`. It reruns
+DB-backed B2-O + SEC readiness with the current `corpus_manifest_id`, requires
+both `sec_source_ready=true` and `sec_evidence_ready=true`, then executes both
+40/40 gates before `promote_candidate()`.
+
+The atomically persisted report identity is:
+
+```text
+probe_report_id = SHA256(canonical_json({
+  schema_version: "pre_b6_probe_report_v1",
+  policy_revision: "pre_b6_40x40_v1",
+  universe_manifest_id,
+  snapshot_id,
+  corpus_manifest_id,
+  ordered_tickers, probe_cutoff,
+  coverage_results, lexical_results,
+  coverage_pass_count, lexical_pass_count, overall_pass
+}))
+```
+
+Timestamps and artifact paths are excluded. A failed 40/40 run is also
+persisted and the failed CLI envelope references its `probe_report_id` and
+absolute report path.
 
 ### I.2 Twelve mutually exclusive cases
 
@@ -944,3 +984,8 @@ GO ⇔
 ```
 
 Otherwise **NO_GO**.
+
+Task 18 source-bundle export requires the certified report artifact as a
+mandatory input. `probe_report_id` enters `source_bundle_id` and
+`source_bundle_manifest.json`; missing, forged, non-40/40, wrong-snapshot, or
+wrong-corpus reports fail closed. There is no export bypass flag.
