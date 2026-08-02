@@ -1,0 +1,12 @@
+{"case_id": "c01", "slot": "single_source_answerable", "ticker": "AAPL"}
+{"case_id": "c02", "slot": "single_source_answerable", "ticker": "MSFT"}
+{"case_id": "c03", "slot": "single_source_answerable", "ticker": "NVDA"}
+{"case_id": "c04", "slot": "single_source_answerable", "ticker": "JPM"}
+{"case_id": "c05", "slot": "multi_source_answerable", "ticker": "TSLA"}
+{"case_id": "c06", "slot": "multi_source_answerable", "ticker": "META"}
+{"case_id": "c07", "slot": "correct_abstain", "ticker": "AMD"}
+{"case_id": "c08", "slot": "correct_abstain", "ticker": "GOOGL"}
+{"case_id": "c09", "slot": "unsupported_distractor", "ticker": "AMZN"}
+{"case_id": "c10", "slot": "unsupported_distractor", "ticker": "UNH"}
+{"case_id": "c11", "slot": "temporal_lookahead_trap", "ticker": "ORCL"}
+{"case_id": "c12", "slot": "temporal_lookahead_trap", "ticker": "CRM"}

@@ -1,0 +1,10 @@
+{
+  "schema_version": "pre_b6_probes_v1",
+  "tickers": [
+    "AAPL", "AMD", "AMZN", "GOOGL", "JPM", "META", "MSFT", "NVDA", "TSLA", "UNH",
+    "INTC", "QCOM", "TSM", "MU", "LRCX", "ASML", "DELL", "HPQ", "CRM", "ADBE",
+    "NOW", "ORCL", "PINS", "RDDT", "SNAP", "WMT", "TGT", "COST", "DASH", "F",
+    "LCID", "GM", "RIVN", "C", "GS", "BAC", "MS", "CNC", "HUM", "CI"
+  ],
+  "gates": ["corpus_coverage_invariant", "lexical_index_smoke_probe"]
+}
