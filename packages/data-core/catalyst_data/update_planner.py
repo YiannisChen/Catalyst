@@ -153,7 +153,14 @@ def _canonical_json(plan: UpdatePlan) -> str:
 
 
 def compute_plan_hash(plan: UpdatePlan) -> str:
-    """SHA-256 over canonical plan JSON."""
+    """SHA-256 over canonical plan JSON after SEC v2 cell validation."""
+    from catalyst_data.sec.cell_record import validate_plan_cells
+
+    plan_cells: list[dict] = []
+    for stage in (plan.stages or {}).values():
+        if isinstance(stage, dict):
+            plan_cells.extend(stage.get("cells") or [])
+    validate_plan_cells(plan_cells)
     payload = _canonical_json(plan)
     return hashlib.sha256(payload.encode()).hexdigest()
 
@@ -310,6 +317,10 @@ def plan_update(
                     cell_identity = cell.to_identity() if hasattr(cell, "to_identity") else dict(cell)
                     if _should_plan_source_cell(conn, cell_identity):
                         all_cells.append(cell_identity)
+            # Pre-B6: validate any SEC plan-cell v2 records before hashing plan
+            from catalyst_data.sec.cell_record import validate_plan_cells
+
+            validate_plan_cells(all_cells)
             stage_rank = {"market": 0, "evidence": 1}
             source_rank = {
                 "polygon_ohlcv": 0, "polygon_news": 1, "finnhub_company_news": 2,

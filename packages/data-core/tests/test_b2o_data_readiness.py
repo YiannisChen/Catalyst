@@ -859,7 +859,9 @@ def test_resource_estimate_and_gate_match_binding_formula(tmp_path: Path):
     from catalyst_data.manifests.operations import (
         ResourceLimitError,
         check_publication_resources,
-        estimate_publication_resources,
+    )
+    from catalyst_data.corpus.streaming_publication import (
+        estimate_streaming_publication_resources,
     )
 
     db_path = _file_db(tmp_path)
@@ -874,14 +876,16 @@ def test_resource_estimate_and_gate_match_binding_formula(tmp_path: Path):
         "INSERT INTO filings (filing_id,cik,ticker,form_type,filed_at,accession_number,url,raw_asset_id) VALUES ('f','0000320193','AAPL','10-K','2025-01-01','1','u','raw')"
     )
     conn.execute(
-        "INSERT INTO filing_documents (filing_id,document_url,document_type,text,char_len,extraction_status) VALUES ('f','u','primary','x' || zeroblob(639),'640','success')"
+        "INSERT INTO filing_documents (filing_id,document_url,document_type,text,char_len,extraction_status,document_id) VALUES ('f','u','primary','x' || zeroblob(639),'640','success',?)",
+        ("f" * 64,),
     )
     conn.commit()
-    estimate = estimate_publication_resources(conn)
+    estimate = estimate_streaming_publication_resources(conn)
     assert estimate.eligible_document_count == 2
-    assert estimate.estimated_chunks == 3
-    expected_peak = estimate.source_utf8_bytes * 8 + 2 * 4096 + 3 * 8192
-    assert estimate.estimated_peak_bytes == expected_peak
+    assert estimate.source_utf8_bytes == len("abcd\nef".encode()) + 640
+    assert estimate.largest_source_document_utf8_bytes == 640
+    assert estimate.estimated_chunks == 2
+    assert estimate.required_headroom == max(estimate.phase_headroom_bytes.values())
     with pytest.raises(ResourceLimitError):
         check_publication_resources(
             estimate,
@@ -893,7 +897,7 @@ def test_resource_estimate_and_gate_match_binding_formula(tmp_path: Path):
 
 
 def test_snapshot_manifest_typed_hashing_and_identity_exclusions(tmp_path: Path):
-    from catalyst_data.manifests.snapshot import build_data_snapshot_manifest
+    from catalyst_data.manifests.snapshot import build_legacy_data_snapshot_manifest as build_data_snapshot_manifest
 
     db_path = _file_db(tmp_path)
     conn = sqlite3.connect(db_path)
@@ -948,7 +952,7 @@ def test_snapshot_table_hash_streams_rows_without_fetchall():
 
 
 def test_snapshot_rejects_incomplete_readiness_and_wrong_user_version(tmp_path: Path):
-    from catalyst_data.manifests.snapshot import build_data_snapshot_manifest
+    from catalyst_data.manifests.snapshot import build_legacy_data_snapshot_manifest as build_data_snapshot_manifest
 
     db_path = _file_db(tmp_path)
     conn = sqlite3.connect(db_path)
@@ -984,7 +988,7 @@ def test_snapshot_rejects_incomplete_readiness_and_wrong_user_version(tmp_path: 
 
 def test_publish_rejects_snapshot_from_different_db(tmp_path: Path, capsys):
     from catalyst_data.b2o import main
-    from catalyst_data.manifests.snapshot import build_data_snapshot_manifest
+    from catalyst_data.manifests.snapshot import build_legacy_data_snapshot_manifest as build_data_snapshot_manifest
 
     one = tmp_path / "one"
     two = tmp_path / "two"
@@ -1016,7 +1020,7 @@ def test_publish_rejects_snapshot_from_different_db(tmp_path: Path, capsys):
 
 def test_promote_rejects_missing_corpus_state_and_preserves_pointer(tmp_path: Path, capsys):
     from catalyst_data.b2o import main
-    from catalyst_data.manifests.snapshot import build_data_snapshot_manifest
+    from catalyst_data.manifests.snapshot import build_legacy_data_snapshot_manifest as build_data_snapshot_manifest
 
     db = _file_db(tmp_path)
     conn = sqlite3.connect(db)

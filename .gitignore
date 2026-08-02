@@ -47,6 +47,8 @@ CLAUDE.md
 # Generated data-snapshot artifacts and machine-local active pointer
 /data/manifests/active_data_snapshot.json
 /data/manifests/b2o_data_snapshot_*.json
+/data/manifests/sec_filing_inventory_*.json
+/data/source_bundles/
 
 # Python packaging
 *.egg-info/

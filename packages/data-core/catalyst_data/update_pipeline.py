@@ -722,19 +722,72 @@ def _fetch_result_payload(response: Any) -> tuple[int, Any, bytes]:
         data = response.data if response.data is not None else {}
         if response.raw_body is not None:
             return status, data, response.raw_body
-    elif isinstance(response, dict) and "body" in response:
+        if isinstance(data, (bytes, bytearray)):
+            return status, {}, bytes(data)
+        raw = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        return status, data, raw
+    if isinstance(response, dict) and "body" in response:
         status = int(response.get("status") or response.get("status_code") or 200)
-        body = response.get("body") or b"{}"
+        body = response.get("body") or b""
         raw = body if isinstance(body, bytes) else str(body).encode("utf-8")
-        return status, json.loads(raw.decode("utf-8") or "{}"), raw
-    elif isinstance(response, dict):
+        # Prefer explicit data; otherwise attempt JSON without failing on HTML/XML
+        if "data" in response and response["data"] is not None:
+            return status, response["data"], raw
+        try:
+            text = raw.decode("utf-8") or "{}"
+            return status, json.loads(text), raw
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return status, {}, raw
+    if isinstance(response, dict):
         status = int(response.get("status") or response.get("status_code") or 200)
         data = response
-    else:
-        status = int(getattr(response, "status_code", getattr(response, "status", 200)) or 200)
-        data = response.json() if hasattr(response, "json") else {}
+        raw = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        return status, data, raw
+    status = int(getattr(response, "status_code", getattr(response, "status", 200)) or 200)
+    data = response.json() if hasattr(response, "json") else {}
     raw = json.dumps(data, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     return status, data, raw
+
+
+async def _invoke_dict_transport_fetcher(
+    fetcher: Any,
+    *,
+    subject: str,
+    endpoint: str,
+    window_start: str,
+    window_end: str,
+    cell: dict[str, Any],
+    page_url: str | None,
+) -> Any:
+    """Adapt dict-transport fake signature once, then invoke exactly once.
+
+    Internal TypeError from the fetcher body must not trigger re-invocation.
+    """
+    import inspect
+
+    try:
+        sig = inspect.signature(fetcher)
+    except (TypeError, ValueError):
+        # Builtins / C callables without signature — use modern full kwargs
+        return await fetcher(
+            subject,
+            endpoint,
+            window_start,
+            window_end,
+            cell=cell,
+            page_url=page_url,
+        )
+    params = sig.parameters
+    accepts_var_kw = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    kwargs: dict[str, Any] = {}
+    if accepts_var_kw or "cell" in params:
+        kwargs["cell"] = cell
+    if accepts_var_kw or "page_url" in params:
+        kwargs["page_url"] = page_url
+    # Always pass positional subject/endpoint/windows for legacy fakes
+    return await fetcher(subject, endpoint, window_start, window_end, **kwargs)
 
 
 async def _call_b2_transport(
@@ -749,11 +802,34 @@ async def _call_b2_transport(
     subject = cell["subject"]
     source = cell["source_type"]
     endpoint = cell["endpoint_name"]
+    if source == "sec_filings":
+        if endpoint in {"sec_filings", "filings"}:
+            endpoint = "sec_submissions"
+            cell = {**cell, "endpoint_name": endpoint}
+        if endpoint not in {
+            "sec_submissions",
+            "sec_filing_index",
+            "sec_document",
+        }:
+            raise ValueError(f"unknown SEC endpoint: {endpoint}")
     if isinstance(transport, dict):
-        fetcher = transport.get(source) or transport.get(endpoint) or transport.get(provider)
+        fetcher = (
+            transport.get(endpoint)
+            or transport.get(source)
+            or transport.get(provider)
+        )
         if fetcher is None:
             raise ValueError(f"No fake transport registered for source {source}")
-        return await fetcher(subject, endpoint, cell["window_start"], cell["window_end"])
+        # Inspect signature once; invoke at most once per ledger attempt.
+        return await _invoke_dict_transport_fetcher(
+            fetcher,
+            subject=subject,
+            endpoint=endpoint,
+            window_start=cell["window_start"],
+            window_end=cell["window_end"],
+            cell=cell,
+            page_url=page_url,
+        )
     if hasattr(transport, "request"):
         return await transport.request(
             provider=provider,
@@ -765,6 +841,7 @@ async def _call_b2_transport(
             page_url=page_url,
             page_cap=cell.get("page_cap"),
             item_cap=cell.get("item_cap"),
+            cell=cell,
         )
     url = f"https://b2.local/{provider}/{endpoint}"
     return await transport(
@@ -1477,15 +1554,22 @@ async def _request_b2_page(
             f"{run_id}:{cell['cell_id']}:{ledger_attempt_no}:{page_no}".encode("utf-8")
         ).hexdigest()
         url = page_url or f"https://b2.local/{provider}/{endpoint}"
+        redacted_params: dict[str, Any] = {
+            "ticker": ticker,
+            "window_start": cell["window_start"],
+            "window_end": cell["window_end"],
+            "page_no": page_no,
+            "endpoint_name": endpoint,
+            "cell_id": cell.get("cell_id"),
+        }
+        if cell.get("identity_schema_version") == "sec_cell_v2":
+            ext = cell.get("identity_extensions") or {}
+            redacted_params["identity_schema_version"] = "sec_cell_v2"
+            redacted_params.update({k: ext[k] for k in sorted(ext)})
         redacted = redact_request({
             "method": "GET",
             "url": url,
-            "params": {
-                "ticker": ticker,
-                "window_start": cell["window_start"],
-                "window_end": cell["window_end"],
-                "page_no": page_no,
-            },
+            "params": redacted_params,
             "provider_profile_version": cell.get("provider_profile_version", "v1"),
         })
         insert_attempt(conn, {
@@ -1656,6 +1740,423 @@ async def _request_b2_page(
         }
 
 
+async def _execute_sec_v2_cell(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    cell: dict[str, Any],
+    transport: Any,
+) -> dict[str, Any]:
+    """Production path for sec_filing_index / sec_document via frozen SEC v2 cell.
+
+    Transport is injectable (no live network required in tests). Each index URL
+    attempt is ledgered independently. Document materialization uses identity-
+    aware INSERT (no INSERT OR REPLACE) and binds filing_id from the cell.
+    """
+    from catalyst_data.ingestion.request_ledger import compute_logical_fetch_id
+    from catalyst_data.sec.index_parser import filing_index_urls, parse_filing_index_html
+    from catalyst_data.sec.materialize import FilingDocumentConflictError
+
+    source = cell["source_type"]
+    endpoint = cell["endpoint_name"]
+    ticker = cell["subject"]
+    date = cell["window_start"]
+    cell_id = cell["cell_id"]
+    logical_fetch_id = compute_logical_fetch_id(run_id, cell_id)
+
+    if source != "sec_filings" or endpoint not in {
+        "sec_filing_index",
+        "sec_document",
+    }:
+        raise ValueError(f"unsupported SEC v2 endpoint: {endpoint}")
+
+    if cell.get("identity_schema_version") != "sec_cell_v2":
+        raise ValueError("sec_filing_index/sec_document require identity_schema_version=sec_cell_v2")
+
+    # Build a sync fetch adapter over the injected async transport for offline helpers.
+    # Each call goes through _request_b2_page so attempts are ledgered in production style.
+    provider = "sec"
+    request_source_type = "filings"
+
+    if endpoint == "sec_filing_index":
+        ext = cell.get("identity_extensions") or {}
+        if not ext.get("cik") or not ext.get("accession_number"):
+            raise ValueError("sec_filing_index requires cik and accession_number in identity_extensions")
+        urls = filing_index_urls(
+            cik_int=str(ext["cik"]), accession=str(ext["accession_number"])
+        )
+        request_count_total = 0
+        pages_received = 0
+        last_raw_asset_id: str | None = None
+        last_http_status: int | None = None
+        last_status = "failed"
+        cell_error_class: str | None = "index_fetch_failed"
+        total_items = 0
+        for i, url in enumerate(urls, start=1):
+            page_result = await _request_b2_page(
+                conn,
+                run_id=run_id,
+                logical_fetch_id=logical_fetch_id,
+                provider=provider,
+                request_source_type=request_source_type,
+                source=source,
+                endpoint=endpoint,
+                ticker=ticker,
+                date=date,
+                cell=cell,
+                page_no=i,
+                page_url=url,
+                parent_request_id=None,
+                transport=transport,
+            )
+            request_count_total += page_result["attempt_count"]
+            last_http_status = page_result.get("status_code")
+            if page_result.get("raw_asset_id"):
+                last_raw_asset_id = page_result["raw_asset_id"]
+            if not page_result["ok"]:
+                continue
+            pages_received += 1
+            raw_body = page_result.get("raw_body") or b""
+            try:
+                parsed = parse_filing_index_html(
+                    raw_body.decode("utf-8", errors="replace"),
+                    base_url=url.rsplit("/", 1)[0] + "/",
+                    primary_document=None,
+                )
+            except Exception:
+                cell_error_class = "index_parse_failed"
+                continue
+            if getattr(parsed, "status", None) == "success":
+                last_status = "success"
+                cell_error_class = None
+                total_items = len(getattr(parsed, "documents", None) or []) or 1
+                # Mark attempt SUCCEEDED with items
+                from catalyst_data.ingestion.request_ledger import transition_attempt
+
+                if page_result.get("request_id"):
+                    transition_attempt(
+                        conn,
+                        page_result["request_id"],
+                        "SUCCEEDED",
+                        http_status=page_result.get("status_code"),
+                        items_count=total_items,
+                        raw_asset_id=page_result.get("raw_asset_id"),
+                        response_sha256=page_result.get("response_sha256"),
+                        response_bytes=len(raw_body),
+                    )
+                    conn.commit()
+                break
+            cell_error_class = "index_parse_failed"
+            if page_result.get("request_id"):
+                from catalyst_data.ingestion.request_ledger import transition_attempt
+
+                transition_attempt(
+                    conn,
+                    page_result["request_id"],
+                    "PARSE_ERROR",
+                    http_status=page_result.get("status_code"),
+                    items_count=0,
+                    raw_asset_id=page_result.get("raw_asset_id"),
+                    response_sha256=page_result.get("response_sha256"),
+                    response_bytes=len(raw_body),
+                )
+                conn.commit()
+        cp_status = "success" if last_status == "success" else "failed"
+        is_complete = 1 if last_status == "success" else 0
+        _write_b2_checkpoint(
+            conn,
+            run_id=run_id,
+            source=source,
+            ticker=ticker,
+            date=date,
+            status=cp_status,
+            logical_fetch_id=logical_fetch_id,
+            items_count=total_items,
+            http_status=last_http_status,
+            is_complete=is_complete,
+            raw_asset_id=last_raw_asset_id,
+            error_class=cell_error_class,
+            cell={**cell, "endpoint_name": endpoint},
+            request_count=request_count_total,
+            pages_received=pages_received or request_count_total,
+        )
+        return {
+            "ticker": ticker,
+            "date": date,
+            "window_start": cell["window_start"],
+            "window_end": cell["window_end"],
+            "cell_id": cell_id,
+            "endpoint_name": endpoint,
+            "source": source,
+            "status": cp_status,
+            "items_count": total_items,
+            "raw_asset_id": last_raw_asset_id,
+            "error_class": cell_error_class,
+            "request_count": request_count_total,
+        }
+
+    # sec_document — full identity from frozen plan; no external filing_id.
+    # Request once via ledgered transport, extract, identity-aware insert, provenance.
+    from catalyst_data.sec.extract import extract_document_text
+    from catalyst_data.ingestion.request_ledger import transition_attempt
+    from catalyst_data.storage.sqlite import ensure_filings_tables
+    from catalyst_data.sec.materialize import _insert_filing_document_identity_aware
+    from catalyst_data.manifests.universe import sha256_identity as _sha_id
+    import hashlib as _hashlib
+
+    ext = cell["identity_extensions"]
+    document_id = ext["document_id"]
+    url = ext["document_url"]
+    filing_id = ext.get("filing_id")
+    if not filing_id:
+        raise ValueError("sec_document cell missing identity_extensions.filing_id")
+
+    page_result = await _request_b2_page(
+        conn,
+        run_id=run_id,
+        logical_fetch_id=logical_fetch_id,
+        provider=provider,
+        request_source_type=request_source_type,
+        source=source,
+        endpoint=endpoint,
+        ticker=ticker,
+        date=date,
+        cell=cell,
+        page_no=1,
+        page_url=url,
+        parent_request_id=None,
+        transport=transport,
+    )
+    request_count_total = page_result["attempt_count"]
+    raw_body = page_result.get("raw_body") or b""
+    status_code = int(page_result.get("status_code") or 0)
+    raw_asset_id = page_result.get("raw_asset_id")
+    response_sha256 = page_result.get("response_sha256")
+    request_id = page_result.get("request_id")
+
+    if not page_result["ok"]:
+        _write_b2_checkpoint(
+            conn,
+            run_id=run_id,
+            source=source,
+            ticker=ticker,
+            date=date,
+            status="failed",
+            logical_fetch_id=logical_fetch_id,
+            items_count=0,
+            http_status=status_code,
+            is_complete=0,
+            raw_asset_id=raw_asset_id,
+            error_class=page_result.get("page_error_class", "transport_error"),
+            cell={**cell, "endpoint_name": endpoint},
+            request_count=request_count_total,
+            pages_received=1 if request_count_total else 0,
+        )
+        return {
+            "ticker": ticker,
+            "date": date,
+            "window_start": cell["window_start"],
+            "window_end": cell["window_end"],
+            "cell_id": cell_id,
+            "endpoint_name": endpoint,
+            "source": source,
+            "status": "failed",
+            "items_count": 0,
+            "raw_asset_id": raw_asset_id,
+            "error_class": page_result.get("page_error_class", "transport_error"),
+            "request_count": request_count_total,
+        }
+
+    is_primary = ext.get("document_role") == "primary_doc"
+    outcome = extract_document_text(
+        raw_body,
+        content_type="text/html",
+        is_primary=is_primary,
+        requiredness=ext.get("requiredness", "mandatory"),
+    )
+    if outcome.status != "success":
+        if request_id:
+            transition_attempt(
+                conn,
+                request_id,
+                "PARSE_ERROR",
+                http_status=status_code,
+                items_count=0,
+                raw_asset_id=raw_asset_id,
+                response_sha256=response_sha256,
+                response_bytes=len(raw_body),
+            )
+            conn.commit()
+        _write_b2_checkpoint(
+            conn,
+            run_id=run_id,
+            source=source,
+            ticker=ticker,
+            date=date,
+            status="failed",
+            logical_fetch_id=logical_fetch_id,
+            items_count=0,
+            http_status=status_code,
+            is_complete=0,
+            raw_asset_id=raw_asset_id,
+            error_class=outcome.error_class or outcome.status,
+            cell={**cell, "endpoint_name": endpoint},
+            request_count=request_count_total,
+            pages_received=1,
+        )
+        return {
+            "ticker": ticker,
+            "date": date,
+            "window_start": cell["window_start"],
+            "window_end": cell["window_end"],
+            "cell_id": cell_id,
+            "endpoint_name": endpoint,
+            "source": source,
+            "status": "failed",
+            "items_count": 0,
+            "raw_asset_id": raw_asset_id,
+            "error_class": outcome.error_class or outcome.status,
+            "request_count": request_count_total,
+        }
+
+    ensure_filings_tables(conn)
+    conn.execute(
+        """INSERT OR IGNORE INTO filings (
+            filing_id, cik, ticker, form_type, filed_at, accession_number, url
+        ) VALUES (?,?,?,?,?,?,?)""",
+        (
+            filing_id,
+            "0000000000",
+            ticker,
+            "8-K",
+            date,
+            ext["accession_number"],
+            url,
+        ),
+    )
+    try:
+        _insert_filing_document_identity_aware(
+            conn,
+            filing_id=filing_id,
+            document_url=url,
+            document_type=ext["document_role"],
+            text=outcome.text,
+            content_type="text/html",
+            byte_size=len(raw_body),
+            document_id=document_id,
+        )
+    except FilingDocumentConflictError as exc:
+        if request_id:
+            transition_attempt(
+                conn,
+                request_id,
+                "PARSE_ERROR",
+                http_status=status_code,
+                items_count=0,
+                raw_asset_id=raw_asset_id,
+                response_sha256=response_sha256,
+                response_bytes=len(raw_body),
+            )
+            conn.commit()
+        _write_b2_checkpoint(
+            conn,
+            run_id=run_id,
+            source=source,
+            ticker=ticker,
+            date=date,
+            status="failed",
+            logical_fetch_id=logical_fetch_id,
+            items_count=0,
+            http_status=status_code,
+            is_complete=0,
+            raw_asset_id=raw_asset_id,
+            error_class="filing_document_conflict",
+            cell={**cell, "endpoint_name": endpoint},
+            request_count=request_count_total,
+            pages_received=1,
+        )
+        return {
+            "ticker": ticker,
+            "date": date,
+            "cell_id": cell_id,
+            "endpoint_name": endpoint,
+            "source": source,
+            "status": "failed",
+            "items_count": 0,
+            "raw_asset_id": raw_asset_id,
+            "error_class": "filing_document_conflict",
+            "request_count": request_count_total,
+            "error": str(exc),
+        }
+
+    text_sha = _hashlib.sha256(outcome.text.encode("utf-8")).hexdigest()
+    entity_version = _sha_id(
+        {
+            "document_id": document_id,
+            "response_sha256": response_sha256,
+            "extracted_text_sha256": text_sha,
+            "extraction_normalizer_version": "sec_extract_v1",
+        }
+    )
+    conn.execute(
+        """INSERT OR IGNORE INTO normalized_provenance (
+            entity_type, entity_id, entity_version, raw_asset_id,
+            normalizer_version, created_at
+        ) VALUES ('filing',?,?,?,?,?)""",
+        (
+            document_id,
+            entity_version,
+            raw_asset_id,
+            "sec_extract_v1",
+            _utc_now_z(),
+        ),
+    )
+    if request_id:
+        transition_attempt(
+            conn,
+            request_id,
+            "SUCCEEDED",
+            http_status=status_code,
+            items_count=1,
+            raw_asset_id=raw_asset_id,
+            response_sha256=response_sha256,
+            response_bytes=len(raw_body),
+        )
+    conn.commit()
+    _write_b2_checkpoint(
+        conn,
+        run_id=run_id,
+        source=source,
+        ticker=ticker,
+        date=date,
+        status="success",
+        logical_fetch_id=logical_fetch_id,
+        items_count=1,
+        http_status=status_code,
+        is_complete=1,
+        raw_asset_id=raw_asset_id,
+        error_class=None,
+        cell={**cell, "endpoint_name": endpoint},
+        request_count=request_count_total,
+        pages_received=1,
+    )
+    return {
+        "ticker": ticker,
+        "date": date,
+        "window_start": cell["window_start"],
+        "window_end": cell["window_end"],
+        "cell_id": cell_id,
+        "endpoint_name": endpoint,
+        "source": source,
+        "status": "success",
+        "items_count": 1,
+        "raw_asset_id": raw_asset_id,
+        "error_class": None,
+        "request_count": request_count_total,
+        "document_id": document_id,
+    }
+
+
 async def _execute_b2_cell(
     conn: sqlite3.Connection,
     *,
@@ -1697,6 +2198,25 @@ async def _execute_b2_cell(
         source, (source.split("_", 1)[0], source, source)
     )
     endpoint = cell.get("endpoint_name") or default_endpoint
+    # Legacy cells sometimes used source_type as endpoint_name ("sec_filings")
+    if source == "sec_filings" and endpoint in {"sec_filings", "filings"}:
+        endpoint = "sec_submissions"
+        cell = {**cell, "endpoint_name": endpoint}
+    # Pre-B6 SEC v2 production path (index + document)
+    if (
+        source == "sec_filings"
+        and endpoint in {"sec_filing_index", "sec_document"}
+        and cell.get("identity_schema_version") == "sec_cell_v2"
+    ):
+        return await _execute_sec_v2_cell(
+            conn, run_id=run_id, cell=cell, transport=transport
+        )
+    if source == "sec_filings" and endpoint not in {
+        "sec_submissions",
+        "sec_filing_index",
+        "sec_document",
+    }:
+        raise ValueError(f"unknown SEC endpoint: {endpoint}")
     cell_id = cell["cell_id"]
     logical_fetch_id = compute_logical_fetch_id(run_id, cell_id)
 

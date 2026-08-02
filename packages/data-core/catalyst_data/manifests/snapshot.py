@@ -23,6 +23,10 @@ SNAPSHOT_TABLE_INVENTORY: dict[str, dict[str, Any]] = {
     "macro_observations": {"key": ("series_id", "observation_date"), "columns": None},
     "fundamental_statements": {"key": ("statement_id",), "columns": None},
     "normalized_provenance": {"key": ("entity_type", "entity_id", "entity_version", "raw_asset_id"), "columns": None},
+    # S1/S2/S4 readiness depends on the immutable request ledger. S2 filing-index
+    # materialization has no separate table; its rows are identified by
+    # endpoint_name='sec_filing_index' in this ledger and source_checkpoints.
+    "provider_request_attempts": {"key": ("request_id",), "columns": None},
     "source_checkpoints": {
         "key": ("checkpoint_id",),
         "columns": (
@@ -121,7 +125,7 @@ def _table_hash(conn: sqlite3.Connection, table: str, key_columns: tuple[str, ..
     return h.hexdigest()
 
 
-def build_data_snapshot_manifest(
+def _assemble_snapshot_manifest(
     conn: sqlite3.Connection,
     *,
     universe_manifest_id: str,
@@ -129,7 +133,7 @@ def build_data_snapshot_manifest(
     protected_source_sha256: str,
     source_windows: SourceWindows,
     created_at: datetime,
-    coverage_states: Mapping[str, Any] | None = None,
+    coverage_states: Mapping[str, Any],
     report_path: str | None = None,
 ) -> DataSnapshotManifest:
     db_user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
@@ -139,11 +143,13 @@ def build_data_snapshot_manifest(
             f"snapshot requires db user_version {CURRENT_SCHEMA_VERSION}, "
             f"got {db_user_version}"
         )
-    coverage = dict(coverage_states or {})
-    if not coverage:
-        raise ValueError("snapshot requires readiness coverage_states")
+    coverage = dict(coverage_states)
     overall = coverage.get("overall_readiness") or {}
-    comparable = coverage.get("canonical_news_comparable_gate") or coverage.get("comparable_gate") or {}
+    comparable = (
+        coverage.get("canonical_news_comparable_gate")
+        or coverage.get("comparable_gate")
+        or {}
+    )
     if overall.get("status") != "complete":
         raise ValueError("snapshot readiness overall_readiness incomplete")
     if comparable.get("status") != "complete":
@@ -182,5 +188,83 @@ def build_data_snapshot_manifest(
         source_windows=source_windows.to_identity(),
         coverage_states=coverage,
         created_at=created_at.isoformat(),
+        report_path=report_path,
+    )
+
+
+def build_data_snapshot_manifest(
+    conn: sqlite3.Connection,
+    *,
+    universe_manifest_id: str,
+    plan_hash: str,
+    protected_source_sha256: str,
+    source_windows: SourceWindows,
+    created_at: datetime,
+    coverage_states: Mapping[str, Any] | None = None,
+    report_path: str | None = None,
+    convergence_plan_hash: str,
+) -> DataSnapshotManifest:
+    """Pre-B6 snapshot: requires ``convergence_plan_hash``; stores it as plan_hash.
+
+    Stage S1/S2/S4 hashes alone are never accepted as the snapshot plan hash.
+    """
+    if not convergence_plan_hash or not isinstance(convergence_plan_hash, str):
+        raise ValueError("Pre-B6 snapshot requires convergence_plan_hash")
+    if len(convergence_plan_hash) != 64:
+        raise ValueError("convergence_plan_hash must be 64-char hex")
+    if plan_hash != convergence_plan_hash:
+        raise ValueError(
+            "plan_hash must equal convergence_plan_hash "
+            "(stage hashes cannot masquerade as composite hash)"
+        )
+    coverage = dict(coverage_states or {})
+    if not coverage:
+        raise ValueError("snapshot requires readiness coverage_states")
+    for stage_key in ("s1_plan_hash", "s2_plan_hash", "s4_plan_hash"):
+        stage_h = coverage.get(stage_key)
+        if stage_h and stage_h == plan_hash:
+            raise ValueError(
+                f"plan_hash must not equal stage hash {stage_key}; "
+                "use convergence_plan_hash"
+            )
+    if coverage.get("sec_source_ready") is not True:
+        raise ValueError("snapshot requires sec_source_ready=true")
+    if coverage.get("sec_evidence_ready") is True and coverage.get("sec_source_ready") is not True:
+        raise ValueError("sec_evidence_ready cannot be true without sec_source_ready")
+    return _assemble_snapshot_manifest(
+        conn,
+        universe_manifest_id=universe_manifest_id,
+        plan_hash=convergence_plan_hash,
+        protected_source_sha256=protected_source_sha256,
+        source_windows=source_windows,
+        created_at=created_at,
+        coverage_states=coverage,
+        report_path=report_path,
+    )
+
+
+def build_legacy_data_snapshot_manifest(
+    conn: sqlite3.Connection,
+    *,
+    universe_manifest_id: str,
+    plan_hash: str,
+    protected_source_sha256: str,
+    source_windows: SourceWindows,
+    created_at: datetime,
+    coverage_states: Mapping[str, Any] | None = None,
+    report_path: str | None = None,
+) -> DataSnapshotManifest:
+    """B2-O / pre-convergence snapshot path. Pre-B6 CLI must never call this."""
+    coverage = dict(coverage_states or {})
+    if not coverage:
+        raise ValueError("snapshot requires readiness coverage_states")
+    return _assemble_snapshot_manifest(
+        conn,
+        universe_manifest_id=universe_manifest_id,
+        plan_hash=plan_hash,
+        protected_source_sha256=protected_source_sha256,
+        source_windows=source_windows,
+        created_at=created_at,
+        coverage_states=coverage,
         report_path=report_path,
     )

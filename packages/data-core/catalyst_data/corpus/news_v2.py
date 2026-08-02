@@ -6,6 +6,8 @@ import hashlib
 import json
 import re
 import unicodedata
+from bisect import bisect_left, bisect_right
+from collections.abc import Iterator
 from typing import Any
 
 from .profile import ChunkResult
@@ -54,26 +56,38 @@ def _encoding(text: str) -> tuple[list[int], list[tuple[int, int]]]:
     return tokenize_with_offsets(text)
 
 
-def _token_end_for_char(offsets: list[tuple[int, int]], char_end: int) -> int:
-    for index, (_, token_end) in enumerate(offsets):
-        if token_end >= char_end:
-            return index + 1
-    return len(offsets)
+def _token_end_for_char(token_end_offsets: list[int], char_end: int) -> int:
+    return min(len(token_end_offsets), bisect_left(token_end_offsets, char_end) + 1)
 
 
 def _find_boundaries(text: str, offsets: list[tuple[int, int]]) -> tuple[list[int], list[int]]:
+    token_end_offsets = [token_end for _, token_end in offsets]
     paragraph_chars = [match.start() for match in re.finditer(r"\n\n", text)]
     if text:
         paragraph_chars.append(len(text))
     sentence_chars = [match.end() for match in _SENTENCE_END.finditer(text)]
-    paragraphs = sorted({_token_end_for_char(offsets, end) for end in paragraph_chars})
-    sentences = sorted({_token_end_for_char(offsets, end) for end in sentence_chars})
+    paragraphs = sorted({
+        _token_end_for_char(token_end_offsets, end) for end in paragraph_chars
+    })
+    sentences = sorted({
+        _token_end_for_char(token_end_offsets, end) for end in sentence_chars
+    })
     return paragraphs, sentences
 
 
 def _select_boundary(boundaries: list[int], lower: int, hard: int, target: int) -> int | None:
-    candidates = [boundary for boundary in boundaries if lower <= boundary <= hard]
-    return min(candidates, key=lambda boundary: (abs(boundary - target), boundary)) if candidates else None
+    first = bisect_left(boundaries, lower)
+    stop = bisect_right(boundaries, hard, lo=first)
+    if first == stop:
+        return None
+    pivot = bisect_left(boundaries, target, lo=first, hi=stop)
+    candidate_indexes = [pivot] if pivot < stop else []
+    if pivot > first:
+        candidate_indexes.append(pivot - 1)
+    return min(
+        (boundaries[index] for index in candidate_indexes),
+        key=lambda boundary: (abs(boundary - target), boundary),
+    )
 
 
 def _prefix(title: str) -> tuple[str, int, bool]:
@@ -97,7 +111,7 @@ def _prefix(title: str) -> tuple[str, int, bool]:
     return prefix, count_tokens(prefix), truncated
 
 
-def _chunk_text(
+def _iter_chunk_text(
     *,
     document: dict[str, Any],
     text: str,
@@ -106,51 +120,21 @@ def _chunk_text(
     section_key: str,
     short_document_has_no_prefix: bool,
     section_parse_degraded: bool = False,
-) -> list[ChunkResult]:
+) -> Iterator[ChunkResult]:
     normalized = _normalize_text(text)
     if not normalized:
-        return []
+        return
 
     token_ids, offsets = _encoding(normalized)
     token_count = len(token_ids)
-    if token_count <= MAX_TOKENS and short_document_has_no_prefix:
-        windows = [(0, token_count, "document_end", 0)]
-        prefix, prefix_count, prefix_truncated = "", 0, False
-    else:
-        prefix, prefix_count, prefix_truncated = _prefix(prefix_title)
-        body_target = max(1, TARGET_TOKENS - prefix_count)
-        body_max = max(1, MAX_TOKENS - prefix_count)
-        paragraphs, sentences = _find_boundaries(normalized, offsets)
-        windows: list[tuple[int, int, str, int]] = []
-        start = 0
-        while start < token_count:
-            target = min(token_count, start + body_target)
-            hard = min(token_count, start + body_max)
-            lower = max(start + 1, target - MAX_OVERLAP)
-            if token_count <= hard:
-                end, kind = token_count, "document_end"
-            else:
-                end = _select_boundary(paragraphs, lower, hard, target)
-                kind = "paragraph"
-                if end is None:
-                    end = _select_boundary(sentences, lower, hard, target)
-                    kind = "sentence"
-                if end is None:
-                    end, kind = target, "token_fallback"
-            next_start = token_count if end == token_count else max(start + 1, end - MAX_OVERLAP)
-            windows.append((start, end, kind, 0 if end == token_count else end - next_start))
-            start = next_start
-
     metadata_hash = _metadata_hash(document, profile_version)
-    chunks: list[ChunkResult] = []
-    for index, (start, end, boundary_kind, overlap) in enumerate(windows, start=1):
-        body = normalized[offsets[start][0]:offsets[end - 1][1]]
-        content_text = f"{prefix}{body}" if prefix else body
-        if count_tokens(content_text) > MAX_TOKENS:
-            raise ValueError("semantic window exceeded 384-token contract")
-        ordinal = f"{index:0{ORDINAL_WIDTH}d}"
-        document_id = document["document_id"]
-        chunks.append(ChunkResult(
+    document_id = document["document_id"]
+
+    # Short document, no prefix path
+    if token_count <= MAX_TOKENS and short_document_has_no_prefix:
+        content_text = normalized
+        ordinal = f"{1:0{ORDINAL_WIDTH}d}"
+        yield ChunkResult(
             chunk_id=f"{document_id}:{profile_version}:{section_key}:{ordinal}",
             document_id=document_id,
             chunk_profile_version=profile_version,
@@ -163,25 +147,169 @@ def _chunk_text(
             available_at=document.get("available_at", ""),
             ticker_associations=document.get("ticker_associations", "[]"),
             eligibility=document.get("eligibility", "eligible"),
-            boundary_kind=boundary_kind,
+            boundary_kind="document_end",
+            body_token_start=0,
+            body_token_end=token_count,
+            body_overlap_tokens=0,
+            prefix_token_count=0,
+            prefix_truncated=False,
+            section_parse_degraded=section_parse_degraded,
+        )
+        return
+
+    prefix, prefix_count, prefix_truncated = _prefix(prefix_title)
+    body_target = max(1, TARGET_TOKENS - prefix_count)
+    body_max = max(1, MAX_TOKENS - prefix_count)
+    paragraphs, sentences = _find_boundaries(normalized, offsets)
+    paragraph_set = set(paragraphs)
+    sentence_set = set(sentences)
+
+    # --- token-fit helper ---
+    def _find_fitting_end(
+        _start: int,
+        _candidate_end: int,
+        _candidate_kind: str,
+    ) -> tuple[int, str]:
+        """Find largest end <= _candidate_end where prefix+body fits.
+
+        Checks the semantic candidate first, then scans every smaller token
+        boundary in reverse. Prefix is always included.
+        """
+        body_slice = normalized[offsets[_start][0]:offsets[_candidate_end - 1][1]]
+        if count_tokens(f"{prefix}{body_slice}") <= MAX_TOKENS:
+            return _candidate_end, _candidate_kind
+
+        # Concatenated tokenizer counts are not assumed to be monotonic as the
+        # end boundary moves. Scan every candidate boundary in reverse so the
+        # first fitting result is the largest one we actually measured.
+        for end in range(_candidate_end - 1, _start, -1):
+            body = normalized[offsets[_start][0]:offsets[end - 1][1]]
+            content_text = f"{prefix}{body}"
+            if count_tokens(content_text) > MAX_TOKENS:
+                continue
+            if end in paragraph_set:
+                kind = "paragraph"
+            elif end in sentence_set:
+                kind = "sentence"
+            else:
+                kind = "token_fallback"
+            if count_tokens(content_text) > MAX_TOKENS:
+                raise ValueError("fitted chunk exceeded token limit")
+            return end, kind
+        return _start, "token_fallback"
+    # --- end token-fit helper ---
+
+    prev_actual_end = 0
+    start = 0
+    index = 0
+
+    while start < token_count:
+        index += 1
+        # --- choose semantic candidate end ---
+        hard = min(token_count, start + body_max)
+        target = min(token_count, start + body_target)
+        lower = max(start + 1, target - MAX_OVERLAP)
+
+        if token_count <= hard:
+            candidate_end, kind = token_count, "document_end"
+        else:
+            candidate_end = _select_boundary(paragraphs, lower, hard, target)
+            kind = "paragraph"
+            if candidate_end is None:
+                candidate_end = _select_boundary(sentences, lower, hard, target)
+                kind = "sentence"
+            if candidate_end is None:
+                candidate_end, kind = target, "token_fallback"
+
+        # --- reduce candidate_end until prefix+body fits ---
+        actual_end, actual_kind = _find_fitting_end(start, candidate_end, kind)
+
+        # Hard invariant: actual_end must be > start.  _prefix caps at 64 << 384
+        # so at least one body token MUST fit.  If this fails, the tokenizer
+        # model or input is fundamentally misconfigured.
+        if actual_end <= start:
+            raise ValueError(
+                f"Chunk invariant violation: cannot fit any body token at "
+                f"start={start} within MAX_TOKENS={MAX_TOKENS}"
+            )
+
+        # --- build content ---
+        body = normalized[offsets[start][0]:offsets[actual_end - 1][1]]
+        content_text = f"{prefix}{body}"
+        if count_tokens(content_text) > MAX_TOKENS:
+            raise ValueError("semantic window exceeded 384-token contract")
+        content_hash = hashlib.sha256(content_text.encode("utf-8")).hexdigest()
+
+        # --- overlap: intersection with previous chunk ---
+        actual_overlap = max(0, prev_actual_end - start)
+        prev_actual_end = actual_end
+
+        if actual_end >= token_count:
+            actual_kind = "document_end"
+
+        ordinal = f"{index:0{ORDINAL_WIDTH}d}"
+        yield ChunkResult(
+            chunk_id=f"{document_id}:{profile_version}:{section_key}:{ordinal}",
+            document_id=document_id,
+            chunk_profile_version=profile_version,
+            section_key=section_key,
+            ordinal=ordinal,
+            content_text=content_text,
+            content_hash=content_hash,
+            metadata_hash=metadata_hash,
+            source_class=document.get("source_class", "reported_news"),
+            available_at=document.get("available_at", ""),
+            ticker_associations=document.get("ticker_associations", "[]"),
+            eligibility=document.get("eligibility", "eligible"),
+            boundary_kind=actual_kind,
             body_token_start=start,
-            body_token_end=end,
-            body_overlap_tokens=overlap,
+            body_token_end=actual_end,
+            body_overlap_tokens=actual_overlap,
             prefix_token_count=prefix_count,
             prefix_truncated=prefix_truncated,
             section_parse_degraded=section_parse_degraded,
-        ))
-    return chunks
+        )
+
+        if actual_end >= token_count:
+            break
+
+        # --- next start (with overlap) ---
+        start = max(start + 1, actual_end - MAX_OVERLAP)
+
+
+
+def _chunk_text(
+    *,
+    document: dict[str, Any],
+    text: str,
+    prefix_title: str,
+    profile_version: str,
+    section_key: str,
+    short_document_has_no_prefix: bool,
+    section_parse_degraded: bool = False,
+) -> list[ChunkResult]:
+    """Legacy list API over the bounded streaming chunk iterator."""
+    return list(
+        _iter_chunk_text(
+            document=document,
+            text=text,
+            prefix_title=prefix_title,
+            profile_version=profile_version,
+            section_key=section_key,
+            short_document_has_no_prefix=short_document_has_no_prefix,
+            section_parse_degraded=section_parse_degraded,
+        )
+    )
 
 
 class NewsV2Profile:
     profile_version = "news_v2"
 
-    def chunk(self, document: dict[str, Any]) -> list[ChunkResult]:
+    def iter_chunks(self, document: dict[str, Any]) -> Iterator[ChunkResult]:
         title = document.get("title", "")
         description = document.get("description") or ""
         text = f"{title}\n{description}" if description else title
-        return _chunk_text(
+        return _iter_chunk_text(
             document=document,
             text=text,
             prefix_title=title,
@@ -189,3 +317,6 @@ class NewsV2Profile:
             section_key="body",
             short_document_has_no_prefix=True,
         )
+
+    def chunk(self, document: dict[str, Any]) -> list[ChunkResult]:
+        return list(self.iter_chunks(document))

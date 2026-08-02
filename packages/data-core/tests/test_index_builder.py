@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import sqlite3
 import unicodedata
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from catalyst_data.index_builder import (
+    _CorpusProgress,
+    build_corpus,
     compute_content_hash,
     build_index_records,
     index_summary,
@@ -89,6 +94,31 @@ def _make_db(db_path: str) -> sqlite3.Connection:
                               raw_asset_id=raw_id, reference_date=ref_date)
 
     return conn
+
+
+def _allow_null_article_timestamp(
+    conn: sqlite3.Connection, db_path: Path
+) -> sqlite3.Connection:
+    table_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='articles'"
+    ).fetchone()[0]
+    nullable_sql, replacements = re.subn(
+        r"(published_utc\s+TEXT)\s+NOT NULL", r"\1", table_sql
+    )
+    assert replacements == 1
+    schema_version = conn.execute("PRAGMA schema_version").fetchone()[0]
+    conn.commit()
+    conn.execute("PRAGMA writable_schema = ON")
+    conn.execute(
+        """UPDATE sqlite_master SET sql = ?
+           WHERE type='table' AND name='articles'""",
+        (nullable_sql,),
+    )
+    conn.execute("PRAGMA writable_schema = OFF")
+    conn.execute(f"PRAGMA schema_version = {schema_version + 1}")
+    conn.commit()
+    conn.close()
+    return sqlite3.connect(db_path)
 
 
 class TestComputeContentHash:
@@ -359,6 +389,711 @@ def test_build_corpus_keeps_reassigned_active_chunk_searchable(tmp_path: Path):
     assert conn.execute(
         "SELECT is_tombstone FROM index_state WHERE chunk_id = ?", (chunk_id,)
     ).fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2025-08-01", "2025-08-01T00:00:00Z"),
+        ("2025-08-01T12:34:56Z", "2025-08-01T12:34:56Z"),
+        ("2025-08-01T20:34:56+08:00", "2025-08-01T12:34:56Z"),
+        ("2025-08-01T12:34:56.987654Z", "2025-08-01T12:34:56Z"),
+    ],
+)
+def test_build_corpus_canonicalizes_article_timestamps(
+    tmp_path: Path, raw: str, expected: str
+):
+    conn = _make_db(str(tmp_path / "article-time.db"))
+    conn.execute(
+        """UPDATE articles
+           SET published_utc = ?, cluster_first_available_at = ?
+           WHERE article_id = 'poly:a1'""",
+        (raw, raw),
+    )
+    result = build_corpus(conn, certified_snapshot_identity="snapshot-time")
+    row = conn.execute(
+        """SELECT available_at, cluster_first_available_at
+           FROM corpus_chunks WHERE document_id = 'poly:a1'"""
+    ).fetchone()
+    assert row == (expected, expected)
+    manifest = json.loads(
+        conn.execute(
+            "SELECT manifest_json FROM corpus_manifest WHERE manifest_id = ?",
+            (result.manifest_id,),
+        ).fetchone()[0]
+    )
+    item = next(
+        item
+        for item in manifest["sorted_active_chunk_inventory"]
+        if item["document_id"] == "poly:a1"
+    )
+    assert item["available_at"] == expected
+    assert item["cluster_first_available_at"] == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2025-08-01", "2025-08-01T00:00:00Z"),
+        ("2025-08-01T12:34:56Z", "2025-08-01T12:34:56Z"),
+        ("2025-08-01T20:34:56+08:00", "2025-08-01T12:34:56Z"),
+        ("2025-08-01T12:34:56.987654Z", "2025-08-01T12:34:56Z"),
+    ],
+)
+def test_build_corpus_canonicalizes_filing_timestamps(
+    tmp_path: Path, raw: str, expected: str
+):
+    conn = _make_db(str(tmp_path / "filing-time.db"))
+    document_id = "a" * 64
+    conn.execute(
+        """INSERT INTO filings
+           (filing_id, cik, ticker, form_type, filed_at, accession_number, url,
+            is_canonical, is_rag_eligible)
+           VALUES ('sec:f1', '1', 'AAPL', '8-K', ?, 'acc', 'https://x', 1, 1)""",
+        (raw,),
+    )
+    conn.execute(
+        """INSERT INTO filing_documents
+           (filing_id, document_url, document_type, text, extraction_status,
+            document_id)
+           VALUES ('sec:f1', 'https://x/a.htm', 'primary_doc', ?, 'success', ?)""",
+        ("ITEM 2.02 Results\n\nRevenue increased. " * 40, document_id),
+    )
+    result = build_corpus(conn, certified_snapshot_identity="snapshot-time")
+    row = conn.execute(
+        """SELECT available_at, cluster_first_available_at
+           FROM corpus_chunks WHERE document_id = ?""",
+        (document_id,),
+    ).fetchone()
+    assert row == (expected, expected)
+    manifest = json.loads(
+        conn.execute(
+            "SELECT manifest_json FROM corpus_manifest WHERE manifest_id = ?",
+            (result.manifest_id,),
+        ).fetchone()[0]
+    )
+    item = next(
+        item
+        for item in manifest["sorted_active_chunk_inventory"]
+        if item["document_id"] == document_id
+    )
+    assert item["available_at"] == expected
+    assert item["cluster_first_available_at"] == expected
+    assert manifest["chunk_profile_versions"]["filing"] == "filing_v3"
+
+
+def test_build_corpus_progress_is_quiet_by_default(tmp_path: Path, capsys):
+    conn = _make_db(str(tmp_path / "quiet.db"))
+    build_corpus(conn, certified_snapshot_identity="snapshot-quiet")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_build_corpus_emits_structured_progress_with_final_phase_events(
+    tmp_path: Path,
+):
+    conn = _make_db(str(tmp_path / "progress.db"))
+    ticks = iter(float(value) for value in range(0, 1000, 31))
+    events: list[dict] = []
+
+    build_corpus(
+        conn,
+        certified_snapshot_identity="snapshot-progress",
+        clock=lambda: next(ticks),
+        rss_reader=lambda: 123456,
+        progress_callback=events.append,
+        progress_interval=30.0,
+    )
+
+    assert events
+    assert events[-2]["phase"] == "articles"
+    assert events[-2]["processed"] == events[-2]["total"] == 5
+    assert events[-1]["phase"] == "filings"
+    assert events[-1]["processed"] == events[-1]["total"] == 0
+    for event in events:
+        assert set(event) == {
+            "phase",
+            "processed",
+            "total",
+            "chunks_generated",
+            "elapsed_seconds",
+            "rss_bytes",
+        }
+        assert event["rss_bytes"] == 123456
+        assert event["elapsed_seconds"] >= 0
+        assert not any(
+            key in event for key in ("content", "content_text", "url", "secret")
+        )
+
+
+def test_pre_b6_manifest_excludes_all_invalid_legacy_document_ids(
+    tmp_path: Path,
+):
+    conn = _make_db(str(tmp_path / "legacy-filing.db"))
+    conn.execute("DROP TRIGGER trg_filing_documents_document_id_insert_guard")
+    cases = [
+        ("null", None),
+        ("uppercase", "A" * 64),
+        ("nonhex", "g" * 64),
+        ("short", "b" * 63),
+        ("long", "d" * 65),
+        ("valid", "c" * 64),
+    ]
+    for suffix, document_id in cases:
+        conn.execute(
+            """INSERT INTO filings
+               (filing_id, cik, ticker, form_type, filed_at, accession_number,
+                url, is_canonical, is_rag_eligible)
+               VALUES (?, '1', 'AAPL', '8-K', '2025-08-01', ?, ?, 1, 1)""",
+            (f"sec:{suffix}", suffix, f"https://{suffix}"),
+        )
+        conn.execute(
+            """INSERT INTO filing_documents
+               (filing_id, document_url, document_type, text,
+                extraction_status, document_id)
+               VALUES (?, ?, 'primary_doc', ?, 'success', ?)""",
+            (
+                f"sec:{suffix}",
+                f"https://{suffix}/a.htm",
+                "ITEM 2.02 Results\n\nLegacy filing body. " * 40,
+                document_id,
+            ),
+        )
+    before = conn.execute(
+        """SELECT filing_id, document_id FROM filing_documents
+           WHERE filing_id LIKE 'sec:%' ORDER BY filing_id"""
+    ).fetchall()
+
+    result = build_corpus(conn, certified_snapshot_identity="snapshot-v3")
+    manifest = json.loads(
+        conn.execute(
+            "SELECT manifest_json FROM corpus_manifest WHERE manifest_id = ?",
+            (result.manifest_id,),
+        ).fetchone()[0]
+    )
+    assert manifest["chunk_profile_versions"]["filing"] == "filing_v3"
+    valid_id = "c" * 64
+    invalid_ids = {value for _, value in cases if value != valid_id}
+    produced_ids = {
+        chunk.document_id
+        for chunk in result.chunks
+        if chunk.chunk_profile_version == "filing_v3"
+    }
+    assert produced_ids == {valid_id}
+    assert conn.execute(
+        "SELECT DISTINCT document_id FROM corpus_chunks WHERE document_id = ?",
+        (valid_id,),
+    ).fetchall() == [(valid_id,)]
+    assert not conn.execute(
+        """SELECT 1 FROM corpus_chunks
+           WHERE document_id IN (?, ?, ?, ?)""",
+        tuple(value for value in invalid_ids if value is not None),
+    ).fetchall()
+    assert not conn.execute(
+        """SELECT 1 FROM index_state
+           WHERE corpus_item_id IN (?, ?, ?, ?)""",
+        tuple(value for value in invalid_ids if value is not None),
+    ).fetchall()
+    inventory_ids = {
+        item["document_id"]
+        for item in manifest["sorted_active_chunk_inventory"]
+    }
+    assert valid_id in inventory_ids
+    assert inventory_ids.isdisjoint(invalid_ids)
+    after = conn.execute(
+        """SELECT filing_id, document_id FROM filing_documents
+           WHERE filing_id LIKE 'sec:%' ORDER BY filing_id"""
+    ).fetchall()
+    assert after == before
+
+
+def _insert_progress_filing(
+    conn: sqlite3.Connection,
+    *,
+    suffix: str,
+    document_id: str | None,
+) -> None:
+    conn.execute(
+        """INSERT INTO filings
+           (filing_id, cik, ticker, form_type, filed_at, accession_number,
+            url, is_canonical, is_rag_eligible)
+           VALUES (?, '1', 'AAPL', '8-K', '2025-08-01', ?, ?, 1, 1)""",
+        (f"sec:{suffix}", suffix, f"https://{suffix}"),
+    )
+    conn.execute(
+        """INSERT INTO filing_documents
+           (filing_id, document_url, document_type, text, extraction_status,
+            document_id)
+           VALUES (?, ?, 'primary_doc', ?, 'success', ?)""",
+        (
+            f"sec:{suffix}",
+            f"https://{suffix}/a.htm",
+            "ITEM 2.02 Results\n\nProgress filing body. " * 40,
+            document_id,
+        ),
+    )
+
+
+def test_invalid_filing_row_can_trigger_elapsed_progress_without_chunks(
+    tmp_path: Path,
+):
+    conn = _make_db(str(tmp_path / "invalid-elapsed.db"))
+    conn.execute("DROP TRIGGER trg_filing_documents_document_id_insert_guard")
+    invalid_id = "G" * 64
+    valid_id = "e" * 64
+    _insert_progress_filing(
+        conn, suffix="000-invalid", document_id=invalid_id
+    )
+    _insert_progress_filing(conn, suffix="001-valid", document_id=valid_id)
+
+    calls = [0]
+
+    def clock() -> float:
+        call = calls[0]
+        calls[0] += 1
+        return 30.0 if call >= 7 else 0.0
+
+    events: list[dict] = []
+    result = build_corpus(
+        conn,
+        certified_snapshot_identity="snapshot-invalid-progress",
+        clock=clock,
+        rss_reader=lambda: 11,
+        progress_callback=events.append,
+    )
+
+    filing_events = [event for event in events if event["phase"] == "filings"]
+    assert len(filing_events) == 2
+    assert filing_events[0]["processed"] == 1
+    assert filing_events[0]["chunks_generated"] == 0
+    assert filing_events[-1]["processed"] == filing_events[-1]["total"] == 2
+    assert filing_events[-1]["chunks_generated"] > 0
+    assert all(chunk.document_id != invalid_id for chunk in result.chunks)
+    assert not conn.execute(
+        "SELECT 1 FROM corpus_chunks WHERE document_id = ?", (invalid_id,)
+    ).fetchall()
+    assert not conn.execute(
+        "SELECT 1 FROM index_state WHERE corpus_item_id = ?", (invalid_id,)
+    ).fetchall()
+    manifest = json.loads(
+        conn.execute(
+            "SELECT manifest_json FROM corpus_manifest WHERE manifest_id = ?",
+            (result.manifest_id,),
+        ).fetchone()[0]
+    )
+    assert invalid_id not in {
+        item["document_id"]
+        for item in manifest["sorted_active_chunk_inventory"]
+    }
+
+
+def test_thousandth_invalid_filing_row_triggers_document_cadence(
+    tmp_path: Path,
+):
+    conn = _make_db(str(tmp_path / "invalid-thousand.db"))
+    conn.execute("DROP TRIGGER trg_filing_documents_document_id_insert_guard")
+    for index in range(1000):
+        _insert_progress_filing(
+            conn,
+            suffix=f"invalid-{index:04d}",
+            document_id=f"G{index:063d}",
+        )
+
+    events: list[dict] = []
+    build_corpus(
+        conn,
+        certified_snapshot_identity="snapshot-thousand",
+        clock=lambda: 0.0,
+        rss_reader=lambda: 12,
+        progress_callback=events.append,
+    )
+
+    filing_events = [event for event in events if event["phase"] == "filings"]
+    assert len(filing_events) == 2
+    periodic, final = filing_events
+    assert periodic["processed"] == periodic["total"] == 1000
+    assert periodic["chunks_generated"] == 0
+    assert final["processed"] == final["total"] == 1000
+    assert final["chunks_generated"] == 0
+
+
+def test_corpus_progress_cadence_boundaries():
+    now = [0.0]
+    events: list[dict] = []
+    reporter = _CorpusProgress(
+        callback=events.append,
+        clock=lambda: now[0],
+        rss_reader=lambda: 99,
+        interval=30.0,
+    )
+
+    now[0] = 29.0
+    for processed in range(1, 1000):
+        reporter.emit(
+            phase="articles",
+            processed=processed,
+            total=2000,
+            chunks_generated=processed * 2,
+        )
+    assert events == []
+
+    reporter.emit(
+        phase="articles", processed=1000, total=2000, chunks_generated=2000
+    )
+    assert len(events) == 1
+    assert events[0]["processed"] == 1000
+
+    now[0] = 58.9
+    reporter.emit(
+        phase="articles", processed=1001, total=2000, chunks_generated=2002
+    )
+    assert len(events) == 1
+
+    now[0] = 59.0
+    reporter.emit(
+        phase="articles", processed=1001, total=2000, chunks_generated=2002
+    )
+    assert len(events) == 2
+    assert events[-1]["elapsed_seconds"] == 59.0
+    assert set(events[-1]) == {
+        "phase",
+        "processed",
+        "total",
+        "chunks_generated",
+        "elapsed_seconds",
+        "rss_bytes",
+    }
+
+
+def test_corpus_progress_final_events_include_empty_phase_and_none_is_quiet():
+    now = [0.0]
+    events: list[dict] = []
+    reporter = _CorpusProgress(
+        callback=events.append,
+        clock=lambda: now[0],
+        rss_reader=lambda: 7,
+        interval=30.0,
+    )
+    reporter.emit(
+        phase="articles", processed=3, total=3, chunks_generated=4, final=True
+    )
+    reporter.emit(
+        phase="filings", processed=0, total=0, chunks_generated=0, final=True
+    )
+    assert [(event["phase"], event["processed"], event["total"]) for event in events] == [
+        ("articles", 3, 3),
+        ("filings", 0, 0),
+    ]
+
+    quiet = _CorpusProgress(
+        callback=None,
+        clock=lambda: now[0],
+        rss_reader=lambda: (_ for _ in ()).throw(AssertionError("RSS read")),
+        interval=30.0,
+    )
+    quiet.emit(
+        phase="articles", processed=1000, total=2000, chunks_generated=1
+    )
+
+
+def test_progress_callback_does_not_change_corpus_result(tmp_path: Path):
+    quiet_conn = _make_db(str(tmp_path / "quiet-result.db"))
+    observed_conn = _make_db(str(tmp_path / "observed-result.db"))
+    quiet = build_corpus(
+        quiet_conn, certified_snapshot_identity="snapshot-equivalence"
+    )
+    events: list[dict] = []
+    observed = build_corpus(
+        observed_conn,
+        certified_snapshot_identity="snapshot-equivalence",
+        clock=lambda: 0.0,
+        rss_reader=lambda: 1,
+        progress_callback=events.append,
+    )
+    assert events
+    assert observed.manifest_id == quiet.manifest_id
+    assert [vars(chunk) for chunk in observed.chunks] == [
+        vars(chunk) for chunk in quiet.chunks
+    ]
+    assert observed.reconciliation == quiet.reconciliation
+
+
+def test_progress_callback_failures_are_fail_open_for_periodic_and_final(caplog):
+    calls = []
+
+    def failing_callback(event: dict) -> None:
+        calls.append(event["processed"])
+        raise RuntimeError("secret payload content must not be logged")
+
+    reporter = _CorpusProgress(
+        callback=failing_callback,
+        clock=lambda: 30.0,
+        rss_reader=lambda: 5,
+        interval=30.0,
+    )
+    reporter.emit(
+        phase="articles", processed=1000, total=2000, chunks_generated=10
+    )
+    reporter.emit(
+        phase="articles",
+        processed=2000,
+        total=2000,
+        chunks_generated=20,
+        final=True,
+    )
+    assert calls == [1000, 2000]
+    assert "corpus progress callback failed" in caplog.text
+    assert "secret payload content" not in caplog.text
+
+
+@pytest.mark.parametrize("bad_timestamp", [None, "not-a-timestamp"])
+def test_article_timestamp_failure_is_contextual_and_atomic(
+    tmp_path: Path, bad_timestamp
+):
+    from catalyst_data.index_builder import CorpusTimestampError
+
+    db_path = tmp_path / "article-timestamp-failure.db"
+    conn = _make_db(str(db_path))
+    baseline = build_corpus(conn, certified_snapshot_identity="snapshot-before")
+    chunk_count = conn.execute("SELECT COUNT(*) FROM corpus_chunks").fetchone()[0]
+    if bad_timestamp is None:
+        conn = _allow_null_article_timestamp(conn, db_path)
+    conn.execute(
+        "UPDATE articles SET published_utc = ? WHERE article_id = 'poly:a1'",
+        (bad_timestamp,),
+    )
+
+    with pytest.raises(CorpusTimestampError, match="poly:a1") as exc_info:
+        build_corpus(conn, certified_snapshot_identity="snapshot-after")
+    assert "published_utc" in str(exc_info.value)
+    assert conn.execute(
+        "SELECT manifest_id FROM corpus_manifest WHERE is_current = 1"
+    ).fetchone()[0] == baseline.manifest_id
+    assert conn.execute("SELECT COUNT(*) FROM corpus_chunks").fetchone()[0] == chunk_count
+
+
+def test_filing_timestamp_failure_is_contextual_and_atomic(tmp_path: Path):
+    from catalyst_data.index_builder import CorpusTimestampError
+
+    conn = _make_db(str(tmp_path / "filing-timestamp-failure.db"))
+    baseline = build_corpus(conn, certified_snapshot_identity="snapshot-before")
+    chunk_count = conn.execute("SELECT COUNT(*) FROM corpus_chunks").fetchone()[0]
+    document_id = "f" * 64
+    _insert_progress_filing(conn, suffix="bad-time", document_id=document_id)
+    conn.execute(
+        "UPDATE filings SET filed_at = 'malformed' WHERE filing_id = 'sec:bad-time'"
+    )
+
+    with pytest.raises(CorpusTimestampError, match=document_id) as exc_info:
+        build_corpus(conn, certified_snapshot_identity="snapshot-after")
+    assert "filed_at" in str(exc_info.value)
+    assert conn.execute(
+        "SELECT manifest_id FROM corpus_manifest WHERE is_current = 1"
+    ).fetchone()[0] == baseline.manifest_id
+    assert conn.execute("SELECT COUNT(*) FROM corpus_chunks").fetchone()[0] == chunk_count
+
+
+def test_callback_failure_does_not_mask_timestamp_failure(tmp_path: Path, caplog):
+    from catalyst_data.index_builder import CorpusTimestampError
+
+    db_path = tmp_path / "callback-timestamp.db"
+    conn = _make_db(str(db_path))
+    conn = _allow_null_article_timestamp(conn, db_path)
+    conn.execute(
+        "UPDATE articles SET published_utc = NULL WHERE article_id = 'poly:a1'"
+    )
+
+    def failing_callback(_event: dict) -> None:
+        raise RuntimeError("secret callback exception")
+
+    with pytest.raises(CorpusTimestampError, match="poly:a1"):
+        build_corpus(
+            conn,
+            certified_snapshot_identity="snapshot-failure",
+            progress_callback=failing_callback,
+            progress_interval=0.0,
+        )
+    assert "secret callback exception" not in caplog.text
+
+
+def test_build_succeeds_when_progress_callback_always_fails(tmp_path: Path):
+    conn = _make_db(str(tmp_path / "callback-fail-open.db"))
+
+    def failing_callback(_event: dict) -> None:
+        raise RuntimeError("callback failure")
+
+    result = build_corpus(
+        conn,
+        certified_snapshot_identity="snapshot-callback-fail-open",
+        progress_callback=failing_callback,
+        progress_interval=0.0,
+    )
+    assert result.manifest_id
+
+
+def test_callback_failure_does_not_mask_chunk_failure(
+    tmp_path: Path, monkeypatch
+):
+    from catalyst_data.corpus.filing_v3 import FilingV3Profile
+
+    class ChunkFailure(RuntimeError):
+        pass
+
+    conn = _make_db(str(tmp_path / "callback-chunk.db"))
+    _insert_progress_filing(conn, suffix="chunk", document_id="a" * 64)
+    monkeypatch.setattr(
+        FilingV3Profile,
+        "chunk",
+        lambda _self, _document: (_ for _ in ()).throw(
+            ChunkFailure("original chunk failure")
+        ),
+    )
+
+    with pytest.raises(ChunkFailure, match="original chunk failure"):
+        build_corpus(
+            conn,
+            certified_snapshot_identity="snapshot-chunk-failure",
+            progress_callback=lambda _event: (_ for _ in ()).throw(
+                RuntimeError("callback failure")
+            ),
+            progress_interval=0.0,
+        )
+
+
+def test_callback_failure_does_not_mask_reconciliation_failure(
+    tmp_path: Path, monkeypatch
+):
+    import catalyst_data.corpus.manifest as manifest_module
+
+    class ReconciliationFailure(RuntimeError):
+        pass
+
+    conn = _make_db(str(tmp_path / "callback-reconciliation.db"))
+    monkeypatch.setattr(
+        manifest_module,
+        "reconcile_and_publish",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ReconciliationFailure("original reconciliation failure")
+        ),
+    )
+
+    with pytest.raises(
+        ReconciliationFailure, match="original reconciliation failure"
+    ):
+        build_corpus(
+            conn,
+            certified_snapshot_identity="snapshot-reconciliation-failure",
+            progress_callback=lambda _event: (_ for _ in ()).throw(
+                RuntimeError("callback failure")
+            ),
+            progress_interval=0.0,
+        )
+
+
+def test_combined_builder_forwards_progress_callback(monkeypatch):
+    import catalyst_data.index_builder as index_builder
+    import catalyst_data.retrieval.fts5_builder as fts5_builder
+
+    callback = lambda _event: None
+    captured = {}
+
+    def fake_build_corpus(_conn, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(manifest_id="m" * 64)
+
+    monkeypatch.setattr(index_builder, "build_corpus", fake_build_corpus)
+    monkeypatch.setattr(
+        fts5_builder,
+        "build_fts5_index",
+        lambda _conn, manifest_id, *, clock: SimpleNamespace(
+            manifest_id=manifest_id
+        ),
+    )
+    result = index_builder.build_corpus_and_lexical_index(
+        object(),
+        certified_snapshot_identity="s" * 64,
+        clock=lambda: "2026-08-01T00:00:00Z",
+        progress_callback=callback,
+        progress_interval=17.0,
+    )
+    assert result.corpus.manifest_id == "m" * 64
+    assert captured["progress_callback"] is callback
+    assert captured["progress_interval"] == 17.0
+
+
+def test_streaming_resource_gate_forwards_progress_callback(monkeypatch, tmp_path: Path):
+    import catalyst_data.manifests.operations as operations
+    import catalyst_data.corpus.streaming_publication as streaming
+
+    conn = sqlite3.connect(tmp_path / "forwarding.db")
+    callback = lambda _event: None
+    captured = {}
+    monkeypatch.setattr(
+        operations,
+        "estimate_publication_resources",
+        lambda _conn: SimpleNamespace(required_headroom=0),
+    )
+    monkeypatch.setattr(operations, "check_publication_resources", lambda *_a, **_k: None)
+
+    def fake_streaming(_conn, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        streaming, "build_streaming_corpus_and_lexical_index", fake_streaming
+    )
+    operations.publish_streaming_corpus_with_resource_gate(
+        conn,
+        snapshot_id="s" * 64,
+        clock=lambda: "2026-08-01T00:00:00Z",
+        current_rss_bytes=0,
+        free_disk_bytes=10**12,
+        protected_db_size=0,
+        progress_callback=callback,
+        progress_interval=19.0,
+    )
+    assert captured["progress_callback"] is callback
+    assert captured["progress_interval"] == 19.0
+
+
+def test_legacy_resource_gate_preserves_builder_result_and_signature(
+    monkeypatch, tmp_path: Path
+):
+    import inspect
+
+    import catalyst_data.index_builder as index_builder
+    import catalyst_data.manifests.operations as operations
+
+    conn = sqlite3.connect(tmp_path / "legacy-resource-gate.db")
+    sentinel = object()
+    captured = {}
+    monkeypatch.setattr(
+        operations,
+        "estimate_publication_resources",
+        lambda _conn: SimpleNamespace(required_headroom=0),
+    )
+    monkeypatch.setattr(operations, "check_publication_resources", lambda *_a, **_k: None)
+
+    def fake_legacy(_conn, **kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(index_builder, "build_corpus_and_lexical_index", fake_legacy)
+    result = operations.publish_corpus_with_resource_gate(
+        conn,
+        snapshot_id="s" * 64,
+        clock=lambda: "2026-08-01T00:00:00Z",
+        current_rss_bytes=0,
+        free_disk_bytes=10**12,
+        protected_db_size=0,
+    )
+
+    assert result is sentinel
+    assert set(captured) == {"certified_snapshot_identity", "clock"}
+    signature = inspect.signature(operations.publish_corpus_with_resource_gate)
+    assert "progress_callback" not in signature.parameters
+    assert "progress_interval" not in signature.parameters
 
 
 class TestIndexSummary:

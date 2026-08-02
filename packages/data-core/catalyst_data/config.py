@@ -93,6 +93,14 @@ RATE_POLICIES = {
     "test": {},  # all mocked, no network
 }
 
+# B6 model pins (Pre-B6 binding; GPU not invoked offline)
+BGE_M3_MODEL = "BAAI/bge-m3"
+BGE_M3_REVISION = "5617a9f61b028005a4858fdac845db406aefb181"
+BGE_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+BGE_RERANKER_REVISION = "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+BGE_M3_DIMENSION = 1024
+
+
 # ---- W1-B: Phase-1 explicit universe and historical window ----
 TICKER_UNIVERSE: tuple[str, ...] = (
     "AAPL", "AMD", "AMZN", "GOOGL", "JPM",

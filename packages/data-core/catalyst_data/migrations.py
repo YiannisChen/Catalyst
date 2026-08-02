@@ -16,6 +16,13 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
+CORPUS_CHUNKS_FTS_DDL = """CREATE VIRTUAL TABLE IF NOT EXISTS corpus_chunks_fts USING fts5(
+    manifest_id UNINDEXED,
+    chunk_id UNINDEXED,
+    content_text,
+    tokenize = 'unicode61 remove_diacritics 2'
+)"""
+
 
 def _quote_identifier(value: str) -> str:
     return '"' + value.replace('"', '""') + '"'
@@ -265,6 +272,282 @@ def _apply_migration_v12(conn: sqlite3.Connection) -> int:
 
     return new_count
 
+
+def _apply_migration_v13(conn: sqlite3.Connection) -> None:
+    """Rebuild corpus_chunks for filing_v3; add filing_documents.document_id."""
+    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current_version >= 13:
+        return
+
+    # Ensure corpus tables exist (v9) before rebuild.
+    has_chunks = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='corpus_chunks'"
+    ).fetchone()
+    if has_chunks:
+        before_count = conn.execute("SELECT COUNT(*) FROM corpus_chunks").fetchone()[0]
+        col_defs = [
+            (r[1], (r[2] or "").upper())
+            for r in conn.execute("PRAGMA table_info(corpus_chunks)")
+        ]
+        cols = [c for c, _ in col_defs]
+        col_types = dict(col_defs)
+        # Typed full-row hash reusing snapshot identity encoding
+        import hashlib as _hl
+        from catalyst_data.manifests.snapshot import _typed_value
+        from catalyst_data.manifests.universe import canonical_json_bytes
+
+        def _full_row_hashes(table: str, columns: list[str]) -> list[str]:
+            select = ", ".join(f'"{c}"' for c in columns)
+            out: list[str] = []
+            for row in conn.execute(
+                f"SELECT {select} FROM {table} ORDER BY chunk_id"
+            ):
+                row_obj = {
+                    col: _typed_value(row[idx], col_types.get(col, ""))
+                    for idx, col in enumerate(columns)
+                }
+                # include declared types in row identity
+                row_obj["_column_types"] = {c: col_types.get(c, "") for c in columns}
+                out.append(
+                    _hl.sha256(canonical_json_bytes(row_obj)).hexdigest()
+                )
+            return out
+
+        before_hashes = _full_row_hashes("corpus_chunks", cols)
+        before_pk = [
+            r[0]
+            for r in conn.execute(
+                "SELECT chunk_id FROM corpus_chunks ORDER BY chunk_id"
+            )
+        ]
+        before_agg = _hl.sha256("".join(before_hashes).encode("utf-8")).hexdigest()
+        col_list = ", ".join(f'"{c}"' for c in cols)
+
+        conn.execute("DROP TRIGGER IF EXISTS trg_corpus_chunks_insert_guard")
+        conn.execute("DROP TRIGGER IF EXISTS trg_corpus_chunks_update_guard")
+
+        conn.execute(
+            """
+            CREATE TABLE corpus_chunks_v13 (
+                chunk_id TEXT PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                chunk_profile_version TEXT NOT NULL CHECK (
+                    chunk_profile_version IN ('news_v2','filing_v2','filing_v3')
+                ),
+                section_key TEXT NOT NULL,
+                ordinal TEXT NOT NULL CHECK (
+                    length(ordinal) = 4 AND ordinal GLOB '[0-9][0-9][0-9][0-9]'
+                ),
+                content_text TEXT NOT NULL CHECK (length(content_text) > 0),
+                content_hash TEXT NOT NULL CHECK (
+                    length(content_hash) = 64 AND lower(content_hash) = content_hash
+                ),
+                metadata_hash TEXT NOT NULL CHECK (
+                    length(metadata_hash) = 64 AND lower(metadata_hash) = metadata_hash
+                ),
+                source_class TEXT NOT NULL CHECK (source_class IN (
+                    'structured_market_data','official_government','issuer_disclosure',
+                    'corporate_press_release','reported_news','analysis_opinion',
+                    'aggregated_unknown'
+                )),
+                dedup_cluster_id TEXT,
+                cluster_first_available_at TEXT,
+                representative_document_id TEXT,
+                available_at TEXT NOT NULL,
+                ticker_associations TEXT NOT NULL CHECK (json_valid(ticker_associations)),
+                eligibility TEXT NOT NULL CHECK (eligibility IN ('eligible','ineligible')),
+                manifest_id TEXT,
+                status TEXT NOT NULL CHECK (
+                    status IN (
+                        'active','pending_embedding','embedded','metadata_only','tombstoned'
+                    )
+                ),
+                boundary_kind TEXT NOT NULL CHECK (
+                    boundary_kind IN (
+                        'document_end','paragraph','sentence','token_fallback'
+                    )
+                ),
+                body_token_start INTEGER NOT NULL CHECK (body_token_start >= 0),
+                body_token_end INTEGER NOT NULL CHECK (body_token_end > body_token_start),
+                body_overlap_tokens INTEGER NOT NULL CHECK (
+                    body_overlap_tokens BETWEEN 0 AND 48
+                ),
+                prefix_token_count INTEGER NOT NULL CHECK (
+                    prefix_token_count BETWEEN 0 AND 64
+                ),
+                prefix_truncated INTEGER NOT NULL CHECK (prefix_truncated IN (0,1)),
+                section_parse_degraded INTEGER NOT NULL DEFAULT 0 CHECK (
+                    section_parse_degraded IN (0,1)
+                ),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(document_id, chunk_profile_version, section_key, ordinal),
+                FOREIGN KEY (manifest_id) REFERENCES corpus_manifest(manifest_id)
+            )
+            """
+        )
+        conn.execute(
+            f"INSERT INTO corpus_chunks_v13 ({col_list}) "
+            f"SELECT {col_list} FROM corpus_chunks"
+        )
+        after_count = conn.execute(
+            "SELECT COUNT(*) FROM corpus_chunks_v13"
+        ).fetchone()[0]
+        if after_count != before_count:
+            raise RuntimeError(
+                f"Migration v13 row count mismatch: {before_count} -> {after_count}"
+            )
+        after_cols = [r[1] for r in conn.execute("PRAGMA table_info(corpus_chunks_v13)")]
+        # Columns must match for full-row compare (same logical columns)
+        if after_cols != cols:
+            # allow only if same set/order of logical fields
+            if set(after_cols) != set(cols):
+                raise RuntimeError(
+                    f"Migration v13 column set changed: {cols} -> {after_cols}"
+                )
+        after_hashes = _full_row_hashes("corpus_chunks_v13", cols)
+        after_pk = [
+            r[0]
+            for r in conn.execute(
+                "SELECT chunk_id FROM corpus_chunks_v13 ORDER BY chunk_id"
+            )
+        ]
+        if after_pk != before_pk:
+            raise RuntimeError("Migration v13 ordered primary keys mismatch")
+        after_agg = _hl.sha256("".join(after_hashes).encode("utf-8")).hexdigest()
+        if after_agg != before_agg:
+            raise RuntimeError("Migration v13 aggregate full-row hash mismatch")
+        if after_hashes != before_hashes:
+            raise RuntimeError("Migration v13 full-row logical hash mismatch after rebuild")
+
+        conn.execute("DROP TABLE corpus_chunks")
+        conn.execute("ALTER TABLE corpus_chunks_v13 RENAME TO corpus_chunks")
+
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_corpus_chunks_document "
+            "ON corpus_chunks(document_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_corpus_chunks_available "
+            "ON corpus_chunks(available_at, chunk_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_corpus_chunks_source_class "
+            "ON corpus_chunks(source_class, available_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_corpus_chunks_manifest "
+            "ON corpus_chunks(manifest_id, status)"
+        )
+
+        conn.execute(
+            """
+            CREATE TRIGGER trg_corpus_chunks_insert_guard
+               BEFORE INSERT ON corpus_chunks
+               WHEN (
+                   length(NEW.content_hash) != 64
+                   OR NEW.content_hash != lower(NEW.content_hash)
+                   OR NEW.content_hash GLOB '*[^0-9a-f]*'
+                   OR length(NEW.metadata_hash) != 64
+                   OR NEW.metadata_hash != lower(NEW.metadata_hash)
+                   OR NEW.metadata_hash GLOB '*[^0-9a-f]*'
+                   OR length(NEW.ordinal) != 4
+                   OR NEW.ordinal NOT GLOB '[0-9][0-9][0-9][0-9]'
+                   OR NOT json_valid(NEW.ticker_associations)
+                   OR NEW.chunk_profile_version NOT IN (
+                       'news_v2','filing_v2','filing_v3'
+                   )
+                   OR NEW.source_class NOT IN (
+                       'structured_market_data','official_government',
+                       'issuer_disclosure','corporate_press_release',
+                       'reported_news','analysis_opinion','aggregated_unknown'
+                   )
+                   OR NEW.eligibility NOT IN ('eligible','ineligible')
+                   OR NEW.status NOT IN (
+                       'active','pending_embedding','embedded',
+                       'metadata_only','tombstoned'
+                   )
+                   OR NEW.boundary_kind NOT IN (
+                       'document_end','paragraph','sentence','token_fallback'
+                   )
+                   OR NEW.body_token_start < 0
+                   OR NEW.body_token_end <= NEW.body_token_start
+                   OR NEW.body_overlap_tokens < 0 OR NEW.body_overlap_tokens > 48
+                   OR NEW.prefix_token_count < 0 OR NEW.prefix_token_count > 64
+                   OR NEW.prefix_truncated NOT IN (0,1)
+                   OR NEW.section_parse_degraded NOT IN (0,1)
+               )
+            BEGIN
+                SELECT RAISE(ABORT, 'corpus_chunk_contract');
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER trg_corpus_chunks_update_guard
+               BEFORE UPDATE ON corpus_chunks
+               WHEN OLD.status = 'embedded'
+                  AND (
+                      OLD.chunk_id != NEW.chunk_id
+                      OR OLD.document_id != NEW.document_id
+                      OR OLD.chunk_profile_version != NEW.chunk_profile_version
+                      OR OLD.section_key != NEW.section_key
+                      OR OLD.ordinal != NEW.ordinal
+                      OR OLD.content_text != NEW.content_text
+                  )
+            BEGIN
+                SELECT RAISE(ABORT, 'corpus_chunk_identity_immutable');
+            END
+            """
+        )
+
+    # filing_documents.document_id additive
+    has_fd = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='filing_documents'"
+    ).fetchone()
+    if has_fd:
+        fd_cols = {r[1] for r in conn.execute("PRAGMA table_info(filing_documents)")}
+        if "document_id" not in fd_cols:
+            conn.execute("ALTER TABLE filing_documents ADD COLUMN document_id TEXT")
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_filing_documents_document_id
+            ON filing_documents(document_id)
+            WHERE document_id IS NOT NULL
+            """
+        )
+        conn.execute("DROP TRIGGER IF EXISTS trg_filing_documents_document_id_insert_guard")
+        conn.execute("DROP TRIGGER IF EXISTS trg_filing_documents_document_id_update_guard")
+        conn.execute(
+            """
+            CREATE TRIGGER trg_filing_documents_document_id_insert_guard
+               BEFORE INSERT ON filing_documents
+               WHEN NEW.document_id IS NOT NULL
+                  AND (
+                      length(NEW.document_id) != 64
+                      OR NEW.document_id != lower(NEW.document_id)
+                      OR NEW.document_id GLOB '*[^0-9a-f]*'
+                  )
+            BEGIN
+                SELECT RAISE(ABORT, 'filing_document_id_contract');
+            END
+            """
+        )
+        conn.execute(
+            """
+            CREATE TRIGGER trg_filing_documents_document_id_update_guard
+               BEFORE UPDATE ON filing_documents
+               WHEN OLD.document_id IS NOT NULL
+                  AND OLD.document_id IS NOT NEW.document_id
+            BEGIN
+                SELECT RAISE(ABORT, 'filing_document_id_immutable');
+            END
+            """
+        )
+
+    fk = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if fk:
+        raise RuntimeError(f"Migration v13 foreign_key_check failed: {fk}")
 
 
 MIGRATIONS: list[Migration] = [
@@ -719,12 +1002,7 @@ MIGRATIONS: list[Migration] = [
             FOREIGN KEY (corpus_manifest_id) REFERENCES corpus_manifest(manifest_id)
         )""",
 
-        """CREATE VIRTUAL TABLE IF NOT EXISTS corpus_chunks_fts USING fts5(
-            manifest_id UNINDEXED,
-            chunk_id UNINDEXED,
-            content_text,
-            tokenize = 'unicode61 remove_diacritics 2'
-        )""",
+        CORPUS_CHUNKS_FTS_DDL,
     ], reversible=False),
 
     Migration(version=11, name="b2o_full_cell_identity_and_fundamentals", statements=[
@@ -807,6 +1085,10 @@ MIGRATIONS: list[Migration] = [
         "-- Adds UNIQUE(run_id, cell_id) for B2-O endpoint coexistence.",
         "-- Preserves ALL DEFAULT values, indexes, and trigger contracts.",
     ], reversible=False),
+    Migration(version=13, name="filing_v3_profile", statements=[
+        "-- v13: rebuild corpus_chunks for filing_v3; add filing_documents.document_id.",
+        "-- Applied via _apply_migration_v13() within SAVEPOINT.",
+    ], reversible=False),
 
 ]
 
@@ -847,6 +1129,19 @@ def run_migrations(conn: sqlite3.Connection) -> int:
             conn.execute(f"SAVEPOINT migration_v{migration.version}")
             try:
                 _apply_migration_v12(conn)
+                conn.execute(f"PRAGMA user_version = {migration.version}")
+                conn.execute(f"RELEASE SAVEPOINT migration_v{migration.version}")
+            except Exception:
+                conn.execute(f"ROLLBACK TO SAVEPOINT migration_v{migration.version}")
+                conn.execute(f"RELEASE SAVEPOINT migration_v{migration.version}")
+                raise
+            logger.info("Applied migration v%d (%s)", migration.version, migration.name)
+            continue
+
+        if migration.version == 13:
+            conn.execute(f"SAVEPOINT migration_v{migration.version}")
+            try:
+                _apply_migration_v13(conn)
                 conn.execute(f"PRAGMA user_version = {migration.version}")
                 conn.execute(f"RELEASE SAVEPOINT migration_v{migration.version}")
             except Exception:

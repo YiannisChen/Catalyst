@@ -20,10 +20,36 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import sqlite3
+import time
 import unicodedata
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
+
+from catalyst_data.corpus.persisted_id import is_valid_persisted_document_id
+from catalyst_data.timeutil import TimestampNormalizationError, normalize_utc_second_z
+
+
+logger = logging.getLogger(__name__)
+
+
+class CorpusTimestampError(TimestampNormalizationError):
+    """An eligible corpus document has a missing or malformed timestamp."""
+
+
+def _normalize_corpus_timestamp(
+    value: object,
+    *,
+    document_id: str,
+    field: str,
+) -> str:
+    try:
+        return normalize_utc_second_z(value)
+    except TimestampNormalizationError as exc:
+        raise CorpusTimestampError(
+            f"invalid {field} for corpus document {document_id}"
+        ) from exc
 
 
 def _dict_rows(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
@@ -40,6 +66,64 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table,),
     ).fetchone() is not None
+
+
+def _current_rss_bytes() -> int:
+    from catalyst_data.corpus.streaming_publication import _current_rss_bytes as current
+
+    return current()
+
+
+class _CorpusProgress:
+    def __init__(
+        self,
+        *,
+        callback: Callable[[dict[str, Any]], None] | None,
+        clock: Callable[[], float],
+        rss_reader: Callable[[], int],
+        interval: float,
+    ) -> None:
+        if interval < 0:
+            raise ValueError("progress_interval must be non-negative")
+        self._callback = callback
+        self._clock = clock
+        self._rss_reader = rss_reader
+        self._interval = interval
+        self._started_at = clock()
+        self._last_emitted_at = self._started_at
+
+    def emit(
+        self,
+        *,
+        phase: str,
+        processed: int,
+        total: int,
+        chunks_generated: int,
+        final: bool = False,
+    ) -> None:
+        if self._callback is None:
+            return
+        now = self._clock()
+        due = processed > 0 and (
+            processed % 1000 == 0
+            or now - self._last_emitted_at >= self._interval
+        )
+        if not final and not due:
+            return
+        event = {
+            "phase": phase,
+            "processed": processed,
+            "total": total,
+            "chunks_generated": chunks_generated,
+            "elapsed_seconds": max(0.0, now - self._started_at),
+            "rss_bytes": self._rss_reader(),
+        }
+        try:
+            self._callback(event)
+        except Exception:
+            logger.warning("corpus progress callback failed")
+        finally:
+            self._last_emitted_at = now
 
 
 def compute_content_hash(title: str, description: str | None) -> str:
@@ -223,9 +307,13 @@ def build_corpus(
     *,
     certified_snapshot_identity: str,
     normalization_version: str = "1.0.0",
+    clock: Callable[[], float] = time.monotonic,
+    rss_reader: Callable[[], int] = _current_rss_bytes,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    progress_interval: float = 30.0,
 ) -> CorpusBuildResult:
     """Build and atomically publish the B3 corpus from canonical documents."""
-    from catalyst_data.corpus.filing_v2 import FilingV2Profile
+    from catalyst_data.corpus.filing_v3 import FilingV3Profile
     from catalyst_data.corpus.manifest import (
         build_manifest,
         compute_manifest_id,
@@ -237,6 +325,12 @@ def build_corpus(
 
     active_chunks: dict[str, dict[str, Any]] = {}
     produced_chunks: list[Any] = []
+    progress = _CorpusProgress(
+        callback=progress_callback,
+        clock=clock,
+        rss_reader=rss_reader,
+        interval=progress_interval,
+    )
     article_columns = _table_columns(conn, "articles")
     provider_expr = "a.provider" if "provider" in article_columns else "COALESCE(a.source, 'polygon')"
     source_type_expr = "a.source_type" if "source_type" in article_columns else "'polygon_news'"
@@ -265,7 +359,7 @@ def build_corpus(
         ORDER BY a.article_id
     """))
     news_profile = NewsV2Profile()
-    for row in article_rows:
+    for article_index, row in enumerate(article_rows, start=1):
         tickers = sorted({item for item in (row["tickers_csv"] or "").split(",") if item})
         ticker_associations = json.dumps(tickers, separators=(",", ":"))
         source_class = row["source_class"] or classify(
@@ -274,13 +368,25 @@ def build_corpus(
             publisher=row["publisher_name"],
         )
         cluster_id = row["dedup_cluster_id"] or row["dedup_group_id"]
-        first_available = row["cluster_first_available_at"] or row["published_utc"]
+        available_at = _normalize_corpus_timestamp(
+            row["published_utc"],
+            document_id=row["article_id"],
+            field="published_utc",
+        )
+        first_available_value = (
+            row["cluster_first_available_at"] or row["published_utc"]
+        )
+        first_available = _normalize_corpus_timestamp(
+            first_available_value,
+            document_id=row["article_id"],
+            field="cluster_first_available_at",
+        )
         representative = row["representative_document_id"] or row["article_id"]
         document = {
             "document_id": row["article_id"],
             "title": row["title"],
             "description": row["description"],
-            "available_at": row["published_utc"],
+            "available_at": available_at,
             "ticker_associations": ticker_associations,
             "source_class": source_class,
             "dedup_cluster_id": cluster_id,
@@ -299,52 +405,88 @@ def build_corpus(
                 "provider": row["provider"],
                 "source_type": row["source_type"],
             }
+        progress.emit(
+            phase="articles",
+            processed=article_index,
+            total=len(article_rows),
+            chunks_generated=len(produced_chunks),
+        )
+    progress.emit(
+        phase="articles",
+        processed=len(article_rows),
+        total=len(article_rows),
+        chunks_generated=len(produced_chunks),
+        final=True,
+    )
 
     filing_rows = _dict_rows(conn.execute("""
         SELECT
             f.filing_id, f.form_type, f.filed_at, f.ticker,
-            f.dedup_group_id, fd.document_url, fd.document_type, fd.text
+            f.dedup_group_id, fd.document_url, fd.document_type, fd.text, fd.document_id
         FROM filings f
         JOIN filing_documents fd ON fd.filing_id = f.filing_id
         WHERE f.is_canonical = 1 AND f.is_rag_eligible = 1
           AND fd.extraction_status = 'success' AND length(trim(fd.text)) > 0
         ORDER BY f.filing_id, fd.document_type, fd.document_url
     """)) if _table_exists(conn, "filings") and _table_exists(conn, "filing_documents") else []
-    filing_profile = FilingV2Profile()
-    for row in filing_rows:
-        document_type = row["document_type"] or "primary_doc"
-        is_exhibit = document_type.lower().startswith("exhibit_99")
-        declared_type = (
-            document_type.lower().replace("exhibit_", "EX-").replace("_", ".")
-            if is_exhibit else row["form_type"]
-        )
-        document_id = (
-            f"{row['filing_id']}:{document_type.lower()}"
-            if is_exhibit else row["filing_id"]
-        )
-        document = {
-            "document_id": document_id,
-            "filing_type": declared_type,
-            "raw_text": row["text"],
-            "available_at": row["filed_at"],
-            "ticker_associations": json.dumps([row["ticker"]], separators=(",", ":")),
-            "source_class": "official_government",
-            "dedup_cluster_id": row["dedup_group_id"],
-            "cluster_first_available_at": row["filed_at"],
-            "representative_document_id": document_id,
-            "eligibility": "eligible",
-        }
-        for chunk in filing_profile.chunk(document):
-            produced_chunks.append(chunk)
-            active_chunks[chunk.chunk_id] = {
-                **vars(chunk),
+    filing_v3_profile = FilingV3Profile()
+    article_chunk_count = len(produced_chunks)
+    for filing_index, row in enumerate(filing_rows, start=1):
+        try:
+            document_type = row["document_type"] or "primary_doc"
+            is_exhibit = document_type.lower().startswith("exhibit_99")
+            declared_type = (
+                document_type.lower().replace("exhibit_", "EX-").replace("_", ".")
+                if is_exhibit else row["form_type"]
+            )
+            persisted_document_id = row.get("document_id") or None
+            if not is_valid_persisted_document_id(persisted_document_id):
+                continue
+            document_id = persisted_document_id
+            available_at = _normalize_corpus_timestamp(
+                row["filed_at"],
+                document_id=document_id,
+                field="filed_at",
+            )
+            document = {
+                "document_id": document_id,
+                "filing_type": declared_type,
+                "raw_text": row["text"],
+                "available_at": available_at,
+                "ticker_associations": json.dumps(
+                    [row["ticker"]], separators=(",", ":")
+                ),
+                "source_class": "official_government",
                 "dedup_cluster_id": row["dedup_group_id"],
-                "cluster_first_available_at": row["filed_at"],
+                "cluster_first_available_at": available_at,
                 "representative_document_id": document_id,
-                "source_kind": "filing",
-                "provider": "sec",
-                "source_type": "sec_filing",
+                "eligibility": "eligible",
             }
+            for chunk in filing_v3_profile.chunk(document):
+                produced_chunks.append(chunk)
+                active_chunks[chunk.chunk_id] = {
+                    **vars(chunk),
+                    "dedup_cluster_id": row["dedup_group_id"],
+                    "cluster_first_available_at": available_at,
+                    "representative_document_id": document_id,
+                    "source_kind": "filing",
+                    "provider": "sec",
+                    "source_type": "sec_filing",
+                }
+        finally:
+            progress.emit(
+                phase="filings",
+                processed=filing_index,
+                total=len(filing_rows),
+                chunks_generated=len(produced_chunks) - article_chunk_count,
+            )
+    progress.emit(
+        phase="filings",
+        processed=len(filing_rows),
+        total=len(filing_rows),
+        chunks_generated=len(produced_chunks) - article_chunk_count,
+        final=True,
+    )
 
     inventory_fields = (
         "chunk_id", "document_id", "chunk_profile_version", "section_key",
@@ -358,7 +500,7 @@ def build_corpus(
     ]
     manifest = build_manifest(
         normalization_version=normalization_version,
-        chunk_profile_versions={"news": "news_v2", "filing": "filing_v2"},
+        chunk_profile_versions={"news": "news_v2", "filing": "filing_v3"},
         source_classifier_version=CLASSIFIER_VERSION,
         certified_snapshot_identity=certified_snapshot_identity,
         active_chunk_inventory=inventory,
@@ -384,6 +526,8 @@ def build_corpus_and_lexical_index(
     certified_snapshot_identity: str,
     clock,
     normalization_version: str = "1.0.0",
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    progress_interval: float = 30.0,
 ) -> CorpusAndLexicalBuildResult:
     """Publish the B3 corpus, then build the B4 index for that exact manifest."""
     from catalyst_data.retrieval.fts5_builder import build_fts5_index
@@ -392,6 +536,8 @@ def build_corpus_and_lexical_index(
         conn,
         certified_snapshot_identity=certified_snapshot_identity,
         normalization_version=normalization_version,
+        progress_callback=progress_callback,
+        progress_interval=progress_interval,
     )
     lexical = build_fts5_index(conn, corpus.manifest_id, clock=clock)
     return CorpusAndLexicalBuildResult(corpus=corpus, lexical=lexical)

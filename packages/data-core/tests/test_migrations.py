@@ -53,8 +53,8 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
         v = run_migrations(conn)
-        assert v == 12
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 12
+        assert v == 13
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
         conn.close()
 
     def test_per_statement_catch(self, tmp_path: Path):
@@ -89,7 +89,7 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
         v = run_migrations(conn)
-        assert v == 12
+        assert v == 13
         conn.close()
 
     def test_duplicate_column_skipped(self, tmp_path: Path):

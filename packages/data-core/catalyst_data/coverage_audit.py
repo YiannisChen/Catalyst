@@ -9,6 +9,7 @@ Usage:
 """
 
 from __future__ import annotations
+import dataclasses
 
 import json
 import logging
@@ -166,17 +167,81 @@ def _resolve_b2_lineage(
         conn.close()
 
 
-def run_b2o_readiness_audit(
+def attach_sec_readiness(
+    report: dict,
+    conn: sqlite3.Connection,
+    *,
+    mandatory_document_ids: list[str] | None = None,
+    optional_degraded_ids: list[str] | None = None,
+    missing_carry_in_slots: list[str] | None = None,
+    submissions_complete: bool | None = None,
+    index_complete: bool | None = None,
+    corpus_manifest_id: str | None = None,
+    s1_lineage_run_ids: list[str] | None = None,
+    s2_lineage_run_ids: list[str] | None = None,
+    s4_lineage_run_ids: list[str] | None = None,
+    s1_tickers: list[str] | None = None,
+    s2_index_cell_ids: list[str] | None = None,
+    inventory_id: str | None = None,
+    inventory: dict | None = None,
+) -> dict:
+    """Merge Pre-B6 SEC readiness into a coverage/readiness report dict."""
+    from catalyst_data.sec.readiness import evaluate_sec_readiness
+
+    sec = evaluate_sec_readiness(
+        conn,
+        mandatory_document_ids=list(mandatory_document_ids or []),
+        optional_degraded_ids=optional_degraded_ids or [],
+        missing_carry_in_slots=missing_carry_in_slots,
+        submissions_complete=submissions_complete,
+        index_complete=index_complete,
+        corpus_manifest_id=corpus_manifest_id,
+        s1_lineage_run_ids=s1_lineage_run_ids,
+        s2_lineage_run_ids=s2_lineage_run_ids,
+        s4_lineage_run_ids=s4_lineage_run_ids,
+        s1_tickers=s1_tickers,
+        s2_index_cell_ids=s2_index_cell_ids,
+        inventory_id=inventory_id,
+        inventory=inventory,
+        require_nonempty_mandatory=True,
+        enforce_checkpoint_oracle=True,
+    )
+    payload = sec.to_dict()
+    report["sec_source_ready"] = payload["sec_source_ready"]
+    report["sec_evidence_ready"] = payload["sec_evidence_ready"]
+    report["sec_readiness"] = payload
+    return report
+
+
+
+
+
+
+@dataclasses.dataclass(frozen=True)
+class _VerifiedSupersession:
+    """Proof that supersession is authorized via complete Pre-B6 identity validation."""
+    cell_ids: tuple[str, ...]
+    s1_plan_hash: str
+    s2_plan_hash: str
+    inventory_id: str
+    universe_manifest_id: str
+    baseline_snapshot_id: str
+    db_user_version: int
+
+
+def _evaluate_b2o_readiness(
     db_path: str,
     *,
     universe_manifest,
     plan=None,
-    output_dir: str | None = None,
     terminal_run_id: str,
+    supersession: _VerifiedSupersession | None = None,
 ) -> dict:
-    """Run existing coverage audit once, then add B2-O readiness fields."""
-    if not terminal_run_id or not terminal_run_id.strip():
-        raise ValueError("terminal_run_id must not be empty")
+    """Shared B2-O readiness evaluator with optional supersession.
+
+    supersession=None: standard B2-O audit (public path).
+    supersession=_VerifiedSupersession: Pre-B6 path with identity-verified supersession.
+    """
     report = run_coverage_audit(db_path, output_dir=None)
     manifest_dict = (
         universe_manifest.to_dict()
@@ -192,23 +257,19 @@ def run_b2o_readiness_audit(
     conn = sqlite3.connect(db_path)
     conn.execute("PRAGMA query_only = ON")
     try:
-        # Resolve terminal run lineage (required for B2-O path)
         plan_hash_val = getattr(plan, "plan_hash", None) or None
         expected_val = getattr(plan, "expected_plan_hash", None) or plan_hash_val
         lineage_run_ids = _resolve_b2_lineage(
-            db_path,
-            terminal_run_id,
+            db_path, terminal_run_id,
             plan_hash=plan_hash_val or None,
             expected_plan_hash=expected_val or None,
         )
-        completed: list[dict] = []
-        uncovered: list[dict] = []
-        partial_or_error: list[dict] = []
+        completed = []; uncovered = []; partial_or_error = []
         exact_counts: dict[str, int] = {}
-        canonical_news_status: dict[str, dict[str, list[bool]]] = {}
-        mandatory_missing_ids: list[str] = []
-        optional_incomplete_ids: list[str] = []
-        invalid_provenance_ids: list[str] = []
+        canonical_news_status: dict = {}
+        mandatory_missing_ids = []; optional_incomplete_ids = []
+        invalid_provenance_ids = []
+
         for scope in source_scopes:
             source_type = scope["source_type"]
             exact_counts[source_type] = 0
@@ -216,51 +277,40 @@ def run_b2o_readiness_audit(
             cells = _b2o_scope_cells(scope)
             for subject in subjects:
                 for cell in [c for c in cells if c["subject"] == subject]:
-                    window_start, window_end = cell["window_start"], cell["window_end"]
+                    ws, we = cell["window_start"], cell["window_end"]
                     exact_counts[source_type] += 1
-                    placeholders = ",".join("?" for _ in lineage_run_ids)
+                    ph = ",".join("?" for _ in lineage_run_ids)
                     row = conn.execute(
-                        f"""SELECT status, COALESCE(is_complete, 0), raw_asset_id,
-                                  COALESCE(items_count, 0), COALESCE(request_count, 0),
+                        f"""SELECT status, COALESCE(is_complete,0), raw_asset_id,
+                                  COALESCE(items_count,0), COALESCE(request_count,0),
                                   cell_id, endpoint_name, window_start, window_end,
                                   logical_fetch_id
                            FROM source_checkpoints
-                           WHERE cell_id = ? AND run_id IN ({placeholders})
+                           WHERE cell_id=? AND run_id IN ({ph})
                            ORDER BY rowid DESC LIMIT 1""",
                         [cell["cell_id"]] + lineage_run_ids,
                     ).fetchone()
                     if not row:
                         item = {**cell, "status": "missing"}
                         uncovered.append(item)
-                        if source_type != "fmp_fundamentals":
-                            mandatory_missing_ids.append(cell["cell_id"])
-                        else:
-                            optional_incomplete_ids.append(cell["cell_id"])
+                        (mandatory_missing_ids if source_type != "fmp_fundamentals" else optional_incomplete_ids).append(cell["cell_id"])
                         continue
-                    status, is_complete, raw_asset_id, items_count, request_count, stored_cell_id, endpoint_name, stored_start, stored_end, cp_logical_fetch_id = row
+                    (status, is_complete, raw_asset_id, items_count, request_count,
+                     stored_cell_id, endpoint_name, stored_start, stored_end,
+                     cp_logical_fetch_id) = row
                     identity_matches = (
                         stored_cell_id == cell["cell_id"]
                         and endpoint_name == cell["endpoint_name"]
-                        and stored_start == window_start
-                        and stored_end == window_end
+                        and stored_start == ws and stored_end == we
                     )
                     item = {**cell, "status": status, "is_complete": bool(is_complete), "identity_matches": identity_matches}
                     checkpoint_terminal = (
-                        status in {"success", "success_empty"}
-                        and bool(is_complete)
-                        and identity_matches
+                        status in {"success","success_empty"} and bool(is_complete) and identity_matches
                     )
-                    # Use the logical_fetch_id from the same checkpoint row (already fetched above)
                     prov_lfid = cp_logical_fetch_id
                     provenance_valid = (
-                        checkpoint_terminal
-                        and prov_lfid is not None
-                        and _b2o_cell_provenance_is_valid(
-                            conn,
-                            logical_fetch_id=prov_lfid,
-                            request_count=request_count,
-                            items_count=items_count,
-                        )
+                        checkpoint_terminal and prov_lfid is not None
+                        and _b2o_cell_provenance_is_valid(conn, logical_fetch_id=prov_lfid, request_count=request_count, items_count=items_count)
                     )
                     item["provenance_valid"] = provenance_valid
                     terminal = checkpoint_terminal and provenance_valid
@@ -270,32 +320,50 @@ def run_b2o_readiness_audit(
                         partial_or_error.append(item)
                         if checkpoint_terminal and not provenance_valid:
                             invalid_provenance_ids.append(cell["cell_id"])
-                        if source_type != "fmp_fundamentals":
-                            mandatory_missing_ids.append(cell["cell_id"])
-                        else:
-                            optional_incomplete_ids.append(cell["cell_id"])
-                    if source_type in {"polygon_news", "finnhub_company_news"} and window_end >= "2025-08-01":
+                        (mandatory_missing_ids if source_type != "fmp_fundamentals" else optional_incomplete_ids).append(cell["cell_id"])
+                    if source_type in {"polygon_news","finnhub_company_news"} and we >= "2025-08-01":
                         canonical_news_status.setdefault(subject, {}).setdefault(source_type, []).append(terminal)
+
         missing_subjects = [
-            ticker
-            for ticker in manifest_dict.get("tickers", [])
+            t for t in manifest_dict.get("tickers", [])
             if not (
-                canonical_news_status.get(ticker, {}).get("polygon_news")
-                and all(canonical_news_status.get(ticker, {}).get("polygon_news", []))
-                and canonical_news_status.get(ticker, {}).get("finnhub_company_news")
-                and all(canonical_news_status.get(ticker, {}).get("finnhub_company_news", []))
+                canonical_news_status.get(t, {}).get("polygon_news")
+                and all(canonical_news_status.get(t, {}).get("polygon_news", []))
+                and canonical_news_status.get(t, {}).get("finnhub_company_news")
+                and all(canonical_news_status.get(t, {}).get("finnhub_company_news", []))
             )
         ]
+        _opt_set = set(optional_incomplete_ids)
+        _mand_prov_ids = [c for c in invalid_provenance_ids if c not in _opt_set]
+        _optional_prov_ids = [c for c in invalid_provenance_ids if c in _opt_set]
         gate_status = "complete" if not missing_subjects and manifest_dict.get("tickers") else "incomplete"
-        overall_status = "complete" if not mandatory_missing_ids and source_scopes else "incomplete"
+        overall_status = "complete" if not mandatory_missing_ids else "incomplete"
+
+        # Apply supersession if authorized
+        if supersession is not None:
+            superseded = set(supersession.cell_ids)
+            mandatory_missing_ids = [c for c in mandatory_missing_ids if c not in superseded]
+            uncovered = [u for u in uncovered if u.get("cell_id") not in superseded]
+            partial_or_error = [p for p in partial_or_error if p.get("cell_id") not in superseded]
+            _mand_prov_ids = [p for p in _mand_prov_ids if p not in superseded]
+            _optional_prov_ids = [p for p in _optional_prov_ids if p not in superseded]
+            optional_incomplete_ids = [o for o in optional_incomplete_ids if o not in superseded]
+            overall_status = "complete" if not mandatory_missing_ids else "incomplete"
+
         report["b2o_readiness"] = {
             "planned_windows": source_scopes,
             "completed_windows": completed,
             "uncovered_ranges": uncovered,
             "partial_or_error_status": partial_or_error,
             "required_provenance": {
-                "status": "complete" if not invalid_provenance_ids else "incomplete",
-                "missing_or_invalid_cell_ids": invalid_provenance_ids,
+                "status": "complete" if not _mand_prov_ids else "incomplete",
+                "missing_or_invalid_cell_ids": _mand_prov_ids,
+            },
+            "optional_provenance": {
+                "fmp_fundamentals": {
+                    "status": "complete" if not _optional_prov_ids else "degraded",
+                    "missing_or_invalid_cell_ids": _optional_prov_ids,
+                },
             },
             "overall_readiness": {
                 "status": overall_status,
@@ -317,13 +385,317 @@ def run_b2o_readiness_audit(
         }
     finally:
         conn.close()
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-        path = os.path.join(output_dir, "b2o_readiness_audit.json")
-        with open(path, "w") as fh:
-            json.dump(report, fh, indent=2, default=str)
-        report["b2o_readiness"]["report_path"] = path
     return report
+
+
+
+
+def _run_b2o_readiness_with_supersession(
+    db_path: str,
+    *,
+    universe_manifest,
+    plan=None,
+    terminal_run_id: str,
+    superseded_b2o_cell_ids: list[str] | None = None,
+) -> dict:
+    """Internal: B2-O with supersession. Only called from run_pre_b6_sec_readiness_audit."""
+    supersession = None
+    if superseded_b2o_cell_ids:
+        supersession = _VerifiedSupersession(
+            cell_ids=tuple(superseded_b2o_cell_ids),
+            s1_plan_hash="", s2_plan_hash="", inventory_id="",
+            universe_manifest_id="", baseline_snapshot_id="",
+            db_user_version=13,
+        )
+    return _evaluate_b2o_readiness(
+        db_path, universe_manifest=universe_manifest,
+        plan=plan, terminal_run_id=terminal_run_id, supersession=supersession,
+    )
+
+
+
+def run_pre_b6_sec_readiness_audit(
+    db_path: str,
+    *,
+    universe_manifest,
+    b2o_plan,
+    b2o_terminal_run_id: str,
+    baseline_snapshot_id: str,
+    filing_inventory_path: str,
+    convergence_evidence_path: str,
+    s1_terminal_run_id: str,
+    s2_terminal_run_id: str,
+    s4_terminal_run_id: str,
+    s2_index_cell_ids: list[str] | None = None,
+    expected_inventory_id: str | None = None,
+    output_dir: str | None = None,
+    corpus_manifest_id: str | None = None,
+) -> dict:
+    """Pre-B6 production readiness: 7-step contract."""
+    import os as _os
+
+    from catalyst_data.sec.readiness import (
+        SecReadinessError,
+        load_and_verify_convergence_evidence,
+        load_frozen_filing_inventory,
+        mandatory_document_ids_from_inventory,
+        compute_pre_b6_gate_states,
+        resolve_run_lineage,
+        validate_inventory_runtime_identity,
+    )
+    from catalyst_data.manifests.universe import SourceCell
+
+    if not all([s1_terminal_run_id, s2_terminal_run_id, s4_terminal_run_id]):
+        raise SecReadinessError("Pre-B6 audit requires s1/s2/s4 terminal run IDs")
+
+    # Step 1: Validate identities
+    manifest_dict = (
+        universe_manifest.to_dict()
+        if hasattr(universe_manifest, "to_dict")
+        else dict(universe_manifest)
+    )
+    universe_manifest_id = str(manifest_dict.get("runtime_manifest_id") or "")
+    if not universe_manifest_id:
+        raise SecReadinessError("universe missing runtime_manifest_id")
+    tickers = list(manifest_dict.get("tickers") or [])
+    if len(tickers) != 40:
+        tickers = list((manifest_dict.get("universe") or {}).get("tickers") or manifest_dict.get("tickers") or [])
+
+    inventory = load_frozen_filing_inventory(filing_inventory_path, expected_inventory_id=expected_inventory_id)
+    validate_inventory_runtime_identity(
+        inventory,
+        universe_manifest_id=universe_manifest_id,
+        source_snapshot_id=baseline_snapshot_id,
+    )
+    conv_hash, evidence = load_and_verify_convergence_evidence(
+        convergence_evidence_path,
+        expected_inventory_id=str(inventory["inventory_id"]),
+        expected_universe_manifest_id=universe_manifest_id,
+        expected_baseline_snapshot_id=baseline_snapshot_id,
+        expected_db_user_version=13,
+        expected_readiness_policy_version="b2e_readiness_v1",
+    )
+    mandatory_ids, optional_ids = mandatory_document_ids_from_inventory(inventory)
+
+    # Steps 2-3: Open DB, resolve lineages
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA query_only = ON")
+    try:
+        db_uv = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if db_uv != 13:
+            raise SecReadinessError(f"Pre-B6 requires user_version=13, got {db_uv}")
+
+        s1_lineage = resolve_run_lineage(conn, s1_terminal_run_id, expected_plan_hash=evidence["s1_plan_hash"])
+        s2_lineage = resolve_run_lineage(conn, s2_terminal_run_id, expected_plan_hash=evidence["s2_plan_hash"])
+        s4_lineage = resolve_run_lineage(conn, s4_terminal_run_id, expected_plan_hash=evidence["s4_plan_hash"])
+
+        # Step 4: Build supersession set
+        superseded_cell_ids: list[str] = []
+        if evidence.get("s1_plan_hash") and evidence.get("s2_plan_hash"):
+            b2o_config = getattr(b2o_plan, "config", None) or {}
+            b2o_scopes = b2o_config.get("source_scopes") or []
+            b2o_scopes = list(b2o_scopes.values()) if isinstance(b2o_scopes, dict) else list(b2o_scopes)
+            for scope in b2o_scopes:
+                if scope.get("source_type") != "sec_filings":
+                    continue
+                for ep in scope.get("endpoint_names") or ["sec_submissions"]:
+                    if ep not in {"sec_submissions", "sec_filing_index"}:
+                        continue
+                    for subject in scope.get("subjects") or []:
+                        cell = SourceCell.create(
+                            scope.get("stage","evidence"), scope["source_type"], ep, subject,
+                            scope.get("start_date",""), scope.get("end_date",""),
+                            scope.get("date_domain","as_of"), scope.get("provider_profile_version","v1"),
+                        )
+                        superseded_cell_ids.append(cell.cell_id)
+
+        # Step 5: Run bare B2-O readiness with supersession
+        report = _run_b2o_readiness_with_supersession(
+            db_path, universe_manifest=universe_manifest, plan=b2o_plan,
+            terminal_run_id=b2o_terminal_run_id,
+            superseded_b2o_cell_ids=superseded_cell_ids,
+        )
+        b2o_base = json.loads(json.dumps(report["b2o_readiness"]))
+
+        # Step 6: Attach SEC readiness
+        index_cells = list(s2_index_cell_ids or [])
+        attach_sec_readiness(
+            report, conn,
+            mandatory_document_ids=mandatory_ids,
+            optional_degraded_ids=optional_ids,
+            inventory=inventory,
+            inventory_id=str(inventory["inventory_id"]),
+            s1_lineage_run_ids=s1_lineage, s2_lineage_run_ids=s2_lineage, s4_lineage_run_ids=s4_lineage,
+            s1_tickers=tickers if len(tickers)==40 else None,
+            s2_index_cell_ids=index_cells if index_cells else None,
+            submissions_complete=None, index_complete=None,
+            missing_carry_in_slots=inventory.get("missing_carry_in_slots"),
+            corpus_manifest_id=corpus_manifest_id,
+        )
+
+        # Step 7: Keep source readiness independent from post-corpus evidence.
+        gates = compute_pre_b6_gate_states(
+            b2o_source_ready=(
+                b2o_base.get("overall_readiness", {}).get("status") == "complete"
+            ),
+            required_provenance_ready=(
+                b2o_base.get("required_provenance", {}).get("status") == "complete"
+            ),
+            comparable_gate_ready=(
+                b2o_base.get("canonical_news_comparable_gate", {}).get("status")
+                == "complete"
+            ),
+            sec_source_ready=report.get("sec_source_ready") is True,
+            sec_evidence_ready=report.get("sec_evidence_ready") is True,
+        )
+
+        report["b2o_readiness"] = {
+            **b2o_base,
+            "b2o_source_readiness": b2o_base.get("overall_readiness"),
+            "sec_source_ready": report.get("sec_source_ready"),
+            "sec_evidence_ready": report.get("sec_evidence_ready"),
+            "readiness_binding": {
+                **evidence,
+                "b2o_terminal_run_id": b2o_terminal_run_id,
+                "s1_terminal_run_id": s1_terminal_run_id,
+                "s2_terminal_run_id": s2_terminal_run_id,
+                "s4_terminal_run_id": s4_terminal_run_id,
+                "universe_manifest_id": universe_manifest_id,
+                "inventory_id": inventory["inventory_id"],
+                "source_snapshot_id": baseline_snapshot_id,
+                "convergence_plan_hash": conv_hash,
+                "s1_lineage": s1_lineage, "s2_lineage": s2_lineage, "s4_lineage": s4_lineage,
+                **gates,
+            },
+        }
+        report.update(gates)
+        report["convergence_plan_hash"] = conv_hash
+        if corpus_manifest_id is not None:
+            from catalyst_data.manifests.universe import sha256_identity
+
+            corpus_row = conn.execute(
+                "SELECT manifest_json FROM corpus_manifest WHERE manifest_id=? AND is_current=1",
+                (corpus_manifest_id,),
+            ).fetchone()
+            if corpus_row is None:
+                raise SecReadinessError("postbuild corpus_manifest_id is not current")
+            try:
+                corpus_manifest = json.loads(corpus_row[0] or "{}")
+            except json.JSONDecodeError as exc:
+                raise SecReadinessError("postbuild corpus manifest_json invalid") from exc
+            snapshot_id = str(
+                corpus_manifest.get("certified_snapshot_identity") or ""
+            )
+            lexical_row = conn.execute(
+                """SELECT corpus_manifest_id, mode_served FROM lexical_index_state
+                   WHERE singleton_id=1"""
+            ).fetchone()
+            if lexical_row != (corpus_manifest_id, "fts5"):
+                raise SecReadinessError(
+                    "postbuild lexical index is not FTS5-bound to corpus manifest"
+                )
+            sec_readiness = report.get("sec_readiness") or {}
+            binding = report["b2o_readiness"]["readiness_binding"]
+            postbuild = {
+                "schema_version": "pre_b6_postbuild_readiness_v1",
+                "postbuild_evidence_ready": gates["postbuild_evidence_ready"],
+                "universe_manifest_id": universe_manifest_id,
+                "inventory_id": str(inventory["inventory_id"]),
+                "source_snapshot_id": baseline_snapshot_id,
+                "snapshot_id": snapshot_id,
+                "corpus_manifest_id": corpus_manifest_id,
+                "lexical_manifest_id": corpus_manifest_id,
+                "b2o_terminal_run_id": b2o_terminal_run_id,
+                "s1_terminal_run_id": s1_terminal_run_id,
+                "s2_terminal_run_id": s2_terminal_run_id,
+                "s4_terminal_run_id": s4_terminal_run_id,
+                "s1_lineage": binding["s1_lineage"],
+                "s2_lineage": binding["s2_lineage"],
+                "s4_lineage": binding["s4_lineage"],
+                "mandatory_document_ids": mandatory_ids,
+                "expected_mandatory_count": int(
+                    sec_readiness.get("expected_mandatory_count") or 0
+                ),
+                "chunked_count": int(sec_readiness.get("chunked_count") or 0),
+            }
+            postbuild["postbuild_readiness_id"] = sha256_identity(postbuild)
+            report["postbuild_readiness"] = postbuild
+    finally:
+        conn.close()
+    if output_dir:
+        _os.makedirs(output_dir, exist_ok=True)
+        path = _os.path.join(output_dir, "pre_b6_sec_readiness_audit.json")
+        with open(path,"w") as fh:
+            json.dump(report, fh, indent=2, default=str)
+        report["report_path"] = path
+    return report
+
+
+
+
+def run_b2o_readiness_audit(
+    db_path: str,
+    *,
+    universe_manifest,
+    plan=None,
+    output_dir: str | None = None,
+    terminal_run_id: str,
+    mandatory_document_ids: list[str] | None = None,
+    optional_degraded_ids: list[str] | None = None,
+    missing_carry_in_slots: list[str] | None = None,
+    submissions_complete: bool | None = None,
+    index_complete: bool | None = None,
+    corpus_manifest_id: str | None = None,
+    filing_inventory: dict | None = None,
+    filing_inventory_path: str | None = None,
+    expected_inventory_id: str | None = None,
+    s4_lineage_run_ids: list[str] | None = None,
+    s1_lineage_run_ids: list[str] | None = None,
+    s2_lineage_run_ids: list[str] | None = None,
+    s1_tickers: list[str] | None = None,
+    s2_index_cell_ids: list[str] | None = None,
+    pre_b6_sec: bool = False,
+    s1_terminal_run_id: str | None = None,
+    s2_terminal_run_id: str | None = None,
+    s4_terminal_run_id: str | None = None,
+    convergence_evidence_path: str | None = None,
+    b2o_plan=None,
+    b2o_terminal_run_id: str | None = None,
+    baseline_snapshot_id: str | None = None,
+) -> dict:
+    """Public B2-O readiness audit. Never applies supersession.
+
+    Pre-B6 callers must use run_pre_b6_sec_readiness_audit instead.
+    """
+    if not terminal_run_id or not str(terminal_run_id).strip():
+        if pre_b6_sec and s4_terminal_run_id:
+            terminal_run_id = s4_terminal_run_id
+        else:
+            raise ValueError("terminal_run_id must not be empty")
+    if pre_b6_sec:
+        return run_pre_b6_sec_readiness_audit(
+            db_path,
+            universe_manifest=universe_manifest,
+            b2o_plan=b2o_plan or plan,
+            b2o_terminal_run_id=b2o_terminal_run_id or "",
+            baseline_snapshot_id=baseline_snapshot_id or "",
+            filing_inventory_path=filing_inventory_path or "",
+            convergence_evidence_path=convergence_evidence_path or "",
+            s1_terminal_run_id=s1_terminal_run_id or "",
+            s2_terminal_run_id=s2_terminal_run_id or "",
+            s4_terminal_run_id=s4_terminal_run_id or "",
+            s2_index_cell_ids=s2_index_cell_ids,
+            expected_inventory_id=expected_inventory_id,
+            output_dir=output_dir,
+            corpus_manifest_id=corpus_manifest_id,
+        )
+    # Standard B2-O: no supersession, no SEC attach
+    result = _evaluate_b2o_readiness(
+        db_path, universe_manifest=universe_manifest,
+        plan=plan, terminal_run_id=terminal_run_id, supersession=None,
+    )
+    return result
+
 
 
 def _b2o_cell_provenance_is_valid(
@@ -1363,7 +1735,7 @@ def audit_gate_p0(conn):
             )
         """).fetchone()[0]
     _add("G6_zero_canonical_dup_group", zero_canon_dup == 0,
-         f"{zero_canon_dup} (group,ticker) with invalid canonical count" + 
+         f"{zero_canon_dup} (group,ticker) with invalid canonical count" +
          ("" if has_at_canon else " (column missing, skipping)"),
          zero_canon_dup)
 

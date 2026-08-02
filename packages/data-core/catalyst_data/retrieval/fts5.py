@@ -93,21 +93,29 @@ def _eligibility_predicate(
     return sql, params
 
 
-def _served_mode(conn: sqlite3.Connection, manifest_id: str) -> tuple[str, str | None]:
+def _served_mode(
+    conn: sqlite3.Connection, manifest_id: str
+) -> tuple[str, str | None, str | None]:
     fts_exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='corpus_chunks_fts'"
     ).fetchone()
     if fts_exists is None:
-        return "sql_like", "fts5_missing"
+        return "sql_like", "fts5_missing", None
+    state_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(lexical_index_state)")
+    }
+    generation_projection = (
+        "lexical_generation_id" if "lexical_generation_id" in state_columns else "NULL"
+    )
     state = conn.execute(
-        "SELECT corpus_manifest_id, mode_served, fallback_reason "
-        "FROM lexical_index_state WHERE singleton_id = 1"
+        f"SELECT corpus_manifest_id, mode_served, fallback_reason, "
+        f"{generation_projection} FROM lexical_index_state WHERE singleton_id = 1"
     ).fetchone()
     if state is None or state[0] != manifest_id:
-        return "sql_like", "fts5_stale"
+        return "sql_like", "fts5_stale", None
     if state[1] != "fts5":
-        return "sql_like", state[2] or "fts5_unavailable"
-    return "fts5", None
+        return "sql_like", state[2] or "fts5_unavailable", None
+    return "fts5", None, state[3]
 
 
 def retrieve_lexical(
@@ -139,19 +147,24 @@ def retrieve_lexical(
         "SELECT 1 FROM corpus_manifest WHERE manifest_id = ?", (requested_manifest_id,)
     ).fetchone() is None:
         raise RetrievalContractError("manifest_not_found")
+    from catalyst_data.corpus.streaming_publication import served_chunks_relation
+
+    chunks_relation = served_chunks_relation(conn)
 
     eligibility_sql, eligibility_params = _eligibility_predicate(
         requested_manifest_id, cutoff, ticker, source_classes, evidence_types,
     )
     manifest_count = conn.execute(
-        "SELECT COUNT(*) FROM corpus_chunks WHERE manifest_id = ?",
+        f"SELECT COUNT(*) FROM {chunks_relation} WHERE manifest_id = ?",
         (requested_manifest_id,),
     ).fetchone()[0]
     eligible_count = conn.execute(
-        f"SELECT COUNT(*) FROM corpus_chunks c WHERE {eligibility_sql}",
+        f"SELECT COUNT(*) FROM {chunks_relation} c WHERE {eligibility_sql}",
         eligibility_params,
     ).fetchone()[0]
-    mode_served, degradation_reason = _served_mode(conn, requested_manifest_id)
+    mode_served, degradation_reason, lexical_generation_id = _served_mode(
+        conn, requested_manifest_id
+    )
     filtered_at = time.perf_counter()
     terms = _normalize_query(query)
 
@@ -162,16 +175,28 @@ def retrieve_lexical(
         fallback_reason = "empty_query"
     elif mode_served == "fts5":
         match_query = " AND ".join(f'"{term}"' for term in terms)
-        rows = conn.execute(
-            f"""SELECT c.chunk_id, c.document_id, c.available_at, c.source_class,
-                       bm25(corpus_chunks_fts) AS score
-                FROM corpus_chunks_fts fts
-                JOIN corpus_chunks c
-                  ON c.manifest_id = fts.manifest_id AND c.chunk_id = fts.chunk_id
-                WHERE corpus_chunks_fts MATCH ? AND {eligibility_sql}
-                ORDER BY score ASC, c.chunk_id ASC""",
-            [match_query, *eligibility_params],
-        ).fetchall()
+        if lexical_generation_id is None:
+            rows = conn.execute(
+                f"""SELECT c.chunk_id, c.document_id, c.available_at, c.source_class,
+                           bm25(corpus_chunks_fts) AS score
+                    FROM corpus_chunks_fts fts
+                    JOIN {chunks_relation} c
+                      ON c.manifest_id = fts.manifest_id AND c.chunk_id = fts.chunk_id
+                    WHERE corpus_chunks_fts MATCH ? AND {eligibility_sql}
+                    ORDER BY score ASC, c.chunk_id ASC""",
+                [match_query, *eligibility_params],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"""SELECT c.chunk_id, c.document_id, c.available_at, c.source_class,
+                           bm25(corpus_build_chunks_fts) AS score
+                    FROM corpus_build_chunks_fts fts
+                    JOIN {chunks_relation} c ON c.chunk_id = fts.chunk_id
+                    WHERE corpus_build_chunks_fts MATCH ? AND fts.build_id = ?
+                      AND {eligibility_sql}
+                    ORDER BY score ASC, c.chunk_id ASC""",
+                [match_query, lexical_generation_id, *eligibility_params],
+            ).fetchall()
         matched_count = len(rows)
         raw_candidates = [tuple(row) for row in rows[:candidate_depth]]
     else:
@@ -181,6 +206,7 @@ def retrieve_lexical(
             eligibility_params=eligibility_params,
             terms=terms,
             candidate_depth=candidate_depth,
+            chunks_relation=chunks_relation,
         )
         raw_candidates = [
             (row[0], row[1], row[2], row[3], None) for row in rows

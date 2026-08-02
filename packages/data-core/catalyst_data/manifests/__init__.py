@@ -11,7 +11,11 @@ from .universe import (
     load_universe_spec,
     terminal_complete,
 )
-from .snapshot import DataSnapshotManifest, build_data_snapshot_manifest
+from .snapshot import (
+    DataSnapshotManifest,
+    build_data_snapshot_manifest,
+    build_legacy_data_snapshot_manifest,
+)
 from .operations import (
     BootstrapResult,
     PromotionResult,
@@ -19,6 +23,7 @@ from .operations import (
     bootstrap_candidate,
     promote_candidate,
     publish_corpus_with_resource_gate,
+    publish_streaming_corpus_with_resource_gate,
     sha256_file,
 )
 
@@ -35,10 +40,12 @@ __all__ = [
     "bootstrap_candidate",
     "build_b2o_source_scopes",
     "build_data_snapshot_manifest",
+    "build_legacy_data_snapshot_manifest",
     "build_universe_manifest",
     "load_universe_spec",
     "promote_candidate",
     "publish_corpus_with_resource_gate",
+    "publish_streaming_corpus_with_resource_gate",
     "sha256_file",
     "terminal_complete",
 ]

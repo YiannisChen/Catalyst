@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import shutil
 import sqlite3
 from dataclasses import dataclass
-import math
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from catalyst_data.migrations import run_migrations
 
@@ -40,6 +40,8 @@ class ResourceEstimate:
     estimated_chunks: int
     estimated_peak_bytes: int
     required_headroom: int
+    largest_source_document_utf8_bytes: int = 0
+    phase_headroom_bytes: dict[str, int] | None = None
 
 
 def sha256_file(path: Path) -> str:
@@ -178,6 +180,7 @@ def publish_corpus_with_resource_gate(
     free_disk_bytes: int | None = None,
     protected_db_size: int | None = None,
 ):
+    """Run the historical list-returning corpus and lexical publication API."""
     db_path = conn.execute("PRAGMA database_list").fetchone()[2]
     db_size = protected_db_size
     if db_size is None and db_path:
@@ -207,6 +210,7 @@ def publish_corpus_with_resource_gate(
 
 
 def estimate_publication_resources(conn: sqlite3.Connection) -> ResourceEstimate:
+    """Estimate resources using the historical legacy publication model."""
     docs: list[int] = []
     article_exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='articles'"
@@ -239,6 +243,67 @@ def estimate_publication_resources(conn: sqlite3.Connection) -> ResourceEstimate
     )
 
 
+def publish_streaming_corpus_with_resource_gate(
+    conn: sqlite3.Connection,
+    *,
+    snapshot_id: str,
+    clock: Callable[[], str],
+    min_free_bytes: int | None = None,
+    max_rss_bytes: int = 6 * 1024**3,
+    current_rss_bytes: int | None = None,
+    free_disk_bytes: int | None = None,
+    protected_db_size: int | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    progress_interval: float = 30.0,
+):
+    """Run the bounded streaming publication API used by Pre-B6 only."""
+    db_path = conn.execute("PRAGMA database_list").fetchone()[2]
+    db_size = protected_db_size
+    if db_size is None and db_path:
+        db_size = Path(db_path).stat().st_size
+    from catalyst_data.corpus.streaming_publication import (
+        estimate_streaming_publication_resources,
+    )
+
+    streaming_estimate = estimate_streaming_publication_resources(conn)
+    estimate = ResourceEstimate(
+        source_utf8_bytes=streaming_estimate.source_utf8_bytes,
+        eligible_document_count=streaming_estimate.eligible_document_count,
+        estimated_chunks=streaming_estimate.estimated_chunks,
+        estimated_peak_bytes=streaming_estimate.estimated_peak_bytes,
+        required_headroom=streaming_estimate.required_headroom,
+        largest_source_document_utf8_bytes=(
+            streaming_estimate.largest_source_document_utf8_bytes
+        ),
+        phase_headroom_bytes=streaming_estimate.phase_headroom_bytes,
+    )
+    if free_disk_bytes is None:
+        target = Path(db_path).parent if db_path else Path(".")
+        free_disk_bytes = shutil.disk_usage(target).free
+    if current_rss_bytes is None:
+        current_rss_bytes = _current_rss_bytes()
+    check_publication_resources(
+        estimate,
+        current_rss_bytes=current_rss_bytes,
+        free_disk_bytes=free_disk_bytes,
+        protected_db_size=db_size or 0,
+        max_rss_bytes=max_rss_bytes,
+    )
+    if min_free_bytes is not None:
+        _check_free_space(Path(db_path).parent if db_path else Path("."), min_free_bytes)
+    from catalyst_data.corpus.streaming_publication import (
+        build_streaming_corpus_and_lexical_index,
+    )
+
+    return build_streaming_corpus_and_lexical_index(
+        conn,
+        certified_snapshot_identity=snapshot_id,
+        clock=clock,
+        progress_callback=progress_callback,
+        progress_interval=progress_interval,
+    )
+
+
 def check_publication_resources(
     estimate: ResourceEstimate,
     *,
@@ -257,12 +322,6 @@ def check_publication_resources(
 
 
 def _current_rss_bytes() -> int:
-    try:
-        import platform
-        import resource
-    except ImportError:
-        return 0
-    rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    if platform.system() == "Darwin":
-        return rss
-    return rss * 1024
+    from catalyst_data.corpus.streaming_publication import _current_rss_bytes as current
+
+    return current()

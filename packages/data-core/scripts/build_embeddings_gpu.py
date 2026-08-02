@@ -1,4 +1,6 @@
-"""Build reproducible embedding artifacts for frozen-eval L1 clean_assets rows.
+"""LEGACY_FROZEN_EVAL only — NOT the Pre-B6 / B2-E corpus embed path.
+
+Build reproducible embedding artifacts for frozen-eval L1 clean_assets rows.
 
 This script is the P1-T01 scaffold for the cloud GPU batch defined by ADR-008.
 It reads deterministic L1 rows from `data/catalyst_eval_frozen_v2.db` and writes:

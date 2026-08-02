@@ -12,11 +12,12 @@ def rank_sql_fallback(
     eligibility_params: list[object],
     terms: tuple[str, ...],
     candidate_depth: int,
+    chunks_relation: str = "corpus_chunks",
 ) -> tuple[list[tuple], int]:
     rows = conn.execute(
         f"""SELECT c.chunk_id, c.document_id, c.available_at, c.source_class,
                    c.content_text
-            FROM corpus_chunks c
+            FROM {chunks_relation} c
             WHERE {eligibility_sql}
             ORDER BY c.chunk_id ASC""",
         eligibility_params,
