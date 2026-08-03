@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from urllib.parse import urlsplit
 
-CLASSIFIER_VERSION = "1.0.0"
+CLASSIFIER_VERSION = "1.1.0"
 
 CLASSES = (
     "structured_market_data",
@@ -53,30 +54,55 @@ _HOST_CLASS = {
 
 _PUBLISHER_CLASS = {
     "globenewswire": "corporate_press_release",
-    "pr newswire": "corporate_press_release",
-    "business wire": "corporate_press_release",
+    "globenewswireinc": "corporate_press_release",
+    "prnewswire": "corporate_press_release",
+    "businesswire": "corporate_press_release",
     "cnbc": "reported_news",
+    "cnbcnews": "reported_news",
     "marketwatch": "reported_news",
+    "marketwatchcom": "reported_news",
     "reuters": "reported_news",
+    "ap": "reported_news",
     "associated press": "reported_news",
+    "associatedpress": "reported_news",
+    "apnews": "reported_news",
     "bloomberg": "reported_news",
-    "wall street journal": "reported_news",
-    "barron's": "reported_news",
-    "investor's business daily": "reported_news",
-    "seeking alpha": "analysis_opinion",
-    "the motley fool": "analysis_opinion",
+    "wsj": "reported_news",
+    "wallstreetjournal": "reported_news",
+    "dowjones": "reported_news",
+    "dowjonesnews": "reported_news",
+    "dowjonesnewswires": "reported_news",
+    "benzinga": "reported_news",
+    "investing": "reported_news",
+    "investingcom": "reported_news",
+    "barrons": "reported_news",
+    "investorsbusinessdaily": "reported_news",
+    "seekingalpha": "analysis_opinion",
+    "themotleyfool": "analysis_opinion",
+    "motleyfool": "analysis_opinion",
     "zacks": "analysis_opinion",
+    "zacksinvestmentresearch": "analysis_opinion",
     "chartmill": "analysis_opinion",
+    "chartmillcom": "analysis_opinion",
     "fintel": "analysis_opinion",
+    "fintelio": "analysis_opinion",
     "yahoo": "aggregated_unknown",
+    "yahoofinance": "aggregated_unknown",
     "finnhub": "aggregated_unknown",
+    "finnhubnews": "aggregated_unknown",
 }
+
+_PROXY_HOSTS = frozenset({"finnhub.io"})
 
 
 def _normalized_host(article_url: str | None, explicit_host: str | None) -> str:
     host = explicit_host or (urlsplit(article_url).hostname if article_url else "") or ""
     host = host.lower().rstrip(".")
     return host[4:] if host.startswith("www.") else host
+
+
+def _normalized_publisher(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (value or "").strip().lower())
 
 
 def classify(
@@ -90,7 +116,7 @@ def classify(
     article_category: str | None = None,
     host: str | None = None,
 ) -> str:
-    """Classify using source-kind precedence, then host, then publisher.
+    """Classify with source-kind precedence and proxy-scoped publisher taxonomy.
 
     Legacy keyword arguments remain accepted while B2 callers migrate to the
     binding ``source_kind/article_url/publisher`` interface.
@@ -100,10 +126,13 @@ def classify(
         return _SOURCE_KIND[kind]
 
     normalized_host = _normalized_host(article_url, host)
+    normalized_publisher = _normalized_publisher(publisher or publisher_name)
+    if normalized_host in _PROXY_HOSTS:
+        return _PUBLISHER_CLASS.get(normalized_publisher, "aggregated_unknown")
+
     if normalized_host in _HOST_CLASS:
         return _HOST_CLASS[normalized_host]
 
-    normalized_publisher = (publisher or publisher_name or "").strip().lower()
     if normalized_publisher in _PUBLISHER_CLASS:
         return _PUBLISHER_CLASS[normalized_publisher]
 
