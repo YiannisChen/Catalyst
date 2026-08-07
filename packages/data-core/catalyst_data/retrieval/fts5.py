@@ -13,6 +13,7 @@ from .result import (
     EVIDENCE_TYPES,
     SEARCHABLE_STATUSES,
     SOURCE_CLASSES,
+    RetrievalArmUnavailableError,
     RetrievalContractError,
     RetrievalFilters,
     RetrievalResult,
@@ -62,6 +63,26 @@ def _validate_filter(
     if not values or any(value not in allowed for value in values):
         raise RetrievalContractError("invalid_filter")
     return tuple(sorted(set(values)))
+
+
+def _is_sqlite_availability_error(exc: BaseException) -> bool:
+    """Confirmed SQLite availability failures only (never query/programmer errors)."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    if "fts5: syntax error" in message:
+        return False
+    return any(
+        marker in message
+        for marker in (
+            "unable to open database file",
+            "database is locked",
+            "database is busy",
+            "disk i/o error",
+            "no such table",
+            "readonly database",
+        )
+    )
 
 
 def _eligibility_predicate(
@@ -143,74 +164,81 @@ def retrieve_lexical(
         source_classes=source_classes,
         evidence_types=evidence_types,
     )
-    if conn.execute(
-        "SELECT 1 FROM corpus_manifest WHERE manifest_id = ?", (requested_manifest_id,)
-    ).fetchone() is None:
-        raise RetrievalContractError("manifest_not_found")
-    from catalyst_data.corpus.streaming_publication import served_chunks_relation
+    try:
+        if conn.execute(
+            "SELECT 1 FROM corpus_manifest WHERE manifest_id = ?", (requested_manifest_id,)
+        ).fetchone() is None:
+            raise RetrievalContractError("manifest_not_found")
+        from catalyst_data.corpus.streaming_publication import served_chunks_relation
 
-    chunks_relation = served_chunks_relation(conn)
+        chunks_relation = served_chunks_relation(conn)
 
-    eligibility_sql, eligibility_params = _eligibility_predicate(
-        requested_manifest_id, cutoff, ticker, source_classes, evidence_types,
-    )
-    manifest_count = conn.execute(
-        f"SELECT COUNT(*) FROM {chunks_relation} WHERE manifest_id = ?",
-        (requested_manifest_id,),
-    ).fetchone()[0]
-    eligible_count = conn.execute(
-        f"SELECT COUNT(*) FROM {chunks_relation} c WHERE {eligibility_sql}",
-        eligibility_params,
-    ).fetchone()[0]
-    mode_served, degradation_reason, lexical_generation_id = _served_mode(
-        conn, requested_manifest_id
-    )
-    filtered_at = time.perf_counter()
-    terms = _normalize_query(query)
-
-    raw_candidates: list[tuple[str, str, str, str, float | None]] = []
-    matched_count = 0
-    fallback_reason = degradation_reason
-    if not terms:
-        fallback_reason = "empty_query"
-    elif mode_served == "fts5":
-        match_query = " AND ".join(f'"{term}"' for term in terms)
-        if lexical_generation_id is None:
-            rows = conn.execute(
-                f"""SELECT c.chunk_id, c.document_id, c.available_at, c.source_class,
-                           bm25(corpus_chunks_fts) AS score
-                    FROM corpus_chunks_fts fts
-                    JOIN {chunks_relation} c
-                      ON c.manifest_id = fts.manifest_id AND c.chunk_id = fts.chunk_id
-                    WHERE corpus_chunks_fts MATCH ? AND {eligibility_sql}
-                    ORDER BY score ASC, c.chunk_id ASC""",
-                [match_query, *eligibility_params],
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                f"""SELECT c.chunk_id, c.document_id, c.available_at, c.source_class,
-                           bm25(corpus_build_chunks_fts) AS score
-                    FROM corpus_build_chunks_fts fts
-                    JOIN {chunks_relation} c ON c.chunk_id = fts.chunk_id
-                    WHERE corpus_build_chunks_fts MATCH ? AND fts.build_id = ?
-                      AND {eligibility_sql}
-                    ORDER BY score ASC, c.chunk_id ASC""",
-                [match_query, lexical_generation_id, *eligibility_params],
-            ).fetchall()
-        matched_count = len(rows)
-        raw_candidates = [tuple(row) for row in rows[:candidate_depth]]
-    else:
-        rows, matched_count = rank_sql_fallback(
-            conn,
-            eligibility_sql=eligibility_sql,
-            eligibility_params=eligibility_params,
-            terms=terms,
-            candidate_depth=candidate_depth,
-            chunks_relation=chunks_relation,
+        eligibility_sql, eligibility_params = _eligibility_predicate(
+            requested_manifest_id, cutoff, ticker, source_classes, evidence_types,
         )
-        raw_candidates = [
-            (row[0], row[1], row[2], row[3], None) for row in rows
-        ]
+        manifest_count = conn.execute(
+            f"SELECT COUNT(*) FROM {chunks_relation} WHERE manifest_id = ?",
+            (requested_manifest_id,),
+        ).fetchone()[0]
+        eligible_count = conn.execute(
+            f"SELECT COUNT(*) FROM {chunks_relation} c WHERE {eligibility_sql}",
+            eligibility_params,
+        ).fetchone()[0]
+        mode_served, degradation_reason, lexical_generation_id = _served_mode(
+            conn, requested_manifest_id
+        )
+        filtered_at = time.perf_counter()
+        terms = _normalize_query(query)
+
+        raw_candidates: list[tuple[str, str, str, str, float | None, str]] = []
+        matched_count = 0
+        fallback_reason = degradation_reason
+        if not terms:
+            fallback_reason = "empty_query"
+        elif mode_served == "fts5":
+            match_query = " AND ".join(f'"{term}"' for term in terms)
+            if lexical_generation_id is None:
+                rows = conn.execute(
+                    f"""SELECT c.chunk_id, c.document_id, c.available_at, c.source_class,
+                               bm25(corpus_chunks_fts) AS score, c.content_text
+                        FROM corpus_chunks_fts fts
+                        JOIN {chunks_relation} c
+                          ON c.manifest_id = fts.manifest_id AND c.chunk_id = fts.chunk_id
+                        WHERE corpus_chunks_fts MATCH ? AND {eligibility_sql}
+                        ORDER BY score ASC, c.chunk_id ASC""",
+                    [match_query, *eligibility_params],
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    f"""SELECT c.chunk_id, c.document_id, c.available_at, c.source_class,
+                               bm25(corpus_build_chunks_fts) AS score, c.content_text
+                        FROM corpus_build_chunks_fts fts
+                        JOIN {chunks_relation} c ON c.chunk_id = fts.chunk_id
+                        WHERE corpus_build_chunks_fts MATCH ? AND fts.build_id = ?
+                          AND {eligibility_sql}
+                        ORDER BY score ASC, c.chunk_id ASC""",
+                    [match_query, lexical_generation_id, *eligibility_params],
+                ).fetchall()
+            matched_count = len(rows)
+            raw_candidates = [tuple(row) for row in rows[:candidate_depth]]
+        else:
+            rows, matched_count = rank_sql_fallback(
+                conn,
+                eligibility_sql=eligibility_sql,
+                eligibility_params=eligibility_params,
+                terms=terms,
+                candidate_depth=candidate_depth,
+                chunks_relation=chunks_relation,
+            )
+            raw_candidates = [
+                (row[0], row[1], row[2], row[3], None, row[4]) for row in rows
+            ]
+    except sqlite3.OperationalError as exc:
+        if not _is_sqlite_availability_error(exc):
+            raise
+        raise RetrievalArmUnavailableError(
+            "lexical", "fts5_unavailable", "SQLite backend unavailable"
+        ) from exc
 
     scored_at = time.perf_counter()
     total_ms = (scored_at - started) * 1000
@@ -218,6 +246,7 @@ def retrieve_lexical(
         RetrievalResult(
             chunk_id=row[0],
             document_id=row[1],
+            content_text=row[5],
             available_at=row[2],
             cutoff=cutoff,
             filters_applied=filters,
@@ -262,4 +291,6 @@ def retrieve_lexical(
     )
 
 
-__all__ = ["RetrievalContractError", "retrieve_lexical"]
+__all__ = [
+    "RetrievalArmUnavailableError", "RetrievalContractError", "retrieve_lexical",
+]

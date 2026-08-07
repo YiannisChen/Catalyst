@@ -18,6 +18,7 @@ def _open_dev():
     return conn
 
 
+@pytest.mark.protected_artifact("data/catalyst_dev_ws4b.db")
 class TestTimestampCanonicalMigration:
     """Migration converts +00:00 suffix to Z, is idempotent, leaves zero +00:00."""
 
@@ -60,6 +61,7 @@ class TestTimestampCanonicalMigration:
             assert row["published_utc"].endswith("Z")
 
 
+@pytest.mark.protected_artifact("data/catalyst_dev_ws4b.db")
 class TestTimestampCanonicalIdempotent:
     """Running the migration twice must produce same result."""
 

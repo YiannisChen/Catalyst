@@ -201,6 +201,8 @@ class HealthComponent(BaseModel):
     path: str | None = None
     table: str | None = None
     vector_dim: int | None = None
+    corpus_manifest_id: str | None = None
+    index_manifest_id: str | None = None
 
 
 class RuntimeHealthResponse(BaseModel):
@@ -212,6 +214,7 @@ class RuntimeHealthResponse(BaseModel):
     embedding: HealthComponent
     reranker: HealthComponent
     default_model: HealthComponent
+    retrieval: HealthComponent | None = None
     errors: list[dict[str, Any]] = Field(default_factory=list)
 
 

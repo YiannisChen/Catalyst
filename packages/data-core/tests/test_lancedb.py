@@ -7,6 +7,7 @@ load_reranker) so they run without lancedb or FlagEmbedding installed.
 from __future__ import annotations
 
 import pytest
+from retrieval_model_fixtures import make_result, make_results
 from catalyst_data.storage.lancedb_store import (
     reciprocal_rank_fusion,
     _apply_reranker,
@@ -103,14 +104,39 @@ def test_rrf_metadata_from_first_seen_list():
     assert dup_entry["source_type"] == "news"
 
 
+def test_legacy_rrf_matches_canonical_fusion_order():
+    from catalyst_data.retrieval.fusion import fuse
+
+    left = [{"asset_id": "b", "ticker": "AAPL"}, {"asset_id": "a", "ticker": "AAPL"}]
+    right = [{"asset_id": "a", "ticker": "AAPL"}, {"asset_id": "c", "ticker": "AAPL"}]
+    legacy = reciprocal_rank_fusion(left, right)
+    canonical = fuse(
+        [make_result(item["asset_id"]) for item in left],
+        [make_result(item["asset_id"]) for item in right],
+    )
+    assert [item["asset_id"] for item in legacy] == [item.chunk_id for item in canonical]
+
+
+def test_legacy_rrf_preserves_a_third_arm():
+    shared = [{"asset_id": "shared"}]
+    merged = reciprocal_rank_fusion(shared, [], shared)
+    assert merged[0]["asset_id"] == "shared"
+    assert merged[0]["rrf_score"] == pytest.approx(2 / 61)
+
+
+def test_legacy_rrf_rejects_mixed_index_identity():
+    with pytest.raises(ValueError, match="one index"):
+        reciprocal_rank_fusion(
+            [{"asset_id": "shared", "index_manifest_id": "1" * 64}],
+            [{"asset_id": "shared", "index_manifest_id": "2" * 64}],
+        )
+
+
 # ---------------------------------------------------------------------------
 # _apply_reranker
 # ---------------------------------------------------------------------------
 
-_SAMPLE_CHUNKS = [
-    {"asset_id": f"c{i}", "content_md": f"Content about topic {i}", "rrf_score": 0.01}
-    for i in range(1, 11)
-]
+_SAMPLE_CHUNKS = make_results(10, prefix="c", content_text="Content about topic")
 
 
 class _MockPredictReranker:
@@ -138,33 +164,33 @@ class _MockScalarReranker:
 
 def test_apply_reranker_with_predict():
     """_apply_reranker works with CrossEncoder-style .predict()."""
-    chunks = [dict(c) for c in _SAMPLE_CHUNKS[:5]]
+    chunks = list(_SAMPLE_CHUNKS[:5])
     result = _apply_reranker(chunks, "test query", _MockPredictReranker(), top_k=3)
 
     assert len(result) == 3
-    assert all("rerank_score" in c for c in result)
+    assert all(c.reranker_score is not None for c in result)
     # Scores are descending
-    scores = [c["rerank_score"] for c in result]
+    scores = [c.reranker_score for c in result]
     assert scores == sorted(scores, reverse=True)
 
 
 def test_apply_reranker_with_compute_score():
     """_apply_reranker works with FlagReranker-style .compute_score()."""
-    chunks = [dict(c) for c in _SAMPLE_CHUNKS[:5]]
+    chunks = list(_SAMPLE_CHUNKS[:5])
     result = _apply_reranker(chunks, "test query", _MockComputeScoreReranker(), top_k=3)
 
     assert len(result) == 3
     # compute_score returns [0, 1, 2, 3, 4] — highest is c5
-    assert result[0]["asset_id"] == "c5"
+    assert result[0].chunk_id == "c:04"
 
 
 def test_apply_reranker_scalar_score():
     """Single-pair reranking where reranker returns a scalar."""
-    chunks = [dict(_SAMPLE_CHUNKS[0])]
+    chunks = [_SAMPLE_CHUNKS[0]]
     result = _apply_reranker(chunks, "test query", _MockScalarReranker(), top_k=1)
 
     assert len(result) == 1
-    assert result[0]["rerank_score"] == pytest.approx(0.75)
+    assert result[0].reranker_score == pytest.approx(0.75)
 
 
 def test_apply_reranker_empty_chunks():
@@ -175,23 +201,23 @@ def test_apply_reranker_empty_chunks():
 
 def test_apply_reranker_top_k_limits_output():
     """Output length is capped at top_k."""
-    chunks = [dict(c) for c in _SAMPLE_CHUNKS]
+    chunks = list(_SAMPLE_CHUNKS)
     result = _apply_reranker(chunks, "query", _MockPredictReranker(), top_k=3)
     assert len(result) == 3
 
 
 def test_apply_reranker_preserves_metadata():
     """Reranking preserves all original chunk fields."""
-    chunks = [{"asset_id": "x", "content_md": "hello", "ticker": "NVDA", "rrf_score": 0.01}]
+    chunks = [make_result("x", ticker="NVDA", content_text="hello")]
 
     class SimpleReranker:
         def predict(self, pairs):
             return [0.9]
 
     result = _apply_reranker(chunks, "q", SimpleReranker(), top_k=1)
-    assert result[0]["ticker"] == "NVDA"
-    assert result[0]["asset_id"] == "x"
-    assert result[0]["rerank_score"] == pytest.approx(0.9)
+    assert result[0].filters_applied.ticker == "NVDA"
+    assert result[0].chunk_id == "x"
+    assert result[0].reranker_score == pytest.approx(0.9)
 
 
 # ---------------------------------------------------------------------------
@@ -312,25 +338,6 @@ class _FakeTable:
         return _FakeQueryBuilder(self._fts_rows)
 
 
-def test_hybrid_search_applies_guardrail_and_logs(caplog):
-    table = _FakeTable(
-        vector_rows=[
-            {"asset_id": "a1", "ticker": "AAPL", "source_type": "polygon_news", "reference_date": "2026-01-01", "content_md": "v1"},
-            {"asset_id": "a2", "ticker": "AAPL", "source_type": "polygon_news", "reference_date": "2026-01-01", "content_md": "v2"},
-        ],
-        fts_rows=[
-            {"asset_id": "a2", "ticker": "AAPL", "source_type": "polygon_news", "reference_date": "2026-01-01", "content_md": "f2"},
-            {"asset_id": "a3", "ticker": "AAPL", "source_type": "polygon_news", "reference_date": "2026-01-01", "content_md": "f3"},
-        ],
-    )
-    caplog.set_level("WARNING")
-    results = hybrid_search(
-        table=table,
-        query="why move",
-        top_k=20,
-        embedding_fn=lambda _text: [0.1, 0.2],
-    )
-
-    assert len(results) == 3
-    assert all("rrf_score" in row for row in results)
-    assert "RRF guardrail fallback" in caplog.text
+def test_hybrid_search_requires_identity_bound_contract():
+    with pytest.raises(TypeError):
+        hybrid_search(table=object(), query="why move")

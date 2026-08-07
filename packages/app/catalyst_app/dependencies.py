@@ -6,6 +6,9 @@ from pathlib import Path
 
 from catalyst_agents.graph import build_attribution_graph
 from catalyst_agents.runtime.dependencies import RuntimeDependencyLoader
+from catalyst_agents.runtime.query_embedding import ProductionBgeM3QueryEmbeddingFactory
+from catalyst_agents.runtime.context import SQLiteContextProvider
+from catalyst_data.retrieval.cutoff import ExchangeCutoffPolicy
 from catalyst_agents.runtime.service import LiveRunService
 from catalyst_app.llm_factory import build_llm
 from catalyst_app.runtime_credential_store import RuntimeCredentialStore
@@ -28,6 +31,8 @@ def get_runtime_dependency_loader() -> RuntimeDependencyLoader:
     return RuntimeDependencyLoader(
         sqlite_db_path=_db_path_from_env(),
         default_model=_default_model_from_env(),
+        require_identity_bound_runtime=True,
+        query_embedding_factory=ProductionBgeM3QueryEmbeddingFactory(),
     )
 
 
@@ -62,7 +67,11 @@ def _graph_factory(model: dict | str | None = None, *, api_key: str | None = Non
         llm = build_llm(model)  # legacy string path
 
     return build_attribution_graph(
+        context_provider=SQLiteContextProvider(deps.sqlite_db_path),
+        cutoff_policy=ExchangeCutoffPolicy(),
         use_critic=True,
+        retriever=deps.retriever,
+        requested_manifest_id=deps.requested_manifest_id,
         table=deps.lancedb_table,
         embedding_fn=deps.embedding_fn,
         reranker=deps.reranker,

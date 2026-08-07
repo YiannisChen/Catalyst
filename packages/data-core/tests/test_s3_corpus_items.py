@@ -48,6 +48,7 @@ class TestCorpusItemsViewExists:
         assert rows == []
 
 
+@pytest.mark.protected_artifact("data/catalyst_dev_ws4b.db")
 class TestCorpusItemsGrain:
     """§0.1 grain: one row per (article_id × ticker) via INNER JOIN article_tickers."""
 
@@ -87,6 +88,7 @@ class TestCorpusItemsGrain:
         conn.close()
 
 
+@pytest.mark.protected_artifact("data/catalyst_dev_ws4b.db")
 class TestArticleContentMDByteIdentity:
     """Article content_md must match title || char(10) || COALESCE(description, '').
 
@@ -115,6 +117,7 @@ class TestArticleContentMDByteIdentity:
         )
 
 
+@pytest.mark.protected_artifact("data/catalyst_dev_ws4b.db")
 class TestFilingContentMDByteIdentity:
     """Filing content_md must be byte-identical to index_state.content_text for L1."""
 
@@ -148,6 +151,7 @@ class TestFilingContentMDByteIdentity:
         assert not mismatches, f"Filing byte-identity failures: {mismatches}"
 
 
+@pytest.mark.protected_artifact("data/catalyst_dev_ws4b.db")
 class TestCorpusItemsChunkLevel:
     """corpus_items includes l1 and l2 records."""
 

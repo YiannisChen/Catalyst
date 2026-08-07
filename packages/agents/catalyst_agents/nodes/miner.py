@@ -113,7 +113,11 @@ def _evidence_to_chunk(item: Any) -> dict[str, Any]:
         "lexical_raw_score": getattr(item, "lexical_raw_score"),
         "lexical_rank": getattr(item, "lexical_rank"),
         "rank": getattr(item, "lexical_rank"),
-        "rrf_score": getattr(item, "lexical_raw_score") or 0.0,
+        "rrf_score": (
+            getattr(item, "fusion_score")
+            if getattr(item, "fusion_score", None) is not None
+            else getattr(item, "lexical_raw_score") or 0.0
+        ),
         "corpus_manifest_id": getattr(item, "corpus_manifest_id"),
         "index_manifest_id": getattr(item, "index_manifest_id"),
         "mode_requested": getattr(item, "mode_requested"),

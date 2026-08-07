@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
+from types import SimpleNamespace
 
 from catalyst_data.retrieval.result import (
     RetrievalFilters,
@@ -60,4 +61,16 @@ def test_result_set_requires_results_prefix_and_exact_count():
             candidates=(first, second), results=(second,), candidate_count=2,
             mode_requested="lexical", mode_served="fts5",
             is_degraded=False, fallback_reason=None,
+        )
+
+
+def test_result_set_requires_retrieval_result_instances():
+    with pytest.raises(ValidationError):
+        RetrievalResultSet(
+            candidates=(SimpleNamespace(chunk_id="fixture"),),
+            results=(SimpleNamespace(chunk_id="fixture"),),
+            candidate_count=1,
+            mode_requested="lexical",
+            mode_served="fts5",
+            is_degraded=False,
         )

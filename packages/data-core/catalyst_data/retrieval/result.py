@@ -15,12 +15,31 @@ SOURCE_CLASSES = frozenset({
     "corporate_press_release", "reported_news", "analysis_opinion",
     "aggregated_unknown",
 })
-EVIDENCE_TYPES = frozenset({"news_v2", "filing_v2"})
+EVIDENCE_TYPES = frozenset({"news_v2", "filing_v3"})
 FALLBACK_REASONS = ("empty_query", "fts5_unavailable", "fts5_missing", "fts5_stale")
 
 
 class RetrievalContractError(ValueError):
     def __init__(self, code: str, message: str = ""):
+        self.code = code
+        super().__init__(f"{code}: {message}" if message else code)
+
+
+class RetrievalArmUnavailableError(RuntimeError):
+    """A confirmed backend availability failure for one retrieval arm.
+
+    ``arm`` is ``"lexical"`` or ``"dense"`` and ``code`` is a stable
+    machine-readable identifier (``fts5_unavailable`` / ``dense_unavailable``)
+    that hybrid retrieval may surface as a degradation reason without leaking
+    exception details, paths, or secrets.
+    """
+
+    def __init__(self, arm: str, code: str, message: str = ""):
+        if arm not in {"lexical", "dense"}:
+            raise ValueError("RetrievalArmUnavailableError arm must be lexical or dense")
+        if not code or any(character.isspace() for character in code):
+            raise ValueError("RetrievalArmUnavailableError code must be a stable identifier")
+        self.arm = arm
         self.code = code
         super().__init__(f"{code}: {message}" if message else code)
 
@@ -54,6 +73,7 @@ class RetrievalResult(BaseModel):
     document_id: str
     available_at: str
     cutoff: str
+    content_text: str | None = Field(default=None, exclude=True)
     filters_applied: RetrievalFilters
     source_class: Literal[
         "structured_market_data", "official_government", "issuer_disclosure",
@@ -61,11 +81,13 @@ class RetrievalResult(BaseModel):
         "aggregated_unknown",
     ]
     lexical_raw_score: float | None
-    lexical_rank: int = Field(ge=1)
+    lexical_rank: int | None = Field(default=None, ge=1)
     dense_score: float | None = None
     dense_rank: int | None = Field(default=None, ge=1)
     fusion_score: float | None = None
     fusion_rank: int | None = Field(default=None, ge=1)
+    arm_ranks: tuple[tuple[str, int], ...] = ()
+    arm_scores: tuple[tuple[str, float | None], ...] = ()
     reranker_score: float | None = None
     reranker_rank: int | None = Field(default=None, ge=1)
     corpus_manifest_id: str
@@ -73,10 +95,13 @@ class RetrievalResult(BaseModel):
     mode_requested: Literal["lexical", "dense", "hybrid", "reranked"]
     mode_served: Literal["fts5", "sql_like", "dense", "hybrid", "reranked"]
     is_degraded: bool
-    fallback_reason: Literal[
-        "empty_query", "fts5_unavailable", "fts5_missing", "fts5_stale"
-    ] | None = None
+    fallback_reason: str | None = None
     timing_ms: float = Field(ge=0)
+    ticker_associations: tuple[str, ...] = ()
+    dedup_cluster_id: str | None = None
+    cluster_first_available_at: str | None = None
+    representative_document_id: str | None = None
+    is_novel: bool = False
 
     @field_validator("corpus_manifest_id")
     @classmethod
@@ -107,9 +132,8 @@ class RetrievalResultSet(BaseModel):
     mode_requested: Literal["lexical", "dense", "hybrid", "reranked"]
     mode_served: Literal["fts5", "sql_like", "dense", "hybrid", "reranked"]
     is_degraded: bool
-    fallback_reason: Literal[
-        "empty_query", "fts5_unavailable", "fts5_missing", "fts5_stale"
-    ] | None = None
+    fallback_reason: str | None = None
+    degradation_reasons: tuple[str, ...] = ()
     trace: RetrievalTrace | None = None
 
     @model_validator(mode="after")
@@ -128,6 +152,6 @@ class RetrievalResultSet(BaseModel):
 
 
 __all__ = [
-    "RetrievalContractError", "RetrievalFilters", "RetrievalResult",
-    "RetrievalResultSet", "RetrievalTrace",
+    "RetrievalContractError", "RetrievalArmUnavailableError", "RetrievalFilters",
+    "RetrievalResult", "RetrievalResultSet", "RetrievalTrace",
 ]

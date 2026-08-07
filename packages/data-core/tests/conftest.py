@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -9,6 +10,42 @@ from pathlib import Path
 import pytest
 
 from catalyst_data.migrations import MIGRATIONS, run_migrations as _run_migrations
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "protected_artifact(path): test requires a protected artifact DB file; "
+        "skipped when the file is missing unless CATALYST_REQUIRE_PROTECTED_DB=1",
+    )
+
+
+def _protected_artifact_missing(item) -> list[Path]:
+    """Return repo-root-relative protected artifact paths that are missing."""
+    marker = item.get_closest_marker("protected_artifact")
+    if marker is None:
+        return []
+    missing: list[Path] = []
+    for arg in marker.args:
+        path = _REPO_ROOT / str(arg)
+        if not path.is_file():
+            missing.append(path)
+    return missing
+
+
+def pytest_runtest_setup(item):
+    """Skip protected-artifact tests when their DB is absent (fail in strict mode)."""
+    missing = _protected_artifact_missing(item)
+    if not missing:
+        return
+    missing_str = ", ".join(str(path) for path in missing)
+    if os.environ.get("CATALYST_REQUIRE_PROTECTED_DB") == "1":
+        pytest.fail(
+            f"protected artifact DB required by strict mode but missing: {missing_str}"
+        )
+    pytest.skip(f"protected artifact DB missing: {missing_str}")
 
 
 def _fresh_db_at_version(target_version: int, *, foreign_keys: bool = True) -> sqlite3.Connection:

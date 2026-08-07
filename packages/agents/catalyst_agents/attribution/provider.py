@@ -47,6 +47,7 @@ class RetrievedEvidence:
     mode_served: str
     is_degraded: bool
     fallback_reason: str | None
+    fusion_score: float | None = None
 
 
 class Retriever(Protocol):

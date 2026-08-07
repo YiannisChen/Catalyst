@@ -26,6 +26,7 @@ def _run_report_module():
 class TestWatermarkDerivation:
     """Watermarks derive from source_checkpoints, not a new table."""
 
+    @pytest.mark.protected_artifact("data/catalyst_dev_ws4b.db")
     def test_source_checkpoints_has_watermarkable_data(self):
         """source_checkpoints table must exist with provider/date columns."""
         conn = _open_dev()

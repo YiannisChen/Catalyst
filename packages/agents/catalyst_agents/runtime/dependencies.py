@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
+import sqlite3
 import threading
 from typing import Any, Callable
 
 from catalyst_data.storage import lancedb_store
+from catalyst_data.retrieval.hybrid import ProductionHybridRetriever
+from catalyst_data.retrieval.index_manifest import IndexManifest
+
+from .query_embedding import QueryEmbeddingFactory
+from .retrieval_adapter import AgentRetrieverAdapter
 
 
 HealthStatus = str
@@ -27,6 +34,9 @@ class RuntimeDependencies:
     reranker_model: str
     default_model: str | None
     health: dict[str, Any]
+    retriever: AgentRetrieverAdapter | None = None
+    requested_manifest_id: str | None = None
+    index_manifest_id: str | None = None
 
 
 class RuntimeDependencyLoader:
@@ -43,6 +53,12 @@ class RuntimeDependencyLoader:
         embedding_factory: EmbeddingFactory | None = None,
         reranker_factory: RerankerFactory | None = None,
         lancedb_connect_factory: LanceConnectFactory | None = None,
+        requested_manifest_id: str | None = None,
+        index_manifest_id: str | None = None,
+        reranker_timeout_seconds: float = 2.0,
+        query_embedding_factory: QueryEmbeddingFactory | None = None,
+        index_manifest_path: str | Path | None = None,
+        require_identity_bound_runtime: bool = False,
     ) -> None:
         self.sqlite_db_path = Path(sqlite_db_path)
         self.lancedb_dir = Path(lancedb_dir) if lancedb_dir is not None else None
@@ -51,6 +67,16 @@ class RuntimeDependencyLoader:
         self.reranker_model = reranker_model
         self.default_model = default_model
         self.expected_embedding_dim = expected_embedding_dim
+        self.requested_manifest_id = requested_manifest_id or os.getenv("CATALYST_CORPUS_MANIFEST_ID")
+        self.index_manifest_id = index_manifest_id or os.getenv("CATALYST_INDEX_MANIFEST_ID")
+        self.reranker_timeout_seconds = reranker_timeout_seconds
+        self.index_manifest_path = Path(index_manifest_path) if index_manifest_path is not None else None
+        self.require_identity_bound_runtime = require_identity_bound_runtime
+        self._query_embedding_factory = query_embedding_factory
+        self.source_bundle_id = os.getenv("CATALYST_SOURCE_BUNDLE_ID")
+        self.snapshot_id = os.getenv("CATALYST_SNAPSHOT_ID")
+        self.probe_report_id = os.getenv("CATALYST_PROBE_REPORT_ID")
+        self.postbuild_readiness_id = os.getenv("CATALYST_POSTBUILD_READINESS_ID")
 
         self._embedding_factory = embedding_factory or _default_embedding_factory
         self._reranker_factory = reranker_factory or lancedb_store.load_reranker
@@ -77,6 +103,10 @@ class RuntimeDependencyLoader:
             "embedding": {"status": "ready", "model": self.embedding_model, "vector_dim": None},
             "reranker": {"status": "ready", "model": self.reranker_model},
             "default_model": {"status": "ready", "model": self.default_model},
+            "retrieval": {
+                "status": "failed",
+                "message": "identity-bound retrieval is not configured",
+            },
             "errors": [],
         }
 
@@ -95,7 +125,44 @@ class RuntimeDependencyLoader:
                 message="CATALYST_LANCEDB_DIR is not set and lancedb_dir was not provided.",
             )
 
+        if self.require_identity_bound_runtime:
+            required_ids = {
+                "corpus_manifest_id": self.requested_manifest_id,
+                "index_manifest_id": self.index_manifest_id,
+                "source_bundle_id": self.source_bundle_id,
+                "snapshot_id": self.snapshot_id,
+                "probe_report_id": self.probe_report_id,
+                "postbuild_readiness_id": self.postbuild_readiness_id,
+            }
+            if any(not value for value in required_ids.values()):
+                return _failed_dependencies(
+                    health,
+                    component="retrieval",
+                    message="all manager-approved retrieval identities are required",
+                )
+
         health["lancedb"]["path"] = str(lancedb_dir)
+
+        if self.require_identity_bound_runtime:
+            manifest_path = self.index_manifest_path or (lancedb_dir / "index_manifest.json")
+            try:
+                raw_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                index_manifest = IndexManifest.from_dict(raw_manifest)
+                if index_manifest.index_manifest_id != self.index_manifest_id:
+                    raise ValueError("IndexManifest ID mismatch")
+                index_manifest.assert_approved_identities(
+                    source_bundle_id=self.source_bundle_id,
+                    snapshot_id=self.snapshot_id,
+                    corpus_manifest_id=self.requested_manifest_id,
+                    probe_report_id=self.probe_report_id,
+                    postbuild_readiness_id=self.postbuild_readiness_id,
+                )
+            except Exception as exc:
+                return _failed_dependencies(
+                    health,
+                    component="retrieval",
+                    message=f"identity-bound IndexManifest validation failed: {exc}",
+                )
 
         try:
             lancedb_db = self._lancedb_connect_factory(str(lancedb_dir))
@@ -108,7 +175,12 @@ class RuntimeDependencyLoader:
             )
 
         try:
-            embedding_fn, embedding_dim = self._embedding_factory(self.embedding_model)
+            if self._query_embedding_factory is not None:
+                query_embedder = self._query_embedding_factory.create(model_name=self.embedding_model)
+                embedding_fn = query_embedder.embed_query
+                embedding_dim = query_embedder.dimension
+            else:
+                embedding_fn, embedding_dim = self._embedding_factory(self.embedding_model)
         except Exception as exc:
             return _failed_dependencies(
                 health,
@@ -145,6 +217,25 @@ class RuntimeDependencyLoader:
             health["reranker"]["status"] = "degraded"
             health["reranker"]["message"] = "Reranker unavailable; retrieval fallback enabled."
 
+        retriever = None
+        readonly_db = None
+        if self.requested_manifest_id and self.index_manifest_id:
+            readonly_db = sqlite3.connect(f"file:{self.sqlite_db_path}?mode=ro", uri=True)
+            production_retriever = ProductionHybridRetriever(
+                db=readonly_db,
+                lancedb_table=lancedb_table,
+                embedding_fn=embedding_fn,
+                reranker=reranker,
+                index_manifest_id=self.index_manifest_id,
+                reranker_timeout_seconds=self.reranker_timeout_seconds,
+            )
+            retriever = AgentRetrieverAdapter(production_retriever)
+            health["retrieval"] = {
+                "status": "ready",
+                "corpus_manifest_id": self.requested_manifest_id,
+                "index_manifest_id": self.index_manifest_id,
+            }
+
         return RuntimeDependencies(
             sqlite_db_path=self.sqlite_db_path,
             lancedb_dir=lancedb_dir,
@@ -156,6 +247,9 @@ class RuntimeDependencyLoader:
             reranker_model=self.reranker_model,
             default_model=self.default_model,
             health=health,
+            retriever=retriever,
+            requested_manifest_id=self.requested_manifest_id,
+            index_manifest_id=self.index_manifest_id,
         )
 
     def _resolve_lancedb_dir(self, health: dict[str, Any]) -> Path | None:
@@ -188,6 +282,9 @@ def _failed_dependencies(health: dict[str, Any], *, component: str, message: str
         reranker_model=health["reranker"]["model"],
         default_model=health["default_model"]["model"],
         health=health,
+        retriever=None,
+        requested_manifest_id=None,
+        index_manifest_id=None,
     )
 
 
@@ -198,16 +295,11 @@ def _default_lancedb_connect_factory(path: str) -> Any:
 
 
 def _default_embedding_factory(model_name: str) -> tuple[Callable[[str], list[float]], int | None]:
-    from FlagEmbedding import BGEM3FlagModel  # type: ignore
-
-    model = BGEM3FlagModel(model_name, use_fp16=True)
-
-    def _embedding_fn(text: str) -> list[float]:
-        encoded = model.encode([text], max_length=8192)
-        return encoded["dense_vecs"][0].tolist()
-
-    sample_vector = _embedding_fn("runtime-health-check")
-    return _embedding_fn, len(sample_vector)
+    del model_name
+    raise RuntimeError(
+        "default CPU/fp16 embedding loader is disabled; initialize the "
+        "identity-bound B6-L CUDA embedder through the manager-approved preflight"
+    )
 
 
 def _detect_index_vector_dim(table: Any) -> int | None:
@@ -225,10 +317,44 @@ def _detect_index_vector_dim(table: Any) -> int | None:
 
 
 def _sample_rows_from_to_list(table: Any) -> list[dict[str, Any]]:
+    """Last-resort dimension probe preferring bounded reads.
+
+    Real LanceDB tables expose ``take_offsets``/``head``/``limit``, so the
+    whole-table ``to_list()`` path is only used for table objects that have no
+    bounded read API at all (fixture doubles and hypothetical stores).
+    """
+    bounded_names = ("take_offsets", "head", "limit")
+    if any(hasattr(table, name) for name in bounded_names):
+        for api_name in bounded_names:
+            try:
+                if api_name == "take_offsets":
+                    rows = table.take_offsets([0])
+                else:
+                    rows = getattr(table, api_name)(1)
+            except Exception:
+                continue
+            if hasattr(rows, "to_list"):
+                try:
+                    rows = rows.to_list()
+                except Exception:
+                    continue
+            elif hasattr(rows, "to_pylist"):
+                try:
+                    rows = rows.to_pylist()
+                except Exception:
+                    continue
+            result: list[dict[str, Any]] = []
+            for row in rows:
+                if isinstance(row, dict):
+                    result.append(dict(row))
+                    break
+            if result:
+                return result
+        return []
     if not hasattr(table, "to_list"):
         return []
     try:
-        # Last-resort fallback when no bounded read API exists.
+        # Absolute last resort: the table object exposes no bounded read API.
         rows = table.to_list()
     except Exception:
         return []

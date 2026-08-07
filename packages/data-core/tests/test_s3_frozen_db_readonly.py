@@ -45,6 +45,7 @@ def _make_temp_frozen_copy() -> tuple[str, str]:
 
 # ── tests ────────────────────────────────────────────────────────────────
 
+@pytest.mark.protected_artifact("data/catalyst_eval_frozen_v2.db")
 class TestFrozenDBSHA:
     """Landmine: frozen DB SHA must never change from canonical."""
 
@@ -96,6 +97,7 @@ class TestFrozenDBWriteGuard:
         mod = _db_module()
         mod._assert_not_frozen("/tmp/nonexistent_test_s3_guard.db")
 
+    @pytest.mark.protected_artifact("data/catalyst_eval_frozen_v2.db")
     def test_init_db_on_temp_frozen_raises_via_guard(self):
         """init_db on a frozen-registered path raises before mutating.
 
@@ -152,6 +154,7 @@ class TestFrozenDBWriteGuard:
         assert sha_before == sha_after, \
             "Damaged backup SHA changed during read-only access!"
 
+    @pytest.mark.protected_artifact("data/catalyst_eval_frozen_v2.db")
     def test_run_migrations_on_frozen_path_raises_guard(self):
         """run_migrations on a frozen path must raise FrozenDBWriteError.
 
@@ -189,6 +192,7 @@ class TestFrozenDBWriteGuard:
 class TestFrozenDBRetrievalSafe:
     """Full retrieval pass over frozen DB must leave SHA unchanged."""
 
+    @pytest.mark.protected_artifact("data/catalyst_eval_frozen_v2.db")
     def test_read_only_retrieval_sha_unchanged(self):
         """Read-only retrieval pass must not change the frozen DB SHA."""
         sha_before = _sha256(FROZEN_DB)

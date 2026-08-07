@@ -16,10 +16,12 @@ Design decisions (per ADR-003 / Section 6 spec):
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 from pathlib import Path
 from typing import Any
+
+from catalyst_data.config import BGE_RERANKER_REVISION
+from catalyst_data.retrieval.result import RetrievalResult
 
 logger = logging.getLogger(__name__)
 
@@ -75,26 +77,39 @@ def reciprocal_rank_fusion(
         asset_id appearing exactly once. The 'rrf_score' key is added (or
         overwritten) in each returned dict.
     """
-    # Accumulate scores and preserve the first-seen metadata for each asset_id.
-    scores: dict[str, float] = {}
-    metadata: dict[str, dict[str, Any]] = {}
+    if not result_lists:
+        return []
+    from catalyst_data.retrieval.fusion import reciprocal_rank_score
 
-    for ranked_list in result_lists:
-        for rank_0based, item in enumerate(ranked_list):
-            aid = item["asset_id"]
-            rank_1based = rank_0based + 1
-            scores[aid] = scores.get(aid, 0.0) + 1.0 / (k + rank_1based)
-            # Keep metadata from first occurrence; subsequent dupes just add score.
-            if aid not in metadata:
-                metadata[aid] = {key: val for key, val in item.items() if key != "rrf_score"}
-
-    merged: list[dict[str, Any]] = []
-    for aid, score in scores.items():
-        entry = dict(metadata[aid])
-        entry["rrf_score"] = score
-        merged.append(entry)
-
-    merged.sort(key=lambda x: x["rrf_score"], reverse=True)
+    records: dict[str, dict[str, Any]] = {}
+    index_identity_set = False
+    index_identity = None
+    for arm_index, ranked_list in enumerate(result_lists, start=1):
+        arm_name = "lexical" if arm_index == 1 else "dense" if arm_index == 2 else f"arm_{arm_index}"
+        for position, item in enumerate(ranked_list, start=1):
+            asset_id = item["asset_id"]
+            item_index_identity = item.get("index_manifest_id")
+            if not index_identity_set:
+                index_identity = item_index_identity
+                index_identity_set = True
+            elif item_index_identity != index_identity:
+                raise ValueError("legacy RRF arms must use one index manifest identity")
+            record = records.setdefault(
+                asset_id,
+                {key: value for key, value in item.items() if key != "rrf_score"},
+            )
+            ranks = record.setdefault("arm_ranks", {})
+            ranks[arm_name] = min(ranks.get(arm_name, position), position)
+            scores = record.setdefault("arm_scores", {})
+            score_key = "lexical_raw_score" if arm_name == "lexical" else "dense_score" if arm_name == "dense" else "fusion_score"
+            scores[arm_name] = item.get(score_key)
+            record.setdefault("_ranks", []).append(position)
+    merged = sorted(
+        records.values(),
+        key=lambda record: (-reciprocal_rank_score(record["_ranks"], k=k), min(record["_ranks"]), record["asset_id"]),
+    )
+    for record in merged:
+        record["rrf_score"] = reciprocal_rank_score(record.pop("_ranks"), k=k)
     return merged
 
 
@@ -125,7 +140,9 @@ def load_reranker(model_name: str = RERANKER_MODEL) -> Any | None:
         return None
 
     try:
-        reranker = CrossEncoder(model_name)
+        if model_name != RERANKER_MODEL:
+            raise ValueError("reranker model must use the pinned BGE reranker identity")
+        reranker = CrossEncoder(model_name, revision=BGE_RERANKER_REVISION, device="cuda")
         return reranker
     except Exception as exc:
         logger.warning("Failed to load reranker %s: %s", model_name, exc)
@@ -133,11 +150,12 @@ def load_reranker(model_name: str = RERANKER_MODEL) -> Any | None:
 
 
 def _apply_reranker(
-    chunks: list[dict[str, Any]],
+    chunks: list[RetrievalResult],
     query: str,
     reranker: Any,
     top_k: int = DEFAULT_RERANK_TOP_K,
-) -> list[dict[str, Any]]:
+    timeout_seconds: float = 2.0,
+) -> list[RetrievalResult]:
     """Score chunks with a cross-encoder, attach rerank_score, return top_k.
 
     Supports two reranker interfaces:
@@ -155,31 +173,16 @@ def _apply_reranker(
     """
     if not chunks:
         return []
+    from catalyst_data.retrieval.reranker import rerank
 
-    pairs = [(query, chunk["content_md"]) for chunk in chunks]
-
-    # Support both CrossEncoder.predict() and FlagReranker.compute_score()
-    if hasattr(reranker, "predict"):
-        scores = reranker.predict(pairs)
-    elif hasattr(reranker, "compute_score"):
-        scores = reranker.compute_score(pairs)
-    else:
-        logger.warning("Reranker has no predict() or compute_score() method; skipping")
-        return chunks[:top_k]
-
-    # Normalise scalar → single-element list
-    if isinstance(scores, (int, float)):
-        scores = [scores]
-
-    # Convert numpy arrays to plain list for uniform iteration
-    if hasattr(scores, "tolist"):
-        scores = scores.tolist()
-
-    for chunk, score in zip(chunks, scores):
-        chunk["rerank_score"] = float(score)
-
-    chunks.sort(key=lambda c: c.get("rerank_score", 0.0), reverse=True)
-    return chunks[:top_k]
+    result = rerank(
+        query=query,
+        candidates=chunks,
+        reranker=reranker,
+        timeout_seconds=timeout_seconds,
+        display_top_k=top_k,
+    )
+    return list(result.results)
 
 
 # ---------------------------------------------------------------------------
@@ -320,67 +323,11 @@ def build_index(
     Raises:
         ImportError: If lancedb or FlagEmbedding are not installed.
     """
-    try:
-        import lancedb  # type: ignore
-    except ImportError as exc:
-        raise ImportError(
-            "lancedb is required for build_index. "
-            "Install it with: pip install 'catalyst-data[vector]'"
-        ) from exc
-
-    try:
-        from FlagEmbedding import BGEM3FlagModel  # type: ignore
-    except ImportError as exc:
-        raise ImportError(
-            "FlagEmbedding is required for build_index. "
-            "Install it with: pip install 'catalyst-data[vector]'"
-        ) from exc
-
-    db_path = Path(db_path)
-    lancedb_path = Path(lancedb_path)
-    lancedb_path.mkdir(parents=True, exist_ok=True)
-
-    # --- Fetch Silver rows ---
-    conn = sqlite3.connect(str(db_path))
-    try:
-        rows = conn.execute(_SILVER_QUERY).fetchall()
-    finally:
-        conn.close()
-
-    if not rows:
-        return 0
-
-    tokenizer = _load_punkt_tab_tokenizer()
-    records = _build_chunk_records(rows, tokenizer=tokenizer)
-    texts = [record["content_md"] for record in records]
-
-    # --- Embed all L1+L2 texts with bge-m3 ---
-    device_override = os.getenv("CATALYST_BGE_DEVICES")
-    use_fp16 = os.getenv("CATALYST_BGE_USE_FP16", "1") != "0"
-    if device_override:
-        try:
-            model = BGEM3FlagModel(embedding_model, use_fp16=use_fp16, devices=device_override)
-        except TypeError:
-            model = BGEM3FlagModel(embedding_model, use_fp16=use_fp16)
-    else:
-        model = BGEM3FlagModel(embedding_model, use_fp16=use_fp16)
-    vectors = _encode_dense_vectors(model, texts, batch_size=_EMBED_BATCH_SIZE, max_length=8192)
-
-    for idx, vector in enumerate(vectors):
-        records[idx]["vector"] = vector
-
-    # --- Upsert into LanceDB (overwrite table for idempotent re-indexing) ---
-    db = lancedb.connect(str(lancedb_path))
-
-    if _TABLE_NAME in db.table_names():
-        db.drop_table(_TABLE_NAME)
-
-    table = db.create_table(_TABLE_NAME, data=records)
-
-    # Create FTS index on content_md for BM25 path
-    table.create_fts_index("content_md", replace=True)
-
-    return len(records)
+    del db_path, lancedb_path, embedding_model
+    raise RuntimeError(
+        "legacy build_index is disabled; use the identity-bound B6-L GPU driver "
+        "and import_vectors_to_lancedb instead"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -391,101 +338,39 @@ def build_index(
 def hybrid_search(
     table: Any,
     query: str,
-    ticker: str | None = None,
-    date_range: tuple[str, str] | None = None,
-    top_k: int = DEFAULT_TOP_K,
-    embedding_fn: Any = None,
-) -> list[dict[str, Any]]:
-    """BM25 + vector search in parallel, merged with RRF.
+    *,
+    db: Any,
+    ticker: str,
+    cutoff: str,
+    requested_manifest_id: str,
+    index_manifest_id: str,
+    query_embedding: Any,
+    reranker: object | None = None,
+    source_classes: tuple[str, ...] | None = None,
+    evidence_types: tuple[str, ...] | None = None,
+    mode: str = "hybrid",
+    reranker_timeout_seconds: float = 2.0,
+):
+    """Compatibility name that delegates directly to the B6-L facade.
 
-    Reranking is NOT applied here — per ADR-002, cross-encoder reranking
-    is the Miner node's responsibility (Section 4.3). This function only
-    handles retrieval and RRF fusion.
-
-    Spec reference: Section 6.1 — hybrid retrieval paths.
-
-    Args:
-        table:        LanceDB table object (already opened).
-        query:        Natural-language search query.
-        ticker:       Optional ticker filter (SQL WHERE clause).
-        date_range:   Optional (start_date, end_date) ISO strings (inclusive).
-        top_k:        Number of results to return after RRF merge.
-        embedding_fn: Callable(str) -> list[float]. Injected for testability;
-                      if None, lancedb_store attempts to load bge-m3 internally
-                      (requires FlagEmbedding installed).
-
-    Returns:
-        List of dicts with keys: asset_id, ticker, source_type,
-        reference_date, content_md, rrf_score. Length <= top_k.
+    All identity and scope arguments are required.  The former optional
+    embedding/model path was removed so callers cannot bypass LanceDB
+    prefilters, IndexManifest binding, or the real reranker timeout.
     """
-    # Resolve embedding function if not injected
-    if embedding_fn is None:
-        try:
-            from FlagEmbedding import BGEM3FlagModel  # type: ignore
-        except ImportError as exc:
-            raise ImportError(
-                "FlagEmbedding is required when embedding_fn is not provided. "
-                "Install it with: pip install 'catalyst-data[vector]'"
-            ) from exc
-        _model = BGEM3FlagModel(EMBEDDING_MODEL, use_fp16=True)
-        embedding_fn = lambda text: _model.encode([text])["dense_vecs"][0].tolist()
+    from catalyst_data.retrieval.hybrid import retrieve_hybrid
 
-    query_vector = embedding_fn(query)
-
-    # Build optional WHERE filter expression
-    where_parts: list[str] = []
-    if ticker is not None:
-        safe_ticker = ticker.replace("'", "''")
-        where_parts.append(f"ticker = '{safe_ticker}'")
-    if date_range is not None:
-        start, end = date_range
-        safe_start = start.replace("'", "''")
-        safe_end = end.replace("'", "''")
-        where_parts.append(f"reference_date >= '{safe_start}'")
-        where_parts.append(f"reference_date <= '{safe_end}'")
-    where_clause = " AND ".join(where_parts) if where_parts else None
-
-    # --- Vector path ---
-    vector_query = table.search(query_vector, query_type="vector").limit(top_k)
-    if where_clause:
-        vector_query = vector_query.where(where_clause, prefilter=True)
-    vector_df = vector_query.to_pandas()
-
-    # --- BM25 full-text path ---
-    fts_query = table.search(query, query_type="fts").limit(top_k)
-    if where_clause:
-        fts_query = fts_query.where(where_clause, prefilter=True)
-    fts_df = fts_query.to_pandas()
-
-    # Convert DataFrames to list[dict], keeping only required fields
-    _keep = {
-        "asset_id",
-        "parent_asset_id",
-        "chunk_level",
-        "sentence_index",
-        "ticker",
-        "source_type",
-        "reference_date",
-        "content_md",
-    }
-
-    def _df_to_dicts(df: Any) -> list[dict[str, Any]]:
-        results = []
-        for _, row in df.iterrows():
-            results.append({k: row[k] for k in _keep if k in row})
-        return results
-
-    vector_results = _df_to_dicts(vector_df)
-    fts_results = _df_to_dicts(fts_df)
-
-    merged = reciprocal_rank_fusion(vector_results, fts_results, k=RRF_K)
-    available_rrf_candidates = len(merged)
-    effective_top_k = min(top_k, available_rrf_candidates)
-    if effective_top_k < top_k:
-        logger.warning(
-            "RRF guardrail fallback: requested top_k=%d but only %d candidates available; using effective_top_k=%d",
-            top_k,
-            available_rrf_candidates,
-            effective_top_k,
-        )
-    return merged[:effective_top_k]
+    return retrieve_hybrid(
+        db,
+        query=query,
+        ticker=ticker,
+        cutoff=cutoff,
+        mode=mode,
+        reranker=reranker,
+        query_embedding=query_embedding,
+        requested_manifest_id=requested_manifest_id,
+        index_manifest_id=index_manifest_id,
+        lancedb_table=table,
+        source_classes=source_classes,
+        evidence_types=evidence_types,
+        reranker_timeout_seconds=reranker_timeout_seconds,
+    )
