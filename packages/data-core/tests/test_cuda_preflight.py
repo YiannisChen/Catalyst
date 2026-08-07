@@ -60,22 +60,38 @@ def test_preflight_rejects_dimension_not_1024():
         _load(lambda texts, **kwargs: {"dense_vecs": np.ones((1, 512), dtype=np.float32)})
 
 
-def test_preflight_rejects_dtype_not_float32():
-    with pytest.raises(RuntimeError, match="float32"):
-        _load(lambda texts, **kwargs: {"dense_vecs": np.ones((1, 1024), dtype=np.float64)})
+def test_preflight_rejects_non_floating_dtype():
+    with pytest.raises(RuntimeError, match="floating"):
+        _load(lambda texts, **kwargs: {"dense_vecs": np.ones((1, 1024), dtype=np.int32)})
+
+
+def test_preflight_accepts_float16_and_casts_to_unit_float32():
+    """Real BGEM3 use_fp16=True returns float16; preflight must accept it."""
+    raw = np.ones((1, 1024), dtype=np.float16)
+    embed = _load(lambda texts, **kwargs: {"dense_vecs": raw})
+    # Loader returns a callable; preflight already succeeded during load.
+    assert callable(embed)
+
+
+def test_preflight_accepts_unnormalized_float32_dense_vecs():
+    """Model dense vectors need not arrive pre-normalized; storage path L2s."""
+    embed = _load(
+        lambda texts, **kwargs: {"dense_vecs": np.ones((1, 1024), dtype=np.float32)}
+    )
+    assert callable(embed)
 
 
 def test_preflight_rejects_nan():
     matrix = np.ones((1, 1024), dtype=np.float32)
     matrix[0, 0] = np.nan
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="finite"):
         _load(lambda texts, **kwargs: {"dense_vecs": matrix})
 
 
 def test_preflight_rejects_inf():
     matrix = np.ones((1, 1024), dtype=np.float32)
     matrix[0, 0] = np.inf
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="finite"):
         _load(lambda texts, **kwargs: {"dense_vecs": matrix})
 
 

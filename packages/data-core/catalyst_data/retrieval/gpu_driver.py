@@ -308,13 +308,28 @@ def build_embedding_artifacts(
 
 
 def _validate_preflight_vectors(vectors: object) -> np.ndarray:
+    """Validate batch-one CUDA preflight dense output.
+
+    FlagEmbedding with ``use_fp16=True`` commonly returns float16 dense vectors
+    that are not yet L2-normalized. Production storage remains float32 + L2 via
+    ``embed_with_oom_backoff``; preflight only proves encode works on CUDA with
+    the correct shape and non-degenerate finite values.
+    """
     matrix = np.asarray(vectors)
-    if matrix.dtype != np.float32 or matrix.shape != (1, BGE_M3_DIMENSION):
-        raise RuntimeError("CUDA preflight output must be float32 with shape (1, 1024)")
-    norm = np.linalg.norm(matrix, axis=1)
-    if np.any(norm == 0) or not np.allclose(norm, 1.0, rtol=1e-4, atol=1e-4):
-        raise RuntimeError("CUDA preflight output must be non-zero and L2-normalized")
-    return matrix
+    if matrix.ndim != 2 or matrix.shape != (1, BGE_M3_DIMENSION):
+        raise RuntimeError("CUDA preflight output must have shape (1, 1024)")
+    if not np.issubdtype(matrix.dtype, np.floating):
+        raise RuntimeError("CUDA preflight output must be floating-point")
+    # Cast fp16/bf16/fp64 model outputs to the storage contract dtype.
+    matrix = np.asarray(matrix, dtype=np.float32)
+    if not np.isfinite(matrix).all():
+        raise RuntimeError("CUDA preflight output must be finite")
+    norms = np.linalg.norm(matrix, axis=1)
+    if np.any(norms == 0):
+        raise RuntimeError("CUDA preflight output must be non-zero")
+    # Normalize for the returned smoke matrix; the live embed path also
+    # L2-normalizes every production batch.
+    return (matrix / norms[:, None]).astype(np.float32, copy=False)
 
 
 def _load_real_cuda_embedder(
