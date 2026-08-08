@@ -4,6 +4,17 @@ The runtime never downloads or loads models itself: the production factory
 owns the CUDA-preflight loader and fails closed on revision, dimension, and
 CUDA availability mismatches. Tests inject fakes through the same typed
 contract.
+
+Query embedding mode policy (Wave 1):
+- ``production_pinned``: ``ProductionBgeM3QueryEmbeddingFactory``; BGE-M3
+  revision ``BGE_M3_REVISION`` and dimension ``BGE_M3_DIMENSION`` are pinned,
+  CUDA is required, and there is no silent CPU fallback.
+- ``mock_unit_test``: deterministic/fake embedders are allowed only in unit
+  tests or explicit mock runs; every artifact that uses them must record
+  ``embedding_mode=mock_unit_test`` and must never be mixed into production
+  dense/hybrid scoring.
+- ``degraded``: manager-approved degraded runs only (for example reranker
+  unavailable); never a silent automatic downgrade.
 """
 
 from __future__ import annotations

@@ -1,3 +1,20 @@
+"""Runtime dependency assembly for the Catalyst agent runtime.
+
+Environment contract (Wave 1, post-import index wiring):
+- CATALYST_LANCEDB_DIR ............. path to the gold LanceDB directory
+- CATALYST_CORPUS_MANIFEST_ID ...... corpus manifest id (identity binding)
+- CATALYST_INDEX_MANIFEST_ID ....... index manifest id (identity binding)
+- CATALYST_SOURCE_BUNDLE_ID ........ source bundle id (identity binding)
+- CATALYST_SNAPSHOT_ID ............. data snapshot id (identity binding)
+- CATALYST_PROBE_REPORT_ID ......... probe report id (identity binding)
+- CATALYST_POSTBUILD_READINESS_ID .. postbuild readiness id (identity binding)
+
+Active table resolution: unless an explicit ``lancedb_table_name`` is
+supplied, the table name is read from ``active_generation.json`` (schema
+``active_generation_v1``) under the resolved lancedb dir. Missing or invalid
+pointer fails closed; the runtime never silently falls back to the legacy
+table name ``"chunks"``.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,6 +31,10 @@ from catalyst_data.retrieval.index_manifest import IndexManifest
 
 from .query_embedding import QueryEmbeddingFactory
 from .retrieval_adapter import AgentRetrieverAdapter
+
+
+ACTIVE_GENERATION_FILENAME = "active_generation.json"
+ACTIVE_GENERATION_SCHEMA_VERSION = "active_generation_v1"
 
 
 HealthStatus = str
@@ -45,7 +66,7 @@ class RuntimeDependencyLoader:
         *,
         sqlite_db_path: str | Path,
         lancedb_dir: str | Path | None = None,
-        lancedb_table_name: str = "chunks",
+        lancedb_table_name: str | None = None,
         embedding_model: str = lancedb_store.EMBEDDING_MODEL,
         reranker_model: str = lancedb_store.RERANKER_MODEL,
         default_model: str | None = None,
@@ -143,6 +164,14 @@ class RuntimeDependencyLoader:
 
         health["lancedb"]["path"] = str(lancedb_dir)
 
+        lancedb_table_name = self._resolve_lancedb_table_name(lancedb_dir, health)
+        if lancedb_table_name is None:
+            return _failed_dependencies(
+                health,
+                component="lancedb",
+                message=health["lancedb"]["message"],
+            )
+
         if self.require_identity_bound_runtime:
             manifest_path = self.index_manifest_path or (lancedb_dir / "index_manifest.json")
             try:
@@ -166,12 +195,12 @@ class RuntimeDependencyLoader:
 
         try:
             lancedb_db = self._lancedb_connect_factory(str(lancedb_dir))
-            lancedb_table = lancedb_db.open_table(self.lancedb_table_name)
+            lancedb_table = lancedb_db.open_table(lancedb_table_name)
         except Exception as exc:
             return _failed_dependencies(
                 health,
                 component="lancedb",
-                message=f"Failed to open LanceDB table '{self.lancedb_table_name}': {exc}",
+                message=f"Failed to open LanceDB table '{lancedb_table_name}': {exc}",
             )
 
         try:
@@ -188,6 +217,7 @@ class RuntimeDependencyLoader:
                 message=f"Failed to initialize embedding model '{self.embedding_model}': {exc}",
             )
 
+        health["lancedb"]["table"] = lancedb_table_name
         health["embedding"]["vector_dim"] = embedding_dim
         index_dim = _detect_index_vector_dim(lancedb_table)
         if index_dim is not None:
@@ -260,6 +290,43 @@ class RuntimeDependencyLoader:
             health["lancedb"]["status"] = "failed"
             return None
         return Path(raw)
+
+    def _resolve_lancedb_table_name(self, lancedb_dir: Path, health: dict[str, Any]) -> str | None:
+        """Resolve the active LanceDB table name.
+
+        Priority: an explicit ``lancedb_table_name`` argument wins; otherwise
+        read ``active_generation.json`` (schema ``active_generation_v1``) from
+        the lancedb dir. Missing/invalid pointer fails closed and never falls
+        back to the legacy table name ``"chunks"``.
+        """
+        if self.lancedb_table_name is not None:
+            return self.lancedb_table_name
+
+        active_path = lancedb_dir / ACTIVE_GENERATION_FILENAME
+        if not active_path.is_file():
+            health["lancedb"]["status"] = "failed"
+            health["lancedb"]["message"] = (
+                f"active_generation.json not found in {lancedb_dir}; "
+                "refusing to fall back to table 'chunks'"
+            )
+            return None
+
+        try:
+            payload = json.loads(active_path.read_text(encoding="utf-8"))
+            schema_version = payload.get("schema_version")
+            if schema_version != ACTIVE_GENERATION_SCHEMA_VERSION:
+                raise ValueError(f"unexpected schema_version {schema_version!r}")
+            table_name = payload.get("table_name")
+            if not isinstance(table_name, str) or not table_name:
+                raise ValueError("active_generation.json missing table_name")
+        except Exception as exc:
+            health["lancedb"]["status"] = "failed"
+            health["lancedb"]["message"] = f"failed to read {active_path}: {exc}"
+            return None
+
+        health["lancedb"]["active_generation"] = str(active_path)
+        health["lancedb"]["table"] = table_name
+        return table_name
 
 
 def _failed_dependencies(health: dict[str, Any], *, component: str, message: str) -> RuntimeDependencies:

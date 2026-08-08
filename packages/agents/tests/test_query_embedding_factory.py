@@ -201,6 +201,7 @@ def test_runtime_loader_ready_with_identity_manifest_table_and_fake_query_factor
     fake_factory = FakeQueryEmbeddingFactory()
     loader = RuntimeDependencyLoader(
         sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
         require_identity_bound_runtime=True,
         query_embedding_factory=fake_factory,
         reranker_factory=lambda _: object(),
@@ -234,6 +235,7 @@ def test_runtime_loader_rejects_snapshot_mismatch(tmp_path, monkeypatch):
 
     loader = RuntimeDependencyLoader(
         sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
         require_identity_bound_runtime=True,
         query_embedding_factory=FakeQueryEmbeddingFactory(),
         reranker_factory=lambda _: object(),
@@ -266,6 +268,7 @@ def test_runtime_loader_rejects_source_bundle_mismatch(tmp_path, monkeypatch):
 
     loader = RuntimeDependencyLoader(
         sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
         require_identity_bound_runtime=True,
         query_embedding_factory=FakeQueryEmbeddingFactory(),
         reranker_factory=lambda _: object(),
@@ -297,6 +300,7 @@ def test_runtime_loader_rejects_index_manifest_id_mismatch(tmp_path, monkeypatch
 
     loader = RuntimeDependencyLoader(
         sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
         require_identity_bound_runtime=True,
         query_embedding_factory=FakeQueryEmbeddingFactory(),
         reranker_factory=lambda _: object(),

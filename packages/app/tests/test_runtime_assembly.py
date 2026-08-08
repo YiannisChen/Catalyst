@@ -107,6 +107,7 @@ def test_app_dependency_factory_assembles_production_hybrid_retriever(tmp_path, 
 
     loader = RuntimeDependencyLoader(
         sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
         require_identity_bound_runtime=True,
         query_embedding_factory=_FakeQueryEmbeddingFactory(),
         reranker_factory=lambda _: object(),

@@ -58,6 +58,7 @@ def test_loader_ready_health_when_all_dependencies_available(tmp_path, monkeypat
 
     loader = RuntimeDependencyLoader(
         sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
         default_model="gpt-4.1-mini",
         embedding_factory=lambda _: (lambda _q: [0.1, 0.2, 0.3], 3),
         reranker_factory=lambda _: object(),
@@ -81,6 +82,7 @@ def test_loader_degraded_when_reranker_unavailable(tmp_path, monkeypatch):
 
     loader = RuntimeDependencyLoader(
         sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
         embedding_factory=lambda _: (lambda _q: [0.1, 0.2, 0.3], 3),
         reranker_factory=lambda _: None,
         lancedb_connect_factory=lambda _path: FakeLanceDB(FakeTable(vector_dim=3)),
@@ -112,6 +114,7 @@ def test_loader_failed_when_embedding_index_dim_incompatible(tmp_path, monkeypat
 
     loader = RuntimeDependencyLoader(
         sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
         embedding_factory=lambda _: (lambda _q: [0.1] * 4, 4),
         reranker_factory=lambda _: object(),
         lancedb_connect_factory=lambda _path: FakeLanceDB(FakeTable(vector_dim=3)),
@@ -145,6 +148,7 @@ def test_loader_initializes_heavy_dependencies_once(tmp_path, monkeypatch):
 
     loader = RuntimeDependencyLoader(
         sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
         embedding_factory=embedding_factory,
         reranker_factory=reranker_factory,
         lancedb_connect_factory=connect_factory,
@@ -167,6 +171,7 @@ def test_loader_degraded_when_reranker_factory_raises(tmp_path, monkeypatch):
 
     loader = RuntimeDependencyLoader(
         sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
         embedding_factory=lambda _: (lambda _q: [0.1, 0.2, 0.3], 3),
         reranker_factory=boom,
         lancedb_connect_factory=lambda _path: FakeLanceDB(FakeTable(vector_dim=3)),
@@ -187,6 +192,7 @@ def test_vector_dim_detection_prefers_bounded_fts_sampling(tmp_path, monkeypatch
 
     loader = RuntimeDependencyLoader(
         sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
         embedding_factory=lambda _: (lambda _q: [0.1] * 7, 7),
         reranker_factory=lambda _: object(),
         lancedb_connect_factory=lambda _path: FakeLanceDB(table),

@@ -9,6 +9,7 @@ under `docs/archive/`.
 | Priority | Document | Role |
 | --- | --- | --- |
 | 1 | `2026-08-06-b6-g-cloud-execution-runbook.md` | Authorized GPU embedding + LanceDB import operator playbook |
+| 1.5 | `2026-08-08-post-import-completion-plan.md` | Post-import plan (INDEX_READY_B6_INCOMPLETE; MANAGER_PLAN_COMPLETE → Wave1 T1–T3) |
 | 2 | `2026-08-06-protected-artifact-ci.md` | Protected DB marker / strict CI contract |
 | 3 | `2026-07-21-b2-b7-technical-contracts.md` | Cross-package binding contracts |
 | 4 | `2026-07-21-catalyst-roadmap.md` | High-level B2–B7 roadmap |
