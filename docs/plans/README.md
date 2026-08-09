@@ -8,6 +8,7 @@ under `docs/archive/`.
 
 | Priority | Document | Role |
 | --- | --- | --- |
+| 0 | `2026-08-09-catalyst-post-gpu-handoff.md` | Current verified state and next-session entry point after GPU embedding/import |
 | 1 | `2026-08-06-b6-g-cloud-execution-runbook.md` | Authorized GPU embedding + LanceDB import operator playbook |
 | 1.5 | `2026-08-08-post-import-completion-plan.md` | Post-import plan (INDEX_READY_B6_INCOMPLETE; MANAGER_PLAN_COMPLETE → Wave1 T1–T3) |
 | 2 | `2026-08-06-protected-artifact-ci.md` | Protected DB marker / strict CI contract |
