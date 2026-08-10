@@ -8,6 +8,7 @@ import pytest
 from retrieval_model_fixtures import (
     EXPECTED_ARM_ARTIFACT_ID,
     FOUR_COMPLETE_ARM_RESULTS,
+    SEMANTIC_ARTIFACT_MUTATIONS,
     make_arm_artifact,
 )
 from catalyst_data.config import BGE_M3_REVISION, BGE_RERANKER_REVISION
@@ -107,3 +108,14 @@ def test_artifact_rejects_missing_or_string_rank(tmp_path):
                 retrieval_config={"lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60, "fused_top_k": 20, "display_top_k": 8, "embedding_revision": BGE_M3_REVISION, "reranker_revision": BGE_RERANKER_REVISION},
                 arms=arms,
             )
+
+
+def test_artifact_id_changes_for_every_semantic_mutation():
+    """Every semantic mutation must change artifact_id (literal fixture set)."""
+    from catalyst_data.retrieval.artifacts import compute_arm_artifact_id
+
+    base = make_arm_artifact()
+    base_id = compute_arm_artifact_id(base)
+    for mutation in SEMANTIC_ARTIFACT_MUTATIONS:
+        changed = mutation(copy.deepcopy(base))
+        assert compute_arm_artifact_id(changed) != base_id

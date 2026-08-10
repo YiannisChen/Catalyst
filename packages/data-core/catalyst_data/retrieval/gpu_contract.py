@@ -498,6 +498,37 @@ def _validate_persisted_lancedb_table(
         raise ValueError("LanceDB persisted artifact hash mismatch")
 
 
+def validate_persisted_lancedb_table(
+    table: Any,
+    *,
+    chunk_ids_path: Path,
+    chunk_count: int,
+    dimension: int,
+    index_manifest_id: str,
+    expected_identities: dict[str, str],
+    expected_hash: str,
+    batch_size: int = MAX_PERSISTED_VALIDATION_BATCH,
+) -> None:
+    """Public wrapper around the production bounded-batch persisted validator.
+
+    Reuses the single production persisted-table hash algorithm; never call
+    whole-table ``to_pylist()``/``to_list()``/``fetchall()``. Every persisted
+    drift (row count, chunk order, identity columns, dimension, vector
+    finiteness, artifact hash) fails closed before the active pointer may be
+    treated as committed or used for retrieval.
+    """
+    _validate_persisted_lancedb_table(
+        table,
+        chunk_ids_path=chunk_ids_path,
+        chunk_count=chunk_count,
+        dimension=dimension,
+        index_manifest_id=index_manifest_id,
+        expected_identities=expected_identities,
+        expected_hash=expected_hash,
+        batch_size=batch_size,
+    )
+
+
 def _clear_staging(table: Any) -> None:
     """Delete or mark the staging generation after an in-process failure."""
     if hasattr(table, "delete"):

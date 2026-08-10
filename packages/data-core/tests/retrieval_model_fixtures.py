@@ -193,5 +193,36 @@ LITERAL_RERANKED_CHUNK_IDS = ("e", "f")
 EXPECTED_UNION_CHUNK_IDS = ("a", "b", "c", "d", "e", "f")
 # Literal golden identity of make_arm_artifact() under the literal arms fixture.
 EXPECTED_ARM_ARTIFACT_ID = "854c03da5d20e19f9e04a19ede14b0005a5a5d17987f7cd89c78473cde4f44e7"
-SEMANTIC_ARTIFACT_MUTATIONS: tuple[Any, ...] = ()
+
+
+def _mutate(update: dict[str, Any]) -> Any:
+    def apply(payload: dict[str, Any]) -> dict[str, Any]:
+        def walk(node: Any) -> Any:
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    if key in update:
+                        node[key] = update[key]
+                    else:
+                        walk(value)
+            elif isinstance(node, list):
+                for item in node:
+                    walk(item)
+            return node
+        return walk(payload)
+    return apply
+
+
+# Semantic mutations that MUST change artifact_id (runtime fields excluded).
+# Each mutation targets one semantic field of the canonical artifact payload.
+SEMANTIC_ARTIFACT_MUTATIONS: tuple[Any, ...] = (
+    _mutate({"mode_served": "sql_like"}),
+    _mutate({"degradation_reasons": ["reranker_failed"]}),
+    _mutate({"ticker": "MSFT"}),
+    _mutate({"corpus_manifest_id": "e" * 64}),
+    _mutate({"index_manifest_id": "9" * 64}),
+    _mutate({"cutoff_ts": "2026-02-01T21:00:00Z"}),
+    _mutate({"query_sha256": "0" * 64}),
+    _mutate({"reranker_revision": "1" * 40}),
+)
+
 INVALID_ARM_ARTIFACTS: tuple[dict[str, Any], ...] = ()

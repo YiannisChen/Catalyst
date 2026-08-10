@@ -325,3 +325,41 @@ def test_write_union_pool_rejects_duplicate_within_one_arm(tmp_path):
     )
     with pytest.raises(ValueError, match="duplicate"):
         write_union_pool(pool, tmp_path / "pool.json")
+
+
+# ---------------------------------------------------------------------------
+# T8: pool source discipline and data-core isolation
+# ---------------------------------------------------------------------------
+
+
+def test_pool_never_generates_from_ephemeral_in_memory_arrays(tmp_path):
+    """generate_union_pool accepts only a persisted artifact path, never a dict."""
+    from catalyst_data.retrieval.pool import generate_union_pool
+
+    with pytest.raises(TypeError):
+        generate_union_pool({"arms": {}})
+
+
+def test_data_core_retrieval_package_has_no_catalyst_eval_import():
+    """Landmine: B6 serializes data-core's own UnionJudgmentPool only."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "catalyst_data" / "retrieval"
+    for path in sorted(root.rglob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        text = path.read_text(encoding="utf-8")
+        assert "catalyst_eval" not in text, path
+        assert "packages/eval" not in text, path
+
+
+def test_pool_source_artifact_identity_verified_when_generating(tmp_path):
+    """Pool must reject a persisted artifact whose artifact_id was tampered."""
+    from catalyst_data.retrieval.pool import generate_union_pool
+
+    path = _write_literal_artifact(tmp_path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["artifact_id"] = "f" * 64
+    path.write_text(json.dumps(raw, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="artifact_id"):
+        generate_union_pool(path)
