@@ -49,6 +49,7 @@ from catalyst_data.retrieval.pool import (
     load_union_pool,
     write_union_pool,
 )
+from catalyst_data.retrieval.result import SEARCHABLE_STATUSES
 from catalyst_data.retrieval.reranker import RerankerGate
 from .case_pack import CasePackCase
 from .index_identity import ResolvedRuntimeIdentity
@@ -294,18 +295,19 @@ def _chunk_served_for_case(
     cutoff: str,
 ) -> bool:
     relation = served_chunks_relation(conn)
+    status_placeholders = ", ".join("?" for _ in SEARCHABLE_STATUSES)
     row = conn.execute(
         f"""SELECT 1 FROM {relation} c
             WHERE c.chunk_id = ?
               AND c.manifest_id = ?
-              AND c.status = 'active'
+              AND c.status IN ({status_placeholders})
               AND c.eligibility = 'eligible'
               AND c.available_at <= ?
               AND EXISTS (
                 SELECT 1 FROM json_each(c.ticker_associations) je
                 WHERE je.value = ?
               )""",
-        (chunk_id, manifest_id, cutoff, ticker),
+        (chunk_id, manifest_id, *SEARCHABLE_STATUSES, cutoff, ticker),
     ).fetchone()
     return row is not None
 

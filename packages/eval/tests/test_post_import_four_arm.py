@@ -27,6 +27,7 @@ from tests.post_import_fixtures import (
     LITERAL_FTS5,
     LITERAL_HYBRID,
     LITERAL_RERANKED,
+    MANIFEST_A,
     MockQueryEmbedder,
     RecordingReranker,
     fresh_lance_table,
@@ -1488,3 +1489,86 @@ def test_non_positive_reranker_timeout_rejected_before_case_loop(
     assert calls == []
     assert not (tmp_path / "run1").exists()
     assert not list(tmp_path.glob(".run1*"))
+
+
+# ---------------------------------------------------------------------------
+# T6b: served-evidence status contract (AMEND-5)
+#
+# Evidence gates must match the production searchable corpus contract
+# (catalyst_data.retrieval.result.SEARCHABLE_STATUSES), not an active-only
+# slice. metadata_only + eligible rows are searchable production evidence;
+# tombstoned, ineligible, wrong-ticker, and look-ahead rows must fail closed.
+# ---------------------------------------------------------------------------
+
+
+def _served_conn(tmp_path, *, chunk_id="a", status="active", eligibility="eligible",
+                 ticker="AAPL", available_at="2026-01-01T00:00:00Z"):
+    conn = fresh_runner_db(tmp_path)
+    conn.execute(
+        """UPDATE corpus_chunks
+           SET status = ?, eligibility = ?, ticker_associations = ?, available_at = ?
+           WHERE chunk_id = ?""",
+        (status, eligibility, f'["{ticker}"]', available_at, chunk_id),
+    )
+    conn.commit()
+    return conn
+
+
+def test_chunk_served_accepts_metadata_only_eligible(tmp_path):
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    conn = _served_conn(tmp_path, status="metadata_only")
+    assert four_arm._chunk_served_for_case(
+        conn, chunk_id="a", manifest_id=MANIFEST_A, ticker="AAPL", cutoff=CUTOFF,
+    ) is True
+    conn.close()
+
+
+def test_chunk_served_accepts_pending_embedding_eligible(tmp_path):
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    conn = _served_conn(tmp_path, status="pending_embedding")
+    assert four_arm._chunk_served_for_case(
+        conn, chunk_id="a", manifest_id=MANIFEST_A, ticker="AAPL", cutoff=CUTOFF,
+    ) is True
+    conn.close()
+
+
+def test_chunk_served_rejects_tombstoned(tmp_path):
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    conn = _served_conn(tmp_path, status="tombstoned")
+    assert four_arm._chunk_served_for_case(
+        conn, chunk_id="a", manifest_id=MANIFEST_A, ticker="AAPL", cutoff=CUTOFF,
+    ) is False
+    conn.close()
+
+
+def test_chunk_served_rejects_ineligible(tmp_path):
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    conn = _served_conn(tmp_path, eligibility="ineligible")
+    assert four_arm._chunk_served_for_case(
+        conn, chunk_id="a", manifest_id=MANIFEST_A, ticker="AAPL", cutoff=CUTOFF,
+    ) is False
+    conn.close()
+
+
+def test_chunk_served_rejects_wrong_ticker(tmp_path):
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    conn = _served_conn(tmp_path, ticker="MSFT")
+    assert four_arm._chunk_served_for_case(
+        conn, chunk_id="a", manifest_id=MANIFEST_A, ticker="AAPL", cutoff=CUTOFF,
+    ) is False
+    conn.close()
+
+
+def test_chunk_served_rejects_look_ahead(tmp_path):
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    conn = _served_conn(tmp_path, available_at="2026-02-01T00:00:00Z")
+    assert four_arm._chunk_served_for_case(
+        conn, chunk_id="a", manifest_id=MANIFEST_A, ticker="AAPL", cutoff=CUTOFF,
+    ) is False
+    conn.close()

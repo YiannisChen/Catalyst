@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from catalyst_data.corpus.streaming_publication import served_chunks_relation
+from catalyst_data.retrieval.result import SEARCHABLE_STATUSES
 from catalyst_agents.runtime.assurance.record import RunAssuranceRecord
 from catalyst_agents.trace.exporter import export_run
 
@@ -303,19 +304,20 @@ def _chunk_served_for_case(
 ) -> tuple[str | None, str | None]:
     """Return (available_at, source_class) when the chunk is served for the case."""
     relation = served_chunks_relation(conn)
+    status_placeholders = ", ".join("?" for _ in SEARCHABLE_STATUSES)
     row = conn.execute(
         f"""SELECT c.available_at, c.source_class
             FROM {relation} c
             WHERE c.chunk_id = ?
               AND c.manifest_id = ?
-              AND c.status = 'active'
+              AND c.status IN ({status_placeholders})
               AND c.eligibility = 'eligible'
               AND c.available_at <= ?
               AND EXISTS (
                 SELECT 1 FROM json_each(c.ticker_associations) je
                 WHERE je.value = ?
               )""",
-        (chunk_id, manifest_id, cutoff, ticker),
+        (chunk_id, manifest_id, *SEARCHABLE_STATUSES, cutoff, ticker),
     ).fetchone()
     if row is None:
         return None, None

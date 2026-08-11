@@ -987,3 +987,105 @@ def test_run_user_smoke_rejects_existing_final_run_id(tmp_path):
 
     with pytest.raises(ValueError, match="already exists"):
         run_user_smoke(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 citation validator: searchable-status contract (AMEND-5)
+#
+# The user-smoke citation check must accept metadata_only + eligible citations
+# (searchable production evidence) while rejecting tombstoned, ineligible,
+# wrong-ticker, and look-ahead citations.
+# ---------------------------------------------------------------------------
+
+
+def _citation_case(*, ticker: str = "TSLA", cutoff: str = "2025-07-24T20:00:00Z") -> CasePackCase:
+    from catalyst_eval.post_import.case_pack import CasePackCase, SCHEMA_VERSION as CV
+
+    return CasePackCase(
+        schema_version=CV,
+        case_id="g006",
+        ticker=ticker,
+        session_date="2025-07-24",
+        cutoff=cutoff,
+        query="Why did TSLA move on 2025-07-24?",
+        source_set="fixture",
+        golden={"golden_id": "g006", "expected_status": "SUFFICIENT"},
+    )
+
+
+def _citation_db(tmp_path, *, status="active", eligibility="eligible",
+                 ticker="TSLA", available_at="2025-07-23T00:00:00Z") -> Path:
+    from catalyst_eval.post_import.user_smoke import _validate_citations
+
+    db = tmp_path / "frozen_citations.db"
+    _build_frozen_corpus_db(db)
+    conn = sqlite3.connect(db)
+    conn.execute(
+        """UPDATE corpus_chunks
+           SET status = ?, eligibility = ?, ticker_associations = ?, available_at = ?
+           WHERE chunk_id = 'tsla-c1'""",
+        (status, eligibility, f'["{ticker}"]', available_at),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def test_citation_validator_accepts_metadata_only_eligible(tmp_path):
+    from catalyst_eval.post_import.user_smoke import _validate_citations
+
+    db = _citation_db(tmp_path, status="metadata_only")
+    ok, detail = _validate_citations(
+        db, case=_citation_case(), cited_ids=["tsla-c1"],
+        manifest_id=EVIDENCE_KWARGS["corpus_manifest_id"],
+    )
+    assert ok, detail
+    assert detail == "citations resolve"
+
+
+def test_citation_validator_rejects_tombstoned(tmp_path):
+    from catalyst_eval.post_import.user_smoke import _validate_citations
+
+    db = _citation_db(tmp_path, status="tombstoned")
+    ok, detail = _validate_citations(
+        db, case=_citation_case(), cited_ids=["tsla-c1"],
+        manifest_id=EVIDENCE_KWARGS["corpus_manifest_id"],
+    )
+    assert ok is False
+    assert "unresolvable" in detail
+
+
+def test_citation_validator_rejects_ineligible(tmp_path):
+    from catalyst_eval.post_import.user_smoke import _validate_citations
+
+    db = _citation_db(tmp_path, eligibility="ineligible")
+    ok, detail = _validate_citations(
+        db, case=_citation_case(), cited_ids=["tsla-c1"],
+        manifest_id=EVIDENCE_KWARGS["corpus_manifest_id"],
+    )
+    assert ok is False
+    assert "unresolvable" in detail
+
+
+def test_citation_validator_rejects_wrong_ticker(tmp_path):
+    from catalyst_eval.post_import.user_smoke import _validate_citations
+
+    db = _citation_db(tmp_path, ticker="GOOGL")
+    ok, detail = _validate_citations(
+        db, case=_citation_case(ticker="TSLA"), cited_ids=["tsla-c1"],
+        manifest_id=EVIDENCE_KWARGS["corpus_manifest_id"],
+    )
+    assert ok is False
+    assert "unresolvable" in detail
+
+
+def test_citation_validator_rejects_look_ahead(tmp_path):
+    from catalyst_eval.post_import.user_smoke import _validate_citations
+
+    db = _citation_db(tmp_path, available_at="2025-07-25T00:00:00Z")
+    ok, detail = _validate_citations(
+        db, case=_citation_case(), cited_ids=["tsla-c1"],
+        manifest_id=EVIDENCE_KWARGS["corpus_manifest_id"],
+    )
+    assert ok is False
+    assert "tsla-c1" in detail
