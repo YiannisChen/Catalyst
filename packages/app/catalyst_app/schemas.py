@@ -200,6 +200,7 @@ class HealthComponent(BaseModel):
     model: str | None = None
     path: str | None = None
     table: str | None = None
+    active_generation: str | None = None
     vector_dim: int | None = None
     corpus_manifest_id: str | None = None
     index_manifest_id: str | None = None

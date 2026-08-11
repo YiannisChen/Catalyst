@@ -147,3 +147,24 @@ def test_runtime_health_supports_ready_degraded_failed():
             errors=[],
         )
         assert health.status.value == status
+
+
+def test_runtime_health_accepts_loader_active_generation_pointer():
+    """RuntimeDependencyLoader emits lancedb.active_generation; the public
+    health schema must accept it (real loader health payload regression)."""
+    health = RuntimeHealthResponse.model_validate({
+        "status": "ready",
+        "sqlite": {"status": "ready", "path": "/tmp/runtime.db"},
+        "lancedb": {
+            "status": "ready",
+            "path": "/data/lancedb_gold/b6g_8ffae891b4e1",
+            "table": "chunks__staging__b3761f4b943542a8",
+            "active_generation": "/data/lancedb_gold/b6g_8ffae891b4e1/active_generation.json",
+        },
+        "embedding": {"status": "ready", "model": "BAAI/bge-m3", "vector_dim": 1024},
+        "reranker": {"status": "ready", "model": "BAAI/bge-reranker-v2-m3"},
+        "default_model": {"status": "ready", "model": "deepseek-chat"},
+        "retrieval": {"status": "ready"},
+        "errors": [],
+    })
+    assert health.lancedb.active_generation.endswith("active_generation.json")
