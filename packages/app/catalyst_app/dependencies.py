@@ -26,6 +26,20 @@ def _default_model_from_env() -> str:
     return os.getenv("CATALYST_DEFAULT_MODEL", "model-default")
 
 
+def _index_manifest_path_from_env() -> Path | None:
+    """Explicit clean-import IndexManifest path (authoritative, outside gold dir).
+
+    If unset, RuntimeDependencyLoader falls back to
+    ``<lancedb_dir>/index_manifest.json``; Wave 2/3 production must set
+    ``CATALYST_INDEX_MANIFEST_PATH`` to the clean-import manifest so identity
+    binding never depends on a copy inside the protected LanceDB gold dir.
+    """
+    raw = os.getenv("CATALYST_INDEX_MANIFEST_PATH")
+    if raw:
+        return Path(raw)
+    return None
+
+
 @lru_cache(maxsize=1)
 def get_runtime_dependency_loader() -> RuntimeDependencyLoader:
     return RuntimeDependencyLoader(
@@ -33,6 +47,7 @@ def get_runtime_dependency_loader() -> RuntimeDependencyLoader:
         default_model=_default_model_from_env(),
         require_identity_bound_runtime=True,
         query_embedding_factory=ProductionBgeM3QueryEmbeddingFactory(),
+        index_manifest_path=_index_manifest_path_from_env(),
     )
 
 

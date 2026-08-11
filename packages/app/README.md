@@ -80,6 +80,9 @@ catalyst_app/
 | Variable | Description |
 |----------|-------------|
 | `CATALYST_DB_PATH` | SQLite database path |
+| `CATALYST_LANCEDB_DIR` | Gold LanceDB directory (identity-bound runtime) |
+| `CATALYST_INDEX_MANIFEST_PATH` | Explicit clean-import `index_manifest.json` path; authoritative for identity binding. When unset, the loader falls back to `<lancedb_dir>/index_manifest.json`, which is NOT the production clean-import manifest. |
+| `CATALYST_CORPUS_MANIFEST_ID` / `CATALYST_INDEX_MANIFEST_ID` / `CATALYST_SOURCE_BUNDLE_ID` / `CATALYST_SNAPSHOT_ID` / `CATALYST_PROBE_REPORT_ID` / `CATALYST_POSTBUILD_READINESS_ID` | Manager-approved retrieval identity bindings required by `require_identity_bound_runtime` |
 | Provider API keys | Optional server-environment credentials; values never appear in API responses |
 
 Browser-supplied BYOK credentials are held in process memory for the run and are

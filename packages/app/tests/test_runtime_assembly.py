@@ -138,3 +138,137 @@ def test_app_loader_wires_production_query_embedding_factory(monkeypatch):
     finally:
         app_dependencies.get_runtime_dependency_loader.cache_clear()
     assert isinstance(loader._query_embedding_factory, ProductionBgeM3QueryEmbeddingFactory)
+
+
+def test_app_loader_wires_catalyst_index_manifest_path_from_env(monkeypatch):
+    """App factory must pass CATALYST_INDEX_MANIFEST_PATH into the loader.
+
+    The authoritative clean-import manifest lives outside the LanceDB gold
+    directory (data/embeddings/<code_revision>/index_manifest.json); the app
+    runtime must not silently fall back to <lancedb_dir>/index_manifest.json.
+    """
+    import catalyst_app.dependencies as app_dependencies
+
+    manifest_path = Path("/tmp/index_manifest.json")
+    monkeypatch.setenv("CATALYST_INDEX_MANIFEST_PATH", str(manifest_path))
+    app_dependencies.get_runtime_dependency_loader.cache_clear()
+    try:
+        loader = app_dependencies.get_runtime_dependency_loader()
+    finally:
+        app_dependencies.get_runtime_dependency_loader.cache_clear()
+    assert loader.index_manifest_path == manifest_path
+
+
+def test_app_loader_index_manifest_path_defaults_to_none(monkeypatch):
+    import catalyst_app.dependencies as app_dependencies
+
+    monkeypatch.delenv("CATALYST_INDEX_MANIFEST_PATH", raising=False)
+    app_dependencies.get_runtime_dependency_loader.cache_clear()
+    try:
+        loader = app_dependencies.get_runtime_dependency_loader()
+    finally:
+        app_dependencies.get_runtime_dependency_loader.cache_clear()
+    assert loader.index_manifest_path is None
+
+
+def test_loader_uses_explicit_manifest_path_outside_lancedb_dir(tmp_path, monkeypatch):
+    """Correct manifest wired via index_manifest_path (env contract) => ready."""
+    from catalyst_agents.runtime.dependencies import RuntimeDependencyLoader
+    from catalyst_data.retrieval.index_manifest import IndexManifest
+
+    sqlite_path = tmp_path / "runtime.db"
+    _touch(sqlite_path)
+    lancedb_dir = tmp_path / "ldb"
+    lancedb_dir.mkdir(parents=True)
+    manifest = IndexManifest.from_dict(_valid_manifest_dict())
+    manifest_dir = tmp_path / "clean_import"
+    manifest_dir.mkdir(parents=True)
+    manifest_path = manifest_dir / "index_manifest.json"
+    manifest_path.write_text(json.dumps(manifest.to_dict()))
+
+    monkeypatch.setenv("CATALYST_CORPUS_MANIFEST_ID", manifest.corpus_manifest_id)
+    monkeypatch.setenv("CATALYST_INDEX_MANIFEST_ID", manifest.index_manifest_id)
+    monkeypatch.setenv("CATALYST_SOURCE_BUNDLE_ID", manifest.source_bundle_id)
+    monkeypatch.setenv("CATALYST_SNAPSHOT_ID", manifest.snapshot_id)
+    monkeypatch.setenv("CATALYST_PROBE_REPORT_ID", manifest.probe_report_id)
+    monkeypatch.setenv("CATALYST_POSTBUILD_READINESS_ID", manifest.postbuild_readiness_id)
+
+    loader = RuntimeDependencyLoader(
+        sqlite_db_path=sqlite_path,
+        lancedb_dir=lancedb_dir,
+        lancedb_table_name="chunks",
+        require_identity_bound_runtime=True,
+        query_embedding_factory=_FakeQueryEmbeddingFactory(),
+        reranker_factory=lambda _: object(),
+        lancedb_connect_factory=lambda _path: _FakeLanceDb(),
+        index_manifest_path=manifest_path,
+    )
+    deps = loader.get_dependencies()
+    assert deps.health["status"] == "ready"
+    assert deps.health["retrieval"]["index_manifest_id"] == manifest.index_manifest_id
+
+
+def test_loader_fails_when_explicit_manifest_missing(tmp_path, monkeypatch):
+    from catalyst_agents.runtime.dependencies import RuntimeDependencyLoader
+    from catalyst_data.retrieval.index_manifest import IndexManifest
+
+    sqlite_path = tmp_path / "runtime.db"
+    _touch(sqlite_path)
+    manifest = IndexManifest.from_dict(_valid_manifest_dict())
+    monkeypatch.setenv("CATALYST_CORPUS_MANIFEST_ID", manifest.corpus_manifest_id)
+    monkeypatch.setenv("CATALYST_INDEX_MANIFEST_ID", manifest.index_manifest_id)
+    monkeypatch.setenv("CATALYST_SOURCE_BUNDLE_ID", manifest.source_bundle_id)
+    monkeypatch.setenv("CATALYST_SNAPSHOT_ID", manifest.snapshot_id)
+    monkeypatch.setenv("CATALYST_PROBE_REPORT_ID", manifest.probe_report_id)
+    monkeypatch.setenv("CATALYST_POSTBUILD_READINESS_ID", manifest.postbuild_readiness_id)
+
+    loader = RuntimeDependencyLoader(
+        sqlite_db_path=sqlite_path,
+        lancedb_dir=tmp_path / "ldb",
+        lancedb_table_name="chunks",
+        require_identity_bound_runtime=True,
+        query_embedding_factory=_FakeQueryEmbeddingFactory(),
+        reranker_factory=lambda _: object(),
+        lancedb_connect_factory=lambda _path: _FakeLanceDb(),
+        index_manifest_path=tmp_path / "missing" / "index_manifest.json",
+    )
+    health = loader.health()
+    assert health["status"] == "failed"
+    assert health["retrieval"]["status"] == "failed"
+    assert "IndexManifest" in health["retrieval"]["message"]
+
+
+def test_loader_fails_when_explicit_manifest_identity_wrong(tmp_path, monkeypatch):
+    from catalyst_agents.runtime.dependencies import RuntimeDependencyLoader
+    from catalyst_data.retrieval.index_manifest import IndexManifest
+
+    sqlite_path = tmp_path / "runtime.db"
+    _touch(sqlite_path)
+    manifest = IndexManifest.from_dict(_valid_manifest_dict())
+    wrong = IndexManifest.from_dict({**_valid_manifest_dict(), "code_revision": "0" * 40})
+    manifest_dir = tmp_path / "clean_import"
+    manifest_dir.mkdir(parents=True)
+    wrong_path = manifest_dir / "index_manifest.json"
+    wrong_path.write_text(json.dumps(wrong.to_dict()))
+
+    monkeypatch.setenv("CATALYST_CORPUS_MANIFEST_ID", manifest.corpus_manifest_id)
+    monkeypatch.setenv("CATALYST_INDEX_MANIFEST_ID", manifest.index_manifest_id)
+    monkeypatch.setenv("CATALYST_SOURCE_BUNDLE_ID", manifest.source_bundle_id)
+    monkeypatch.setenv("CATALYST_SNAPSHOT_ID", manifest.snapshot_id)
+    monkeypatch.setenv("CATALYST_PROBE_REPORT_ID", manifest.probe_report_id)
+    monkeypatch.setenv("CATALYST_POSTBUILD_READINESS_ID", manifest.postbuild_readiness_id)
+
+    loader = RuntimeDependencyLoader(
+        sqlite_db_path=sqlite_path,
+        lancedb_dir=tmp_path / "ldb",
+        lancedb_table_name="chunks",
+        require_identity_bound_runtime=True,
+        query_embedding_factory=_FakeQueryEmbeddingFactory(),
+        reranker_factory=lambda _: object(),
+        lancedb_connect_factory=lambda _path: _FakeLanceDb(),
+        index_manifest_path=wrong_path,
+    )
+    health = loader.health()
+    assert health["status"] == "failed"
+    assert health["retrieval"]["status"] == "failed"
+    assert "mismatch" in health["retrieval"]["message"].lower() or "failed" in health["retrieval"]["message"].lower()
