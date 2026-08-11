@@ -1089,3 +1089,26 @@ def test_citation_validator_rejects_look_ahead(tmp_path):
     )
     assert ok is False
     assert "tsla-c1" in detail
+
+
+def test_validate_wave2_evidence_accepts_four_arm_meta_without_db_sha256(tmp_path):
+    """The four-arm run meta does not carry db_sha256 (by design); DB identity
+    is bound through the T4 evidence and resolved runtime identity."""
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(
+        tmp_path, resolved=resolved,
+        meta_extra={"db_sha256": None},
+    )
+    # Simulate the actual four-arm meta by removing the db_sha256 key.
+    meta = json.loads((wave2_dir / "meta.json").read_text())
+    meta.pop("db_sha256", None)
+    (wave2_dir / "meta.json").write_text(json.dumps(meta, sort_keys=True))
+    validated = validate_wave2_evidence(
+        wave2_dir=wave2_dir,
+        t4_evidence_dir=t4_dir,
+        current_case_pack=cases,
+        resolved=resolved,
+    )
+    assert validated.four_arm_token == WAVE2_FOUR_ARM_TOKEN

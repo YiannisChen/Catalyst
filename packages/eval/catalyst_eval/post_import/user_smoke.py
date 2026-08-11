@@ -250,9 +250,12 @@ def validate_wave2_evidence(
         )
 
     if resolved is not None:
+        # The four-arm run meta binds runtime, index, snapshot, and corpus
+        # identities.  The frozen DB SHA is bound through the T4 evidence
+        # (validated above) and the resolved runtime identity, and is not a
+        # four-arm meta field by design.
         comparisons = (
             ("runtime_git_head", meta.get("runtime_git_head"), resolved.git_head),
-            ("db_sha256", meta.get("db_sha256"), resolved.db_sha256),
             ("index_manifest_id", meta.get("index_manifest_id"), resolved.index_manifest_id),
             ("snapshot_id", meta.get("snapshot_id"), resolved.snapshot_id),
             ("corpus_manifest_id", meta.get("corpus_manifest_id"), resolved.corpus_manifest_id),
