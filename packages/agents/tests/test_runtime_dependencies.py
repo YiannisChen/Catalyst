@@ -202,3 +202,33 @@ def test_vector_dim_detection_prefers_bounded_fts_sampling(tmp_path, monkeypatch
     assert deps.health["status"] == "ready"
     assert deps.health["lancedb"]["vector_dim"] == 7
     assert table.to_list_called is False
+
+
+def test_loader_sqlite_connection_reusable_across_threads(tmp_path, monkeypatch):
+    """The runtime graph executes in a worker thread; the loader's read-only
+    SQLite connection must be usable across threads (check_same_thread=False)."""
+    import sqlite3
+    from concurrent.futures import ThreadPoolExecutor
+
+    sqlite_path = tmp_path / "runtime.db"
+    conn = sqlite3.connect(sqlite_path)
+    conn.execute("CREATE TABLE t (x INTEGER)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("CATALYST_LANCEDB_DIR", str(tmp_path / "ldb"))
+
+    loader = RuntimeDependencyLoader(
+        sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
+        requested_manifest_id="c" * 64,
+        index_manifest_id="i" * 64,
+        embedding_factory=lambda _: (lambda _q: [0.1, 0.2, 0.3], 3),
+        reranker_factory=lambda _: object(),
+        lancedb_connect_factory=lambda _path: FakeLanceDB(FakeTable(vector_dim=3)),
+    )
+    deps = loader.get_dependencies()
+    db = deps.retriever._retriever.db
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        result = executor.submit(lambda: db.execute("SELECT 1").fetchone()).result(timeout=5)
+    assert result == (1,)

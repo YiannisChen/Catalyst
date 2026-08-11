@@ -250,7 +250,9 @@ class RuntimeDependencyLoader:
         retriever = None
         readonly_db = None
         if self.requested_manifest_id and self.index_manifest_id:
-            readonly_db = sqlite3.connect(f"file:{self.sqlite_db_path}?mode=ro", uri=True)
+            readonly_db = sqlite3.connect(
+                f"file:{self.sqlite_db_path}?mode=ro", uri=True, check_same_thread=False
+            )
             production_retriever = ProductionHybridRetriever(
                 db=readonly_db,
                 lancedb_table=lancedb_table,

@@ -149,7 +149,12 @@ class LiveRunRunner:
             model = state.get("model_id")  # legacy string fallback
 
         previous_db_path = os.environ.get("CATALYST_DB_PATH")
+        previous_trace_db_path = os.environ.get("CATALYST_TRACE_DB_PATH")
         os.environ["CATALYST_DB_PATH"] = str(self.db_path)
+        # The graph's TraceWriter defaults to CATALYST_TRACE_DB_PATH; it must
+        # write into the same runtime DB the service reads so events and
+        # assurance records are served for real runs.
+        os.environ["CATALYST_TRACE_DB_PATH"] = str(self.db_path)
         try:
             graph = self.graph_factory(model=model, api_key=api_key)
             result = graph.invoke(state, run_id=run_id)
@@ -162,6 +167,10 @@ class LiveRunRunner:
                 os.environ.pop("CATALYST_DB_PATH", None)
             else:
                 os.environ["CATALYST_DB_PATH"] = previous_db_path
+            if previous_trace_db_path is None:
+                os.environ.pop("CATALYST_TRACE_DB_PATH", None)
+            else:
+                os.environ["CATALYST_TRACE_DB_PATH"] = previous_trace_db_path
 
     def _is_cancelled(self, run_id: str) -> bool:
         conn = self._connect()

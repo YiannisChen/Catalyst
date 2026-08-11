@@ -247,3 +247,26 @@ def test_graph_exception_marks_failed_system_and_does_not_leave_queued(tmp_path)
     assert result["status"] == "FAILED_SYSTEM"
     assert run["status"] == "FAILED_SYSTEM"
     assert "boom" in (run["failure"]["message"] or "")
+
+
+def test_runner_invokes_graph_with_trace_db_path_wired(tmp_path):
+    """The graph's TraceWriter must write into the runner's runtime DB, not
+    the default .catalyst/agent_trace.db, so the app can serve events and
+    assurance records for real runs."""
+    import os
+
+    db_path = _db_path(tmp_path)
+    runner = LiveRunRunner(db_path=db_path, graph_factory=lambda *a, **k: None)
+    observed = {}
+
+    def recording_factory(model=None, api_key=None):
+        observed["trace_db"] = os.environ.get("CATALYST_TRACE_DB_PATH")
+        return RecordingGraph(db_path)
+
+    runner.graph_factory = recording_factory
+    service = LiveRunService(db_path=db_path, graph_factory=recording_factory)
+    created = service.create_run(
+        ticker="AAPL", trade_date="2026-01-15", query="explain", model="model-default",
+    )
+    runner.run(created["run_id"])
+    assert observed["trace_db"] == str(db_path)
