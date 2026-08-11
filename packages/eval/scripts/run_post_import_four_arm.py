@@ -190,7 +190,12 @@ def main(argv: list[str] | None = None) -> int:
             reranker = load_reranker(model_name=BGE_RERANKER_MODEL)
             if reranker is None:
                 raise RuntimeError("production reranker could not be loaded")
-            cuda_available = True
+            # Use the actual torch CUDA result; the embedding boundary inside
+            # run_four_arm_cases fails closed (no CPU fallback) when CUDA is
+            # unavailable, even if the factory preflight already succeeded.
+            import torch
+
+            cuda_available = bool(torch.cuda.is_available())
             is_mock = False
         else:  # mock_unit_test
             embedder = _MockQueryEmbedder()
@@ -214,6 +219,15 @@ def main(argv: list[str] | None = None) -> int:
             tokenizer_revision=resolved.tokenizer_revision,
             reranker_model=BGE_RERANKER_MODEL,
             reranker_revision="953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+            dimension=resolved.dimension,
+            dtype=resolved.dtype,
+            normalization_mode=resolved.normalization_mode,
+            vector_count=resolved.vector_count,
+            lancedb_row_count=resolved.lancedb_row_count,
+            db_path=str(resolved.db_path),
+            db_sha256=resolved.db_sha256,
+            db_user_version=resolved.db_user_version,
+            db_foreign_key_violations=resolved.db_foreign_key_violations,
         )
         boundary = EmbeddingBoundary(
             embedding_mode=args.embedding_mode,

@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
             db_path=db_path,
             repo_root=REPO_ROOT,
             expected=APPROVED,
-            require_clean=False,
+            require_clean=True,
         )
 
         conn = _open_db_readonly(db_path)

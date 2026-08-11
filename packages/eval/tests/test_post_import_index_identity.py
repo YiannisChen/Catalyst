@@ -550,3 +550,54 @@ def test_missing_chunk_ids_file_fails(tmp_path):
     (tmp_path / "gold" / "chunk_ids.json").unlink()
     with pytest.raises((ValueError, OSError), match="chunk_ids|missing|No such file"):
         _call(tmp_path)
+
+
+def test_dirty_git_fails_before_lancedb_or_db_scan(tmp_path, monkeypatch):
+    """Dirty Git must fail before any LanceDB open or DB SHA scan."""
+    import sys
+    import types
+
+    import catalyst_eval.post_import.index_identity as index_identity
+
+    _write_lancedb_identity_files(tmp_path)
+    db = _write_fake_db(tmp_path)
+    expected = ApprovedFrozenIdentities(**{
+        **APPROVED.__dict__,
+        "index_manifest_id": _fixture_manifest_id(tmp_path),
+        "db_sha256": hashlib.sha256(Path(db).read_bytes()).hexdigest(),
+    })
+    called = {"sha256_file": False, "lancedb_connect": False}
+    expected_db_sha = hashlib.sha256(Path(db).read_bytes()).hexdigest()
+
+    def record_sha(path):
+        called["sha256_file"] = True
+        return expected_db_sha
+
+    monkeypatch.setattr(index_identity, "_sha256_file", record_sha)
+    fake_lancedb = types.ModuleType("lancedb")
+
+    def bad_connect(*args, **kwargs):
+        called["lancedb_connect"] = True
+        raise AssertionError("lancedb.connect must not run on a dirty tree")
+
+    fake_lancedb.connect = bad_connect
+    monkeypatch.setitem(sys.modules, "lancedb", fake_lancedb)
+
+    def dirty_runner(*args, cwd):
+        if args[0] == "rev-parse":
+            return "8dd9ee9b5f04e848e3d8248dad6470189af79573\n"
+        if args[0] == "status":
+            return "M file.py\n"
+        raise AssertionError(f"unexpected git args: {args}")
+
+    with pytest.raises(RuntimeError, match="dirty"):
+        resolve_runtime_identity(
+            lancedb_dir=tmp_path / "gold",
+            index_manifest_path=tmp_path / "gold" / "index_manifest.json",
+            db_path=db,
+            repo_root=tmp_path,
+            expected=expected,
+            git_runner=dirty_runner,
+        )
+    assert called["sha256_file"] is False
+    assert called["lancedb_connect"] is False

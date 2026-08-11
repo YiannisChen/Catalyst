@@ -27,7 +27,7 @@ _TOP_LEVEL_KEYS = {
 _FILTER_KEYS = {"ticker", "evidence_types", "source_classes", "corpus_manifest_id", "index_manifest_id"}
 _CONFIG_KEYS = {
     "lexical_top_k", "dense_top_k", "fusion_k", "fused_top_k", "display_top_k",
-    "embedding_revision", "reranker_revision",
+    "embedding_revision", "reranker_revision", "reranker_timeout_seconds",
 }
 _ARM_KEYS = {"mode_requested", "mode_served", "status", "latency_ms", "degradation_reasons", "results"}
 _RESULT_KEYS = {

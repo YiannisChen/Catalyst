@@ -21,7 +21,7 @@ def test_arm_artifact_path_schema_and_identity_are_exact(tmp_path):
         root=tmp_path, run_id="run-1", case_id="B001",
         query="AAPL earnings", cutoff_ts="2026-01-15T21:00:00Z",
         filters={"ticker": "AAPL", "evidence_types": [], "source_classes": [], "corpus_manifest_id": "a" * 64, "index_manifest_id": "1" * 64},
-        retrieval_config={"lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60, "fused_top_k": 20, "display_top_k": 8, "embedding_revision": BGE_M3_REVISION, "reranker_revision": BGE_RERANKER_REVISION},
+        retrieval_config={"lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60, "fused_top_k": 20, "display_top_k": 8, "embedding_revision": BGE_M3_REVISION, "reranker_revision": BGE_RERANKER_REVISION, "reranker_timeout_seconds": 2.0},
         arms=FOUR_COMPLETE_ARM_RESULTS,
         created_at="2026-07-22T00:00:00Z",
     )
@@ -73,7 +73,7 @@ def test_artifact_rejects_missing_contract_fields(tmp_path):
             root=tmp_path, run_id="r", case_id="c", query="q",
             cutoff_ts="2026-01-01T00:00:00Z",
         filters={"ticker": "AAPL", "evidence_types": [], "source_classes": [], "corpus_manifest_id": "a" * 64, "index_manifest_id": "1" * 64},
-            retrieval_config={"lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60, "fused_top_k": 20, "display_top_k": 8, "embedding_revision": BGE_M3_REVISION, "reranker_revision": BGE_RERANKER_REVISION}, arms=arms,
+            retrieval_config={"lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60, "fused_top_k": 20, "display_top_k": 8, "embedding_revision": BGE_M3_REVISION, "reranker_revision": BGE_RERANKER_REVISION, "reranker_timeout_seconds": 2.0}, arms=arms,
         )
 
 
@@ -105,7 +105,7 @@ def test_artifact_rejects_missing_or_string_rank(tmp_path):
                 root=tmp_path, run_id="r", case_id="c", query="q",
                 cutoff_ts="2026-01-01T00:00:00Z",
         filters={"ticker": "AAPL", "evidence_types": [], "source_classes": [], "corpus_manifest_id": "a" * 64, "index_manifest_id": "1" * 64},
-                retrieval_config={"lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60, "fused_top_k": 20, "display_top_k": 8, "embedding_revision": BGE_M3_REVISION, "reranker_revision": BGE_RERANKER_REVISION},
+                retrieval_config={"lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60, "fused_top_k": 20, "display_top_k": 8, "embedding_revision": BGE_M3_REVISION, "reranker_revision": BGE_RERANKER_REVISION, "reranker_timeout_seconds": 2.0},
                 arms=arms,
             )
 

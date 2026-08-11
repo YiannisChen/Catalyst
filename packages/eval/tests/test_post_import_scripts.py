@@ -12,6 +12,7 @@ import hashlib
 import importlib.util
 import json
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
@@ -509,3 +510,381 @@ def test_runner_script_probe_identity_mismatch_rejected_before_model_load(tmp_pa
     assert rc == 2
     assert called["factory"] is False
     assert not (tmp_path / "smoke").exists()
+
+
+# ---------------------------------------------------------------------------
+# AMEND-4 Task 3: clean-tree requirement for T4 preparation
+# ---------------------------------------------------------------------------
+
+
+def test_prepare_script_resolver_requires_clean(tmp_path, monkeypatch):
+    """prepare must resolve runtime identity with require_clean=True."""
+    module = _load(PREPARE_SCRIPT)
+    from catalyst_eval.post_import.case_pack import build_smoke_case_pack
+    from catalyst_eval.post_import.probe import CaseProbeResult, ServedCorpusProbeReport
+
+    cases = build_smoke_case_pack(module.GOLDEN_DIR)
+    report = ServedCorpusProbeReport(
+        schema_version="served_corpus_probe_v1",
+        corpus_manifest_id="3274069269bbabd8099137933310ead43e3f378577f0124e5770f89eeec4cffc",
+        case_count=10, passed_count=10, all_passed=True,
+        per_case=tuple(CaseProbeResult(c.case_id, c.ticker, c.cutoff, 1) for c in cases),
+    )
+    captured = {}
+
+    def recorder(**kwargs):
+        captured.update(kwargs)
+        return _resolved()
+
+    monkeypatch.setattr(module, "_sha256_file", lambda path: FROZEN_DB_SHA256)
+    monkeypatch.setattr(module, "resolve_runtime_identity", recorder)
+    monkeypatch.setattr(module, "_open_db_readonly", lambda path: sqlite3.connect(":memory:"))
+    monkeypatch.setattr(module, "run_served_corpus_probe", lambda conn, **k: report)
+    rc = module.main([
+        "--db", "data/snapshots/x.db",
+        "--run-id", "t4_clean_req",
+        "--output-root", str(tmp_path),
+        "--lancedb-dir", str(tmp_path / "gold"),
+        "--index-manifest", str(tmp_path / "index_manifest.json"),
+    ])
+    assert rc == 0
+    assert captured.get("require_clean") is True
+
+
+def test_prepare_script_dirty_tree_fails_before_writing_evidence(tmp_path, monkeypatch):
+    """A dirty tree must fail preparation before any evidence is written."""
+    module = _load(PREPARE_SCRIPT)
+    from catalyst_eval.post_import.case_pack import build_smoke_case_pack
+    from catalyst_eval.post_import.probe import CaseProbeResult, ServedCorpusProbeReport
+
+    cases = build_smoke_case_pack(module.GOLDEN_DIR)
+    report = ServedCorpusProbeReport(
+        schema_version="served_corpus_probe_v1",
+        corpus_manifest_id="3274069269bbabd8099137933310ead43e3f378577f0124e5770f89eeec4cffc",
+        case_count=10, passed_count=10, all_passed=True,
+        per_case=tuple(CaseProbeResult(c.case_id, c.ticker, c.cutoff, 1) for c in cases),
+    )
+    monkeypatch.setattr(module, "_sha256_file", lambda path: FROZEN_DB_SHA256)
+
+    def dirty_resolver(**kwargs):
+        if kwargs.get("require_clean") is True:
+            raise RuntimeError(
+                "Git worktree is dirty; production execution requires a clean worktree"
+            )
+        return _resolved()
+
+    monkeypatch.setattr(module, "resolve_runtime_identity", dirty_resolver)
+    monkeypatch.setattr(module, "_open_db_readonly", lambda path: sqlite3.connect(":memory:"))
+    monkeypatch.setattr(module, "run_served_corpus_probe", lambda conn, **k: report)
+    rc = module.main([
+        "--db", "data/snapshots/x.db",
+        "--run-id", "t4_dirty",
+        "--output-root", str(tmp_path),
+        "--lancedb-dir", str(tmp_path / "gold"),
+        "--index-manifest", str(tmp_path / "index_manifest.json"),
+    ])
+    assert rc == 2
+    assert not (tmp_path / "t4_dirty").exists()
+    assert not list(tmp_path.glob(".t4_dirty*"))
+
+
+# ---------------------------------------------------------------------------
+# AMEND-4 Task 4: production CLI happy-path composition order
+# ---------------------------------------------------------------------------
+
+
+def _happy_path_stubs(tmp_path, monkeypatch, module):
+    """Stub identity/DB/count preflight; return an order recorder."""
+    from catalyst_eval.post_import.case_pack import build_smoke_case_pack
+
+    cases = build_smoke_case_pack(GOLDEN_DIR)
+    from catalyst_eval.post_import.case_pack import write_case_pack
+    pack_path = tmp_path / "pack.jsonl"
+    write_case_pack(cases, pack_path)
+
+    # Real T4 evidence directory on disk (written + validated for real).
+    from catalyst_eval.post_import.case_pack import compute_case_pack_id
+    from catalyst_eval.post_import.probe import CaseProbeResult, ServedCorpusProbeReport, write_probe_evidence
+    evidence_dir = tmp_path / "evidence"
+    write_case_pack(cases, evidence_dir / "case_pack.jsonl")
+    report = ServedCorpusProbeReport(
+        schema_version="served_corpus_probe_v1",
+        corpus_manifest_id=_resolved().corpus_manifest_id,
+        case_count=10, passed_count=10, all_passed=True,
+        per_case=tuple(CaseProbeResult(c.case_id, c.ticker, c.cutoff, 1) for c in cases),
+    )
+    write_probe_evidence(
+        report, run_dir=evidence_dir,
+        case_pack_id=compute_case_pack_id(cases),
+        case_pack_path="case_pack.jsonl",
+        runtime_git_head=GIT_HEAD,
+        index_build_code_revision=CODE_REVISION,
+        db_sha256=_resolved().db_sha256,
+        corpus_manifest_id=_resolved().corpus_manifest_id,
+        snapshot_id=_resolved().snapshot_id,
+        source_bundle_id=_resolved().source_bundle_id,
+        probe_report_id=_resolved().probe_report_id,
+        postbuild_readiness_id=_resolved().postbuild_readiness_id,
+        index_manifest_id=_resolved().index_manifest_id,
+        db_path=str(_resolved().db_path),
+        db_user_version=13,
+        db_foreign_key_violations=0,
+        lancedb_dir=str(_resolved().lancedb_dir),
+        active_table_name=_resolved().active_table_name,
+        model_name=_resolved().model_name,
+        model_revision=_resolved().model_revision,
+        tokenizer_revision=_resolved().tokenizer_revision,
+        dimension=1024,
+        dtype="float32",
+        normalization_mode="l2",
+        embedding_mode="mock_unit_test",
+    )
+
+    order: list[str] = []
+    monkeypatch.setattr(module, "_sha256_file", lambda path: FROZEN_DB_SHA256)
+    monkeypatch.setattr(module, "_open_db_readonly", lambda path: sqlite3.connect(":memory:"))
+    monkeypatch.setattr(module, "_verify_frozen_db_counts", lambda conn: None)
+    # Identity resolution itself is covered by index_identity tests; here we
+    # record order and return the fixture-resolved identity.
+    monkeypatch.setattr(module, "resolve_runtime_identity", lambda **k: (
+        order.append("resolve_runtime_identity"), _resolved()
+    )[1])
+    orig_validate_pack = module.validate_case_pack_against_contract
+    monkeypatch.setattr(module, "validate_case_pack_against_contract", lambda cases: (
+        order.append("validate_case_pack_against_contract"), orig_validate_pack(cases)
+    )[1])
+    orig_validate_evidence = module.validate_t4_evidence
+    monkeypatch.setattr(module, "validate_t4_evidence", lambda **k: (
+        order.append("validate_t4_evidence"), orig_validate_evidence(**k)
+    )[1])
+    return cases, pack_path, evidence_dir, order
+
+
+class _StubEmbedder:
+    is_mock = False
+    dimension = 1024
+    model_revision = "5617a9f61b028005a4858fdac845db406aefb181"
+
+    def embed_query(self, query):
+        import numpy as np
+        seed = len(query) + 1
+        values = np.arange(seed, seed + 1024, dtype=np.float32)
+        return values / np.linalg.norm(values)
+
+
+class _StubReranker:
+    def score(self, query, candidates):
+        return [float(100 - i) for i in range(len(candidates))]
+
+
+def test_cli_production_happy_path_composition_order(tmp_path, monkeypatch, capsys):
+    """The CLI composes: DB preflight -> identity -> case pack -> evidence ->
+    factory -> reranker -> run_four_arm_cases. Model factory must be called
+    only after identity/evidence validation, and the T4 evidence parser must
+    run against a real on-disk evidence directory."""
+    import types
+
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    module = _load(RUNNER_SCRIPT)
+    cases, pack_path, evidence_dir, order = _happy_path_stubs(tmp_path, monkeypatch, module)
+
+    # Model and reranker are stubs; record when the factory is created.
+    class _StubFactory:
+        def create(self, model_name):
+            order.append("factory_create")
+            return _StubEmbedder()
+
+    monkeypatch.setattr(
+        "catalyst_agents.runtime.query_embedding.ProductionBgeM3QueryEmbeddingFactory",
+        _StubFactory,
+    )
+    monkeypatch.setattr(
+        "catalyst_data.storage.lancedb_store.load_reranker",
+        lambda model_name: (order.append("load_reranker"), _StubReranker())[1],
+    )
+
+    # Torch is not installed in the dev venv; inject a stub for the CUDA read.
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: True)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    # LanceDB is stubbed; the four-arm runner's retrieval internals are patched
+    # so the CLI composition test does not scan the real 295k gold index.
+    fake_lancedb = types.ModuleType("lancedb")
+
+    class _FakeConn:
+        def open_table(self, name):
+            return _FakeTable()
+
+    class _FakeTable:
+        name = "chunks__staging__b3761f4b943542a8"
+
+    fake_lancedb.connect = lambda path: _FakeConn()
+    monkeypatch.setitem(sys.modules, "lancedb", fake_lancedb)
+
+    def recording_runner(*args, **kwargs):
+        order.append("run_four_arm_cases")
+        return _original_runner(*args, **kwargs)
+
+    _original_runner = module.run_four_arm_cases
+    monkeypatch.setattr(module, "run_four_arm_cases", recording_runner)
+
+    from tests.post_import_fixtures import make_hybrid_result
+
+    monkeypatch.setattr(
+        four_arm, "_retrieve_hybrid",
+        lambda *a, **k: make_hybrid_result(ticker=k.get("ticker", "AAPL")),
+    )
+    monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
+
+    rc = module.main([
+        "--db", str(tmp_path / "frozen.db"),
+        "--lancedb-dir", str(tmp_path / "gold"),
+        "--case-pack", str(pack_path),
+        "--run-id", "happy_path",
+        "--output-root", str(tmp_path / "runs"),
+        "--embedding-mode", "production_pinned",
+        "--t4-evidence-dir", str(evidence_dir),
+    ])
+    captured = capsys.readouterr().out
+    assert rc == 0, captured
+    assert order == [
+        "resolve_runtime_identity",
+        "validate_case_pack_against_contract",
+        "validate_t4_evidence",
+        "factory_create",
+        "load_reranker",
+        "run_four_arm_cases",
+    ]
+    # Factory must come strictly after the disk identity/evidence validation.
+    assert order.index("factory_create") > order.index("validate_t4_evidence")
+    assert order.index("factory_create") > order.index("resolve_runtime_identity")
+    assert (tmp_path / "runs" / "happy_path" / "WAVE_TOKEN.txt").is_file()
+
+
+# ---------------------------------------------------------------------------
+# AMEND-4 Task 6: CUDA boundary hardening
+# ---------------------------------------------------------------------------
+
+
+def _fake_lancedb_module():
+    import types
+
+    fake_lancedb = types.ModuleType("lancedb")
+
+    class _FakeConn:
+        def open_table(self, name):
+            return _FakeTable()
+
+    class _FakeTable:
+        name = "chunks__staging__b3761f4b943542a8"
+
+    fake_lancedb.connect = lambda path: _FakeConn()
+    return fake_lancedb
+
+
+def test_runner_production_uses_actual_cuda_available(tmp_path, monkeypatch, capsys):
+    """production_pinned must fail closed when torch CUDA is unavailable,
+    even though the model factory preflight already ran."""
+    import types
+
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    module = _load(RUNNER_SCRIPT)
+    cases, pack_path, evidence_dir, order = _happy_path_stubs(tmp_path, monkeypatch, module)
+
+    class _StubFactory:
+        def create(self, model_name):
+            order.append("factory_create")
+            return _StubEmbedder()
+
+    monkeypatch.setattr(
+        "catalyst_agents.runtime.query_embedding.ProductionBgeM3QueryEmbeddingFactory",
+        _StubFactory,
+    )
+    monkeypatch.setattr(
+        "catalyst_data.storage.lancedb_store.load_reranker",
+        lambda model_name: _StubReranker(),
+    )
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "lancedb", _fake_lancedb_module())
+
+    from tests.post_import_fixtures import make_hybrid_result
+
+    monkeypatch.setattr(
+        four_arm, "_retrieve_hybrid",
+        lambda *a, **k: make_hybrid_result(ticker=k.get("ticker", "AAPL")),
+    )
+    monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
+
+    rc = module.main([
+        "--db", str(tmp_path / "frozen.db"),
+        "--lancedb-dir", str(tmp_path / "gold"),
+        "--case-pack", str(pack_path),
+        "--run-id", "cuda_off",
+        "--output-root", str(tmp_path / "runs"),
+        "--embedding-mode", "production_pinned",
+        "--t4-evidence-dir", str(evidence_dir),
+    ])
+    captured = capsys.readouterr().out
+    assert rc == 2, captured
+    assert "CUDA" in captured
+    assert "factory_create" in order
+    assert not (tmp_path / "runs" / "cuda_off").exists()
+
+
+def test_runner_mock_path_does_not_import_torch(tmp_path, monkeypatch):
+    """mock_unit_test must never import/load torch (CPU fallback forbidden)."""
+    import builtins
+
+    import catalyst_eval.post_import.four_arm as four_arm
+    from catalyst_eval.post_import.case_pack import (
+        SCHEMA_VERSION as CASE_PACK_SCHEMA_VERSION,
+        CasePackCase,
+        write_case_pack,
+    )
+
+    module = _load(RUNNER_SCRIPT)
+    case = CasePackCase(
+        schema_version=CASE_PACK_SCHEMA_VERSION,
+        case_id="c1", ticker="AAPL", session_date="2025-06-12",
+        cutoff="2025-06-12T20:00:00Z", query="Why did AAPL move on 2025-06-12?",
+        source_set="fixture", golden={"golden_id": "c1"},
+    )
+    pack_path = tmp_path / "pack.jsonl"
+    write_case_pack([case], pack_path)
+    monkeypatch.setattr(module, "_sha256_file", lambda path: FROZEN_DB_SHA256)
+    monkeypatch.setattr(module, "_open_db_readonly", lambda path: sqlite3.connect(":memory:"))
+    monkeypatch.setattr(module, "_verify_frozen_db_counts", lambda conn: None)
+    monkeypatch.setattr(module, "resolve_runtime_identity", lambda **k: _resolved())
+    monkeypatch.setitem(sys.modules, "lancedb", _fake_lancedb_module())
+
+    from tests.post_import_fixtures import make_hybrid_result
+
+    monkeypatch.setattr(
+        four_arm, "_retrieve_hybrid",
+        lambda *a, **k: make_hybrid_result(ticker=k.get("ticker", "AAPL")),
+    )
+    monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name == "torch" or name.startswith("torch."):
+            raise AssertionError("mock path must not import torch")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    rc = module.main([
+        "--db", str(tmp_path / "frozen.db"),
+        "--lancedb-dir", str(tmp_path / "gold"),
+        "--case-pack", str(pack_path),
+        "--run-id", "mock_run",
+        "--output-root", str(tmp_path / "runs"),
+        "--embedding-mode", "mock_unit_test",
+    ])
+    assert rc == 0
+    assert not (tmp_path / "runs" / "mock_run" / "WAVE_TOKEN.txt").exists()

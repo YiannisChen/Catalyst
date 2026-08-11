@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -64,6 +65,15 @@ APPROVED = {
     "tokenizer_revision": "5617a9f61b028005a4858fdac845db406aefb181",
     "reranker_model": "BAAI/bge-reranker-v2-m3",
     "reranker_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+    "dimension": 1024,
+    "dtype": "float32",
+    "normalization_mode": "l2",
+    "vector_count": 295506,
+    "lancedb_row_count": 295506,
+    "db_path": "data/snapshots/catalyst_b2o_7a004accb187a17dd5661821913f5b84785af7fe448d6a92331f0bd8aea92f49.db",
+    "db_sha256": "bb37b213091e256033fa00272cb7a85617dbcddf69d6fe9b515840cd9f1ebe40",
+    "db_user_version": 13,
+    "db_foreign_key_violations": 0,
 }
 
 FULL_CASE_PACK_ID = "05333690c3a3f074e34b038a17792837568bf55870abf5678b15ec85c41a03aa"
@@ -860,47 +870,39 @@ def test_mid_run_exception_leaves_no_final_run_dir(tmp_path, monkeypatch):
 
 
 def test_limit_run_never_writes_token(tmp_path, monkeypatch):
-    _monkeypatch_single_call(monkeypatch)
-    summary = run_four_arm_cases(
-        db=fresh_runner_db(tmp_path),
-        lancedb_table=fresh_lance_table(tmp_path),
-        cases=[_case(), _case("B002")], run_id="run1", output_root=tmp_path,
-        identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
-        query_embedding_fn=MockQueryEmbedder().embed_query,
-        reranker=None,
-        limit=1,
-        case_pack_id=FULL_CASE_PACK_ID,
-        validated_evidence=_validated_evidence(),
-        validated_runtime_identity=_validated_runtime(),
-    )
-    assert summary.token_written is False
-    assert not (tmp_path / "run1" / "WAVE_TOKEN.txt").exists()
+    """--limit on the approved pack still never writes the token."""
+    summary = _production_run(tmp_path, monkeypatch, limit=1)
+    _assert_no_token(tmp_path, summary)
 
 
 def test_failed_base_arm_never_writes_token(tmp_path, monkeypatch):
+    """A failed base arm on the approved pack still never writes the token."""
     import catalyst_eval.post_import.four_arm as four_arm
 
+    cases = _approved_cases()
+    evidence_dir, validated, resolved = _real_evidence(tmp_path, cases)
     monkeypatch.setattr(
         four_arm, "_retrieve_hybrid",
         lambda *a, **k: make_hybrid_result(
             mode_requested="reranked", mode_served="fts5",
             dense_ids=None, reranked_ids=None,
             degradation_reasons=("dense_unavailable",),
+            ticker=k.get("ticker", "AAPL"),
         ),
     )
+    monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
     summary = run_four_arm_cases(
         db=fresh_runner_db(tmp_path),
         lancedb_table=fresh_lance_table(tmp_path),
-        cases=[_case()], run_id="run1", output_root=tmp_path,
+        cases=cases, run_id="run1", output_root=tmp_path,
         identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
         query_embedding_fn=MockQueryEmbedder().embed_query,
         reranker=None,
-        case_pack_id=FULL_CASE_PACK_ID,
-        validated_evidence=_validated_evidence(),
-        validated_runtime_identity=_validated_runtime(),
+        case_pack_id=compute_case_pack_id(cases),
+        validated_evidence=validated,
+        validated_runtime_identity=resolved,
     )
-    assert summary.token_written is False
-    assert not (tmp_path / "run1" / "WAVE_TOKEN.txt").exists()
+    _assert_no_token(tmp_path, summary)
 
 
 def test_mock_run_never_writes_token(tmp_path, monkeypatch):
@@ -941,6 +943,7 @@ def test_full_production_contract_writes_exact_token(tmp_path, monkeypatch):
     # Smoke cases use cutoffs absent from the fixture DB; the token-gate
     # behavior under test is the approved-pack contract, not DB serving.
     monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
+    evidence_dir, validated, resolved = _real_evidence(tmp_path, cases)
     summary = run_four_arm_cases(
         db=fresh_runner_db(tmp_path),
         lancedb_table=fresh_lance_table(tmp_path),
@@ -949,154 +952,73 @@ def test_full_production_contract_writes_exact_token(tmp_path, monkeypatch):
         query_embedding_fn=MockQueryEmbedder().embed_query,
         reranker=None,
         case_pack_id=case_pack_id,
-        validated_evidence=_validated_evidence(case_pack_id=case_pack_id),
-        validated_runtime_identity=_validated_runtime(),
+        validated_evidence=validated,
+        validated_runtime_identity=resolved,
     )
     assert summary.token_written is True
     assert (tmp_path / "run1" / "WAVE_TOKEN.txt").read_text().strip() == "FOUR_ARM_E2E_OK"
 
 
-def test_nine_case_pack_never_writes_token(tmp_path, monkeypatch):
-    """A 9-case pack cannot write the token even with matching evidence."""
-    import catalyst_eval.post_import.four_arm as four_arm
-
+def test_nine_case_pack_fails_at_library_production_boundary(tmp_path, monkeypatch):
+    """A 9-case pack cannot pass the library production boundary."""
     cases = _approved_cases()[:9]
-    case_pack_id = compute_case_pack_id(cases)
-    monkeypatch.setattr(
-        four_arm, "_retrieve_hybrid",
-        lambda *a, **k: make_hybrid_result(ticker=k.get("ticker", "AAPL")),
-    )
-    monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
-    summary = run_four_arm_cases(
-        db=fresh_runner_db(tmp_path),
-        lancedb_table=fresh_lance_table(tmp_path),
-        cases=cases, run_id="run1", output_root=tmp_path,
-        identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
-        query_embedding_fn=MockQueryEmbedder().embed_query,
-        reranker=None,
-        case_pack_id=case_pack_id,
-        validated_evidence=_validated_evidence(case_pack_id=case_pack_id),
-        validated_runtime_identity=_validated_runtime(),
-    )
-    assert summary.token_written is False
-    assert not (tmp_path / "run1" / "WAVE_TOKEN.txt").exists()
+    with pytest.raises(ValueError, match="exactly 10|case count"):
+        run_four_arm_cases(
+            db=fresh_runner_db(tmp_path),
+            lancedb_table=fresh_lance_table(tmp_path),
+            cases=cases, run_id="run1", output_root=tmp_path,
+            identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
+            query_embedding_fn=MockQueryEmbedder().embed_query,
+            reranker=None,
+            case_pack_id=compute_case_pack_id(cases),
+        )
+    assert not (tmp_path / "run1").exists()
 
 
-def test_non_approved_10_case_pack_never_writes_token(tmp_path, monkeypatch):
-    """An arbitrary 10-case pack (not the approved one) cannot write the token."""
-    from dataclasses import replace
-
-    import catalyst_eval.post_import.four_arm as four_arm
-
+def test_non_approved_10_case_pack_fails_at_library_production_boundary(tmp_path, monkeypatch):
+    """An arbitrary 10-case pack (not the approved one) cannot pass the library boundary."""
     cases = [replace(c, case_id=f"B{i:03d}") for i, c in enumerate(_approved_cases(), start=1)]
-    case_pack_id = compute_case_pack_id(cases)
-    monkeypatch.setattr(
-        four_arm, "_retrieve_hybrid",
-        lambda *a, **k: make_hybrid_result(ticker=k.get("ticker", "AAPL")),
-    )
-    monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
-    summary = run_four_arm_cases(
-        db=fresh_runner_db(tmp_path),
-        lancedb_table=fresh_lance_table(tmp_path),
-        cases=cases, run_id="run1", output_root=tmp_path,
-        identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
-        query_embedding_fn=MockQueryEmbedder().embed_query,
-        reranker=None,
-        case_pack_id=case_pack_id,
-        validated_evidence=_validated_evidence(case_pack_id=case_pack_id),
-        validated_runtime_identity=_validated_runtime(),
-    )
-    assert summary.token_written is False
-    assert not (tmp_path / "run1" / "WAVE_TOKEN.txt").exists()
+    with pytest.raises(ValueError, match="order|approved|contract"):
+        run_four_arm_cases(
+            db=fresh_runner_db(tmp_path),
+            lancedb_table=fresh_lance_table(tmp_path),
+            cases=cases, run_id="run1", output_root=tmp_path,
+            identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
+            query_embedding_fn=MockQueryEmbedder().embed_query,
+            reranker=None,
+            case_pack_id=compute_case_pack_id(cases),
+        )
+    assert not (tmp_path / "run1").exists()
 
 
 def test_case_pack_id_mismatch_never_writes_token(tmp_path, monkeypatch):
-    _monkeypatch_single_call(monkeypatch)
-    summary = run_four_arm_cases(
-        db=fresh_runner_db(tmp_path),
-        lancedb_table=fresh_lance_table(tmp_path),
-        cases=[_case()], run_id="run1", output_root=tmp_path,
-        identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
-        query_embedding_fn=MockQueryEmbedder().embed_query,
-        reranker=None,
-        case_pack_id=FULL_CASE_PACK_ID,
-        validated_evidence=_validated_evidence(case_pack_id="9" * 64),
-        validated_runtime_identity=_validated_runtime(),
-    )
-    assert summary.token_written is False
-    assert not (tmp_path / "run1" / "WAVE_TOKEN.txt").exists()
+    """The approved pack with a forged case_pack_id param cannot write the token."""
+    summary = _production_run(tmp_path, monkeypatch, case_pack_id="9" * 64)
+    _assert_no_token(tmp_path, summary)
 
 
 def test_partial_case_count_never_writes_token(tmp_path, monkeypatch):
-    _monkeypatch_single_call(monkeypatch)
-    summary = run_four_arm_cases(
-        db=fresh_runner_db(tmp_path),
-        lancedb_table=fresh_lance_table(tmp_path),
-        cases=[_case()], run_id="run1", output_root=tmp_path,
-        identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
-        query_embedding_fn=MockQueryEmbedder().embed_query,
-        reranker=None,
-        case_pack_id=FULL_CASE_PACK_ID,
-        full_case_count=2,
-        validated_evidence=_validated_evidence(),
-        validated_runtime_identity=_validated_runtime(),
-    )
-    assert summary.token_written is False
-    assert not (tmp_path / "run1" / "WAVE_TOKEN.txt").exists()
+    """A full_case_count larger than the executed pack cannot write the token."""
+    summary = _production_run(tmp_path, monkeypatch, full_case_count=11)
+    _assert_no_token(tmp_path, summary)
 
 
 def test_token_requires_validated_evidence_object(tmp_path, monkeypatch):
-    _monkeypatch_single_call(monkeypatch)
-    summary = run_four_arm_cases(
-        db=fresh_runner_db(tmp_path),
-        lancedb_table=fresh_lance_table(tmp_path),
-        cases=[_case()], run_id="run1", output_root=tmp_path,
-        identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
-        query_embedding_fn=MockQueryEmbedder().embed_query,
-        reranker=None,
-        case_pack_id=FULL_CASE_PACK_ID,
-        validated_evidence=None,
-        validated_runtime_identity=_validated_runtime(),
-    )
-    assert summary.token_written is False
-    assert not (tmp_path / "run1" / "WAVE_TOKEN.txt").exists()
+    summary = _production_run(tmp_path, monkeypatch, evidence=None)
+    _assert_no_token(tmp_path, summary)
 
 
 def test_token_requires_validated_runtime_identity_object(tmp_path, monkeypatch):
-    _monkeypatch_single_call(monkeypatch)
-    summary = run_four_arm_cases(
-        db=fresh_runner_db(tmp_path),
-        lancedb_table=fresh_lance_table(tmp_path),
-        cases=[_case()], run_id="run1", output_root=tmp_path,
-        identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
-        query_embedding_fn=MockQueryEmbedder().embed_query,
-        reranker=None,
-        case_pack_id=FULL_CASE_PACK_ID,
-        validated_evidence=_validated_evidence(),
-        validated_runtime_identity=None,
-    )
-    assert summary.token_written is False
-    assert not (tmp_path / "run1" / "WAVE_TOKEN.txt").exists()
+    summary = _production_run(tmp_path, monkeypatch, runtime=None)
+    _assert_no_token(tmp_path, summary)
 
 
 def test_token_rejects_runtime_identity_mismatch(tmp_path, monkeypatch):
     """Validated runtime identity corpus manifest must match run identities."""
-    _monkeypatch_single_call(monkeypatch)
-    base = _validated_runtime()
-    runtime = ResolvedRuntimeIdentity(**{**base.__dict__, "corpus_manifest_id": "e" * 64})
-    summary = run_four_arm_cases(
-        db=fresh_runner_db(tmp_path),
-        lancedb_table=fresh_lance_table(tmp_path),
-        cases=[_case()], run_id="run1", output_root=tmp_path,
-        identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
-        query_embedding_fn=MockQueryEmbedder().embed_query,
-        reranker=None,
-        case_pack_id=FULL_CASE_PACK_ID,
-        validated_evidence=_validated_evidence(),
-        validated_runtime_identity=runtime,
-    )
-    assert summary.token_written is False
-    assert not (tmp_path / "run1" / "WAVE_TOKEN.txt").exists()
+    _evidence_dir, validated, resolved = _real_evidence(tmp_path)
+    runtime = replace(resolved, corpus_manifest_id="e" * 64)
+    summary = _production_run(tmp_path, monkeypatch, runtime=runtime)
+    _assert_no_token(tmp_path, summary)
 
 
 # ---------------------------------------------------------------------------
@@ -1163,14 +1085,19 @@ def test_production_embedding_called_exactly_n_times_no_probe_query(tmp_path, mo
     """AMEND-2 P6: N cases => exactly N embedding calls; no extra probe-query."""
     import catalyst_eval.post_import.four_arm as four_arm
 
+    cases = _approved_cases()
+    evidence_dir, validated, resolved = _real_evidence(tmp_path, cases)
     calls: list[str] = []
 
     def embedding_fn(query):
         calls.append(query)
         return MockQueryEmbedder().embed_query(query)
 
-    monkeypatch.setattr(four_arm, "_retrieve_hybrid", lambda *a, **k: _ok_hybrid())
-    cases = [_case("B001"), _case("B002"), _case("B003")]
+    monkeypatch.setattr(
+        four_arm, "_retrieve_hybrid",
+        lambda *a, **k: _ok_hybrid(ticker=k.get("ticker", "AAPL")),
+    )
+    monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
     run_four_arm_cases(
         db=fresh_runner_db(tmp_path),
         lancedb_table=fresh_lance_table(tmp_path),
@@ -1178,11 +1105,11 @@ def test_production_embedding_called_exactly_n_times_no_probe_query(tmp_path, mo
         identities=_identities(), boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
         query_embedding_fn=embedding_fn,
         reranker=None,
-        case_pack_id=FULL_CASE_PACK_ID,
-        validated_evidence=_validated_evidence(),
-        validated_runtime_identity=_validated_runtime(),
+        case_pack_id=compute_case_pack_id(cases),
+        validated_evidence=validated,
+        validated_runtime_identity=resolved,
     )
-    assert len(calls) == 3
+    assert len(calls) == 10
     assert all("probe-query" not in call for call in calls)
 
 
@@ -1216,3 +1143,348 @@ def test_degraded_mode_requires_authorization_artifact(tmp_path):
     validate_embedding_boundary(
         boundary, manager_authorization_path=auth,
     )
+
+
+# ---------------------------------------------------------------------------
+# AMEND-4 Task 1: batch reranker single-flight (shared RerankerGate)
+# ---------------------------------------------------------------------------
+
+
+def test_four_arm_batch_reuses_one_reranker_gate(tmp_path, monkeypatch):
+    """Every case must receive the same non-None RerankerGate."""
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    seen_gates: list = []
+
+    def recording_hybrid(*args, **kwargs):
+        seen_gates.append(kwargs.get("reranker_gate"))
+        return _ok_hybrid()
+
+    monkeypatch.setattr(four_arm, "_retrieve_hybrid", recording_hybrid)
+    cases = [_case("B001"), _case("B002")]
+    run_four_arm_cases(
+        db=fresh_runner_db(tmp_path),
+        lancedb_table=fresh_lance_table(tmp_path),
+        cases=cases, run_id="run1", output_root=tmp_path,
+        identities=_identities(), boundary=_mock_boundary(),
+        query_embedding_fn=MockQueryEmbedder().embed_query,
+        reranker=RecordingReranker(),
+        case_pack_id=FULL_CASE_PACK_ID,
+    )
+    assert len(seen_gates) == 2
+    assert all(gate is not None for gate in seen_gates)
+    assert seen_gates[0] is seen_gates[1]
+
+
+def test_four_arm_timeout_never_starts_second_reranker_worker(tmp_path, monkeypatch):
+    """A timed-out inference blocks a second case: reranker_busy, max 1 worker."""
+    import time
+
+    import catalyst_eval.post_import.four_arm as four_arm
+    from catalyst_data.retrieval.reranker import RerankerGate
+
+    class SlowReranker:
+        def score(self, query, candidates):
+            time.sleep(0.25)
+            return [float(100 - i) for i in range(len(candidates))]
+
+    started_workers: list = []
+    original_acquire = RerankerGate.acquire
+
+    def spy_acquire(self, *, target, name):
+        worker = original_acquire(self, target=target, name=name)
+        started_workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(RerankerGate, "acquire", spy_acquire)
+    cases = [_case("B001"), _case("B002")]
+    summary = run_four_arm_cases(
+        db=fresh_runner_db(tmp_path),
+        lancedb_table=fresh_lance_table(tmp_path),
+        cases=cases, run_id="run1", output_root=tmp_path,
+        identities=_identities(), boundary=_mock_boundary(),
+        query_embedding_fn=MockQueryEmbedder().embed_query,
+        reranker=SlowReranker(),
+        reranker_timeout_seconds=0.05,
+        case_pack_id=FULL_CASE_PACK_ID,
+    )
+    run_dir = tmp_path / "run1"
+    first_arm = json.loads((run_dir / "arms" / "B001.json").read_text())
+    second_arm = json.loads((run_dir / "arms" / "B002.json").read_text())
+    assert "reranker_timeout" in first_arm["arms"]["reranked"]["degradation_reasons"]
+    assert "reranker_busy" in second_arm["arms"]["reranked"]["degradation_reasons"]
+    # Exactly one worker ever starts; the second acquire is refused (None).
+    started = [worker for worker in started_workers if worker is not None]
+    assert len(started) == 1
+    assert len(started_workers) == 2
+    assert started_workers[1] is None
+    assert summary.token_written is False
+    assert not (run_dir / "WAVE_TOKEN.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# AMEND-4 Task 2: caller-forgeable validated evidence/runtime fails closed
+# ---------------------------------------------------------------------------
+
+
+def _evidence_kwargs() -> dict:
+    return {
+        "db_sha256": APPROVED["db_sha256"],
+        "corpus_manifest_id": APPROVED["corpus_manifest_id"],
+        "snapshot_id": APPROVED["snapshot_id"],
+        "source_bundle_id": APPROVED["source_bundle_id"],
+        "probe_report_id": APPROVED["probe_report_id"],
+        "postbuild_readiness_id": APPROVED["postbuild_readiness_id"],
+        "index_manifest_id": APPROVED["index_manifest_id"],
+        "db_path": APPROVED["db_path"],
+        "db_user_version": APPROVED["db_user_version"],
+        "db_foreign_key_violations": APPROVED["db_foreign_key_violations"],
+        "lancedb_dir": APPROVED["lancedb_dir"],
+        "active_table_name": APPROVED["active_table_name"],
+        "model_name": APPROVED["model_name"],
+        "model_revision": APPROVED["model_revision"],
+        "tokenizer_revision": APPROVED["tokenizer_revision"],
+        "dimension": APPROVED["dimension"],
+        "dtype": APPROVED["dtype"],
+        "normalization_mode": APPROVED["normalization_mode"],
+        "embedding_mode": "mock_unit_test",
+    }
+
+
+def _real_evidence(tmp_path, cases=None):
+    """Build a real T4 evidence directory on disk and validate it for real."""
+    from catalyst_eval.post_import.case_pack import write_case_pack
+    from catalyst_eval.post_import.probe import (
+        CaseProbeResult,
+        ServedCorpusProbeReport,
+        write_probe_evidence,
+    )
+    from catalyst_eval.post_import.t4_evidence import validate_t4_evidence
+
+    cases = cases if cases is not None else _approved_cases()
+    evidence_dir = tmp_path / "evidence"
+    write_case_pack(cases, evidence_dir / "case_pack.jsonl")
+    report = ServedCorpusProbeReport(
+        schema_version="served_corpus_probe_v1",
+        corpus_manifest_id=APPROVED["corpus_manifest_id"],
+        case_count=len(cases), passed_count=len(cases), all_passed=True,
+        per_case=tuple(CaseProbeResult(c.case_id, c.ticker, c.cutoff, 1) for c in cases),
+    )
+    write_probe_evidence(
+        report, run_dir=evidence_dir,
+        case_pack_id=compute_case_pack_id(cases),
+        case_pack_path="case_pack.jsonl",
+        runtime_git_head=APPROVED["git_head"],
+        index_build_code_revision=APPROVED["code_revision"],
+        **_evidence_kwargs(),
+    )
+    resolved = _validated_runtime()
+    validated = validate_t4_evidence(
+        evidence_dir=evidence_dir, current_case_pack=cases, resolved=resolved,
+    )
+    return evidence_dir, validated, resolved
+
+
+_USE_VALIDATED = object()
+
+
+def _production_run(tmp_path, monkeypatch, *, cases=None, evidence=_USE_VALIDATED,
+                    runtime=_USE_VALIDATED, identities=None, case_pack_id=None,
+                    **kwargs):
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    cases = cases if cases is not None else _approved_cases()
+    _evidence_dir, validated, resolved = _real_evidence(tmp_path, cases)
+    monkeypatch.setattr(
+        four_arm, "_retrieve_hybrid",
+        lambda *a, **k: _ok_hybrid(ticker=k.get("ticker", "AAPL")),
+    )
+    monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
+    return run_four_arm_cases(
+        db=fresh_runner_db(tmp_path),
+        lancedb_table=fresh_lance_table(tmp_path),
+        cases=cases, run_id="run1", output_root=tmp_path,
+        identities=identities if identities is not None else _identities(),
+        boundary=_mock_boundary(
+            embedding_mode="production_pinned", is_mock=False, cuda_available=True,
+        ),
+        query_embedding_fn=MockQueryEmbedder().embed_query,
+        reranker=None,
+        case_pack_id=case_pack_id if case_pack_id is not None else compute_case_pack_id(cases),
+        validated_evidence=validated if evidence is _USE_VALIDATED else evidence,
+        validated_runtime_identity=resolved if runtime is _USE_VALIDATED else runtime,
+        **kwargs,
+    )
+
+
+def _assert_no_token(tmp_path, summary):
+    assert summary.token_written is False
+    assert not (tmp_path / "run1" / "WAVE_TOKEN.txt").exists()
+
+
+def test_poisoned_passed_count_never_writes_token(tmp_path, monkeypatch):
+    _evidence_dir, validated, _resolved = _real_evidence(tmp_path)
+    summary = _production_run(
+        tmp_path, monkeypatch, evidence=replace(validated, passed_count=1),
+    )
+    _assert_no_token(tmp_path, summary)
+
+
+def test_poisoned_db_sha256_never_writes_token(tmp_path, monkeypatch):
+    _evidence_dir, validated, _resolved = _real_evidence(tmp_path)
+    summary = _production_run(
+        tmp_path, monkeypatch, evidence=replace(validated, db_sha256="0" * 64),
+    )
+    _assert_no_token(tmp_path, summary)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("db_user_version", 12),
+    ("db_foreign_key_violations", 1),
+])
+def test_poisoned_db_user_version_and_fk_never_write_token(tmp_path, monkeypatch, field, value):
+    _evidence_dir, validated, _resolved = _real_evidence(tmp_path)
+    summary = _production_run(
+        tmp_path, monkeypatch, evidence=replace(validated, **{field: value}),
+    )
+    _assert_no_token(tmp_path, summary)
+
+
+def test_poisoned_runtime_git_head_never_writes_token(tmp_path, monkeypatch):
+    _evidence_dir, validated, resolved = _real_evidence(tmp_path)
+    poisoned_runtime = replace(resolved, git_head="0" * 40)
+    summary = _production_run(tmp_path, monkeypatch, runtime=poisoned_runtime)
+    _assert_no_token(tmp_path, summary)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("vector_count", 1),
+    ("lancedb_row_count", 1),
+])
+def test_poisoned_runtime_vector_count_and_row_count_never_write_token(tmp_path, monkeypatch, field, value):
+    _evidence_dir, validated, resolved = _real_evidence(tmp_path)
+    poisoned_runtime = replace(resolved, **{field: value})
+    summary = _production_run(tmp_path, monkeypatch, runtime=poisoned_runtime)
+    _assert_no_token(tmp_path, summary)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("model_revision", "0" * 40),
+    ("tokenizer_revision", "0" * 40),
+])
+def test_poisoned_model_and_tokenizer_revision_never_write_token(tmp_path, monkeypatch, field, value):
+    _evidence_dir, validated, _resolved = _real_evidence(tmp_path)
+    summary = _production_run(
+        tmp_path, monkeypatch, evidence=replace(validated, **{field: value}),
+    )
+    _assert_no_token(tmp_path, summary)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("dimension", 512),
+    ("dtype", "float64"),
+    ("normalization_mode", "none"),
+])
+def test_poisoned_vector_contract_never_writes_token(tmp_path, monkeypatch, field, value):
+    _evidence_dir, validated, _resolved = _real_evidence(tmp_path)
+    summary = _production_run(
+        tmp_path, monkeypatch, evidence=replace(validated, **{field: value}),
+    )
+    _assert_no_token(tmp_path, summary)
+
+
+def test_reordered_approved_cases_fail_at_library_production_boundary(tmp_path, monkeypatch):
+    """Reordering the approved pack must fail closed at the library boundary."""
+    cases = _approved_cases()
+    reordered = [cases[1], cases[0], *cases[2:]]
+    evidence_dir, validated, resolved = _real_evidence(tmp_path, cases)
+    with pytest.raises(ValueError, match="order|approved|contract"):
+        run_four_arm_cases(
+            db=fresh_runner_db(tmp_path),
+            lancedb_table=fresh_lance_table(tmp_path),
+            cases=reordered, run_id="run1", output_root=tmp_path,
+            identities=_identities(),
+            boundary=_mock_boundary(
+                embedding_mode="production_pinned", is_mock=False, cuda_available=True,
+            ),
+            query_embedding_fn=MockQueryEmbedder().embed_query,
+            reranker=None,
+            case_pack_id=compute_case_pack_id(reordered),
+            validated_evidence=validated,
+            validated_runtime_identity=resolved,
+        )
+    assert not (tmp_path / "run1").exists()
+
+
+def test_validated_object_not_backed_by_real_evidence_dir_never_writes_token(tmp_path, monkeypatch):
+    _evidence_dir, validated, _resolved = _real_evidence(tmp_path)
+    forged = replace(validated, evidence_dir=tmp_path / "missing_evidence")
+    summary = _production_run(tmp_path, monkeypatch, evidence=forged)
+    _assert_no_token(tmp_path, summary)
+
+
+# ---------------------------------------------------------------------------
+# AMEND-4 Task 7: reranker timeout configuration recording
+# ---------------------------------------------------------------------------
+
+
+def test_meta_records_reranker_timeout_seconds(tmp_path, monkeypatch):
+    _monkeypatch_single_call(monkeypatch)
+    summary = run_four_arm_cases(
+        db=fresh_runner_db(tmp_path),
+        lancedb_table=fresh_lance_table(tmp_path),
+        cases=[_case()], run_id="run1", output_root=tmp_path,
+        identities=_identities(), boundary=_mock_boundary(),
+        query_embedding_fn=MockQueryEmbedder().embed_query,
+        reranker=RecordingReranker(),
+        reranker_timeout_seconds=2.0,
+        case_pack_id=FULL_CASE_PACK_ID,
+    )
+    meta = json.loads((tmp_path / "run1" / "meta.json").read_text())
+    assert meta["reranker_timeout_seconds"] == 2.0
+
+
+def test_arm_retrieval_config_records_reranker_timeout_seconds(tmp_path, monkeypatch):
+    _monkeypatch_single_call(monkeypatch)
+    run_four_arm_cases(
+        db=fresh_runner_db(tmp_path),
+        lancedb_table=fresh_lance_table(tmp_path),
+        cases=[_case()], run_id="run1", output_root=tmp_path,
+        identities=_identities(), boundary=_mock_boundary(),
+        query_embedding_fn=MockQueryEmbedder().embed_query,
+        reranker=RecordingReranker(),
+        reranker_timeout_seconds=1.5,
+        case_pack_id=FULL_CASE_PACK_ID,
+    )
+    arm = json.loads((tmp_path / "run1" / "arms" / "B001.json").read_text())
+    assert arm["retrieval_config"]["reranker_timeout_seconds"] == 1.5
+
+
+@pytest.mark.parametrize("bad_timeout", [0.0, -1.0])
+def test_non_positive_reranker_timeout_rejected_before_case_loop(
+    tmp_path, monkeypatch, bad_timeout,
+):
+    """Non-positive timeouts must be rejected before any embedding/retrieval."""
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    calls: list[str] = []
+    monkeypatch.setattr(four_arm, "_retrieve_hybrid", lambda *a, **k: _ok_hybrid())
+
+    def embedding_fn(query):
+        calls.append(query)
+        return MockQueryEmbedder().embed_query(query)
+
+    with pytest.raises(ValueError, match="timeout"):
+        run_four_arm_cases(
+            db=fresh_runner_db(tmp_path),
+            lancedb_table=fresh_lance_table(tmp_path),
+            cases=[_case()], run_id="run1", output_root=tmp_path,
+            identities=_identities(), boundary=_mock_boundary(),
+            query_embedding_fn=embedding_fn,
+            reranker=RecordingReranker(),
+            reranker_timeout_seconds=bad_timeout,
+            case_pack_id=FULL_CASE_PACK_ID,
+        )
+    assert calls == []
+    assert not (tmp_path / "run1").exists()
+    assert not list(tmp_path.glob(".run1*"))

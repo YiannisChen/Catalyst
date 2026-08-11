@@ -28,6 +28,7 @@ PINNED_RETRIEVAL_CONFIG = {
     "display_top_k": 8,
     "embedding_revision": BGE_M3_REVISION,
     "reranker_revision": BGE_RERANKER_REVISION,
+    "reranker_timeout_seconds": 2.0,
 }
 
 
@@ -192,7 +193,7 @@ LITERAL_HYBRID_CHUNK_IDS = ("d", "a", "e")
 LITERAL_RERANKED_CHUNK_IDS = ("e", "f")
 EXPECTED_UNION_CHUNK_IDS = ("a", "b", "c", "d", "e", "f")
 # Literal golden identity of make_arm_artifact() under the literal arms fixture.
-EXPECTED_ARM_ARTIFACT_ID = "854c03da5d20e19f9e04a19ede14b0005a5a5d17987f7cd89c78473cde4f44e7"
+EXPECTED_ARM_ARTIFACT_ID = "07a82b43e64d230946a75443e301faeeec6a7756ada8bd950e80fabb3c802522"
 
 
 def _mutate(update: dict[str, Any]) -> Any:

@@ -185,3 +185,45 @@ def test_public_validator_reads_only_bounded_batch_apis(tmp_path):
     table = _BoundedFakeTable(rows)
     assert not hasattr(table, "to_pylist")
     _call(table, chunk_ids_path=chunk_ids_path, expected_hash=_canonical_digest(rows))
+
+
+# ---------------------------------------------------------------------------
+# AMEND-4 Task 5: persisted vector finiteness and dimension negatives
+# ---------------------------------------------------------------------------
+
+
+def test_public_validator_rejects_nan_vector(tmp_path):
+    rows = [_row(i) for i in range(4)]
+    poisoned = dict(rows[0])
+    poisoned["vector"] = [0.0] * 1023 + [float("nan")]
+    rows[0] = poisoned
+    # LanceDB rejects NaN at insert time; the bounded fake table exercises the
+    # validator's own finiteness check.
+    chunk_ids_path = _write_chunk_ids(tmp_path, [r["chunk_id"] for r in rows])
+    table = _BoundedFakeTable(rows)
+    with pytest.raises(ValueError, match="finite"):
+        _call(table, chunk_ids_path=chunk_ids_path, expected_hash=_canonical_digest(rows))
+
+
+def test_public_validator_rejects_inf_vector(tmp_path):
+    rows = [_row(i) for i in range(4)]
+    poisoned = dict(rows[0])
+    poisoned["vector"] = [0.0] * 1023 + [float("inf")]
+    rows[0] = poisoned
+    table, _rows, chunk_ids_path, _hash = _build_table(tmp_path, rows=rows)
+    with pytest.raises(ValueError, match="finite"):
+        _call(table, chunk_ids_path=chunk_ids_path, expected_hash=_canonical_digest(rows))
+
+
+@pytest.mark.parametrize("vector_dim", [512, 1025])
+def test_public_validator_rejects_wrong_vector_dimension(tmp_path, vector_dim):
+    rows = [_row(i) for i in range(4)]
+    poisoned = dict(rows[0])
+    poisoned["vector"] = [0.0] * vector_dim
+    rows[0] = poisoned
+    chunk_ids_path = _write_chunk_ids(tmp_path, [r["chunk_id"] for r in rows])
+    # A fixed-size 1024 LanceDB schema cannot hold the wrong-length vector, so
+    # use the bounded fake table to exercise the validator's dimension check.
+    table = _BoundedFakeTable(rows)
+    with pytest.raises(ValueError, match="dimension"):
+        _call(table, chunk_ids_path=chunk_ids_path, expected_hash=_canonical_digest(rows))

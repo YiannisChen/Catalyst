@@ -180,6 +180,14 @@ def resolve_runtime_identity(
     if not lancedb_dir.is_dir():
         raise ValueError(f"lancedb dir does not exist: {lancedb_dir}")
 
+    # Dirty Git / HEAD resolution must fail fast, before any identity-file
+    # read, frozen-DB SHA scan, or LanceDB open/scan.
+    git_head = resolve_git_revision(
+        repo_root=repo_root,
+        require_clean=require_clean,
+        git_runner=git_runner,
+    )
+
     pointer = _load_json(lancedb_dir / "active_generation.json", "active_generation")
     import_report = _load_json(lancedb_dir / "import_report.json", "import_report")
     index_manifest_raw = _load_json(index_manifest_path, "index_manifest")
@@ -325,14 +333,6 @@ def resolve_runtime_identity(
             "postbuild_readiness_id": manifest.postbuild_readiness_id,
         },
         expected_hash=manifest.artifact_hashes["lancedb_table"],
-    )
-
-    # --- Runtime git HEAD (dirty worktree fails closed for production execution;
-    # preparation evidence may record the actual HEAD without a clean gate). ---
-    git_head = resolve_git_revision(
-        repo_root=repo_root,
-        require_clean=require_clean,
-        git_runner=git_runner,
     )
 
     return ResolvedRuntimeIdentity(

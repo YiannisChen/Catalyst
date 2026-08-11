@@ -30,7 +30,7 @@ import shutil
 import sqlite3
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Callable
 
@@ -49,9 +49,15 @@ from catalyst_data.retrieval.pool import (
     load_union_pool,
     write_union_pool,
 )
+from catalyst_data.retrieval.reranker import RerankerGate
 from .case_pack import CasePackCase
 from .index_identity import ResolvedRuntimeIdentity
-from .t4_evidence import APPROVED_T4_CONTRACT, ValidatedT4Evidence
+from .t4_evidence import (
+    APPROVED_T4_CONTRACT,
+    ValidatedT4Evidence,
+    validate_case_pack_against_contract,
+    validate_t4_evidence,
+)
 
 ARM_ORDER = ("fts5", "dense", "hybrid", "reranked")
 META_SCHEMA_VERSION = "post_import_run_meta_v1"
@@ -82,6 +88,15 @@ class RunIdentities:
     tokenizer_revision: str
     reranker_model: str
     reranker_revision: str
+    dimension: int
+    dtype: str
+    normalization_mode: str
+    vector_count: int
+    lancedb_row_count: int
+    db_path: str
+    db_sha256: str
+    db_user_version: int
+    db_foreign_key_violations: int
     schema_version: str = META_SCHEMA_VERSION
 
 
@@ -125,7 +140,18 @@ def _validate_identities(identities: RunIdentities) -> None:
         value = getattr(identities, field_name)
         if _HEX64.fullmatch(value) is None:
             raise ValueError(f"{field_name} must be a 64-char SHA")
-    for field_name in ("lancedb_dir", "active_table_name", "model_name"):
+    if _HEX64.fullmatch(identities.db_sha256) is None:
+        raise ValueError("db_sha256 must be a 64-char SHA")
+    for field_name in ("lancedb_dir", "active_table_name", "model_name", "db_path"):
+        if not getattr(identities, field_name):
+            raise ValueError(f"{field_name} is required")
+    if identities.dimension <= 0:
+        raise ValueError("dimension must be positive")
+    if identities.vector_count <= 0 or identities.lancedb_row_count <= 0:
+        raise ValueError("vector/lancedb row counts must be positive")
+    if identities.db_user_version < 0 or identities.db_foreign_key_violations < 0:
+        raise ValueError("DB facts must be non-negative")
+    for field_name in ("dtype", "normalization_mode"):
         if not getattr(identities, field_name):
             raise ValueError(f"{field_name} is required")
 
@@ -349,7 +375,7 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _pinned_retrieval_config() -> dict[str, Any]:
+def _pinned_retrieval_config(reranker_timeout_seconds: float = 2.0) -> dict[str, Any]:
     return {
         "lexical_top_k": 20,
         "dense_top_k": 20,
@@ -358,6 +384,7 @@ def _pinned_retrieval_config() -> dict[str, Any]:
         "display_top_k": 8,
         "embedding_revision": BGE_M3_REVISION,
         "reranker_revision": BGE_RERANKER_REVISION,
+        "reranker_timeout_seconds": reranker_timeout_seconds,
     }
 
 
@@ -390,6 +417,22 @@ def _reload_validate_run(staging_dir: Path) -> list[dict[str, Any]]:
     return validation
 
 
+def _evidence_fields_match(
+    left: ValidatedT4Evidence,
+    right: ValidatedT4Evidence,
+) -> bool:
+    """Field-by-field canonical equality (no sentinels, no magic markers)."""
+    for field in fields(ValidatedT4Evidence):
+        a = getattr(left, field.name)
+        b = getattr(right, field.name)
+        if field.name == "evidence_dir":
+            a = Path(a).resolve()
+            b = Path(b).resolve()
+        if a != b:
+            return False
+    return True
+
+
 def _success_token_gate(
     *,
     embedding_mode: str,
@@ -405,9 +448,12 @@ def _success_token_gate(
     reload_validation: list[dict[str, Any]],
     has_failed_arm: bool,
     has_degradation: bool,
+    revalidated_evidence: ValidatedT4Evidence | None = None,
+    evidence_revalidation_error: str | None = None,
 ) -> tuple[bool, list[str]]:
     """Return (may_write_token, reasons). Token is only writable when both
-    validated objects are held and match the actual run state."""
+    validated objects are held, the evidence directory re-validates to an
+    identical canonical object, and every identity matches the actual run."""
     reasons: list[str] = []
     if embedding_mode != "production_pinned":
         reasons.append("embedding_mode != production_pinned")
@@ -425,6 +471,14 @@ def _success_token_gate(
         reasons.append("validated T4 evidence object missing")
     elif case_pack_id != validated_evidence.case_pack_id:
         reasons.append("case_pack_id does not match validated T4 evidence")
+    if evidence_revalidation_error is not None:
+        reasons.append(f"T4 evidence re-validation failed: {evidence_revalidation_error}")
+    elif validated_evidence is not None and revalidated_evidence is None:
+        reasons.append("validated T4 evidence could not be re-validated from its evidence directory")
+    elif validated_evidence is not None and not _evidence_fields_match(
+        revalidated_evidence, validated_evidence
+    ):
+        reasons.append("validated T4 evidence fields do not match the evidence directory")
     if validated_runtime_identity is None:
         reasons.append("validated runtime identity object missing")
     elif _identity_binding_mismatch(run_identities, validated_runtime_identity):
@@ -444,8 +498,15 @@ def _identity_binding_mismatch(
     run_identities: RunIdentities,
     runtime: ResolvedRuntimeIdentity,
 ) -> bool:
+    """Full runtime identity parity between the run and the resolved object.
+
+    Every field that a caller could observe or forge is compared here; the
+    validated runtime object is itself re-derived from disk by the CLI, so a
+    mismatch means the run cannot claim the resolved production identity.
+    """
     return not (
         run_identities.code_revision == runtime.code_revision
+        and run_identities.git_head == runtime.git_head
         and run_identities.snapshot_id == runtime.snapshot_id
         and run_identities.corpus_manifest_id == runtime.corpus_manifest_id
         and run_identities.source_bundle_id == runtime.source_bundle_id
@@ -454,6 +515,18 @@ def _identity_binding_mismatch(
         and run_identities.index_manifest_id == runtime.index_manifest_id
         and run_identities.active_table_name == runtime.active_table_name
         and Path(run_identities.lancedb_dir).resolve() == runtime.lancedb_dir.resolve()
+        and run_identities.model_name == runtime.model_name
+        and run_identities.model_revision == runtime.model_revision
+        and run_identities.tokenizer_revision == runtime.tokenizer_revision
+        and run_identities.dimension == runtime.dimension
+        and run_identities.dtype == runtime.dtype
+        and run_identities.normalization_mode == runtime.normalization_mode
+        and run_identities.vector_count == runtime.vector_count
+        and run_identities.lancedb_row_count == runtime.lancedb_row_count
+        and Path(run_identities.db_path).resolve() == runtime.db_path.resolve()
+        and run_identities.db_sha256 == runtime.db_sha256
+        and run_identities.db_user_version == runtime.db_user_version
+        and run_identities.db_foreign_key_violations == runtime.db_foreign_key_violations
     )
 
 
@@ -487,6 +560,14 @@ def run_four_arm_cases(
         manager_authorization_path=manager_authorization_path,
     )
 
+    if boundary.embedding_mode == "production_pinned":
+        # The CLI is the only production entry point, but the library boundary
+        # must also fail closed against caller-forgeable case packs.
+        validate_case_pack_against_contract(cases)
+
+    if reranker_timeout_seconds <= 0:
+        raise ValueError("reranker_timeout_seconds must be positive")
+
     if limit is not None:
         executed_cases = cases[:limit]
     else:
@@ -513,6 +594,7 @@ def run_four_arm_cases(
     validation: list[dict[str, Any]] = []
     has_failed_arm = False
     has_degradation = False
+    reranker_gate = RerankerGate()
     try:
         for case in executed_cases:
             query_vector = validate_query_vector(
@@ -526,6 +608,7 @@ def run_four_arm_cases(
                 index_manifest_id=identities.index_manifest_id,
                 lancedb_table=lancedb_table, reranker=reranker,
                 reranker_timeout_seconds=reranker_timeout_seconds,
+                reranker_gate=reranker_gate,
             )
             hybrid_latency_ms = (time.perf_counter() - started_hybrid) * 1000.0
 
@@ -600,7 +683,7 @@ def run_four_arm_cases(
                 query=case.query,
                 cutoff_ts=case.cutoff,
                 filters=filters,
-                retrieval_config=_pinned_retrieval_config(),
+                retrieval_config=_pinned_retrieval_config(reranker_timeout_seconds),
                 arms=arms,
                 created_at=started_at,
             )
@@ -652,6 +735,7 @@ def run_four_arm_cases(
             "tokenizer_revision": identities.tokenizer_revision,
             "reranker_model": identities.reranker_model,
             "reranker_revision": identities.reranker_revision,
+            "reranker_timeout_seconds": reranker_timeout_seconds,
             "started_at": started_at,
             "completed_at": completed_at,
             "case_count": len(executed_cases),
@@ -670,6 +754,18 @@ def run_four_arm_cases(
         meta_path = staging_dir / "meta.json"
         _atomic_write_json(meta_path, meta)
 
+        revalidated_evidence = None
+        evidence_revalidation_error = None
+        if validated_evidence is not None:
+            try:
+                revalidated_evidence = validate_t4_evidence(
+                    evidence_dir=validated_evidence.evidence_dir,
+                    current_case_pack=cases,
+                    resolved=validated_runtime_identity,
+                )
+            except Exception as exc:
+                evidence_revalidation_error = str(exc)
+
         may_write, gate_reasons = _success_token_gate(
             embedding_mode=boundary.embedding_mode,
             limit=limit,
@@ -684,6 +780,8 @@ def run_four_arm_cases(
             reload_validation=reload_validation,
             has_failed_arm=has_failed_arm,
             has_degradation=has_degradation,
+            revalidated_evidence=revalidated_evidence,
+            evidence_revalidation_error=evidence_revalidation_error,
         )
         token_written = False
         if not may_write:
