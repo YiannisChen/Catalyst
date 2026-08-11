@@ -41,8 +41,16 @@ def test_known_cost_keeps_known_aggregate():
     assert state["total_cost_usd"] is not None
 
 
-def test_deepseek_chat_pricing_is_known():
-    """deepseek-chat is the Wave 3 production model; its cost must be bounded."""
+def test_deepseek_chat_alias_has_no_production_pricing_lock():
+    """deepseek-chat is retired (2026-07-24) and must not carry a pricing lock."""
     est = CostEstimate(model_id="deepseek-chat", tokens_prompt=1_000_000, tokens_completion=1_000_000)
+    assert est.cost_status == "unknown"
+    assert est.cost_usd is None
+
+
+def test_deepseek_v4_flash_pricing_is_known_and_bounded():
+    """deepseek-v4-flash is the Wave 3 production model; cost must be known and <= USD 5."""
+    est = CostEstimate(model_id="deepseek-v4-flash", tokens_prompt=1_000_000, tokens_completion=1_000_000)
     assert est.cost_status == "known"
-    assert est.cost_usd == 0.27 + 1.10
+    assert est.cost_usd == 0.20 + 0.60
+    assert est.cost_usd <= 5.0

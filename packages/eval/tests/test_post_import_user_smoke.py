@@ -340,7 +340,7 @@ class FakeLoader:
             "lancedb": {"status": "ready"},
             "embedding": {"status": "ready"},
             "reranker": {"status": "ready"},
-            "default_model": {"status": "ready", "model": "deepseek-chat"},
+            "default_model": {"status": "ready", "model": "deepseek-v4-flash"},
             "errors": [],
         }
 
@@ -376,7 +376,7 @@ class FakeGraph:
                     started_at="2026-01-15T00:00:00Z",
                     ended_at="2026-01-15T00:00:01Z",
                     latency_ms=100,
-                    model_id="deepseek-chat",
+                    model_id="deepseek-v4-flash",
                     input_tokens=10,
                     output_tokens=20,
                     cost_usd=cost / 5.0 if cost is not None else None,
@@ -519,7 +519,7 @@ def _default_run_kwargs(
         frozen_db_path=frozen_db_path,
         http=http,
         provider="deepseek",
-        model_id="deepseek-chat",
+        model_id="deepseek-v4-flash",
         credential_source="server_env",
         poll_interval_seconds=0.01,
         poll_timeout_seconds=5.0,
@@ -533,6 +533,30 @@ def _default_run_kwargs(
 # ---------------------------------------------------------------------------
 # Stable case selection
 # ---------------------------------------------------------------------------
+
+
+def test_default_model_id_is_deepseek_v4_flash():
+    from catalyst_eval.post_import.user_smoke import DEFAULT_MODEL_ID
+
+    assert DEFAULT_MODEL_ID == "deepseek-v4-flash"
+
+
+def test_retired_model_alias_rejected_before_provider_call(tmp_path):
+    """deepseek-chat is retired; the runner must fail closed before any provider call."""
+    from catalyst_eval.post_import.user_smoke import run_user_smoke
+
+    _, _, _, kwargs = _happy_run(tmp_path)
+    calls: list[str] = []
+
+    def provider_validator():
+        calls.append("provider-validator-called")
+
+    kwargs["model_id"] = "deepseek-chat"
+    kwargs["provider_validator"] = provider_validator
+    with pytest.raises(ValueError, match="retired"):
+        run_user_smoke(**kwargs)
+    assert calls == []
+    assert not (tmp_path / "reports" / "usmoke_test").exists()
 
 
 def test_select_user_smoke_cases_selects_exactly_approved_three():

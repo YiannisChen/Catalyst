@@ -82,7 +82,11 @@ COST_CEILING_USD = 5.0
 POLL_DEFAULT_TIMEOUT_SECONDS = 300.0
 POLL_DEFAULT_INTERVAL_SECONDS = 0.5
 DEFAULT_PROVIDER = "deepseek"
-DEFAULT_MODEL_ID = "deepseek-chat"
+DEFAULT_MODEL_ID = "deepseek-v4-flash"
+
+# DeepSeek retired deepseek-chat/deepseek-reasoner on 2026-07-24 (manager
+# decision); the runner must fail closed rather than silently fall back.
+RETIRED_MODEL_ALIASES = ("deepseek-chat", "deepseek-reasoner")
 
 EXPECTED_WAVE2_CASE_COUNT = 10
 
@@ -143,6 +147,22 @@ def _open_frozen_db_readonly(path: Path) -> sqlite3.Connection:
     """
     uri = f"{Path(path).resolve().as_uri()}?mode=ro&immutable=1"
     return sqlite3.connect(uri, uri=True)
+
+
+def _model_pricing_rate(model_id: str, direction: str) -> float | None:
+    """Read the runtime pricing lock without exposing credentials.
+
+    Returns None when the model has no lock (the cost gate fails closed later).
+    """
+    try:
+        from catalyst_agents.cost_tracker import MODEL_PRICING
+
+        entry = MODEL_PRICING.get(model_id)
+        if entry is None:
+            return None
+        return float(entry.get(direction))
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -771,6 +791,11 @@ def run_user_smoke(
     ``cases`` is the full T4 case pack; the three approved cases are selected
     internally.  All gates run before any provider call or artifact write.
     """
+    if model_id in RETIRED_MODEL_ALIASES:
+        raise ValueError(
+            f"retired provider model alias {model_id!r} is not supported; "
+            f"use {DEFAULT_MODEL_ID}"
+        )
     selected = select_user_smoke_cases(cases)
     validate_embedding_boundary(boundary)
     if poll_timeout_seconds <= 0 or poll_interval_seconds <= 0:
@@ -1064,6 +1089,11 @@ def run_user_smoke(
             "provider": provider,
             "model_id": model_id,
             "credential_source": credential_source,
+            "model_pricing_source": "repository MODEL_PRICING lock (cost_tracker.py)",
+            "model_pricing_assumption": "conservative cache-miss rates",
+            "model_pricing_recorded_at": "2026-08-11",
+            "model_pricing_input_usd_per_million": _model_pricing_rate(model_id, "input"),
+            "model_pricing_output_usd_per_million": _model_pricing_rate(model_id, "output"),
             "selected_case_ids": list(USER_SMOKE_CASE_IDS),
             "expected_classes": dict(USER_SMOKE_EXPECTED_CLASSES),
             "started_at": started_at,
@@ -1107,9 +1137,9 @@ __all__ = [
     "FAILURE_PATHS_SCHEMA", "META_SCHEMA_VERSION", "POLL_DEFAULT_INTERVAL_SECONDS",
     "POLL_DEFAULT_TIMEOUT_SECONDS", "USER_SMOKE_CASE_IDS", "USER_SMOKE_EXPECTED_CLASSES",
     "USER_SMOKE_TOKEN", "WAVE2_FOUR_ARM_TOKEN", "WAVE_TOKEN_FILENAME",
-    "CASE_RESULTS_SCHEMA", "EXPECTED_WAVE2_CASE_COUNT",
+    "CASE_RESULTS_SCHEMA", "EXPECTED_WAVE2_CASE_COUNT", "RETIRED_MODEL_ALIASES",
     "FailurePathResult", "HttpResponse", "UserSmokeCase", "UserSmokeCaseResult",
     "UserSmokeSummary", "ValidatedWave2Evidence",
-    "_redact_payload", "_secret_scan", "normalize_expected_class",
+    "_model_pricing_rate", "_redact_payload", "_secret_scan", "normalize_expected_class",
     "run_user_smoke", "select_user_smoke_cases", "validate_wave2_evidence",
 ]

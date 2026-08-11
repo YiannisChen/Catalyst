@@ -911,7 +911,7 @@ def test_user_smoke_script_parses_minimal_required_args():
     assert args.run_id == "user_smoke_1"
     assert args.embedding_mode == "production_pinned"
     assert args.provider == "deepseek"
-    assert args.model_id == "deepseek-chat"
+    assert args.model_id == "deepseek-v4-flash"
     assert args.output_root == Path("data/run_reports/post_import")
     assert not hasattr(args, "code_revision")
     assert not hasattr(args, "git_head")
