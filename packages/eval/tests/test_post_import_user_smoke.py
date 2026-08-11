@@ -70,6 +70,17 @@ from catalyst_eval.post_import.user_smoke import (
 
 GOLDEN_DIR = Path(__file__).resolve().parents[1] / "golden_set"
 
+
+@pytest.fixture(autouse=True)
+def _fake_deepseek_env(monkeypatch):
+    """The app's server_env credential gate requires a configured key.
+
+    The provider itself is mocked at the graph/LLM adapter seam in these
+    tests, so the value is a synthetic placeholder that never reaches the
+    network and never appears in evidence.
+    """
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-fake-test-only-00000000000000000000")
+
 GIT_HEAD = "8dd9ee9b5f04e848e3d8248dad6470189af79573"
 CODE_REVISION = "bb43ebe20f29a13ef426e0a1a7c3aefc6d15ffd8"
 
