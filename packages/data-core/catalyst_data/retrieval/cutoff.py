@@ -53,6 +53,28 @@ class ExchangeCutoffPolicy:
         """
         return _validate_intraday(session_date, as_of)
 
+    def compute_cutoff(
+        self,
+        ticker: str,
+        session_date: str,
+        mode: str = "close_to_close",
+        as_of: str | None = None,
+    ) -> str:
+        """Policy-level cutoff computation (graph runtime contract).
+
+        Mirrors the module-level ``compute_cutoff`` function so the
+        attribution graph can call ``cutoff_policy.compute_cutoff(...)``:
+        ``close_to_close`` and ``attribution`` resolve to the official
+        exchange close; ``intraday`` canonicalizes an explicit UTC as_of.
+        """
+        if mode in {"close_to_close", "attribution"}:
+            return self.close_to_close(ticker, session_date)
+        if mode == "intraday":
+            if as_of is None:
+                raise CutoffPolicyError("invalid_as_of", "intraday requires as_of")
+            return self.intraday(ticker, session_date, as_of)
+        raise CutoffPolicyError("invalid_mode", str(mode))
+
 
 def _validate_intraday(session_date: str, as_of: str) -> str:
     """Validate intraday as_of and return canonical second-resolution UTC."""

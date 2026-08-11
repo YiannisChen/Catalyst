@@ -160,3 +160,34 @@ def test_cutoff_failures_expose_typed_codes():
     with pytest.raises(CutoffPolicyError) as holiday:
         compute_cutoff("AAPL", "2026-01-17")
     assert holiday.value.code == "not_a_trading_session"
+
+
+def test_exchange_cutoff_policy_compute_cutoff_close_to_close():
+    """The attribution graph calls cutoff_policy.compute_cutoff(mode=...); the
+    production policy must implement the same contract as the module function."""
+    from catalyst_data.retrieval.cutoff import ExchangeCutoffPolicy
+
+    policy = ExchangeCutoffPolicy()
+    cutoff = policy.compute_cutoff(ticker="TSLA", session_date="2025-07-24",
+                                   mode="close_to_close")
+    assert cutoff == "2025-07-24T20:00:00Z"
+    assert cutoff == policy.close_to_close("TSLA", "2025-07-24")
+
+
+def test_exchange_cutoff_policy_compute_cutoff_attribution_mode():
+    """mode='attribution' used by the runtime graph resolves to exchange close."""
+    from catalyst_data.retrieval.cutoff import ExchangeCutoffPolicy
+
+    policy = ExchangeCutoffPolicy()
+    cutoff = policy.compute_cutoff(ticker="GOOGL", session_date="2025-06-12",
+                                   mode="attribution")
+    assert cutoff == "2025-06-12T20:00:00Z"
+
+
+def test_exchange_cutoff_policy_compute_cutoff_intraday():
+    from catalyst_data.retrieval.cutoff import ExchangeCutoffPolicy
+
+    policy = ExchangeCutoffPolicy()
+    cutoff = policy.compute_cutoff(ticker="AAPL", session_date="2026-01-15",
+                                   mode="intraday", as_of="2026-01-15T15:30:00Z")
+    assert cutoff == "2026-01-15T15:30:00Z"

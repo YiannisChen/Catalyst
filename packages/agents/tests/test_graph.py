@@ -358,3 +358,21 @@ def test_graph_ignores_artifact_write_failure_and_keeps_mcj_result(monkeypatch):
 
     assert len(result["causes"]) > 0
     assert result["summary_md"] != ""
+
+
+def test_graph_with_production_exchange_cutoff_policy(monkeypatch):
+    """Regression: the runtime graph must work with the real ExchangeCutoffPolicy,
+    whose compute_cutoff contract matches the module-level cutoff function."""
+    from catalyst_data.retrieval.cutoff import ExchangeCutoffPolicy
+
+    graph = build_attribution_graph(
+        context_provider=mock_provider_with_ohlcv(),
+        retriever=FixtureRetriever(),
+        cutoff_policy=ExchangeCutoffPolicy(),
+        requested_manifest_id="corpus-fixture-v1",
+        use_critic=True,
+        llm=MockLLM(),
+    )
+    result = graph.invoke(_base_state())
+    assert result["cutoff"] == "2026-01-15T21:00:00Z"
+    assert result["output_status"] in {OutputStatus.SUFFICIENT, OutputStatus.PARTIAL, OutputStatus.ABSTAIN}
