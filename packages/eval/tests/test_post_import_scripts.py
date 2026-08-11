@@ -888,3 +888,84 @@ def test_runner_mock_path_does_not_import_torch(tmp_path, monkeypatch):
     ])
     assert rc == 0
     assert not (tmp_path / "runs" / "mock_run" / "WAVE_TOKEN.txt").exists()
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 user-smoke runner CLI (C2/C3)
+# ---------------------------------------------------------------------------
+
+USER_SMOKE_SCRIPT = Path(__file__).resolve().parents[3] / "packages" / "eval" / "scripts" / "run_post_import_user_smoke.py"
+
+
+def test_user_smoke_script_parses_minimal_required_args():
+    module = _load(USER_SMOKE_SCRIPT)
+    args = module._parse_args([
+        "--db", "data/snapshots/x.db",
+        "--lancedb-dir", "data/lancedb_gold/x",
+        "--index-manifest", "data/embeddings/x/index_manifest.json",
+        "--t4-evidence-dir", "data/run_reports/post_import/t4",
+        "--wave2-evidence-dir", "data/run_reports/post_import/wave2",
+        "--run-id", "user_smoke_1",
+        "--embedding-mode", "production_pinned",
+    ])
+    assert args.run_id == "user_smoke_1"
+    assert args.embedding_mode == "production_pinned"
+    assert args.provider == "deepseek"
+    assert args.model_id == "deepseek-chat"
+    assert args.output_root == Path("data/run_reports/post_import")
+    assert not hasattr(args, "code_revision")
+    assert not hasattr(args, "git_head")
+    assert not hasattr(args, "token")
+    assert not hasattr(args, "api_key")
+    assert not hasattr(args, "active_table")
+    assert not hasattr(args, "success_token")
+    assert not hasattr(args, "validation_ok")
+
+
+def test_user_smoke_script_rejects_legacy_identity_and_credential_flags():
+    """--git-head, --code-revision, --token, --api-key, --active-table are rejected."""
+    module = _load(USER_SMOKE_SCRIPT)
+    base = [
+        "--db", "data/snapshots/x.db",
+        "--lancedb-dir", "data/lancedb_gold/x",
+        "--index-manifest", "data/embeddings/x/index_manifest.json",
+        "--t4-evidence-dir", "data/run_reports/post_import/t4",
+        "--wave2-evidence-dir", "data/run_reports/post_import/wave2",
+        "--run-id", "user_smoke_1",
+        "--embedding-mode", "production_pinned",
+    ]
+    for extra in (
+        ["--git-head", "8dd9ee9b5f04e848e3d8248dad6470189af79573"],
+        ["--code-revision", "bb43ebe20f29a13ef426e0a1a7c3aefc6d15ffd8"],
+        ["--token", "USER_SMOKE_OK"],
+        ["--success-token", "USER_SMOKE_OK"],
+        ["--api-key", "sk-test-123"],
+        ["--active-table", "chunks__staging__b3761f4b943542a8"],
+        ["--embedding-mode", "mock_unit_test"],
+        ["--validation-ok", "true"],
+    ):
+        with pytest.raises(SystemExit):
+            module._parse_args(base + extra)
+
+
+def test_user_smoke_script_rejects_missing_frozen_db():
+    module = _load(USER_SMOKE_SCRIPT)
+    with pytest.raises(SystemExit) as excinfo:
+        module.main(["--db", "data/snapshots/missing.db"])
+    assert excinfo.value.code == 2
+
+
+def test_user_smoke_script_defaults_to_loopback_only():
+    module = _load(USER_SMOKE_SCRIPT)
+    args = module._parse_args([
+        "--db", "data/snapshots/x.db",
+        "--lancedb-dir", "data/lancedb_gold/x",
+        "--index-manifest", "data/embeddings/x/index_manifest.json",
+        "--t4-evidence-dir", "data/run_reports/post_import/t4",
+        "--wave2-evidence-dir", "data/run_reports/post_import/wave2",
+        "--run-id", "user_smoke_1",
+        "--embedding-mode", "production_pinned",
+    ])
+    assert args.host == "127.0.0.1"
+    assert args.port == 0
+    assert args.cost_ceiling_usd == 5.0
