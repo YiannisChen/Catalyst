@@ -39,3 +39,10 @@ def test_known_cost_keeps_known_aggregate():
     track_cost(state, "critic", Response())
     assert state["cost_status"] == "known"
     assert state["total_cost_usd"] is not None
+
+
+def test_deepseek_chat_pricing_is_known():
+    """deepseek-chat is the Wave 3 production model; its cost must be bounded."""
+    est = CostEstimate(model_id="deepseek-chat", tokens_prompt=1_000_000, tokens_completion=1_000_000)
+    assert est.cost_status == "known"
+    assert est.cost_usd == 0.27 + 1.10

@@ -24,6 +24,7 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "claude-opus-4-6":            {"input": 15.0,  "output": 75.0},
     "deepseek-v4-flash":          {"input": 0.20,  "output": 0.60},
     "deepseek-v3":                {"input": 0.27,  "output": 1.10},
+    "deepseek-chat":              {"input": 0.27,  "output": 1.10},
 }
 
 @dataclass(frozen=True)
