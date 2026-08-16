@@ -48,6 +48,8 @@ def make_result(chunk_id: str, *, ticker: str = "AAPL", available_at: str = "202
                 fusion_rank: int | None = None, reranker_rank: int | None = None,
                 lexical_raw_score: float | None = None, dense_score: float | None = None,
                 fusion_score: float | None = None, reranker_score: float | None = None,
+                arm_ranks: tuple[tuple[str, int], ...] = (),
+                arm_scores: tuple[tuple[str, float | None], ...] = (),
                 index_manifest_id: str | None = INDEX_MANIFEST) -> RetrievalResult:
     filters = RetrievalFilters(
         ticker=ticker, requested_manifest_id=MANIFEST_A, cutoff=CUTOFF,
@@ -66,8 +68,8 @@ def make_result(chunk_id: str, *, ticker: str = "AAPL", available_at: str = "202
         dense_rank=dense_rank,
         fusion_score=fusion_score,
         fusion_rank=fusion_rank,
-        arm_ranks=(("lexical", lexical_rank),) if lexical_rank else (),
-        arm_scores=(("lexical", lexical_raw_score),) if lexical_raw_score is not None else (),
+        arm_ranks=arm_ranks or ((("lexical", lexical_rank),) if lexical_rank else ()),
+        arm_scores=arm_scores or ((("lexical", lexical_raw_score),) if lexical_raw_score is not None else ()),
         reranker_score=reranker_score,
         reranker_rank=reranker_rank,
         corpus_manifest_id=MANIFEST_A,
@@ -94,6 +96,7 @@ def make_result_set(mode_requested: str, mode_served: str, ids: tuple[str, ...],
             dense_rank=idx if mode_requested == "dense" else None,
             fusion_rank=idx if mode_requested == "hybrid" else None,
             reranker_rank=idx if mode_requested == "reranked" else None,
+            reranker_score=float(100 - idx) if mode_requested == "reranked" else None,
         )
         for idx, chunk_id in enumerate(ids, start=1)
     )
@@ -204,6 +207,54 @@ def fresh_lance_table(tmp_path: Path, *, name: str = "vectors") -> Any:
     return db.create_table(name, data=rows)
 
 
+def _make_fused_chunk(chunk_id: str, fusion_rank: int, lexical_ids: tuple[str, ...],
+                     dense_ids: tuple[str, ...], *, ticker: str = "AAPL") -> RetrievalResult:
+    """Mirror fuse(): a hybrid result carries its arm ranks when present."""
+    lexical_rank = lexical_ids.index(chunk_id) + 1 if lexical_ids and chunk_id in lexical_ids else None
+    dense_rank = dense_ids.index(chunk_id) + 1 if dense_ids and chunk_id in dense_ids else None
+    arm_ranks = tuple(sorted(
+        (("lexical", lexical_rank),) if lexical_rank is not None else ()
+        + (("dense", dense_rank),) if dense_rank is not None else ()
+    ))
+    arm_scores = tuple(sorted(
+        (("lexical", None),) if lexical_rank is not None else ()
+        + (("dense", None),) if dense_rank is not None else ()
+    ))
+    return make_result(
+        chunk_id, ticker=ticker, mode_requested="hybrid", mode_served="hybrid",
+        lexical_rank=lexical_rank, dense_rank=dense_rank,
+        fusion_rank=fusion_rank, fusion_score=1.0 / (60.0 + fusion_rank),
+        arm_ranks=arm_ranks, arm_scores=arm_scores,
+    )
+
+
+def _fixture_temporal_identity(
+    *,
+    query: str,
+    cutoff: str,
+    temporal_identity: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Fixture temporal identity.
+
+    By default it simulates the production hybrid facade: the structured
+    center is resolved from query + cutoff and stamped on the outer result and
+    served evidence.  ``temporal_identity`` overrides individual fields so
+    negative tests can corrupt one dimension at a time.
+    """
+    from catalyst_data.retrieval.query_policy import resolve_temporal_center
+
+    resolved = resolve_temporal_center(query=query, cutoff=cutoff)
+    temporal = {
+        "temporal_center_date": resolved.center_date,
+        "query_date": resolved.query_date,
+        "query_date_conflict": resolved.conflict,
+        "query_date_decision": resolved.decision,
+    }
+    if temporal_identity is not None:
+        temporal.update(temporal_identity)
+    return temporal
+
+
 def make_hybrid_result(
     *,
     mode_requested: str = "reranked",
@@ -216,28 +267,52 @@ def make_hybrid_result(
     lexical_override: Any | None = None,
     dense_override: Any | None = None,
     ticker: str = "AAPL",
+    query: str = "Why did AAPL move on 2026-01-15?",
+    cutoff: str = CUTOFF,
+    temporal_identity: dict[str, Any] | None = None,
 ) -> Any:
-    """Construct a real HybridRetrievalResult with literal fixture arms."""
+    """Construct a real HybridRetrievalResult with literal fixture arms.
+
+    The outer result and every served evidence result carry a structured
+    temporal identity (production-faithful stamp); ``temporal_identity`` can
+    override one or more fields for negative tests.
+    """
     from catalyst_data.retrieval.hybrid import HybridRetrievalResult
+
+    temporal = _fixture_temporal_identity(
+        query=query, cutoff=cutoff, temporal_identity=temporal_identity,
+    )
+
+    def _stamped(values: tuple[Any, ...]) -> tuple[Any, ...]:
+        return tuple(
+            item.model_copy(update={
+                "temporal_center_date": temporal["temporal_center_date"],
+                "query_date": temporal["query_date"],
+                "query_date_conflict": temporal["query_date_conflict"],
+                "query_date_decision": temporal["query_date_decision"],
+            })
+            for item in values
+        )
 
     lexical = lexical_override if lexical_override is not None else make_result_set("lexical", "fts5", lexical_ids, ticker=ticker)
     dense = dense_override if dense_override is not None else (
         None if dense_ids is None else make_result_set("dense", "dense", dense_ids, ticker=ticker)
     )
-    fusion = tuple(make_result_set("hybrid", "hybrid", fusion_ids, ticker=ticker).results)
+    fusion = _stamped(tuple(_make_fused_chunk(chunk_id, idx, lexical_ids, dense_ids, ticker=ticker)
+                            for idx, chunk_id in enumerate(fusion_ids, start=1)))
     if mode_served == "hybrid":
         reranked_set = None
         final = fusion
     elif mode_served == "fts5":
         # Surviving-arm fallback: final_results equal the lexical survivor.
         reranked_set = None
-        final = tuple(lexical.results)
+        final = _stamped(tuple(lexical.results))
     elif reranked_ids is None:
         reranked_set = None
         final = ()
     else:
         reranked_set = make_result_set("reranked", "reranked", reranked_ids, ticker=ticker)
-        final = tuple(reranked_set.results)
+        final = _stamped(tuple(reranked_set.results))
     return HybridRetrievalResult(
         mode_requested=mode_requested,
         mode_served=mode_served,
@@ -247,4 +322,8 @@ def make_hybrid_result(
         reranker_results=reranked_set,
         final_results=final,
         degradation_reasons=degradation_reasons,
+        temporal_center_date=temporal["temporal_center_date"],
+        query_date=temporal["query_date"],
+        query_date_conflict=temporal["query_date_conflict"],
+        query_date_decision=temporal["query_date_decision"],
     )

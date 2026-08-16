@@ -48,6 +48,13 @@ class RetrievedEvidence:
     is_degraded: bool
     fallback_reason: str | None
     fusion_score: float | None = None
+    reranker_score: float | None = None
+    reranker_rank: int | None = None
+    # AMEND-5.2A: structured temporal identity on production evidence.
+    temporal_center_date: str | None = None
+    query_date: str | None = None
+    query_date_conflict: bool = False
+    query_date_decision: str | None = None
 
 
 class Retriever(Protocol):

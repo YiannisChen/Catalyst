@@ -78,6 +78,45 @@ USER_SMOKE_EXPECTED_CLASSES = {
     "h004": "ABSTAIN",
 }
 
+# Path-specific required (node, artifact_type) matrix (AMEND-5.1).
+# Base path applies to every case; ABSTAIN and judge/validator paths add more.
+REQUIRED_NODE_ARTIFACT_MATRIX: dict[str, frozenset[tuple[str, str]]] = {
+    "base": frozenset({
+        ("context_builder", "context_artifact"),
+        ("context_builder", "state_snapshot"),
+        ("miner", "retrieved_chunks"),
+        ("miner", "reranked_chunks"),
+        ("miner", "arm_b_evidence"),
+        ("miner", "state_snapshot"),
+        ("critic", "graded_evidence"),
+        ("critic", "all_graded_chunks"),
+        ("critic", "critic_decision"),
+        ("critic", "raw_llm_response"),
+        ("critic", "state_snapshot"),
+        ("finalizer", "state_snapshot"),
+    }),
+    "abstain": frozenset({
+        ("insufficient_handler", "state_snapshot"),
+    }),
+    "judge_validator": frozenset({
+        ("judge", "judge_evidence"),
+        ("judge", "judge_causes"),
+        ("judge", "judge_summary"),
+        ("judge", "raw_llm_response"),
+        ("judge", "state_snapshot"),
+        ("validator", "validator_decision"),
+        ("validator", "raw_llm_response"),
+        ("validator", "state_snapshot"),
+    }),
+}
+
+# Legacy type-set view (union of all matrix pairs) kept for inventory export.
+REQUIRED_NODE_ARTIFACT_TYPES = frozenset(
+    artifact_type
+    for pairs in REQUIRED_NODE_ARTIFACT_MATRIX.values()
+    for _, artifact_type in pairs
+)
+
 COST_CEILING_USD = 5.0
 POLL_DEFAULT_TIMEOUT_SECONDS = 300.0
 POLL_DEFAULT_INTERVAL_SECONDS = 0.5
@@ -228,6 +267,74 @@ class ValidatedWave2Evidence:
     t4_evidence: ValidatedT4Evidence
 
 
+def _effect_validity_from_artifact(artifact) -> list[str]:
+    """Re-run AMEND-5 effect-validity invariants against a loaded arm artifact."""
+    problems: list[str] = []
+    effect = artifact.payload.get("effect_metrics") or {}
+    arms = artifact.arms
+    for name, count_key in (
+        ("fts5", "lexical_count"),
+        ("dense", "dense_count"),
+        ("hybrid", "hybrid_count"),
+        ("reranked", "reranked_count"),
+    ):
+        arm = arms.get(name) or {}
+        if arm.get("status") != "ok":
+            problems.append(f"{name} arm failed")
+        results = arm.get("results") or []
+        if not results:
+            problems.append(f"{name} arm ok with zero results")
+        if effect.get(count_key) == 0:
+            problems.append(f"effect_metrics.{count_key}=0")
+    if effect.get("hybrid_lexical_contribution", 0) == 0:
+        problems.append("hybrid lexical contribution is zero")
+    if effect.get("hybrid_dense_contribution", 0) == 0:
+        problems.append("hybrid dense contribution is zero")
+    if effect.get("reranker_input_count", 0) == 0:
+        problems.append("reranker input count is zero")
+    if effect.get("reranker_output_count", 0) == 0:
+        problems.append("reranker output count is zero")
+    provenance = effect.get("reranker_provenance") or []
+    if not provenance:
+        problems.append("reranker provenance incomplete")
+    # production_pinned / successful rerank serve: every hit needs finite score+rank.
+    from catalyst_data.retrieval.artifacts import is_finite_number
+
+    reranked_arm = arms.get("reranked") or {}
+    reranked_results = reranked_arm.get("results") or []
+    if (
+        reranked_arm.get("mode_served") == "reranked"
+        and reranked_arm.get("status") == "ok"
+        and reranked_results
+    ):
+        for position, result in enumerate(reranked_results, start=1):
+            if not is_finite_number(result.get("reranker_score")):
+                problems.append(
+                    f"reranked result rank={position} missing finite reranker_score"
+                )
+            rank = result.get("reranker_rank")
+            if type(rank) is not int or type(rank) is bool or rank < 1:
+                problems.append(
+                    f"reranked result rank={position} missing valid reranker_rank"
+                )
+            elif rank != position:
+                problems.append(
+                    f"reranked result rank={position} reranker_rank not contiguous"
+                )
+        for position, entry in enumerate(provenance, start=1):
+            if not isinstance(entry, dict):
+                problems.append(f"provenance entry {position} invalid")
+                continue
+            if not is_finite_number(entry.get("reranker_score")):
+                problems.append(
+                    f"provenance rank={position} missing finite reranker_score"
+                )
+            rank = entry.get("reranker_rank")
+            if type(rank) is not int or type(rank) is bool or rank < 1:
+                problems.append(f"provenance rank={position} missing reranker_rank")
+    return problems
+
+
 def validate_wave2_evidence(
     *,
     wave2_dir: Path,
@@ -241,7 +348,22 @@ def validate_wave2_evidence(
     ``FOUR_ARM_E2E_OK``; it is never supplied by CLI or user.  The four-arm
     meta must be identity-bound to the resolved runtime and describe a full
     (non-limited) production-pinned 10-case run.
+
+    AMEND-5.1: every arm artifact and union pool is reloaded; schema version,
+    artifact_id, pool.source_artifact_id, exact approved case IDs, and
+    effect_metrics invariants are verified.  Legacy pre-effect_metrics
+    evidence directories (e.g. four_arm_full_wave23_final3) fail closed.
     """
+    from catalyst_data.retrieval.artifacts import (
+        ARM_ARTIFACT_SCHEMA_VERSION,
+        ArtifactValidationError,
+        load_arm_artifact,
+    )
+    from catalyst_data.retrieval.pool import load_union_pool
+    from catalyst_eval.post_import.four_arm import (
+        validate_temporal_identity_validation,
+    )
+
     wave2_dir = Path(wave2_dir).resolve()
     if not wave2_dir.is_dir():
         raise ValueError(f"wave2 evidence directory missing: {wave2_dir}")
@@ -304,6 +426,155 @@ def validate_wave2_evidence(
         current_case_pack=current_case_pack,
         resolved=resolved,
     )
+
+    if current_case_pack is not None:
+        approved_ids = [case.case_id for case in current_case_pack]
+        temporal_cases = list(current_case_pack)
+    else:
+        # Load the pack bound into the validated T4 evidence directory.
+        from catalyst_eval.post_import.case_pack import load_case_pack
+
+        pack_path = Path(t4_evidence.evidence_dir) / "case_pack.jsonl"
+        temporal_cases = list(load_case_pack(pack_path))
+        approved_ids = [case.case_id for case in temporal_cases]
+    if len(approved_ids) != EXPECTED_WAVE2_CASE_COUNT:
+        raise ValueError(
+            f"approved case pack must contain {EXPECTED_WAVE2_CASE_COUNT} cases, "
+            f"got {len(approved_ids)}"
+        )
+    expected_case_ids = set(approved_ids)
+    if len(expected_case_ids) != len(approved_ids):
+        raise ValueError("approved case pack contains duplicate case IDs")
+
+    temporal_problems = validate_temporal_identity_validation(
+        meta.get("temporal_identity_validation"), temporal_cases,
+    )
+    if temporal_problems:
+        raise ValueError(
+            "wave2 meta temporal_identity_validation failed: "
+            + "; ".join(temporal_problems)
+        )
+
+    # Case pack by id for semantic binding (query/ticker/cutoff).
+    cases_by_id: dict[str, CasePackCase] = {}
+    if current_case_pack is not None:
+        for case in current_case_pack:
+            cases_by_id[case.case_id] = case
+    else:
+        from catalyst_eval.post_import.case_pack import load_case_pack
+
+        pack_path = Path(t4_evidence.evidence_dir) / "case_pack.jsonl"
+        for case in load_case_pack(pack_path):
+            cases_by_id[case.case_id] = case
+
+    # Wave 2 meta run_id + corpus/index identities for arm binding.
+    meta_run_id = meta.get("run_id")
+    if not isinstance(meta_run_id, str) or not meta_run_id:
+        raise ValueError("wave2 meta.run_id is required for arm binding")
+    meta_corpus_id = meta.get("corpus_manifest_id")
+    meta_index_id = meta.get("index_manifest_id")
+    if resolved is not None:
+        if meta_corpus_id != resolved.corpus_manifest_id:
+            raise ValueError("wave2 meta.corpus_manifest_id does not match resolved runtime")
+        if meta_index_id != resolved.index_manifest_id:
+            raise ValueError("wave2 meta.index_manifest_id does not match resolved runtime")
+
+    loaded_arms: dict[str, Any] = {}
+    for path in arm_files:
+        try:
+            artifact = load_arm_artifact(path)
+        except ArtifactValidationError as exc:
+            raise ValueError(
+                f"wave2 arm artifact {path.name} failed reload validation: {exc}"
+            ) from exc
+        if artifact.schema_version != ARM_ARTIFACT_SCHEMA_VERSION:
+            raise ValueError(
+                f"wave2 arm artifact {path.name} schema_version "
+                f"{artifact.schema_version!r} != {ARM_ARTIFACT_SCHEMA_VERSION}"
+            )
+        case_id = artifact.payload.get("case_id")
+        if not isinstance(case_id, str) or not case_id:
+            raise ValueError(f"wave2 arm artifact {path.name} missing case_id")
+        if case_id in loaded_arms:
+            raise ValueError(f"wave2 arm artifacts contain duplicate case_id {case_id}")
+        if artifact.artifact_id != artifact.payload.get("artifact_id"):
+            raise ValueError(f"wave2 arm artifact {path.name} artifact_id mismatch")
+        # AMEND-5.2: bind each arm to approved case + Wave 2 meta identities.
+        case = cases_by_id.get(case_id)
+        if case is None:
+            raise ValueError(f"wave2 arm artifact {case_id} not in approved case pack")
+        expected_query_sha = hashlib.sha256(case.query.encode("utf-8")).hexdigest()
+        actual_query_sha = artifact.payload.get("query_sha256")
+        if actual_query_sha != expected_query_sha:
+            raise ValueError(
+                f"wave2 arm artifact {case_id} query_sha256 does not match approved case query hash"
+            )
+        if artifact.payload.get("cutoff_ts") != case.cutoff:
+            raise ValueError(
+                f"wave2 arm artifact {case_id} cutoff_ts does not match approved case cutoff"
+            )
+        filters = artifact.payload.get("filters") or {}
+        if filters.get("ticker") != case.ticker:
+            raise ValueError(
+                f"wave2 arm artifact {case_id} filters.ticker does not match approved case ticker"
+            )
+        if artifact.payload.get("run_id") != meta_run_id:
+            raise ValueError(
+                f"wave2 arm artifact {case_id} run_id does not match wave2 meta.run_id"
+            )
+        if filters.get("corpus_manifest_id") != meta_corpus_id:
+            raise ValueError(
+                f"wave2 arm artifact {case_id} filters.corpus_manifest_id does not match meta/resolved"
+            )
+        if filters.get("index_manifest_id") != meta_index_id:
+            raise ValueError(
+                f"wave2 arm artifact {case_id} filters.index_manifest_id does not match meta/resolved"
+            )
+        problems = _effect_validity_from_artifact(artifact)
+        if problems:
+            raise ValueError(
+                f"wave2 arm artifact {case_id} effect-validity failed: {'; '.join(problems)}"
+            )
+        loaded_arms[case_id] = artifact
+
+    arm_case_ids = set(loaded_arms)
+    if arm_case_ids != expected_case_ids:
+        missing = sorted(expected_case_ids - arm_case_ids)
+        extra = sorted(arm_case_ids - expected_case_ids)
+        raise ValueError(
+            f"wave2 arm case IDs mismatch approved pack "
+            f"(missing={missing}, extra={extra})"
+        )
+
+    loaded_pools: dict[str, Any] = {}
+    for path in pool_files:
+        try:
+            pool = load_union_pool(path)
+        except Exception as exc:
+            raise ValueError(
+                f"wave2 pool artifact {path.name} failed reload validation: {exc}"
+            ) from exc
+        case_id = pool.case_id
+        if case_id in loaded_pools:
+            raise ValueError(f"wave2 pool artifacts contain duplicate case_id {case_id}")
+        arm = loaded_arms.get(case_id)
+        if arm is None:
+            raise ValueError(f"wave2 pool {case_id} has no matching arm artifact")
+        if pool.source_artifact_id != arm.artifact_id:
+            raise ValueError(
+                f"wave2 pool {case_id} source_artifact_id does not match arm artifact_id"
+            )
+        loaded_pools[case_id] = pool
+
+    pool_case_ids = set(loaded_pools)
+    if pool_case_ids != expected_case_ids:
+        missing = sorted(expected_case_ids - pool_case_ids)
+        extra = sorted(pool_case_ids - expected_case_ids)
+        raise ValueError(
+            f"wave2 pool case IDs mismatch approved pack "
+            f"(missing={missing}, extra={extra})"
+        )
+
     return ValidatedWave2Evidence(
         wave2_dir=wave2_dir,
         four_arm_token=token,
@@ -682,6 +953,8 @@ def _success_token_gate(
     *,
     selected: list[UserSmokeCase],
     results: list[UserSmokeCaseResult],
+    assurance_records: list[RunAssuranceRecord | None],
+    incomplete_evidence: list[str],
     failure_results: list[FailurePathResult],
     cost_known: bool,
     total_cost_usd: float,
@@ -696,6 +969,28 @@ def _success_token_gate(
         reasons.append("expected status or evidence mismatch")
     if any(result.transport_status in _FAILED_TRANSPORT for result in results):
         reasons.append("failed transport status")
+    if len(assurance_records) != len(results):
+        reasons.append("assurance record count mismatch")
+    for index, record in enumerate(assurance_records):
+        case_id = results[index].case_id if index < len(results) else str(index)
+        if record is None:
+            reasons.append(f"assurance record missing for {case_id}")
+            continue
+        result_run_id = results[index].run_id if index < len(results) else ""
+        if getattr(record, "run_id", None) and result_run_id and record.run_id != result_run_id:
+            reasons.append(
+                f"assurance run_id mismatch for {case_id}: "
+                f"record={record.run_id} result={result_run_id}"
+            )
+        failed = [check.check_name for check in record.checks if check.status == "fail"]
+        if failed:
+            reasons.append(
+                f"assurance check failed for {case_id}: {', '.join(failed)}"
+            )
+    if incomplete_evidence:
+        reasons.append(
+            "incomplete node artifact evidence: " + "; ".join(incomplete_evidence)
+        )
     if not cost_known:
         reasons.append("cost unknown")
     elif total_cost_usd > cost_ceiling_usd:
@@ -759,6 +1054,119 @@ def _read_assurance(runtime_db_path: Path, run_id: str) -> RunAssuranceRecord | 
     return RunAssuranceRecord.model_validate_json(row[0])
 
 
+def _read_node_artifacts(runtime_db_path: Path, run_id: str) -> list[dict[str, Any]]:
+    """Read persisted node artifacts for one run (read-only)."""
+    from catalyst_agents.trace.artifacts import read_node_artifacts
+
+    conn = sqlite3.connect(str(runtime_db_path))
+    try:
+        return read_node_artifacts(conn, run_id=run_id)
+    finally:
+        conn.close()
+
+
+def _scrub_server_paths(payload: Any) -> Any:
+    """Replace server/local filesystem paths in exported evidence strings."""
+    if isinstance(payload, dict):
+        return {key: _scrub_server_paths(value) for key, value in payload.items()}
+    if isinstance(payload, list):
+        return [_scrub_server_paths(item) for item in payload]
+    if isinstance(payload, str):
+        value = payload
+        for marker in ("/workspace/", "/Users/", "/workspace"):
+            value = value.replace(marker, "<redacted_path>")
+        return value
+    return payload
+
+
+def required_node_artifact_pairs(
+    *,
+    output_status: str | None,
+    entered_judge_validator: bool,
+) -> frozenset[tuple[str, str]]:
+    """Return the path-specific required (node, artifact_type) pairs."""
+    required = set(REQUIRED_NODE_ARTIFACT_MATRIX["base"])
+    if (output_status or "").upper() == "ABSTAIN":
+        required |= set(REQUIRED_NODE_ARTIFACT_MATRIX["abstain"])
+    if entered_judge_validator:
+        required |= set(REQUIRED_NODE_ARTIFACT_MATRIX["judge_validator"])
+    return frozenset(required)
+
+
+def _export_node_artifacts(
+    staging_dir: Path,
+    *,
+    case_id: str,
+    run_id: str,
+    rows: list[dict[str, Any]],
+    output_status: str | None = None,
+    entered_judge_validator: bool = False,
+) -> list[dict[str, str]]:
+    """Export redacted node artifacts for one case under staging/node_artifacts.
+
+    Returns a list of missing required pairs as
+    ``{"case_id", "node", "artifact_type"}`` so the Wave 3 runner can record
+    an explicit incomplete-evidence reason and block the success token.
+    """
+    out_dir = staging_dir / "node_artifacts" / "by_case" / case_id / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    present_types: set[str] = set()
+    present_pairs: set[tuple[str, str]] = set()
+    lines: list[dict[str, Any]] = []
+    for row in rows:
+        artifact_type = str(row.get("artifact_type") or "")
+        node = str(row.get("node") or "")
+        present_types.add(artifact_type)
+        if node and artifact_type:
+            present_pairs.add((node, artifact_type))
+        lines.append({
+            "run_id": row.get("run_id"),
+            "event_seq": row.get("event_seq"),
+            "node": node,
+            "artifact_type": artifact_type,
+            "created_at": row.get("created_at"),
+            "payload": _scrub_server_paths(_redact_payload(row.get("payload_json", {}))),
+            "case_id": case_id,
+        })
+    required_pairs = required_node_artifact_pairs(
+        output_status=output_status,
+        entered_judge_validator=entered_judge_validator,
+    )
+    missing_pairs = sorted(required_pairs - present_pairs)
+    missing_records = [
+        {"case_id": case_id, "node": node, "artifact_type": artifact_type}
+        for node, artifact_type in missing_pairs
+    ]
+    (out_dir / "node_artifacts.jsonl").write_text(
+        "".join(json.dumps(line, ensure_ascii=False, sort_keys=True) + "\n" for line in lines),
+        encoding="utf-8",
+    )
+    (out_dir / "inventory.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "amend5_1_node_artifacts_export_v1",
+                "case_id": case_id,
+                "run_id": run_id,
+                "artifact_types": sorted(present_types),
+                "present_pairs": sorted(
+                    [{"node": n, "artifact_type": t} for n, t in present_pairs],
+                    key=lambda item: (item["node"], item["artifact_type"]),
+                ),
+                "required_pairs": sorted(
+                    [{"node": n, "artifact_type": t} for n, t in required_pairs],
+                    key=lambda item: (item["node"], item["artifact_type"]),
+                ),
+                "missing_pairs": missing_records,
+                "required_artifact_types": sorted({t for _, t in required_pairs}),
+                "complete": not missing_records,
+            },
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ) + "\n",
+        encoding="utf-8",
+    )
+    return missing_records
+
+
 # ---------------------------------------------------------------------------
 # Main orchestration
 # ---------------------------------------------------------------------------
@@ -820,7 +1228,7 @@ def run_user_smoke(
     started_at = clock() if clock is not None else _utc_now()
     try:
         staging_dir.mkdir(parents=True, exist_ok=False)
-        for subdir in ("requests", "responses", "traces", "assurance", "failure_paths"):
+        for subdir in ("requests", "responses", "traces", "assurance", "failure_paths", "node_artifacts"):
             (staging_dir / subdir).mkdir(exist_ok=False)
 
         # Gate: app health readiness.
@@ -841,6 +1249,8 @@ def run_user_smoke(
         request_index = 0
         response_index = 0
         results: list[UserSmokeCaseResult] = []
+        assurance_records: list[RunAssuranceRecord | None] = []
+        incomplete_evidence: list[str] = []
         total_cost = 0.0
         cost_known = True
         degraded = False
@@ -941,6 +1351,7 @@ def run_user_smoke(
             export_run(created_run_id, out_path=trace_path, db_path=runtime_db_path)
 
             assurance = _read_assurance(runtime_db_path, created_run_id)
+            assurance_records.append(assurance)
             assurance_path = staging_dir / "assurance" / f"assurance-{case.case_id}.json"
             if assurance is not None:
                 _atomic_write_json(
@@ -953,6 +1364,27 @@ def run_user_smoke(
             output_status = assurance.output_status if assurance is not None else None
             if output_status is None and isinstance(workspace.get("result"), dict):
                 output_status = workspace["result"].get("output_status")
+
+            node_names = {
+                str(event.get("node") or "")
+                for event in events
+                if isinstance(event, dict)
+            }
+            entered_judge_validator = "judge" in node_names or "validator" in node_names
+            node_artifact_rows = _read_node_artifacts(runtime_db_path, created_run_id)
+            missing_artifacts = _export_node_artifacts(
+                staging_dir,
+                case_id=case.case_id,
+                run_id=created_run_id,
+                rows=node_artifact_rows,
+                output_status=output_status if isinstance(output_status, str) else None,
+                entered_judge_validator=entered_judge_validator,
+            )
+            if missing_artifacts:
+                for missing in missing_artifacts:
+                    incomplete_evidence.append(
+                        f"{missing['case_id']}/{missing['node']}/{missing['artifact_type']}"
+                    )
 
             case_cost, case_cost_known = _aggregate_cost(events)
             if not case_cost_known:
@@ -1049,6 +1481,8 @@ def run_user_smoke(
         may_write, gate_reasons = _success_token_gate(
             selected=selected,
             results=results,
+            assurance_records=assurance_records,
+            incomplete_evidence=incomplete_evidence,
             failure_results=failure_results,
             cost_known=cost_known,
             total_cost_usd=total_cost,
@@ -1140,6 +1574,9 @@ __all__ = [
     "CASE_RESULTS_SCHEMA", "EXPECTED_WAVE2_CASE_COUNT", "RETIRED_MODEL_ALIASES",
     "FailurePathResult", "HttpResponse", "UserSmokeCase", "UserSmokeCaseResult",
     "UserSmokeSummary", "ValidatedWave2Evidence",
-    "_model_pricing_rate", "_redact_payload", "_secret_scan", "normalize_expected_class",
+    "REQUIRED_NODE_ARTIFACT_MATRIX", "REQUIRED_NODE_ARTIFACT_TYPES",
+    "_export_node_artifacts", "_model_pricing_rate", "_read_node_artifacts",
+    "_redact_payload", "_scrub_server_paths", "_secret_scan",
+    "normalize_expected_class", "required_node_artifact_pairs",
     "run_user_smoke", "select_user_smoke_cases", "validate_wave2_evidence",
 ]

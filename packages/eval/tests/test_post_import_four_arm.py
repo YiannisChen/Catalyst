@@ -30,6 +30,7 @@ from tests.post_import_fixtures import (
     MANIFEST_A,
     MockQueryEmbedder,
     RecordingReranker,
+    _fixture_temporal_identity,
     fresh_lance_table,
     fresh_runner_db,
     make_hybrid_result,
@@ -43,6 +44,7 @@ from catalyst_eval.post_import.four_arm import (
     META_SCHEMA_VERSION,
     EmbeddingBoundary,
     RunIdentities,
+    RunnerValidationError,
     run_four_arm_cases,
     validate_embedding_boundary,
     validate_query_vector,
@@ -352,6 +354,10 @@ def test_reranker_input_set_equals_fused_candidate_set(tmp_path, monkeypatch):
             fusion_results=base.fusion_results,
             reranker_results=make_result_set("reranked", "reranked", LITERAL_RERANKED),
             final_results=tuple(reranked),
+            temporal_center_date=base.temporal_center_date,
+            query_date=base.query_date,
+            query_date_conflict=base.query_date_conflict,
+            query_date_decision=base.query_date_decision,
         )
 
     monkeypatch.setattr(four_arm, "_retrieve_hybrid", reranked_pipeline)
@@ -889,6 +895,8 @@ def test_failed_base_arm_never_writes_token(tmp_path, monkeypatch):
             dense_ids=None, reranked_ids=None,
             degradation_reasons=("dense_unavailable",),
             ticker=k.get("ticker", "AAPL"),
+            query=k.get("query", ""),
+            cutoff=k.get("cutoff"),
         ),
     )
     monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
@@ -939,7 +947,11 @@ def test_full_production_contract_writes_exact_token(tmp_path, monkeypatch):
     assert len(cases) == APPROVED_T4_CONTRACT.expected_case_count
     monkeypatch.setattr(
         four_arm, "_retrieve_hybrid",
-        lambda *a, **k: make_hybrid_result(ticker=k.get("ticker", "AAPL")),
+        lambda *a, **k: make_hybrid_result(
+            ticker=k.get("ticker", "AAPL"),
+            query=k.get("query", ""),
+            cutoff=k.get("cutoff"),
+        ),
     )
     # Smoke cases use cutoffs absent from the fixture DB; the token-gate
     # behavior under test is the approved-pack contract, not DB serving.
@@ -1096,7 +1108,11 @@ def test_production_embedding_called_exactly_n_times_no_probe_query(tmp_path, mo
 
     monkeypatch.setattr(
         four_arm, "_retrieve_hybrid",
-        lambda *a, **k: _ok_hybrid(ticker=k.get("ticker", "AAPL")),
+        lambda *a, **k: _ok_hybrid(
+            ticker=k.get("ticker", "AAPL"),
+            query=k.get("query", ""),
+            cutoff=k.get("cutoff"),
+        ),
     )
     monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
     run_four_arm_cases(
@@ -1298,7 +1314,11 @@ def _production_run(tmp_path, monkeypatch, *, cases=None, evidence=_USE_VALIDATE
     _evidence_dir, validated, resolved = _real_evidence(tmp_path, cases)
     monkeypatch.setattr(
         four_arm, "_retrieve_hybrid",
-        lambda *a, **k: _ok_hybrid(ticker=k.get("ticker", "AAPL")),
+        lambda *a, **k: _ok_hybrid(
+            ticker=k.get("ticker", "AAPL"),
+            query=k.get("query", ""),
+            cutoff=k.get("cutoff"),
+        ),
     )
     monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
     return run_four_arm_cases(
@@ -1572,3 +1592,536 @@ def test_chunk_served_rejects_look_ahead(tmp_path):
         conn, chunk_id="a", manifest_id=MANIFEST_A, ticker="AAPL", cutoff=CUTOFF,
     ) is False
     conn.close()
+
+
+# ── AMEND-5: effect-validity contract (Wave 2 gate hardening) ────────────────
+
+def _effect_hybrid(
+    *,
+    ticker: str,
+    query: str,
+    cutoff: str | None,
+    lexical_ids: tuple[str, ...],
+    dense_ids: tuple[str, ...],
+    fusion_ids: tuple[str, ...],
+    reranked_ids: tuple[str, ...] | None,
+) -> Any:
+    """Effect-validity hybrid with a production-faithful temporal stamp."""
+    from catalyst_data.retrieval.hybrid import HybridRetrievalResult
+
+    temporal = _fixture_temporal_identity(query=query, cutoff=cutoff or CUTOFF, temporal_identity=None)
+    lexical = make_result_set("lexical", "fts5", lexical_ids, ticker=ticker)
+    dense = make_result_set("dense", "dense", dense_ids, ticker=ticker)
+    fusion = tuple(
+        item.model_copy(update={
+            "temporal_center_date": temporal["temporal_center_date"],
+            "query_date": temporal["query_date"],
+            "query_date_conflict": temporal["query_date_conflict"],
+            "query_date_decision": temporal["query_date_decision"],
+        })
+        for item in make_result_set("hybrid", "hybrid", fusion_ids, ticker=ticker).results
+    )
+    if reranked_ids is None:
+        reranked_set = None
+        final: tuple[Any, ...] = ()
+    else:
+        reranked_set = make_result_set("reranked", "reranked", reranked_ids, ticker=ticker)
+        final = tuple(
+            item.model_copy(update={
+                "temporal_center_date": temporal["temporal_center_date"],
+                "query_date": temporal["query_date"],
+                "query_date_conflict": temporal["query_date_conflict"],
+                "query_date_decision": temporal["query_date_decision"],
+            })
+            for item in reranked_set.results
+        )
+    return HybridRetrievalResult(
+        mode_requested="reranked", mode_served="reranked",
+        lexical_results=lexical, dense_results=dense,
+        fusion_results=fusion, reranker_results=reranked_set,
+        final_results=final,
+        temporal_center_date=temporal["temporal_center_date"],
+        query_date=temporal["query_date"],
+        query_date_conflict=temporal["query_date_conflict"],
+        query_date_decision=temporal["query_date_decision"],
+    )
+
+
+def _hybrid_empty_lexical_arm(ticker: str = "AAPL", query: str = "", cutoff: str | None = None):
+    """fts5 arm exists (not failed) but returns zero served results."""
+    return _effect_hybrid(
+        ticker=ticker, query=query, cutoff=cutoff,
+        lexical_ids=(), dense_ids=("b", "d"),
+        fusion_ids=LITERAL_HYBRID, reranked_ids=LITERAL_RERANKED,
+    )
+
+
+def _hybrid_without_lexical_contribution(ticker: str = "AAPL", query: str = "", cutoff: str | None = None):
+    """Hybrid results carry dense ranks only: no lexical contribution."""
+    return _effect_hybrid(
+        ticker=ticker, query=query, cutoff=cutoff,
+        lexical_ids=("a",), dense_ids=("b", "d"),
+        fusion_ids=("b", "d"), reranked_ids=("b",),
+    )
+
+
+def _hybrid_empty_reranked(ticker: str = "AAPL", query: str = "", cutoff: str | None = None):
+    """Reranker ran but produced zero output rows."""
+    return _effect_hybrid(
+        ticker=ticker, query=query, cutoff=cutoff,
+        lexical_ids=("a",), dense_ids=("b",),
+        fusion_ids=("b", "a"), reranked_ids=None,
+    )
+
+
+def _production_gate_run(tmp_path, monkeypatch, *, hybrid_fn, run_id="run1"):
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    cases = _approved_cases()
+    monkeypatch.setattr(
+        four_arm, "_retrieve_hybrid",
+        lambda *a, **k: hybrid_fn(
+            k.get("ticker", "AAPL"),
+            query=k.get("query", ""),
+            cutoff=k.get("cutoff"),
+        ),
+    )
+    monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
+    _evidence_dir, validated, resolved = _real_evidence(tmp_path, cases)
+    return run_four_arm_cases(
+        db=fresh_runner_db(tmp_path),
+        lancedb_table=fresh_lance_table(tmp_path),
+        cases=cases, run_id=run_id, output_root=tmp_path,
+        identities=_identities(),
+        boundary=_mock_boundary(embedding_mode="production_pinned", is_mock=False, cuda_available=True),
+        query_embedding_fn=MockQueryEmbedder().embed_query,
+        reranker=None,
+        case_pack_id=compute_case_pack_id(cases),
+        validated_evidence=validated,
+        validated_runtime_identity=resolved,
+    )
+
+
+def test_empty_ok_lexical_arm_never_writes_token(tmp_path, monkeypatch):
+    """An arm with status ok but zero results must not allow FOUR_ARM_E2E_OK."""
+    summary = _production_gate_run(tmp_path, monkeypatch, hybrid_fn=_hybrid_empty_lexical_arm)
+    _assert_no_token(tmp_path, summary)
+    assert any("empty" in reason or "zero" in reason for reason in _gate_reasons(tmp_path))
+
+
+def test_hybrid_without_lexical_contribution_never_writes_token(tmp_path, monkeypatch):
+    summary = _production_gate_run(tmp_path, monkeypatch, hybrid_fn=_hybrid_without_lexical_contribution)
+    _assert_no_token(tmp_path, summary)
+
+
+def test_empty_reranker_output_never_writes_token(tmp_path, monkeypatch):
+    summary = _production_gate_run(tmp_path, monkeypatch, hybrid_fn=_hybrid_empty_reranked)
+    _assert_no_token(tmp_path, summary)
+
+
+def test_artifact_missing_effect_metrics_fails_reload(tmp_path):
+    """Persisted artifacts must carry effect metrics; reload must reject loss."""
+    from catalyst_data.retrieval.artifacts import ArtifactValidationError, load_arm_artifact
+
+    payload = {
+        "schema_version": "1.0.0",
+        "artifact_id": "",
+        "run_id": "run1",
+        "case_id": "B001",
+        "query_sha256": "a" * 64,
+        "cutoff_ts": CUTOFF,
+        "filters": {
+            "ticker": "AAPL", "evidence_types": [], "source_classes": [],
+            "corpus_manifest_id": MANIFEST_A, "index_manifest_id": "c7f4248b2b70009a1d8c57d21075342dfe82e3e8417388a62667f9ba87bda083",
+        },
+        "retrieval_config": {
+            "lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60,
+            "fused_top_k": 20, "display_top_k": 8,
+            "embedding_revision": "5617a9f61b028005a4858fdac845db406aefb181",
+            "reranker_revision": "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+            "reranker_timeout_seconds": 2.0,
+        },
+        "arms": {name: {"mode_requested": name, "mode_served": name,
+                        "status": "ok", "latency_ms": 1.0,
+                        "degradation_reasons": [], "results": []}
+                 for name in ("fts5", "dense", "hybrid", "reranked")},
+        "created_at": "2026-01-02T00:00:00Z",
+    }
+    path = tmp_path / "no-effect.json"
+    path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ArtifactValidationError):
+        load_arm_artifact(path)
+
+
+def test_happy_path_persists_effect_metrics(tmp_path, monkeypatch):
+    """A real run persists per-case counts, contributions, and reranker provenance."""
+    _monkeypatch_single_call(monkeypatch)
+    run_dir = tmp_path / "run1"
+    _run_once(tmp_path, monkeypatch)
+
+    arm = json.loads((run_dir / "arms" / "B001.json").read_text(encoding="utf-8"))
+    effect = arm["effect_metrics"]
+    assert effect["lexical_count"] == len(LITERAL_FTS5)
+    assert effect["dense_count"] == len(LITERAL_DENSE)
+    assert effect["hybrid_count"] == len(LITERAL_HYBRID)
+    assert effect["reranked_count"] == len(LITERAL_RERANKED)
+    assert effect["hybrid_lexical_contribution"] >= 1
+    assert effect["hybrid_dense_contribution"] >= 1
+    assert effect["reranker_input_count"] == len(LITERAL_HYBRID)
+    assert effect["reranker_output_count"] == len(LITERAL_RERANKED)
+    provenance = effect["reranker_provenance"]
+    assert len(provenance) == len(LITERAL_RERANKED)
+    assert all(entry["reranker_rank"] == entry["rank"] for entry in provenance)
+    assert all(entry["reranker_score"] is not None for entry in provenance)
+
+
+def _gate_reasons(tmp_path):
+    meta = json.loads((tmp_path / "run1" / "meta.json").read_text(encoding="utf-8"))
+    return meta.get("token_gate", {}).get("reasons", [])
+
+
+# ── AMEND-5.2C P1: actual Wave 2 temporal identity binding (fail-closed) ─────
+
+def _run_with_hybrid(tmp_path, monkeypatch, hybrid, *, cases=None, **kwargs):
+    """Orchestration helper: run run_four_arm_cases with one patched hybrid.
+
+    Pass ``hybrid=None`` when the caller already patched ``_retrieve_hybrid``
+    (e.g. a factory that must see per-case kwargs).
+    """
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    if hybrid is not None:
+        monkeypatch.setattr(four_arm, "_retrieve_hybrid", lambda *a, **k: hybrid)
+    return run_four_arm_cases(
+        db=fresh_runner_db(tmp_path),
+        lancedb_table=fresh_lance_table(tmp_path),
+        cases=cases or [_case()],
+        run_id="run1",
+        output_root=tmp_path,
+        identities=_identities(),
+        boundary=_mock_boundary(),
+        query_embedding_fn=MockQueryEmbedder().embed_query,
+        reranker=None,
+        case_pack_id=FULL_CASE_PACK_ID,
+        **kwargs,
+    )
+
+
+def _assert_temporal_failure_cleanup(tmp_path):
+    assert not (tmp_path / "run1").exists()
+    assert not list(tmp_path.glob(".run1*"))
+    assert not list(tmp_path.glob("*.staging*"))
+    assert not list(tmp_path.rglob("*.tmp"))
+    assert not list(tmp_path.rglob("WAVE_TOKEN.txt"))
+
+
+def test_extract_runtime_temporal_identity_reads_only_runtime_fields():
+    from catalyst_eval.post_import.four_arm import (
+        extract_runtime_temporal_identity,
+    )
+
+    hybrid = _ok_hybrid(
+        temporal_identity={
+            "temporal_center_date": "2026-01-15",
+            "query_date": "2026-01-15",
+            "query_date_conflict": False,
+            "query_date_decision": "structured",
+        },
+    )
+    actual = extract_runtime_temporal_identity(hybrid)
+    assert actual == {
+        "temporal_center_date": "2026-01-15",
+        "query_date": "2026-01-15",
+        "query_date_conflict": False,
+        "query_date_decision": "structured",
+    }
+
+
+def test_validate_runtime_temporal_identity_accepts_matching_identity():
+    from catalyst_eval.post_import.four_arm import validate_runtime_temporal_identity
+
+    hybrid = _ok_hybrid()  # fixture stamp matches _case() expected identity
+    actual = validate_runtime_temporal_identity(_case(), hybrid)
+    assert actual == {
+        "temporal_center_date": "2026-01-15",
+        "query_date": "2026-01-15",
+        "query_date_conflict": False,
+        "query_date_decision": "structured",
+    }
+
+
+@pytest.mark.parametrize(
+    "temporal_override,match",
+    [
+        ({"temporal_center_date": None}, "temporal_center_date"),
+        ({"temporal_center_date": "1999-01-01"}, "1999-01-01|approved"),
+        ({"query_date": "2025-07-24"}, "query_date"),
+        ({"query_date_conflict": "yes"}, "query_date_conflict"),
+        ({"query_date_conflict": True}, "query_date_conflict"),
+        ({"query_date_decision": "none"}, "query_date_decision"),
+    ],
+)
+def test_runner_rejects_bad_runtime_temporal_identity(tmp_path, monkeypatch, temporal_override, match):
+    hybrid = _ok_hybrid(temporal_identity=temporal_override)
+    with pytest.raises(RunnerValidationError, match=match):
+        _run_with_hybrid(tmp_path, monkeypatch, hybrid)
+    _assert_temporal_failure_cleanup(tmp_path)
+
+
+def test_runner_rejects_fusion_result_temporal_mismatch(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    hybrid = _ok_hybrid()
+    bad = hybrid.fusion_results[0].model_copy(
+        update={"temporal_center_date": "1999-01-01"}
+    )
+    hybrid = replace(hybrid, fusion_results=(bad,) + hybrid.fusion_results[1:])
+    with pytest.raises(RunnerValidationError, match="fusion_results"):
+        _run_with_hybrid(tmp_path, monkeypatch, hybrid)
+    _assert_temporal_failure_cleanup(tmp_path)
+
+
+def test_runner_rejects_final_reranked_result_temporal_mismatch(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    hybrid = _ok_hybrid()
+    bad = hybrid.final_results[0].model_copy(
+        update={"query_date_conflict": True}
+    )
+    hybrid = replace(hybrid, final_results=(bad,) + hybrid.final_results[1:])
+    with pytest.raises(RunnerValidationError, match="final_results"):
+        _run_with_hybrid(tmp_path, monkeypatch, hybrid)
+    _assert_temporal_failure_cleanup(tmp_path)
+
+
+def test_temporal_failure_before_artifact_write_cleans_staging(tmp_path, monkeypatch):
+    """Failure atomicity: no arm artifact, no final dir, no staging leftovers."""
+    import catalyst_eval.post_import.four_arm as four_arm
+    from catalyst_data.retrieval.artifacts import write_arm_artifact as real_write
+
+    calls: list[tuple] = []
+
+    def spy_write(*args, **kwargs):
+        calls.append(args)
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(four_arm, "write_arm_artifact", spy_write)
+    hybrid = _ok_hybrid(temporal_identity={"temporal_center_date": "1999-01-01"})
+
+    with pytest.raises(RunnerValidationError):
+        _run_with_hybrid(tmp_path, monkeypatch, hybrid)
+
+    assert calls == []  # write_arm_artifact never called
+    _assert_temporal_failure_cleanup(tmp_path)
+
+
+def test_valid_actual_temporal_identity_persisted_exactly_in_meta(tmp_path, monkeypatch):
+    """meta.temporal_identity_validation must be the runtime actual identity."""
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    actual = {
+        "temporal_center_date": "2026-01-15",
+        "query_date": "2026-01-15",
+        "query_date_conflict": False,
+        "query_date_decision": "structured",
+    }
+    captured: dict = {}
+
+    def factory(*a, **k):
+        captured.clear()
+        hybrid = _ok_hybrid(temporal_identity=actual)
+        captured.update({
+            "temporal_center_date": hybrid.temporal_center_date,
+            "query_date": hybrid.query_date,
+            "query_date_conflict": hybrid.query_date_conflict,
+            "query_date_decision": hybrid.query_date_decision,
+        })
+        return hybrid
+
+    monkeypatch.setattr(four_arm, "_retrieve_hybrid", factory)
+    run_dir = tmp_path / "run1"
+    _run_with_hybrid(tmp_path, monkeypatch, None)
+    meta = json.loads((run_dir / "meta.json").read_text())
+    assert meta["temporal_identity_validation"] == {"B001": captured}
+    assert captured == actual
+
+
+def test_wave2_conflicting_query_date_preflight_fails_closed(tmp_path, monkeypatch):
+    """An approved case whose query date conflicts with the structured session
+    date must fail closed at the Wave 2 preflight boundary."""
+    from catalyst_eval.post_import.case_pack import SCHEMA_VERSION as _CSV
+
+    case = CasePackCase(
+        schema_version=_CSV,
+        case_id="B099", ticker="AAPL", session_date="2026-01-15",
+        cutoff=CUTOFF, query="Why did AAPL move on 2025-07-24?",
+        source_set="fixture", golden={"golden_id": "B099", "should_refuse": False},
+    )
+    # The production facade would stamp conflict=True/structured_ignore_query.
+    hybrid = _ok_hybrid(query="Why did AAPL move on 2025-07-24?", cutoff=CUTOFF)
+    with pytest.raises(RunnerValidationError, match="conflict|preflight"):
+        _run_with_hybrid(tmp_path, monkeypatch, hybrid, cases=[case])
+    _assert_temporal_failure_cleanup(tmp_path)
+
+
+def test_runtime_center_1999_reproduces_previous_false_pass_now_raises(tmp_path, monkeypatch):
+    """Regression: the reported false pass (runtime center 1999-01-01 vs
+    expected 2026-01-15) must now raise RunnerValidationError."""
+    hybrid = _ok_hybrid(temporal_identity={"temporal_center_date": "1999-01-01"})
+    with pytest.raises(RunnerValidationError, match="1999-01-01"):
+        _run_with_hybrid(tmp_path, monkeypatch, hybrid)
+    _assert_temporal_failure_cleanup(tmp_path)
+
+
+# ── AMEND-5.2C follow-up P2: query_date=None is legal, absence is not ────────
+
+def _no_date_case(case_id: str = "B100") -> CasePackCase:
+    """Approved-style case whose query contains no date (query_date=None)."""
+    return CasePackCase(
+        schema_version=CASE_PACK_SCHEMA_VERSION,
+        case_id=case_id, ticker="AAPL", session_date="2026-01-15",
+        cutoff=CUTOFF, query="Why did the selected stock move?",
+        source_set="fixture", golden={"golden_id": case_id, "should_refuse": False},
+    )
+
+
+def test_runner_accepts_query_date_none_when_expected_none(tmp_path, monkeypatch):
+    """query_date=None is a legal runtime value when the query has no date.
+
+    The mock boundary run must complete (temporal validation passes) and write
+    meta; the success token is a production-pinned gate and stays unwritten in
+    mock mode, which is expected here.
+    """
+    case = _no_date_case()
+    hybrid = _ok_hybrid(query=case.query, cutoff=case.cutoff)
+    run_dir = tmp_path / "run1"
+    _run_with_hybrid(tmp_path, monkeypatch, hybrid, cases=[case])
+    assert (run_dir / "meta.json").is_file()
+    assert (run_dir / "arms" / "B100.json").is_file()
+    assert not (run_dir / "WAVE_TOKEN.txt").exists()
+
+
+def test_query_date_none_persisted_exactly_in_meta(tmp_path, monkeypatch):
+    """Valid None must be persisted verbatim in meta.temporal_identity_validation."""
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    case = _no_date_case()
+    captured: dict = {}
+
+    def factory(*a, **k):
+        captured.clear()
+        hybrid = _ok_hybrid(query=case.query, cutoff=case.cutoff)
+        captured.update({
+            "temporal_center_date": hybrid.temporal_center_date,
+            "query_date": hybrid.query_date,
+            "query_date_conflict": hybrid.query_date_conflict,
+            "query_date_decision": hybrid.query_date_decision,
+        })
+        return hybrid
+
+    monkeypatch.setattr(four_arm, "_retrieve_hybrid", factory)
+    run_dir = tmp_path / "run1"
+    _run_with_hybrid(tmp_path, monkeypatch, None, cases=[case])
+    meta = json.loads((run_dir / "meta.json").read_text())
+    assert meta["temporal_identity_validation"] == {"B100": captured}
+    assert captured["query_date"] is None
+    assert meta["temporal_identity_validation"]["B100"]["query_date"] is None
+
+
+def test_validate_rejects_query_date_attribute_absent():
+    """An absent query_date attribute is a failure, unlike a legal None."""
+    from types import SimpleNamespace
+
+    from catalyst_eval.post_import.four_arm import validate_runtime_temporal_identity
+
+    hybrid = SimpleNamespace(
+        temporal_center_date="2026-01-15",
+        # query_date attribute intentionally missing
+        query_date_conflict=False,
+        query_date_decision="structured",
+        fusion_results=(),
+        final_results=(),
+    )
+    with pytest.raises(RunnerValidationError, match="query_date"):
+        validate_runtime_temporal_identity(_case(), hybrid)
+
+
+def test_runner_rejects_query_date_none_when_expected_has_date(tmp_path, monkeypatch):
+    """actual query_date=None with expected non-None must fail closed."""
+    hybrid = _ok_hybrid(temporal_identity={"query_date": None})
+    with pytest.raises(RunnerValidationError, match="query_date"):
+        _run_with_hybrid(tmp_path, monkeypatch, hybrid)
+    _assert_temporal_failure_cleanup(tmp_path)
+
+
+def test_runner_rejects_query_date_present_when_expected_none(tmp_path, monkeypatch):
+    """actual query_date non-None with expected None must fail closed."""
+    case = _no_date_case()
+    hybrid = _ok_hybrid(
+        query=case.query, cutoff=case.cutoff,
+        temporal_identity={"query_date": "2026-01-15"},
+    )
+    with pytest.raises(RunnerValidationError, match="query_date"):
+        _run_with_hybrid(tmp_path, monkeypatch, hybrid, cases=[case])
+    _assert_temporal_failure_cleanup(tmp_path)
+
+
+def test_runner_rejects_temporal_center_none_with_cleanup(tmp_path, monkeypatch):
+    """temporal_center_date=None remains a hard failure with staging cleanup."""
+    hybrid = _ok_hybrid(temporal_identity={"temporal_center_date": None})
+    with pytest.raises(RunnerValidationError, match="temporal_center_date"):
+        _run_with_hybrid(tmp_path, monkeypatch, hybrid)
+    _assert_temporal_failure_cleanup(tmp_path)
+    assert not (tmp_path / "run1" / "WAVE_TOKEN.txt").exists()
+
+
+def test_inner_query_date_none_consistent_with_outer_passes(tmp_path, monkeypatch):
+    """Inner/outer query_date=None consistency is accepted (orchestration)."""
+    case = _no_date_case()
+    hybrid = _ok_hybrid(query=case.query, cutoff=case.cutoff)
+    assert hybrid.query_date is None
+    assert all(
+        item.query_date is None
+        for item in (*hybrid.fusion_results, *hybrid.final_results)
+    )
+    run_dir = tmp_path / "run1"
+    _run_with_hybrid(tmp_path, monkeypatch, hybrid, cases=[case])
+    assert (run_dir / "meta.json").is_file()
+
+
+def test_inner_query_date_conflict_still_rejected(tmp_path, monkeypatch):
+    """Inner result carrying a different query_date than the outer is rejected."""
+    from dataclasses import replace
+
+    case = _no_date_case()
+    hybrid = _ok_hybrid(query=case.query, cutoff=case.cutoff)
+    bad = hybrid.final_results[0].model_copy(update={"query_date": "2026-01-15"})
+    hybrid = replace(hybrid, final_results=(bad,) + hybrid.final_results[1:])
+    with pytest.raises(RunnerValidationError, match="final_results"):
+        _run_with_hybrid(tmp_path, monkeypatch, hybrid, cases=[case])
+    _assert_temporal_failure_cleanup(tmp_path)
+
+
+def test_inner_query_date_attribute_absent_rejected():
+    """Inner evidence whose query_date attribute is absent fails inner binding."""
+    from types import SimpleNamespace
+
+    from catalyst_eval.post_import.four_arm import validate_runtime_temporal_identity
+
+    class _Inner:
+        temporal_center_date = "2026-01-15"
+        query_date_conflict = False
+        query_date_decision = "structured"
+        # query_date attribute intentionally absent
+
+    case = _no_date_case()
+    hybrid = SimpleNamespace(
+        temporal_center_date="2026-01-15",
+        query_date=None,
+        query_date_conflict=False,
+        query_date_decision="structured",
+        fusion_results=(),
+        final_results=(_Inner(),),
+    )
+    with pytest.raises(RunnerValidationError, match="final_results"):
+        validate_runtime_temporal_identity(case, hybrid)

@@ -128,8 +128,14 @@ def _fresh_db_with_chunks_and_embeddings() -> sqlite3.Connection:
 
 
 def make_arm_artifact(**kwargs: Any) -> dict[str, Any]:
-    return {
-        "schema_version": "1.0.0",
+    from catalyst_data.retrieval.artifacts import (
+        ARM_ARTIFACT_SCHEMA_VERSION,
+        _default_effect_metrics,
+    )
+
+    arms = kwargs.get("arms", FOUR_COMPLETE_ARM_RESULTS)
+    base = {
+        "schema_version": ARM_ARTIFACT_SCHEMA_VERSION,
         "artifact_id": "",
         "run_id": "run-1",
         "case_id": "B001",
@@ -138,9 +144,13 @@ def make_arm_artifact(**kwargs: Any) -> dict[str, Any]:
         "filters": COMPLETE_FILTERS,
         "retrieval_config": PINNED_RETRIEVAL_CONFIG,
         "arms": FOUR_COMPLETE_ARM_RESULTS,
+        "effect_metrics": _default_effect_metrics(arms),
         "created_at": "2026-07-22T00:00:00Z",
-        **kwargs,
     }
+    base.update(kwargs)
+    if "effect_metrics" not in kwargs and "arms" in kwargs:
+        base["effect_metrics"] = _default_effect_metrics(kwargs["arms"])
+    return base
 
 
 def _literal_arm(mode: str, chunk_ids: tuple[str, ...]) -> dict[str, Any]:
@@ -148,9 +158,12 @@ def _literal_arm(mode: str, chunk_ids: tuple[str, ...]) -> dict[str, Any]:
 
     This is input fixture construction only; the expected union order and
     artifact identity oracles in the tests are hardcoded literals.
+    Successful mode_served=reranked arms must carry valid scores/ranks
+    (production_pinned contract).
     """
     results = []
     for position, chunk_id in enumerate(chunk_ids, start=1):
+        scored = mode == "reranked"
         results.append({
             "chunk_id": chunk_id,
             "document_id": f"doc:{chunk_id}",
@@ -165,8 +178,8 @@ def _literal_arm(mode: str, chunk_ids: tuple[str, ...]) -> dict[str, Any]:
             "fusion_rank": None,
             "arm_ranks": [],
             "arm_scores": [],
-            "reranker_score": None,
-            "reranker_rank": None,
+            "reranker_score": float(10 - position) if scored else None,
+            "reranker_rank": position if scored else None,
         })
     return {
         "mode_requested": mode,
@@ -193,7 +206,7 @@ LITERAL_HYBRID_CHUNK_IDS = ("d", "a", "e")
 LITERAL_RERANKED_CHUNK_IDS = ("e", "f")
 EXPECTED_UNION_CHUNK_IDS = ("a", "b", "c", "d", "e", "f")
 # Literal golden identity of make_arm_artifact() under the literal arms fixture.
-EXPECTED_ARM_ARTIFACT_ID = "07a82b43e64d230946a75443e301faeeec6a7756ada8bd950e80fabb3c802522"
+EXPECTED_ARM_ARTIFACT_ID = "44991353b50f6ea2320634f0376a72c533b021c6897b5cb37b442828cdbe0b01"
 
 
 def _mutate(update: dict[str, Any]) -> Any:

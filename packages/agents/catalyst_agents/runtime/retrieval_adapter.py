@@ -29,6 +29,12 @@ def _to_retrieved_evidence(result: RetrievalResult) -> RetrievedEvidence:
         is_degraded=result.is_degraded,
         fallback_reason=result.fallback_reason,
         fusion_score=result.fusion_score,
+        reranker_score=result.reranker_score,
+        reranker_rank=result.reranker_rank,
+        temporal_center_date=getattr(result, "temporal_center_date", None),
+        query_date=getattr(result, "query_date", None),
+        query_date_conflict=bool(getattr(result, "query_date_conflict", False)),
+        query_date_decision=getattr(result, "query_date_decision", None),
     )
 
 

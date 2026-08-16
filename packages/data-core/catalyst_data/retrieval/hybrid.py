@@ -19,6 +19,7 @@ import numpy as np
 from .dense import retrieve_dense
 from .fts5 import _validate_inputs, retrieve_lexical
 from .fusion import fuse
+from .query_policy import TemporalCenterResolution, resolve_temporal_center
 from .reranker import RerankerGate, rerank
 from .result import (
     RetrievalArmUnavailableError,
@@ -89,6 +90,20 @@ def _bind_index_manifest(result_set: RetrievalResultSet, index_manifest_id: str)
     return result_set.model_copy(update={"candidates": values, "results": values[:len(result_set.results)]})
 
 
+def _stamp_temporal(
+    results: tuple[RetrievalResult, ...] | list[RetrievalResult],
+    center: TemporalCenterResolution,
+) -> tuple[RetrievalResult, ...]:
+    """Copy structured temporal identity onto every production evidence result."""
+    update = {
+        "temporal_center_date": center.center_date,
+        "query_date": center.query_date,
+        "query_date_conflict": center.conflict,
+        "query_date_decision": center.decision,
+    }
+    return tuple(item.model_copy(update=update) for item in results)
+
+
 @dataclass(frozen=True)
 class HybridRetrievalResult:
     mode_requested: str
@@ -99,6 +114,11 @@ class HybridRetrievalResult:
     reranker_results: RetrievalResultSet | None = None
     final_results: tuple[RetrievalResult, ...] = ()
     degradation_reasons: tuple[str, ...] = ()
+    # AMEND-5.2A: production evidence temporal identity (not include_trace-only).
+    temporal_center_date: str | None = None
+    query_date: str | None = None
+    query_date_conflict: bool = False
+    query_date_decision: str | None = None
 
 
 class ProductionHybridRetriever:
@@ -187,6 +207,15 @@ def retrieve_hybrid(
         source_classes=source_classes,
         evidence_types=evidence_types,
     )
+    # Always resolve structured temporal center on the production hybrid path
+    # (independent of lexical include_trace).
+    temporal = resolve_temporal_center(query=query, cutoff=cutoff)
+    temporal_kwargs = {
+        "temporal_center_date": temporal.center_date,
+        "query_date": temporal.query_date,
+        "query_date_conflict": temporal.conflict,
+        "query_date_decision": temporal.decision,
+    }
     shared_scope = {
         "ticker": ticker,
         "cutoff": cutoff,
@@ -210,23 +239,30 @@ def retrieve_hybrid(
     except RetrievalArmUnavailableError as exc:
         reasons.append(exc.code)
     if lexical is None and dense is None:
-        return HybridRetrievalResult(mode, "failed", degradation_reasons=tuple(reasons))
+        return HybridRetrievalResult(
+            mode, "failed", degradation_reasons=tuple(reasons), **temporal_kwargs,
+        )
     if lexical is None or dense is None:
         survivor = dense if lexical is None else lexical
         survivor = _bind_index_manifest(survivor, index_manifest_id)
         served = "dense" if lexical is None else survivor.mode_served
+        finals = _stamp_temporal(tuple(survivor.results), temporal)
         return HybridRetrievalResult(
             mode, served, lexical_results=lexical, dense_results=dense,
-            final_results=tuple(survivor.results), degradation_reasons=tuple(reasons),
+            final_results=finals, degradation_reasons=tuple(reasons),
+            **temporal_kwargs,
         )
     lexical = _bind_index_manifest(lexical, index_manifest_id)
     dense = _bind_index_manifest(dense, index_manifest_id)
-    fused = tuple(fuse(lexical.results, dense.results, k=60, output_k=20))
+    fused = _stamp_temporal(
+        tuple(fuse(lexical.results, dense.results, k=60, output_k=20)),
+        temporal,
+    )
     if mode == "hybrid":
         return HybridRetrievalResult(
             mode, "hybrid", lexical_results=lexical, dense_results=dense,
             fusion_results=fused, final_results=fused,
-            degradation_reasons=tuple(reasons),
+            degradation_reasons=tuple(reasons), **temporal_kwargs,
         )
     reranked = rerank(
         query=query, candidates=fused, reranker=reranker,
@@ -234,15 +270,19 @@ def retrieve_hybrid(
     )
     if reranked.is_degraded:
         reasons.extend(reranked.degradation_reasons)
+        # Serve hybrid fusion order with temporal identity still stamped.
         return HybridRetrievalResult(
             mode, "hybrid", lexical_results=lexical, dense_results=dense,
             fusion_results=fused, reranker_results=reranked,
             final_results=fused, degradation_reasons=tuple(reasons),
+            **temporal_kwargs,
         )
+    finals = _stamp_temporal(tuple(reranked.results), temporal)
     return HybridRetrievalResult(
         mode, "reranked", lexical_results=lexical, dense_results=dense,
         fusion_results=fused, reranker_results=reranked,
-        final_results=tuple(reranked.results), degradation_reasons=tuple(reasons),
+        final_results=finals, degradation_reasons=tuple(reasons),
+        **temporal_kwargs,
     )
 
 

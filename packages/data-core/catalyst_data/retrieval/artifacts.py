@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import copy
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -13,17 +14,43 @@ from typing import Any
 
 from catalyst_data.config import BGE_M3_REVISION, BGE_RERANKER_REVISION
 
+# Breaking change: effect_metrics is required and validated on reload.
+ARM_ARTIFACT_SCHEMA_VERSION = "1.1.0"
+LEGACY_ARM_ARTIFACT_SCHEMA_VERSIONS = frozenset({"1.0.0"})
+
 
 class ArtifactValidationError(ValueError):
     pass
+
+
+def is_finite_number(value: Any) -> bool:
+    """True only for finite int/float scores — rejects None, bool, NaN, ±Inf.
+
+    ``bool`` is a subclass of ``int`` in Python, so ``isinstance(True, int)``
+    is True; production reranker scores must never accept bool via that hole.
+    """
+    if type(value) is bool:
+        return False
+    if type(value) is int:
+        return True
+    if type(value) is float:
+        return math.isfinite(value)
+    return False
 
 
 _ARM_NAMES = ("fts5", "dense", "hybrid", "reranked")
 _MODE_SERVING = {"fts5", "dense", "hybrid", "reranked", "sql_like", "failed"}
 _TOP_LEVEL_KEYS = {
     "schema_version", "artifact_id", "run_id", "case_id", "query_sha256",
-    "cutoff_ts", "filters", "retrieval_config", "arms", "created_at",
+    "cutoff_ts", "filters", "retrieval_config", "arms", "effect_metrics",
+    "created_at",
 }
+_EFFECT_KEYS = {
+    "lexical_count", "dense_count", "hybrid_count", "reranked_count",
+    "hybrid_lexical_contribution", "hybrid_dense_contribution",
+    "reranker_input_count", "reranker_output_count", "reranker_provenance",
+}
+_PROVENANCE_KEYS = {"chunk_id", "rank", "reranker_score", "reranker_rank"}
 _FILTER_KEYS = {"ticker", "evidence_types", "source_classes", "corpus_manifest_id", "index_manifest_id"}
 _CONFIG_KEYS = {
     "lexical_top_k", "dense_top_k", "fusion_k", "fused_top_k", "display_top_k",
@@ -62,7 +89,13 @@ def compute_arm_artifact_id(payload: Any) -> str:
 def _validate_payload(payload: dict[str, Any]) -> None:
     if set(payload) != _TOP_LEVEL_KEYS:
         raise ArtifactValidationError("top-level artifact fields mismatch")
-    if payload.get("schema_version") != "1.0.0":
+    schema_version = payload.get("schema_version")
+    if schema_version in LEGACY_ARM_ARTIFACT_SCHEMA_VERSIONS:
+        raise ArtifactValidationError(
+            f"legacy incompatible arm artifact schema_version {schema_version!r}; "
+            f"require {ARM_ARTIFACT_SCHEMA_VERSION}"
+        )
+    if schema_version != ARM_ARTIFACT_SCHEMA_VERSION:
         raise ArtifactValidationError("schema_version mismatch")
     if not isinstance(payload.get("run_id"), str) or not payload["run_id"]:
         raise ArtifactValidationError("run_id is required")
@@ -90,6 +123,39 @@ def _validate_payload(payload: dict[str, Any]) -> None:
         raise ArtifactValidationError("retrieval_config top-k contract mismatch")
     if config["embedding_revision"] != BGE_M3_REVISION or config["reranker_revision"] != BGE_RERANKER_REVISION:
         raise ArtifactValidationError("retrieval_config revisions are not pinned")
+    effect = payload.get("effect_metrics")
+    if not isinstance(effect, dict) or set(effect) != _EFFECT_KEYS:
+        raise ArtifactValidationError("effect_metrics fields mismatch")
+    for key in (
+        "lexical_count", "dense_count", "hybrid_count", "reranked_count",
+        "hybrid_lexical_contribution", "hybrid_dense_contribution",
+        "reranker_input_count", "reranker_output_count",
+    ):
+        if not isinstance(effect[key], int) or effect[key] < 0:
+            raise ArtifactValidationError(f"effect_metrics.{key} must be a non-negative int")
+    provenance = effect.get("reranker_provenance")
+    if not isinstance(provenance, list):
+        raise ArtifactValidationError("effect_metrics.reranker_provenance must be a list")
+    seen_provenance: set[str] = set()
+    for entry in provenance:
+        if not isinstance(entry, dict) or set(entry) != _PROVENANCE_KEYS:
+            raise ArtifactValidationError("effect_metrics provenance entry fields mismatch")
+        chunk_id = entry.get("chunk_id")
+        if not isinstance(chunk_id, str) or not chunk_id or chunk_id in seen_provenance:
+            raise ArtifactValidationError("effect_metrics provenance chunk_id invalid/duplicate")
+        seen_provenance.add(chunk_id)
+        if type(entry.get("rank")) is not int or entry["rank"] < 1:
+            raise ArtifactValidationError("effect_metrics provenance rank must be a positive int")
+        score = entry.get("reranker_score")
+        if score is not None and not is_finite_number(score):
+            raise ArtifactValidationError(
+                "effect_metrics provenance reranker_score must be a finite int/float"
+            )
+        if entry.get("reranker_rank") is not None and (
+            type(entry["reranker_rank"]) is not int or type(entry["reranker_rank"]) is bool
+            or entry["reranker_rank"] < 1
+        ):
+            raise ArtifactValidationError("effect_metrics provenance reranker_rank invalid")
     arms = payload.get("arms")
     if not isinstance(arms, dict) or set(arms) != set(_ARM_NAMES):
         raise ArtifactValidationError("all four retrieval arms are required")
@@ -128,6 +194,71 @@ def _validate_payload(payload: dict[str, Any]) -> None:
             if result["rank"] != position:
                 raise ArtifactValidationError(f"result order/rank mismatch in {name}")
             seen.add(chunk_id)
+    effect = payload["effect_metrics"]
+    for arm_name, count_key in (
+        ("fts5", "lexical_count"), ("dense", "dense_count"),
+        ("hybrid", "hybrid_count"), ("reranked", "reranked_count"),
+    ):
+        if len(arms[arm_name].get("results", [])) != effect[count_key]:
+            raise ArtifactValidationError(
+                f"effect_metrics.{count_key} does not match {arm_name} result count"
+            )
+    hybrid_results = arms["hybrid"].get("results", [])
+    lexical_contribution = sum(
+        1 for result in hybrid_results if result.get("lexical_rank") is not None
+    )
+    dense_contribution = sum(
+        1 for result in hybrid_results if result.get("dense_rank") is not None
+    )
+    if lexical_contribution != effect["hybrid_lexical_contribution"]:
+        raise ArtifactValidationError("effect_metrics.hybrid_lexical_contribution mismatch")
+    if dense_contribution != effect["hybrid_dense_contribution"]:
+        raise ArtifactValidationError("effect_metrics.hybrid_dense_contribution mismatch")
+    # Reranker input contract: production hybrid arm results feed the reranker.
+    if effect["reranker_input_count"] != len(hybrid_results):
+        raise ArtifactValidationError(
+            "effect_metrics.reranker_input_count does not match hybrid result count"
+        )
+    reranked = arms["reranked"].get("results", [])
+    if len(reranked) != effect["reranker_output_count"]:
+        raise ArtifactValidationError("effect_metrics.reranker_output_count mismatch")
+    # Contiguous ranks + provenance order must match the persisted reranked arm.
+    for position, result in enumerate(reranked, start=1):
+        if result.get("rank") != position:
+            raise ArtifactValidationError("reranked result ranks must be contiguous and ordered")
+        if result.get("reranker_rank") is not None and result.get("reranker_rank") != position:
+            raise ArtifactValidationError("reranker_rank must match persisted order")
+    # Successful production rerank serve (mode_served=reranked + status=ok):
+    # every result must carry a valid score and contiguous reranker_rank.
+    # No any()-partial heuristic — all-null must fail closed.
+    production_reranked = (
+        arms["reranked"].get("mode_served") == "reranked"
+        and arms["reranked"].get("status") == "ok"
+        and bool(reranked)
+    )
+    if production_reranked:
+        for result in reranked:
+            if not is_finite_number(result.get("reranker_score")):
+                raise ArtifactValidationError(
+                    "production_pinned reranked result requires finite reranker_score"
+                )
+            rank = result.get("reranker_rank")
+            if type(rank) is not int or type(rank) is bool or rank < 1:
+                raise ArtifactValidationError(
+                    "production_pinned reranked result requires valid reranker_rank"
+                )
+            if rank != result["rank"]:
+                raise ArtifactValidationError(
+                    "production_pinned reranker_rank must equal result rank/order"
+                )
+    expected_provenance = [
+        {"chunk_id": result["chunk_id"], "rank": index,
+         "reranker_score": result.get("reranker_score"),
+         "reranker_rank": result.get("reranker_rank")}
+        for index, result in enumerate(reranked, start=1)
+    ]
+    if provenance != expected_provenance:
+        raise ArtifactValidationError("effect_metrics.reranker_provenance mismatch")
     expected = compute_arm_artifact_id(payload)
     if payload.get("artifact_id") not in (None, "", expected):
         raise ArtifactValidationError("artifact_id mismatch")
@@ -157,6 +288,45 @@ class ArmArtifact:
         return copy.deepcopy(self.payload)
 
 
+def _default_effect_metrics(arms: dict[str, Any]) -> dict[str, Any]:
+    """Derive effect metrics from arm results when a caller omits them.
+
+    Persisted artifacts always carry effect_metrics; ``load_arm_artifact``
+    requires them. The production four-arm runner passes explicit metrics.
+    """
+    def _results(name: str) -> list[Any]:
+        arm = arms.get(name) or {}
+        results = arm.get("results") or []
+        return results if isinstance(results, list) else []
+
+    hybrid = _results("hybrid")
+    reranked = _results("reranked")
+    return {
+        "lexical_count": len(_results("fts5")),
+        "dense_count": len(_results("dense")),
+        "hybrid_count": len(hybrid),
+        "reranked_count": len(reranked),
+        "hybrid_lexical_contribution": sum(
+            1 for result in hybrid if isinstance(result, dict) and result.get("lexical_rank") is not None
+        ),
+        "hybrid_dense_contribution": sum(
+            1 for result in hybrid if isinstance(result, dict) and result.get("dense_rank") is not None
+        ),
+        "reranker_input_count": len(hybrid),
+        "reranker_output_count": len(reranked),
+        "reranker_provenance": [
+            {
+                "chunk_id": result.get("chunk_id", ""),
+                "rank": position,
+                "reranker_score": result.get("reranker_score"),
+                "reranker_rank": result.get("reranker_rank"),
+            }
+            for position, result in enumerate(reranked, start=1)
+            if isinstance(result, dict)
+        ],
+    }
+
+
 def write_arm_artifact(
     *,
     root: Path,
@@ -167,10 +337,11 @@ def write_arm_artifact(
     filters: dict[str, Any],
     retrieval_config: dict[str, Any],
     arms: dict[str, Any],
+    effect_metrics: dict[str, Any] | None = None,
     created_at: str = "1970-01-01T00:00:00Z",
 ) -> Path:
     payload = {
-        "schema_version": "1.0.0",
+        "schema_version": ARM_ARTIFACT_SCHEMA_VERSION,
         "artifact_id": "",
         "run_id": run_id,
         "case_id": case_id,
@@ -179,6 +350,9 @@ def write_arm_artifact(
         "filters": copy.deepcopy(filters),
         "retrieval_config": copy.deepcopy(retrieval_config),
         "arms": copy.deepcopy(arms),
+        "effect_metrics": copy.deepcopy(
+            effect_metrics if effect_metrics is not None else _default_effect_metrics(arms)
+        ),
         "created_at": created_at,
     }
     _validate_payload(payload)
@@ -204,4 +378,9 @@ def load_arm_artifact(path: Path) -> ArmArtifact:
     return ArmArtifact(payload)
 
 
-__all__ = ["ArmArtifact", "ArtifactValidationError", "compute_arm_artifact_id", "load_arm_artifact", "write_arm_artifact"]
+__all__ = [
+    "ARM_ARTIFACT_SCHEMA_VERSION", "LEGACY_ARM_ARTIFACT_SCHEMA_VERSIONS",
+    "is_finite_number",
+    "ArmArtifact", "ArtifactValidationError", "compute_arm_artifact_id",
+    "load_arm_artifact", "write_arm_artifact",
+]

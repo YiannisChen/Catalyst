@@ -26,7 +26,7 @@ from catalyst_data.config import BGE_M3_REVISION, BGE_RERANKER_REVISION
 # Independent literal oracles for the exact write_arm_artifact call below.
 LITERAL_CORPUS_MANIFEST_ID = "a" * 64
 LITERAL_INDEX_MANIFEST_ID = "1" * 64
-LITERAL_ARTIFACT_ID = "8bdcd1eb61665d71e250373302a8844a5877417548339d368632b071f9d446cb"
+LITERAL_ARTIFACT_ID = "c044a59b39d106b9dd9208539f5bb594d272369629030fca5b17f91797cdfb67"
 
 FILTERS = {
     "ticker": "AAPL",

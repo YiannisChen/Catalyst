@@ -254,10 +254,14 @@ class TraceWriter:
                 list(final_state["judge_evidence"].keys())
                 if final_state.get("judge_evidence") is not None else None
             ),
+            # AMEND-5: no synthetic gate rows. A no-hypothesis ABSTAIN run
+            # persists an empty gate_results list so the assurance layer marks
+            # judge_visibility/prerequisite_gates not_applicable instead of
+            # failing on a fabricated row.
             "gate_results": [
                 (h.get("cause_label"), h.get("prerequisite_gate_passed"), h.get("prerequisite_gate_reason"))
                 for h in final_state.get("hypotheses", []) or []
-            ] or [("not_applicable", True, "no hypotheses")],
+            ],
             "legal_path_ok": legal_path_ok,
             "trace_complete": trace_complete,
             "corpus_manifest_id": final_state.get("corpus_manifest_id"),

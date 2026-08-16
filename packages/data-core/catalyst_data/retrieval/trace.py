@@ -23,6 +23,15 @@ class RetrievalTrace(BaseModel):
     fallback_reason: Literal[
         "empty_query", "fts5_unavailable", "fts5_missing", "fts5_stale"
     ] | None = None
+    # AMEND-5.1: executed lexical match policy (never re-inferred by audit).
+    match_mode: Literal["AND", "OR", "temporal", "none"] | None = None
+    policy: str | None = None
+    temporal_window_days: int | None = Field(default=None, ge=0)
+    # AMEND-5.2: structured temporal center; query free-text date never overrides.
+    temporal_center_date: str | None = None
+    query_date: str | None = None
+    query_date_conflict: bool = False
+    query_date_decision: str | None = None
 
     @model_validator(mode="after")
     def _validate_counts(self) -> "RetrievalTrace":

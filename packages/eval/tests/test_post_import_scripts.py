@@ -734,7 +734,11 @@ def test_cli_production_happy_path_composition_order(tmp_path, monkeypatch, caps
 
     monkeypatch.setattr(
         four_arm, "_retrieve_hybrid",
-        lambda *a, **k: make_hybrid_result(ticker=k.get("ticker", "AAPL")),
+        lambda *a, **k: make_hybrid_result(
+            ticker=k.get("ticker", "AAPL"),
+            query=k.get("query", ""),
+            cutoff=k.get("cutoff"),
+        ),
     )
     monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
 
@@ -816,7 +820,11 @@ def test_runner_production_uses_actual_cuda_available(tmp_path, monkeypatch, cap
 
     monkeypatch.setattr(
         four_arm, "_retrieve_hybrid",
-        lambda *a, **k: make_hybrid_result(ticker=k.get("ticker", "AAPL")),
+        lambda *a, **k: make_hybrid_result(
+            ticker=k.get("ticker", "AAPL"),
+            query=k.get("query", ""),
+            cutoff=k.get("cutoff"),
+        ),
     )
     monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
 
@@ -866,7 +874,11 @@ def test_runner_mock_path_does_not_import_torch(tmp_path, monkeypatch):
 
     monkeypatch.setattr(
         four_arm, "_retrieve_hybrid",
-        lambda *a, **k: make_hybrid_result(ticker=k.get("ticker", "AAPL")),
+        lambda *a, **k: make_hybrid_result(
+            ticker=k.get("ticker", "AAPL"),
+            query=k.get("query", ""),
+            cutoff=k.get("cutoff"),
+        ),
     )
     monkeypatch.setattr(four_arm, "_chunk_served_for_case", lambda conn, **k: True)
 

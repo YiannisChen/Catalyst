@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Any
 
 from catalyst_agents.retrieval.policy import DEFAULT_CANDIDATE_DEPTH, DEFAULT_TOP_K, Layer, RetrievalMetadata, retrieve
@@ -30,29 +31,42 @@ def _build_query(state: AttributionState) -> str:
     return f"Why did {state['ticker']} move on {state['trade_date']}?"
 
 
-def _extract_query_ticker(query_text: str | None, known_tickers: set[str]) -> str | None:
-    if not query_text:
-        return None
-    ticker_alias = {
-        "APPLE": "AAPL",
-        "MICROSOFT": "MSFT",
-        "TESLA": "TSLA",
-        "GOOGLE": "GOOGL",
-        "ALPHABET": "GOOGL",
-        "NVIDIA": "NVDA",
-        "META": "META",
-        "AMAZON": "AMZN",
-        "JPMORGAN": "JPM",
-    }
-    tokens = re.findall(r"\b[A-Za-z]{1,12}\b", query_text)
-    upper_tokens = [t.upper() for t in tokens]
-    for token in upper_tokens:
-        if token in known_tickers:
-            return token
-    for token in upper_tokens:
-        mapped = ticker_alias.get(token)
-        if mapped and mapped in known_tickers:
-            return mapped
+@lru_cache(maxsize=1)
+def _universe_ticker_set() -> frozenset[str]:
+    """Ratified universe ticker symbols (symbol path only — not legal-name tokens)."""
+    from catalyst_data.retrieval.query_policy import KNOWN_TICKERS
+
+    return frozenset(KNOWN_TICKERS)
+
+
+def _production_known_tickers() -> set[str]:
+    return set(_universe_ticker_set())
+
+
+# AMEND-5.2C: claim collection + decision now live in the shared query policy
+# (catalyst_data.retrieval.query_policy) so provenance typing, conservative
+# brand/phrase maps, and the fail-open decision are single-source and covered
+# by data-core tests.  The miner delegates and only maps the decision to the
+# public state fields.
+from catalyst_data.retrieval.query_policy import (
+    QueryTickerClaim,
+    claim_tickers,
+    collect_query_claims,
+    decide_claim_consistency,
+    direct_target_mismatch_symbol,
+)
+
+
+def _extract_query_ticker(query_text: str | None, known_tickers: set[str] | frozenset[str] | None = None) -> str | None:
+    """Compatibility: unique claimed ticker, else None (never first-wins).
+
+    Extraction is claim reporting only; the consistency *decision* is
+    provenance-aware (``decide_claim_consistency``) and never treats a bare
+    single letter or an issuer brand/phrase as a hard mismatch.
+    """
+    unique = claim_tickers(collect_query_claims(query_text, known_tickers))
+    if len(unique) == 1:
+        return next(iter(unique))
     return None
 
 
@@ -95,6 +109,14 @@ def _build_arm_b_evidence(reranked_chunks: list[dict]) -> dict:
 def _evidence_to_chunk(item: Any) -> dict[str, Any]:
     chunk_id = getattr(item, "chunk_id")
     available_at = getattr(item, "available_at")
+    reranker_score = getattr(item, "reranker_score", None)
+    reranker_rank = getattr(item, "reranker_rank", None)
+    lexical_rank = getattr(item, "lexical_rank")
+    rrf_score = (
+        getattr(item, "fusion_score")
+        if getattr(item, "fusion_score", None) is not None
+        else getattr(item, "lexical_raw_score") or 0.0
+    )
     return {
         "asset_id": chunk_id,
         "chunk_id": chunk_id,
@@ -111,19 +133,23 @@ def _evidence_to_chunk(item: Any) -> dict[str, Any]:
         "representative_document_id": getattr(item, "representative_document_id"),
         "is_novel": getattr(item, "is_novel"),
         "lexical_raw_score": getattr(item, "lexical_raw_score"),
-        "lexical_rank": getattr(item, "lexical_rank"),
-        "rank": getattr(item, "lexical_rank"),
-        "rrf_score": (
-            getattr(item, "fusion_score")
-            if getattr(item, "fusion_score", None) is not None
-            else getattr(item, "lexical_raw_score") or 0.0
-        ),
+        "lexical_rank": lexical_rank,
+        "rank": reranker_rank if reranker_rank is not None else lexical_rank,
+        "rrf_score": rrf_score,
+        "rerank_score": reranker_score,
+        "reranker_score": reranker_score,
+        "reranker_rank": reranker_rank,
+        "score": reranker_score if reranker_score is not None else rrf_score,
         "corpus_manifest_id": getattr(item, "corpus_manifest_id"),
         "index_manifest_id": getattr(item, "index_manifest_id"),
         "mode_requested": getattr(item, "mode_requested"),
         "mode_served": getattr(item, "mode_served"),
         "is_degraded": getattr(item, "is_degraded"),
         "fallback_reason": getattr(item, "fallback_reason"),
+        "temporal_center_date": getattr(item, "temporal_center_date", None),
+        "query_date": getattr(item, "query_date", None),
+        "query_date_conflict": bool(getattr(item, "query_date_conflict", False)),
+        "query_date_decision": getattr(item, "query_date_decision", None),
     }
 
 
@@ -138,16 +164,31 @@ def miner(
     reranker: Any = None,
 ) -> dict:
     query = _build_query(state)
-    known_tickers = {state["ticker"], "AAPL", "MSFT", "TSLA", "GOOGL", "NVDA", "META", "AMZN", "JPM", "MRNA"}
-    query_ticker_raw = str(state.get("query_ticker_raw")).upper() if state.get("query_ticker_raw") else _extract_query_ticker(query, known_tickers)
-    ticker_consistent = _is_ticker_consistent(query_ticker_raw, state["ticker"])
+    known_tickers = _production_known_tickers()
+    # Structured ticker is recognized for set membership, not as a forced claim.
+    known_tickers.add(str(state["ticker"]).upper())
+    # Claims always come from the query text with provenance.  A pre-seeded
+    # state.query_ticker_raw has no provenance anywhere in production (the
+    # runtime runner seeds None), so it is never treated as a strong explicit
+    # symbol that could hard-reject a query.
+    claims = collect_query_claims(query, known_tickers)
+    ticker_consistent = decide_claim_consistency(claims, state["ticker"], query=query)
+    if ticker_consistent is True:
+        query_ticker_raw = str(state["ticker"]).upper()
+    elif ticker_consistent is False:
+        query_ticker_raw = direct_target_mismatch_symbol(claims, state["ticker"], query=query)
+    else:
+        query_ticker_raw = None
     if ticker_consistent is False:
+        # Fail closed before provider/cutoff/retrieval: zero external calls.
         return {
             "query_ticker_raw": query_ticker_raw,
             "ticker_consistent": False,
             "retrieved_chunks": [],
             "reranked_chunks": [],
             "arm_b_evidence": {"per_asset": {}, "sha256": ""},
+            "provider_calls": 0,
+            "retrieval_calls": 0,
             "phase": Phase.MINER,
         }
     if state.get("market_session_valid") is False:

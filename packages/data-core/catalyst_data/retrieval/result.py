@@ -102,6 +102,11 @@ class RetrievalResult(BaseModel):
     cluster_first_available_at: str | None = None
     representative_document_id: str | None = None
     is_novel: bool = False
+    # AMEND-5.2A: structured temporal identity (always stampable on production path).
+    temporal_center_date: str | None = None
+    query_date: str | None = None
+    query_date_conflict: bool = False
+    query_date_decision: str | None = None
 
     @field_validator("corpus_manifest_id")
     @classmethod
@@ -135,6 +140,11 @@ class RetrievalResultSet(BaseModel):
     fallback_reason: str | None = None
     degradation_reasons: tuple[str, ...] = ()
     trace: RetrievalTrace | None = None
+    # AMEND-5.2A: temporal identity even when full trace is not requested.
+    temporal_center_date: str | None = None
+    query_date: str | None = None
+    query_date_conflict: bool = False
+    query_date_decision: str | None = None
 
     @model_validator(mode="after")
     def _validate_set(self) -> "RetrievalResultSet":

@@ -27,7 +27,9 @@ def test_arm_artifact_path_schema_and_identity_are_exact(tmp_path):
     )
     loaded = load_arm_artifact(path)
     assert path == tmp_path / "run-1" / "B001.json"
-    assert loaded.schema_version == "1.0.0"
+    from catalyst_data.retrieval.artifacts import ARM_ARTIFACT_SCHEMA_VERSION
+
+    assert loaded.schema_version == ARM_ARTIFACT_SCHEMA_VERSION
     assert list(loaded.arms) == ["fts5", "dense", "hybrid", "reranked"]
     assert loaded.artifact_id
     assert not list(path.parent.glob("*.tmp"))
@@ -119,3 +121,251 @@ def test_artifact_id_changes_for_every_semantic_mutation():
     for mutation in SEMANTIC_ARTIFACT_MUTATIONS:
         changed = mutation(copy.deepcopy(base))
         assert compute_arm_artifact_id(changed) != base_id
+
+
+def test_legacy_1_0_0_rejected_as_incompatible(tmp_path):
+    from catalyst_data.retrieval.artifacts import (
+        ARM_ARTIFACT_SCHEMA_VERSION,
+        ArtifactValidationError,
+        load_arm_artifact,
+    )
+
+    payload = make_arm_artifact()
+    payload["schema_version"] = "1.0.0"
+    path = tmp_path / "legacy.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ArtifactValidationError, match="legacy incompatible"):
+        load_arm_artifact(path)
+    assert ARM_ARTIFACT_SCHEMA_VERSION == "1.1.0"
+
+
+def _write_scored_production_artifact(tmp_path, **kwargs):
+    """Write a mode_served=reranked arm with valid scores/ranks (production shape)."""
+    from catalyst_data.retrieval.artifacts import write_arm_artifact
+
+    arms = copy.deepcopy(FOUR_COMPLETE_ARM_RESULTS)
+    for position, result in enumerate(arms["reranked"]["results"], start=1):
+        result["reranker_score"] = float(10 - position)
+        result["reranker_rank"] = position
+    path = write_arm_artifact(
+        root=tmp_path, run_id="run-1", case_id="B001",
+        query="AAPL earnings", cutoff_ts="2026-01-15T21:00:00Z",
+        filters={"ticker": "AAPL", "evidence_types": [], "source_classes": [],
+                 "corpus_manifest_id": "a" * 64, "index_manifest_id": "1" * 64},
+        retrieval_config={"lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60,
+                          "fused_top_k": 20, "display_top_k": 8,
+                          "embedding_revision": BGE_M3_REVISION,
+                          "reranker_revision": BGE_RERANKER_REVISION,
+                          "reranker_timeout_seconds": 2.0},
+        arms=arms,
+        created_at="2026-07-22T00:00:00Z",
+        **kwargs,
+    )
+    return path, arms
+
+
+def test_effect_metrics_tamper_fails_closed(tmp_path):
+    from catalyst_data.retrieval.artifacts import (
+        ArtifactValidationError,
+        load_arm_artifact,
+    )
+
+    path, _ = _write_scored_production_artifact(tmp_path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("lexical_count", "reranker_output_count", "reranker_input_count"):
+        tampered = copy.deepcopy(raw)
+        tampered["effect_metrics"][key] = 999
+        path.write_text(json.dumps(tampered), encoding="utf-8")
+        with pytest.raises(ArtifactValidationError):
+            load_arm_artifact(path)
+    # provenance order tamper
+    tampered = copy.deepcopy(raw)
+    if tampered["effect_metrics"]["reranker_provenance"]:
+        tampered["effect_metrics"]["reranker_provenance"][0]["chunk_id"] = "tampered"
+        path.write_text(json.dumps(tampered), encoding="utf-8")
+        with pytest.raises(ArtifactValidationError):
+            load_arm_artifact(path)
+
+
+def test_production_reranked_null_score_fails_load(tmp_path):
+    """mode_served=reranked+ok must reject missing/null reranker_score on any hit."""
+    from catalyst_data.retrieval.artifacts import (
+        ArtifactValidationError,
+        compute_arm_artifact_id,
+        load_arm_artifact,
+    )
+
+    path, _ = _write_scored_production_artifact(tmp_path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    # Null one score; keep provenance consistent so only the score gate fires.
+    raw["arms"]["reranked"]["results"][0]["reranker_score"] = None
+    raw["effect_metrics"]["reranker_provenance"][0]["reranker_score"] = None
+    raw["artifact_id"] = compute_arm_artifact_id(raw)
+    path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ArtifactValidationError, match="reranker_score"):
+        load_arm_artifact(path)
+
+
+def test_production_reranked_all_null_scores_fail_load(tmp_path):
+    """All-null scores must not slip through any()-partial heuristics."""
+    from catalyst_data.retrieval.artifacts import (
+        ArtifactValidationError,
+        compute_arm_artifact_id,
+        load_arm_artifact,
+    )
+
+    path, _ = _write_scored_production_artifact(tmp_path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    for result, prov in zip(
+        raw["arms"]["reranked"]["results"],
+        raw["effect_metrics"]["reranker_provenance"],
+        strict=True,
+    ):
+        result["reranker_score"] = None
+        result["reranker_rank"] = None
+        prov["reranker_score"] = None
+        prov["reranker_rank"] = None
+    raw["artifact_id"] = compute_arm_artifact_id(raw)
+    path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ArtifactValidationError, match="reranker_score|reranker_rank"):
+        load_arm_artifact(path)
+
+
+def test_production_reranked_null_rank_fails_load(tmp_path):
+    from catalyst_data.retrieval.artifacts import (
+        ArtifactValidationError,
+        compute_arm_artifact_id,
+        load_arm_artifact,
+    )
+
+    path, _ = _write_scored_production_artifact(tmp_path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["arms"]["reranked"]["results"][1]["reranker_rank"] = None
+    raw["effect_metrics"]["reranker_provenance"][1]["reranker_rank"] = None
+    raw["artifact_id"] = compute_arm_artifact_id(raw)
+    path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ArtifactValidationError, match="reranker_rank"):
+        load_arm_artifact(path)
+
+
+def test_mode_served_reranked_ok_without_scores_fails_write(tmp_path):
+    """write_arm_artifact must reject reranked+ok results lacking scores/ranks."""
+    from catalyst_data.retrieval.artifacts import ArtifactValidationError, write_arm_artifact
+
+    arms = copy.deepcopy(FOUR_COMPLETE_ARM_RESULTS)
+    assert arms["reranked"]["mode_served"] == "reranked"
+    assert arms["reranked"]["status"] == "ok"
+    # Force all-null scores/ranks — successful reranked serve is invalid.
+    for result in arms["reranked"]["results"]:
+        result["reranker_score"] = None
+        result["reranker_rank"] = None
+    with pytest.raises(ArtifactValidationError, match="reranker_score|reranker_rank"):
+        write_arm_artifact(
+            root=tmp_path, run_id="run-1", case_id="B001",
+            query="AAPL earnings", cutoff_ts="2026-01-15T21:00:00Z",
+            filters={"ticker": "AAPL", "evidence_types": [], "source_classes": [],
+                     "corpus_manifest_id": "a" * 64, "index_manifest_id": "1" * 64},
+            retrieval_config={"lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60,
+                              "fused_top_k": 20, "display_top_k": 8,
+                              "embedding_revision": BGE_M3_REVISION,
+                              "reranker_revision": BGE_RERANKER_REVISION,
+                              "reranker_timeout_seconds": 2.0},
+            arms=arms,
+        )
+
+
+# ── AMEND-5.2: finite reranker scores (reject None/bool/NaN/±Inf) ─────────────
+
+_SENTINEL = object()
+
+
+def _tamper_score_and_provenance(path, score_value, *, rank_value=_SENTINEL):
+    from catalyst_data.retrieval.artifacts import compute_arm_artifact_id
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["arms"]["reranked"]["results"][0]["reranker_score"] = score_value
+    raw["effect_metrics"]["reranker_provenance"][0]["reranker_score"] = score_value
+    if rank_value is not _SENTINEL:
+        raw["arms"]["reranked"]["results"][0]["reranker_rank"] = rank_value
+        raw["effect_metrics"]["reranker_provenance"][0]["reranker_rank"] = rank_value
+        # Keep result.rank contiguous/order; only reranker_rank is tampered when needed.
+    raw["artifact_id"] = compute_arm_artifact_id(raw)
+    path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
+    return raw
+
+
+@pytest.mark.parametrize(
+    "bad_score",
+    [None, True, False, float("nan"), float("inf"), float("-inf")],
+    ids=["None", "True", "False", "NaN", "+Inf", "-Inf"],
+)
+def test_production_reranked_rejects_non_finite_scores(tmp_path, bad_score):
+    from catalyst_data.retrieval.artifacts import ArtifactValidationError, load_arm_artifact
+
+    path, _ = _write_scored_production_artifact(tmp_path)
+    _tamper_score_and_provenance(path, bad_score)
+    with pytest.raises(ArtifactValidationError, match="reranker_score|finite"):
+        load_arm_artifact(path)
+
+
+@pytest.mark.parametrize(
+    "bad_score",
+    [None, True, False, float("nan"), float("inf"), float("-inf")],
+    ids=["None", "True", "False", "NaN", "+Inf", "-Inf"],
+)
+def test_provenance_rejects_non_finite_scores(tmp_path, bad_score):
+    """Provenance path must reject non-finite scores even when result is fixed separately."""
+    from catalyst_data.retrieval.artifacts import (
+        ArtifactValidationError,
+        compute_arm_artifact_id,
+        load_arm_artifact,
+    )
+
+    path, _ = _write_scored_production_artifact(tmp_path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    # Keep result finite; only provenance is non-finite → mismatch or score invalid.
+    raw["effect_metrics"]["reranker_provenance"][0]["reranker_score"] = bad_score
+    raw["artifact_id"] = compute_arm_artifact_id(raw)
+    path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ArtifactValidationError, match="reranker_score|provenance|finite"):
+        load_arm_artifact(path)
+
+
+@pytest.mark.parametrize("bad_rank", [None, 0, -1, 1.5, True, "1"], ids=["None", "0", "neg", "float", "bool", "str"])
+def test_production_reranked_rejects_invalid_ranks(tmp_path, bad_rank):
+    from catalyst_data.retrieval.artifacts import ArtifactValidationError, load_arm_artifact
+
+    path, _ = _write_scored_production_artifact(tmp_path)
+    _tamper_score_and_provenance(path, 9.0, rank_value=bad_rank)
+    with pytest.raises(ArtifactValidationError, match="reranker_rank|rank"):
+        load_arm_artifact(path)
+
+
+def test_production_reranked_rejects_non_contiguous_ranks(tmp_path):
+    from catalyst_data.retrieval.artifacts import (
+        ArtifactValidationError,
+        compute_arm_artifact_id,
+        load_arm_artifact,
+    )
+
+    path, _ = _write_scored_production_artifact(tmp_path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    # Swap ranks so order is non-contiguous relative to position.
+    raw["arms"]["reranked"]["results"][0]["reranker_rank"] = 2
+    raw["arms"]["reranked"]["results"][1]["reranker_rank"] = 1
+    raw["effect_metrics"]["reranker_provenance"][0]["reranker_rank"] = 2
+    raw["effect_metrics"]["reranker_provenance"][1]["reranker_rank"] = 1
+    raw["artifact_id"] = compute_arm_artifact_id(raw)
+    path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ArtifactValidationError, match="reranker_rank|contiguous|order"):
+        load_arm_artifact(path)
+
+
+def test_is_finite_number_predicate_unit():
+    from catalyst_data.retrieval.artifacts import is_finite_number
+
+    assert is_finite_number(0) is True
+    assert is_finite_number(1.5) is True
+    assert is_finite_number(-3) is True
+    for bad in (None, True, False, "1", float("nan"), float("inf"), float("-inf"), object()):
+        assert is_finite_number(bad) is False

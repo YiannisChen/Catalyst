@@ -40,6 +40,8 @@ from catalyst_app.runtime_credential_store import RuntimeCredentialStore
 from catalyst_app.workbench_store import WorkbenchStore
 
 from catalyst_eval.post_import.case_pack import (
+    CasePackCase,
+    SCHEMA_VERSION as CASE_PACK_SCHEMA_VERSION,
     build_smoke_case_pack,
     compute_case_pack_id,
     write_case_pack,
@@ -185,17 +187,164 @@ def _build_wave2_evidence(
     arm_count: int = 10,
     pool_count: int = 10,
     meta_extra: dict | None = None,
+    cases=None,
+    valid_artifacts: bool = True,
 ) -> Path:
+    """Build Wave 2 evidence. When valid_artifacts is True, write reloadable
+    arm/pool artifacts under the AMEND-5.1 schema (required for validate_wave2).
+    """
+    from catalyst_data.config import BGE_M3_REVISION, BGE_RERANKER_REVISION
+    from catalyst_data.retrieval.artifacts import write_arm_artifact
+    from catalyst_data.retrieval.pool import generate_union_pool, write_union_pool
+
     resolved = resolved if resolved is not None else _resolved()
     wave2 = tmp_path / f"wave2_full_{uuid.uuid4().hex[:8]}"
     (wave2 / "arms").mkdir(parents=True)
     (wave2 / "pool").mkdir(parents=True)
-    for idx in range(arm_count):
-        (wave2 / "arms" / f"case-{idx}.json").write_text(json.dumps({"case_id": f"case-{idx}"}))
-    for idx in range(pool_count):
-        (wave2 / "pool" / f"case-{idx}.json").write_text(json.dumps({"case_id": f"case-{idx}"}))
+    if cases is None:
+        cases = _full_cases() if case_count == 10 else [
+            CasePackCase(
+                schema_version=CASE_PACK_SCHEMA_VERSION,
+                case_id=f"case-{idx}", ticker="AAPL", session_date="2026-01-15",
+                cutoff="2026-01-15T21:00:00Z", query="q", source_set="fixture",
+                golden={"golden_id": f"case-{idx}", "should_refuse": False},
+            )
+            for idx in range(case_count)
+        ]
+    case_ids = [case.case_id for case in cases][:arm_count]
+
+    def _arm_result(chunk_ids, *, lexical=False, dense=False, rerank=False):
+        results = []
+        for position, chunk_id in enumerate(chunk_ids, start=1):
+            results.append({
+                "chunk_id": chunk_id,
+                "document_id": f"doc:{chunk_id}",
+                "available_at": "2026-01-01T00:00:00Z",
+                "source_class": "reported_news",
+                "rank": position,
+                "lexical_raw_score": 0.1 if lexical else None,
+                "lexical_rank": position if lexical else None,
+                "dense_score": 0.1 if dense else None,
+                "dense_rank": position if dense else None,
+                "fusion_score": 0.1,
+                "fusion_rank": position,
+                "arm_ranks": [],
+                "arm_scores": [],
+                "reranker_score": float(10 - position) if rerank else None,
+                "reranker_rank": position if rerank else None,
+            })
+        return results
+
+    wave2_run_id = "wave2"
+    cases_by_id = {case.case_id: case for case in cases}
+    if valid_artifacts:
+        for case_id in case_ids:
+            case = cases_by_id[case_id]
+            arms = {
+                "fts5": {
+                    "mode_requested": "fts5", "mode_served": "fts5", "status": "ok",
+                    "latency_ms": 1.0, "degradation_reasons": [],
+                    "results": _arm_result(("a", "b", "c"), lexical=True),
+                },
+                "dense": {
+                    "mode_requested": "dense", "mode_served": "dense", "status": "ok",
+                    "latency_ms": 1.0, "degradation_reasons": [],
+                    "results": _arm_result(("b", "d"), dense=True),
+                },
+                "hybrid": {
+                    "mode_requested": "hybrid", "mode_served": "hybrid", "status": "ok",
+                    "latency_ms": 1.0, "degradation_reasons": [],
+                    "results": [
+                        {
+                            "chunk_id": "d", "document_id": "doc:d",
+                            "available_at": "2026-01-01T00:00:00Z",
+                            "source_class": "reported_news", "rank": 1,
+                            "lexical_raw_score": None, "lexical_rank": None,
+                            "dense_score": 0.2, "dense_rank": 1,
+                            "fusion_score": 0.3, "fusion_rank": 1,
+                            "arm_ranks": [], "arm_scores": [],
+                            "reranker_score": None, "reranker_rank": None,
+                        },
+                        {
+                            "chunk_id": "a", "document_id": "doc:a",
+                            "available_at": "2026-01-01T00:00:00Z",
+                            "source_class": "reported_news", "rank": 2,
+                            "lexical_raw_score": 0.1, "lexical_rank": 1,
+                            "dense_score": None, "dense_rank": None,
+                            "fusion_score": 0.2, "fusion_rank": 2,
+                            "arm_ranks": [], "arm_scores": [],
+                            "reranker_score": None, "reranker_rank": None,
+                        },
+                        {
+                            "chunk_id": "e", "document_id": "doc:e",
+                            "available_at": "2026-01-01T00:00:00Z",
+                            "source_class": "reported_news", "rank": 3,
+                            "lexical_raw_score": 0.05, "lexical_rank": 2,
+                            "dense_score": 0.05, "dense_rank": 2,
+                            "fusion_score": 0.1, "fusion_rank": 3,
+                            "arm_ranks": [], "arm_scores": [],
+                            "reranker_score": None, "reranker_rank": None,
+                        },
+                    ],
+                },
+                "reranked": {
+                    "mode_requested": "reranked", "mode_served": "reranked", "status": "ok",
+                    "latency_ms": 1.0, "degradation_reasons": [],
+                    "results": _arm_result(("e", "f"), rerank=True),
+                },
+            }
+            path = write_arm_artifact(
+                root=wave2 / "arms_root",
+                run_id=wave2_run_id,
+                case_id=case_id,
+                query=case.query,
+                cutoff_ts=case.cutoff,
+                filters={
+                    "ticker": case.ticker,
+                    "evidence_types": [],
+                    "source_classes": [],
+                    "corpus_manifest_id": resolved.corpus_manifest_id,
+                    "index_manifest_id": resolved.index_manifest_id,
+                },
+                retrieval_config={
+                    "lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60,
+                    "fused_top_k": 20, "display_top_k": 8,
+                    "embedding_revision": BGE_M3_REVISION,
+                    "reranker_revision": BGE_RERANKER_REVISION,
+                    "reranker_timeout_seconds": 2.0,
+                },
+                arms=arms,
+            )
+            # Flatten into arms/ as case_id.json (four-arm layout).
+            dest = wave2 / "arms" / f"{case_id}.json"
+            dest.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            pool = generate_union_pool(dest)
+            write_union_pool(pool, wave2 / "pool" / f"{case_id}.json")
+        # Pad/truncate to requested counts for negative tests.
+        if arm_count < len(case_ids):
+            for path in sorted((wave2 / "arms").glob("*.json"))[arm_count:]:
+                path.unlink()
+        if pool_count < len(case_ids):
+            for path in sorted((wave2 / "pool").glob("*.json"))[pool_count:]:
+                path.unlink()
+        while arm_count > len(list((wave2 / "arms").glob("*.json"))):
+            idx = len(list((wave2 / "arms").glob("*.json")))
+            (wave2 / "arms" / f"extra-{idx}.json").write_text("{}")
+        while pool_count > len(list((wave2 / "pool").glob("*.json"))):
+            idx = len(list((wave2 / "pool").glob("*.json")))
+            (wave2 / "pool" / f"extra-{idx}.json").write_text("{}")
+    else:
+        for idx in range(arm_count):
+            (wave2 / "arms" / f"case-{idx}.json").write_text(
+                json.dumps({"case_id": f"case-{idx}"})
+            )
+        for idx in range(pool_count):
+            (wave2 / "pool" / f"case-{idx}.json").write_text(
+                json.dumps({"case_id": f"case-{idx}"})
+            )
     meta = {
         "schema_version": "post_import_run_meta_v1",
+        "run_id": wave2_run_id if valid_artifacts else "wave2",
         "git_head": GIT_HEAD,
         "runtime_git_head": GIT_HEAD,
         "index_build_revision": CODE_REVISION,
@@ -213,6 +362,10 @@ def _build_wave2_evidence(
         "db_user_version": 13,
         "db_foreign_key_violations": 0,
     }
+    if valid_artifacts:
+        from catalyst_eval.post_import.four_arm import build_temporal_identity_validation
+
+        meta["temporal_identity_validation"] = build_temporal_identity_validation(cases)
     if meta_extra:
         meta.update(meta_extra)
     (wave2 / "meta.json").write_text(json.dumps(meta, sort_keys=True))
@@ -369,7 +522,19 @@ class FakeGraph:
             config="mcj_full",
         ) as writer:
             event_seq_by_node = {}
-            for node in ("critic", "decision_router", "judge", "validator", "finalizer"):
+            abstain = outcome["output_status"] == "ABSTAIN"
+            if abstain:
+                # ABSTAIN path: no judge/validator; insufficient_handler terminal.
+                nodes = [
+                    "context_builder", "miner", "critic", "decision_router",
+                    "insufficient_handler", "finalizer",
+                ]
+            else:
+                nodes = [
+                    "context_builder", "miner", "critic", "decision_router",
+                    "judge", "validator", "finalizer",
+                ]
+            for node in nodes:
                 status_after = outcome["output_status"] if node == "finalizer" else "RUNNING"
                 event_seq = writer.event(
                     node=node,
@@ -396,21 +561,75 @@ class FakeGraph:
                     "evidence_ids": [citation],
                     "direction": "down",
                 })
-            write_node_artifact(
-                writer.conn,
-                run_id=writer.run_id,
-                event_seq=event_seq_by_node["judge"],
-                node="judge",
-                artifact_type="judge_causes",
-                payload={"causes": causes},
-            )
+            # Path-specific required (node, artifact_type) matrix (AMEND-5.1).
+            def _art(node: str, artifact_type: str, payload: dict) -> None:
+                seq = event_seq_by_node.get(node)
+                if seq is None:
+                    return
+                write_node_artifact(
+                    writer.conn, run_id=writer.run_id, event_seq=seq,
+                    node=node, artifact_type=artifact_type, payload=payload,
+                )
+
+            _art("context_builder", "context_artifact", {"schema_version": "1.0.0"})
+            _art("context_builder", "state_snapshot", {"state": {}})
+            _art("miner", "retrieved_chunks", {"chunks": []})
+            _art("miner", "reranked_chunks", {"chunks": []})
+            _art("miner", "arm_b_evidence", {"per_asset": {}, "sha256": ""})
+            _art("miner", "state_snapshot", {"state": {}})
+            _art("critic", "graded_evidence", {"items": []})
+            _art("critic", "all_graded_chunks", {"items": []})
+            _art("critic", "critic_decision", {"decision": {"sufficiency": "sufficient"}})
+            _art("critic", "raw_llm_response", {"text": "critic raw response"})
+            _art("critic", "state_snapshot", {"state": {}})
+            if not abstain:
+                _art("judge", "judge_causes", {"causes": causes})
+                _art("judge", "judge_evidence", {"items": []})
+                _art("judge", "judge_summary", {"summary": ""})
+                _art("judge", "raw_llm_response", {"text": "judge raw"})
+                _art("judge", "state_snapshot", {"state": {}})
+                _art("validator", "validator_decision", {"decision": "pass"})
+                _art("validator", "raw_llm_response", {"text": "validator raw"})
+                _art("validator", "state_snapshot", {"state": {}})
+            else:
+                _art("insufficient_handler", "state_snapshot", {"state": {}})
+            _art("finalizer", "state_snapshot", {"state": {}})
+
+            cutoff = outcome.get("cutoff", "2025-07-24T20:00:00Z")
+            evidence_ids = list(outcome.get("citations", [])) or (["abstain-evidence-1"] if abstain else [])
+            retrieved_chunks = [
+                {
+                    "asset_id": chunk_id,
+                    "chunk_id": chunk_id,
+                    "source_class": "reported_news",
+                    "ticker_associations": [],
+                    "corpus_manifest_id": EVIDENCE_KWARGS["corpus_manifest_id"],
+                    "index_manifest_id": EVIDENCE_KWARGS["index_manifest_id"],
+                    "available_at": cutoff,
+                }
+                for chunk_id in evidence_ids
+            ]
             final_state = {
                 "output_status": outcome["output_status"],
-                "cutoff": outcome.get("cutoff", "2025-07-24T20:00:00Z"),
+                "cutoff": cutoff,
+                "context_cutoff": cutoff,
+                "retrieval_cutoff": cutoff,
+                "validator_cutoff": cutoff,
                 "corpus_manifest_id": EVIDENCE_KWARGS["corpus_manifest_id"],
                 "index_manifest_id": EVIDENCE_KWARGS["index_manifest_id"],
-                "retrieved_chunks": [],
-                "hypotheses": [],
+                "retrieved_chunks": retrieved_chunks,
+                "context_artifact": {"schema_version": "1.0.0"},
+                "hypotheses": [] if abstain else [
+                    {
+                        "cause_label": "earnings_guidance",
+                        "prerequisite_gate_passed": outcome.get("gate_passed", True),
+                        "prerequisite_gate_reason": outcome.get("gate_reason", "fixture pass"),
+                    }
+                ],
+                "judge_evidence": None if abstain else {
+                    citation: {"chunk_id": citation, "source_class": "reported_news"}
+                    for citation in outcome.get("citations", [])
+                },
                 "retry_count": outcome.get("retry_count", 0),
                 "repair_count": 0,
                 "budget_exhausted": outcome.get("budget_exhausted", False),
@@ -1136,3 +1355,513 @@ def test_validate_wave2_evidence_accepts_four_arm_meta_without_db_sha256(tmp_pat
         resolved=resolved,
     )
     assert validated.four_arm_token == WAVE2_FOUR_ARM_TOKEN
+
+
+# ── AMEND-5: Wave 3 assurance hardening ───────────────────────────────────────
+
+def _assert_token_gate_reason(final_dir: Path, needle: str) -> list[str]:
+    meta = json.loads((final_dir / "meta.json").read_text(encoding="utf-8"))
+    reasons = meta.get("token_gate", {}).get("reasons", [])
+    assert any(needle in reason for reason in reasons), reasons
+    return reasons
+
+
+def test_run_user_smoke_missing_assurance_record_rejects_token(tmp_path, monkeypatch):
+    """A missing assurance record must reject USER_SMOKE_OK."""
+    import catalyst_eval.post_import.user_smoke as user_smoke
+
+    monkeypatch.setattr(user_smoke, "_read_assurance", lambda *a, **k: None)
+    _runtime_db, _frozen_db, _resolved, kwargs = _happy_run(tmp_path)
+    summary = run_user_smoke(**kwargs)
+    assert summary.token_written is False
+    assert not (tmp_path / "reports" / "usmoke_test" / WAVE_TOKEN_FILENAME).exists()
+    _assert_token_gate_reason(tmp_path / "reports" / "usmoke_test", "assurance")
+
+
+def test_run_user_smoke_failed_assurance_check_rejects_token(tmp_path):
+    """Expected status match alone is insufficient: any failed assurance check
+    rejects USER_SMOKE_OK and records the check name in meta.token_gate.reasons."""
+    outcomes = _valid_outcomes()
+    outcomes["g006"]["gate_passed"] = False
+    _runtime_db, _frozen_db, _resolved, kwargs = _happy_run(tmp_path, outcomes=outcomes)
+    summary = run_user_smoke(**kwargs)
+    assert summary.token_written is False
+    final_dir = tmp_path / "reports" / "usmoke_test"
+    assert not (final_dir / WAVE_TOKEN_FILENAME).exists()
+    reasons = _assert_token_gate_reason(final_dir, "assurance")
+    assert any("prerequisite_gates" in reason for reason in reasons)
+
+
+def test_run_user_smoke_not_applicable_assurance_checks_do_not_block(tmp_path):
+    """not_applicable assurance checks (no-hypothesis ABSTAIN) do not fail the run."""
+    _runtime_db, _frozen_db, _resolved, kwargs = _happy_run(tmp_path)
+    summary = run_user_smoke(**kwargs)
+    assert summary.token_written is True
+    final_dir = tmp_path / "reports" / "usmoke_test"
+    assurance = json.loads((final_dir / "assurance" / "assurance-h004.json").read_text())
+    by_name = {check["check_name"]: check["status"] for check in assurance["checks"]}
+    assert by_name["judge_visibility"] == "not_applicable"
+    assert by_name["prerequisite_gates"] == "not_applicable"
+
+
+# ── AMEND-5: Wave 3 evidence completeness (automatic node artifacts) ──────────
+
+REQUIRED_DIAGNOSTIC_TYPES = frozenset({
+    "retrieved_chunks", "reranked_chunks", "arm_b_evidence",
+    "graded_evidence", "all_graded_chunks", "critic_decision",
+    "raw_llm_response", "state_snapshot",
+})
+
+
+def test_run_user_smoke_exports_node_artifacts(tmp_path):
+    """The production runner automatically exports checksum-covered, redacted
+    node artifacts for every case (no manual diagnostic step)."""
+    _runtime_db, _frozen_db, _resolved, kwargs = _happy_run(tmp_path)
+    summary = run_user_smoke(**kwargs)
+    assert summary.token_written is True
+    final_dir = tmp_path / "reports" / "usmoke_test"
+    artifacts_dir = final_dir / "node_artifacts"
+    assert artifacts_dir.is_dir()
+    files = sorted(rel.as_posix() for rel in artifacts_dir.rglob("*") if rel.is_file())
+    assert files, "node_artifacts export is empty"
+    for case_id in USER_SMOKE_CASE_IDS:
+        case_files = [
+            rel for rel in files
+            if f"/{case_id}/" in rel or rel.startswith(f"{case_id}/")
+        ]
+        assert case_files, f"missing node artifacts for {case_id}"
+        blob = "\n".join(
+            (artifacts_dir / rel).read_text(encoding="utf-8") for rel in case_files
+        )
+        present = {name for name in REQUIRED_DIAGNOSTIC_TYPES if f'"{name}"' in blob}
+        assert present == REQUIRED_DIAGNOSTIC_TYPES, (
+            f"{case_id} missing required artifact types: {sorted(REQUIRED_DIAGNOSTIC_TYPES - present)}"
+        )
+        assert "sk-" not in blob
+        assert "authorization" not in blob.lower() or "[REDACTED]" in blob
+        assert "/workspace/" not in blob
+        assert "/Users/" not in blob
+    manifest = (final_dir / "checksums.sha256").read_text()
+    assert any("node_artifacts/by_case/" in line for line in manifest.splitlines())
+
+
+def test_run_user_smoke_missing_required_artifact_fails_closed(tmp_path, monkeypatch):
+    """A missing required (node, type) pair blocks the token and records
+    case/node/type in meta.token_gate.reasons."""
+    import catalyst_eval.post_import.user_smoke as user_smoke
+
+    real_read = user_smoke._read_node_artifacts
+
+    def dropping_read(db_path, run_id):
+        rows = real_read(db_path, run_id)
+        return [row for row in rows if row.get("artifact_type") != "reranked_chunks"]
+
+    monkeypatch.setattr(user_smoke, "_read_node_artifacts", dropping_read)
+    _runtime_db, _frozen_db, _resolved, kwargs = _happy_run(tmp_path)
+    summary = run_user_smoke(**kwargs)
+    assert summary.token_written is False
+    final_dir = tmp_path / "reports" / "usmoke_test"
+    assert final_dir.is_dir()
+    assert not (final_dir / WAVE_TOKEN_FILENAME).exists()
+    meta = json.loads((final_dir / "meta.json").read_text(encoding="utf-8"))
+    reasons = meta["token_gate"]["reasons"]
+    assert any("incomplete node artifact evidence" in reason for reason in reasons)
+    assert any("reranked_chunks" in reason for reason in reasons)
+    assert any("/miner/reranked_chunks" in reason for reason in reasons)
+
+
+def test_validate_wave2_rejects_legacy_four_arm_full_wave23_final3():
+    """Old Wave 2 evidence without effect_metrics / schema 1.1.0 must fail closed."""
+    from pathlib import Path
+
+    legacy = Path("data/run_reports/post_import/four_arm_full_wave23_final3")
+    if not legacy.is_dir():
+        pytest.skip("legacy evidence directory not present")
+    t4 = Path("data/run_reports/post_import/t4_wave23_final3")
+    if not t4.is_dir():
+        pytest.skip("t4 evidence directory not present")
+    with pytest.raises(ValueError):
+        validate_wave2_evidence(
+            wave2_dir=legacy,
+            t4_evidence_dir=t4,
+            current_case_pack=None,
+            resolved=None,
+        )
+
+
+def test_validate_wave2_rejects_null_reranker_scores(tmp_path):
+    """Wave3 must fail closed when production reranked hits lack scores/ranks."""
+    from catalyst_data.retrieval.artifacts import compute_arm_artifact_id
+
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+    # Tamper first arm: null all scores/ranks + matching provenance.
+    arm_path = sorted((wave2_dir / "arms").glob("*.json"))[0]
+    payload = json.loads(arm_path.read_text(encoding="utf-8"))
+    for result in payload["arms"]["reranked"]["results"]:
+        result["reranker_score"] = None
+        result["reranker_rank"] = None
+    for entry in payload["effect_metrics"]["reranker_provenance"]:
+        entry["reranker_score"] = None
+        entry["reranker_rank"] = None
+    payload["artifact_id"] = compute_arm_artifact_id(payload)
+    arm_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    # Also rebind pool.source_artifact_id so only score gate is under test.
+    case_id = payload["case_id"]
+    pool_path = wave2_dir / "pool" / f"{case_id}.json"
+    if pool_path.is_file():
+        pool = json.loads(pool_path.read_text(encoding="utf-8"))
+        pool["source_artifact_id"] = payload["artifact_id"]
+        pool_path.write_text(json.dumps(pool, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="reranker_score|reload validation|effect-validity"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir,
+            t4_evidence_dir=t4_dir,
+            current_case_pack=cases,
+            resolved=resolved,
+        )
+
+
+def test_required_node_artifact_matrix_covers_paths():
+    from catalyst_eval.post_import.user_smoke import required_node_artifact_pairs
+
+    base = required_node_artifact_pairs(output_status="SUFFICIENT", entered_judge_validator=True)
+    assert ("miner", "retrieved_chunks") in base
+    assert ("judge", "judge_evidence") in base
+    assert ("validator", "validator_decision") in base
+    abstain = required_node_artifact_pairs(output_status="ABSTAIN", entered_judge_validator=False)
+    assert ("insufficient_handler", "state_snapshot") in abstain
+    assert ("judge", "judge_evidence") not in abstain
+
+
+# ── AMEND-5.2: Wave 3 effect-validity rejects non-finite reranker scores ─────
+
+@pytest.mark.parametrize(
+    "bad_score",
+    [None, True, False, float("nan"), float("inf"), float("-inf")],
+    ids=["None", "True", "False", "NaN", "+Inf", "-Inf"],
+)
+def test_effect_validity_rejects_non_finite_reranker_scores(bad_score):
+    from catalyst_eval.post_import.user_smoke import _effect_validity_from_artifact
+
+    # Bypass load validation by constructing a minimal ArmArtifact-like object.
+    class _A:
+        def __init__(self, payload):
+            self.payload = payload
+            self.arms = payload["arms"]
+
+    payload = {
+        "effect_metrics": {
+            "lexical_count": 1, "dense_count": 1, "hybrid_count": 1, "reranked_count": 1,
+            "hybrid_lexical_contribution": 1, "hybrid_dense_contribution": 1,
+            "reranker_input_count": 1, "reranker_output_count": 1,
+            "reranker_provenance": [{
+                "chunk_id": "e", "rank": 1,
+                "reranker_score": bad_score, "reranker_rank": 1,
+            }],
+        },
+        "arms": {
+            "fts5": {"status": "ok", "results": [{"chunk_id": "a"}]},
+            "dense": {"status": "ok", "results": [{"chunk_id": "b"}]},
+            "hybrid": {"status": "ok", "results": [{"chunk_id": "c", "lexical_rank": 1, "dense_rank": 1}]},
+            "reranked": {
+                "status": "ok", "mode_served": "reranked",
+                "results": [{
+                    "chunk_id": "e", "rank": 1,
+                    "reranker_score": bad_score, "reranker_rank": 1,
+                }],
+            },
+        },
+    }
+    problems = _effect_validity_from_artifact(_A(payload))
+    assert any("reranker_score" in p or "finite" in p for p in problems), problems
+
+
+@pytest.mark.parametrize(
+    "bad_score",
+    [None, True, False, float("nan"), float("inf"), float("-inf")],
+    ids=["None", "True", "False", "NaN", "+Inf", "-Inf"],
+)
+def test_validate_wave2_rejects_non_finite_reranker_scores(tmp_path, bad_score):
+    from catalyst_data.retrieval.artifacts import compute_arm_artifact_id
+
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+    arm_path = sorted((wave2_dir / "arms").glob("*.json"))[0]
+    payload = json.loads(arm_path.read_text(encoding="utf-8"))
+    for result in payload["arms"]["reranked"]["results"]:
+        result["reranker_score"] = bad_score
+    for entry in payload["effect_metrics"]["reranker_provenance"]:
+        entry["reranker_score"] = bad_score
+    payload["artifact_id"] = compute_arm_artifact_id(payload)
+    arm_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    case_id = payload["case_id"]
+    pool_path = wave2_dir / "pool" / f"{case_id}.json"
+    if pool_path.is_file():
+        pool = json.loads(pool_path.read_text(encoding="utf-8"))
+        pool["source_artifact_id"] = payload["artifact_id"]
+        pool_path.write_text(json.dumps(pool, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="reranker_score|reload validation|effect-validity|finite"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir,
+            t4_evidence_dir=t4_dir,
+            current_case_pack=cases,
+            resolved=resolved,
+        )
+
+
+# ── AMEND-5.2: Wave 2 semantic binding (query/ticker/cutoff/run_id/corpus/index)
+
+def _tamper_first_arm(wave2_dir, mutator):
+    from catalyst_data.retrieval.artifacts import compute_arm_artifact_id
+
+    arm_path = sorted((wave2_dir / "arms").glob("*.json"))[0]
+    payload = json.loads(arm_path.read_text(encoding="utf-8"))
+    mutator(payload)
+    payload["artifact_id"] = compute_arm_artifact_id(payload)
+    arm_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    case_id = payload["case_id"]
+    pool_path = wave2_dir / "pool" / f"{case_id}.json"
+    if pool_path.is_file():
+        pool = json.loads(pool_path.read_text(encoding="utf-8"))
+        pool["source_artifact_id"] = payload["artifact_id"]
+        pool_path.write_text(json.dumps(pool, sort_keys=True), encoding="utf-8")
+    return payload
+
+
+def test_validate_wave2_rejects_wrong_query_sha256(tmp_path):
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+
+    def mut(payload):
+        payload["query_sha256"] = "a" * 64
+
+    _tamper_first_arm(wave2_dir, mut)
+    with pytest.raises(ValueError, match="query_sha256|query hash"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir, t4_evidence_dir=t4_dir,
+            current_case_pack=cases, resolved=resolved,
+        )
+
+
+def test_validate_wave2_rejects_wrong_ticker(tmp_path):
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+
+    def mut(payload):
+        payload["filters"]["ticker"] = "ZZZZ"
+
+    _tamper_first_arm(wave2_dir, mut)
+    with pytest.raises(ValueError, match="ticker"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir, t4_evidence_dir=t4_dir,
+            current_case_pack=cases, resolved=resolved,
+        )
+
+
+def test_validate_wave2_rejects_wrong_cutoff_ts(tmp_path):
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+
+    def mut(payload):
+        payload["cutoff_ts"] = "1999-01-01T00:00:00Z"
+
+    _tamper_first_arm(wave2_dir, mut)
+    with pytest.raises(ValueError, match="cutoff"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir, t4_evidence_dir=t4_dir,
+            current_case_pack=cases, resolved=resolved,
+        )
+
+
+def test_validate_wave2_rejects_wrong_run_id(tmp_path):
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+
+    def mut(payload):
+        payload["run_id"] = "wrong-run-id"
+
+    _tamper_first_arm(wave2_dir, mut)
+    with pytest.raises(ValueError, match="run_id"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir, t4_evidence_dir=t4_dir,
+            current_case_pack=cases, resolved=resolved,
+        )
+
+
+def test_validate_wave2_rejects_wrong_corpus_manifest_id(tmp_path):
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+
+    def mut(payload):
+        payload["filters"]["corpus_manifest_id"] = "b" * 64
+
+    _tamper_first_arm(wave2_dir, mut)
+    with pytest.raises(ValueError, match="corpus_manifest_id|corpus"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir, t4_evidence_dir=t4_dir,
+            current_case_pack=cases, resolved=resolved,
+        )
+
+
+def test_validate_wave2_rejects_wrong_index_manifest_id(tmp_path):
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+
+    def mut(payload):
+        payload["filters"]["index_manifest_id"] = "c" * 64
+
+    _tamper_first_arm(wave2_dir, mut)
+    with pytest.raises(ValueError, match="index_manifest_id|index"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir, t4_evidence_dir=t4_dir,
+            current_case_pack=cases, resolved=resolved,
+        )
+
+
+# ── AMEND-5.2B: Wave 2 per-case temporal identity on persisted meta ──────────
+
+def test_validate_wave2_rejects_missing_temporal_identity_validation(tmp_path):
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+    meta_path = wave2_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta.pop("temporal_identity_validation", None)
+    meta_path.write_text(json.dumps(meta, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="temporal_identity_validation"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir, t4_evidence_dir=t4_dir,
+            current_case_pack=cases, resolved=resolved,
+        )
+
+
+def test_validate_wave2_rejects_wrong_temporal_center(tmp_path):
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+    meta_path = wave2_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    first_id = cases[0].case_id
+    meta["temporal_identity_validation"][first_id]["temporal_center_date"] = "1999-01-01"
+    meta_path.write_text(json.dumps(meta, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="temporal_center|temporal_identity"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir, t4_evidence_dir=t4_dir,
+            current_case_pack=cases, resolved=resolved,
+        )
+
+
+def test_validate_wave2_rejects_temporal_identity_case_mismatch(tmp_path):
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+    meta_path = wave2_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    first_id = cases[0].case_id
+    del meta["temporal_identity_validation"][first_id]
+    meta_path.write_text(json.dumps(meta, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="temporal_identity|case"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir, t4_evidence_dir=t4_dir,
+            current_case_pack=cases, resolved=resolved,
+        )
+
+
+# ── AMEND-5.2C: Wave 2 preflight rejects every wrong temporal dimension ───────
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("query_date", "1999-01-01"),
+        ("query_date_conflict", True),
+        ("query_date_decision", "none"),
+    ],
+)
+def test_validate_wave2_rejects_wrong_temporal_identity_fields(tmp_path, field, value):
+    cases = _full_cases()
+    resolved = _resolved()
+    t4_dir = _build_t4_evidence(tmp_path, cases=cases, resolved=resolved)
+    wave2_dir = _build_wave2_evidence(tmp_path, resolved=resolved, cases=cases)
+    meta_path = wave2_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    first_id = cases[0].case_id
+    meta["temporal_identity_validation"][first_id][field] = value
+    meta_path.write_text(json.dumps(meta, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError, match="temporal_identity"):
+        validate_wave2_evidence(
+            wave2_dir=wave2_dir, t4_evidence_dir=t4_dir,
+            current_case_pack=cases, resolved=resolved,
+        )
+
+
+# ── AMEND-5.2C P2: approved Wave 2 pack must not be wrongly short-circuited ──
+
+class _StubRetriever:
+    """Minimal miner retriever: records calls, returns no evidence."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def retrieve(self, query, *, ticker, cutoff, requested_manifest_id, top_k=8, candidate_depth=20):
+        self.calls.append({
+            "query": query, "ticker": ticker, "cutoff": cutoff,
+            "requested_manifest_id": requested_manifest_id,
+            "top_k": top_k, "candidate_depth": candidate_depth,
+        })
+        return ()
+
+
+class _StubCutoffPolicy:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str]] = []
+
+    def compute_cutoff(self, *, ticker, session_date, mode) -> str:
+        self.calls.append((ticker, session_date, mode))
+        return "2026-01-15T21:00:00Z"
+
+
+def test_miner_approved_ten_case_pack_not_short_circuited():
+    """Every manager-approved Wave 2 case query must keep the structured ticker
+    consistent or fail-open through the provenance-aware miner — none may be
+    wrongly hard-rejected as a foreign ticker mismatch."""
+    from catalyst_agents.nodes.miner import miner
+
+    cases = _full_cases()
+    assert len(cases) == 10
+    for case in cases:
+        retriever = _StubRetriever()
+        cutoff_policy = _StubCutoffPolicy()
+        state = {
+            "ticker": case.ticker,
+            "trade_date": case.session_date,
+            "query": case.query,
+            "price_move_pct": None,
+            "corpus_manifest_id": "corpus-fixture-v1",
+        }
+        out = miner(state, retriever=retriever, cutoff_policy=cutoff_policy)
+        assert out.get("ticker_consistent") is not False, (case.case_id, case.query, out)
+        assert retriever.calls, case.case_id
+        if out.get("ticker_consistent") is True:
+            assert out.get("query_ticker_raw") == case.ticker.upper(), case.case_id
+        else:
+            assert out.get("query_ticker_raw") is None, case.case_id

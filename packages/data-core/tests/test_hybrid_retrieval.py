@@ -392,3 +392,70 @@ def test_degradation_reason_contains_no_exception_details(monkeypatch):
         assert "secret" not in reason.lower()
         assert "/" not in reason
         assert "lance" not in reason.lower()
+
+
+def test_hybrid_persists_temporal_conflict_without_include_trace(monkeypatch):
+    """Production hybrid path must carry structured_ignore_query fields on results.
+
+    Free-text query date must not override cutoff session; conflict is recorded
+    even when retrieve_lexical is not called with include_trace=True.
+    """
+    result = _run(
+        monkeypatch,
+        mode="hybrid",
+    )
+    # _run uses query "AAPL earnings" — no date conflict. Force a conflict query.
+    import catalyst_data.retrieval.hybrid as hybrid_module
+    import numpy as np
+
+    lexical, dense = _arms()
+    monkeypatch.setattr(hybrid_module, "retrieve_lexical", lambda *a, **k: lexical)
+    monkeypatch.setattr(hybrid_module, "retrieve_dense", lambda *a, **k: dense)
+    hybrid = hybrid_module.retrieve_hybrid(
+        _FakeManifestDb(),
+        query="Why did AAPL move on 2025-07-24?",  # conflicts with cutoff session
+        ticker="AAPL",
+        cutoff="2026-01-15T21:00:00Z",
+        mode="hybrid",
+        query_embedding=np.ones(1024, dtype=np.float32),
+        requested_manifest_id=MANIFEST_A,
+        index_manifest_id="1" * 64,
+        lancedb_table=object(),
+    )
+    assert hybrid.temporal_center_date == "2026-01-15"
+    assert hybrid.query_date == "2025-07-24"
+    assert hybrid.query_date_conflict is True
+    assert hybrid.query_date_decision == "structured_ignore_query"
+    assert hybrid.final_results
+    for item in hybrid.final_results:
+        assert item.temporal_center_date == "2026-01-15"
+        assert item.query_date == "2025-07-24"
+        assert item.query_date_conflict is True
+        assert item.query_date_decision == "structured_ignore_query"
+
+
+def test_production_hybrid_retriever_stamps_temporal_on_evidence_results(monkeypatch):
+    import catalyst_data.retrieval.hybrid as hybrid_module
+    from catalyst_data.retrieval.hybrid import ProductionHybridRetriever
+    import numpy as np
+
+    lexical, dense = _arms()
+    monkeypatch.setattr(hybrid_module, "retrieve_lexical", lambda *a, **k: lexical)
+    monkeypatch.setattr(hybrid_module, "retrieve_dense", lambda *a, **k: dense)
+    retriever = ProductionHybridRetriever(
+        db=_FakeManifestDb(),
+        lancedb_table=object(),
+        embedding_fn=lambda q: np.ones(1024, dtype=np.float32),
+        reranker=None,
+        index_manifest_id="1" * 64,
+    )
+    results = retriever.retrieve(
+        "Why did AAPL move on 2025-07-24?",
+        ticker="AAPL",
+        cutoff="2026-01-15T21:00:00Z",
+        requested_manifest_id=MANIFEST_A,
+    )
+    assert results
+    assert results[0].temporal_center_date == "2026-01-15"
+    assert results[0].query_date_conflict is True
+    assert results[0].query_date_decision == "structured_ignore_query"

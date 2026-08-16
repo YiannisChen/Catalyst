@@ -83,3 +83,51 @@ def test_source_flags_use_valid_support_only():
         {"source_class": "reported_news", "valid_support": False},
     ])
     assert flags["opinion_only_support"] is True
+
+
+# ── AMEND-5: no-hypothesis ABSTAIN marks judge/prerequisite gates N/A ────────
+
+def test_no_hypothesis_abstain_persists_not_applicable_gate_checks(tmp_path):
+    """No-hypothesis ABSTAIN must persist judge_visibility/prerequisite_gates
+    as not_applicable; no synthetic gate row may turn them into failures."""
+    import json
+    import sqlite3
+
+    from catalyst_agents.trace.writer import TraceWriter
+
+    db_path = tmp_path / "trace.db"
+    with TraceWriter(db_path=db_path, run_id="no-hyp-run", ticker="TSLA",
+                     trade_date="2025-07-24", config="mcj_full") as writer:
+        writer.event(
+            node="critic", started_at="2026-01-15T00:00:00Z",
+            ended_at="2026-01-15T00:00:01Z", latency_ms=100,
+            model_id="deepseek-v4-flash", input_tokens=1, output_tokens=1,
+            cost_usd=0.01, decision=None, error_type=None, error_message=None,
+            status_before="RUNNING", status_after="RUNNING",
+        )
+        writer.complete({
+            "output_status": "ABSTAIN",
+            "cutoff": "2025-07-24T20:00:00Z",
+            "corpus_manifest_id": "corpus-fixture-v1",
+            "index_manifest_id": "index-fixture-v1",
+            "retrieved_chunks": [],
+            "hypotheses": [],
+            "retry_count": 0,
+            "repair_count": 0,
+            "budget_exhausted": False,
+            "is_degraded": False,
+            "total_cost_usd": 0.01,
+            "cost_breakdown": [],
+            "error_type": None,
+            "validation_error": None,
+        })
+
+    conn = sqlite3.connect(db_path)
+    row = conn.execute(
+        "SELECT record_json FROM run_assurance WHERE run_id = 'no-hyp-run'"
+    ).fetchone()
+    record = json.loads(row[0])
+    conn.close()
+    by_name = {check["check_name"]: check["status"] for check in record["checks"]}
+    assert by_name["judge_visibility"] == "not_applicable"
+    assert by_name["prerequisite_gates"] == "not_applicable"

@@ -32,8 +32,10 @@ class TraceStatus(str, Enum):
 
 
 class ArtifactType(str, Enum):
+    CONTEXT_ARTIFACT = "context_artifact"
     RETRIEVED_CHUNKS = "retrieved_chunks"
     RERANKED_CHUNKS = "reranked_chunks"
+    ARM_B_EVIDENCE = "arm_b_evidence"
     GRADED_EVIDENCE = "graded_evidence"
     ALL_GRADED_CHUNKS = "all_graded_chunks"
     CRITIC_DECISION = "critic_decision"
@@ -42,6 +44,7 @@ class ArtifactType(str, Enum):
     ERROR_SNAPSHOT = "error_snapshot"
     JUDGE_CAUSES = "judge_causes"
     JUDGE_SUMMARY = "judge_summary"
+    JUDGE_EVIDENCE = "judge_evidence"
     VALIDATOR_DECISION = "validator_decision"
 
 

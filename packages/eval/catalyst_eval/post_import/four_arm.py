@@ -63,9 +63,204 @@ from .t4_evidence import (
 ARM_ORDER = ("fts5", "dense", "hybrid", "reranked")
 META_SCHEMA_VERSION = "post_import_run_meta_v1"
 SUCCESS_TOKEN = "FOUR_ARM_E2E_OK"
+_TEMPORAL_IDENTITY_KEYS = (
+    "temporal_center_date", "query_date", "query_date_conflict", "query_date_decision",
+)
+
+# Sentinel distinguishing "attribute absent on a runtime object" from None.
+_MISSING = object()
 
 # Contract-only served modes for a production four-arm run.
 _CONTRACT_MODE_SERVED = {"fts5", "dense", "hybrid", "reranked", "failed"}
+
+
+def expected_case_temporal_identity(case: CasePackCase) -> dict[str, Any]:
+    """Expected structured temporal identity for one approved case.
+
+    Computes only the approved-case expectation (query never overrides).  It
+    must never read runtime retrieval fields; the runtime side has its own
+    reader (``extract_runtime_temporal_identity``).
+    """
+    from catalyst_data.retrieval.query_policy import resolve_temporal_center
+
+    resolved = resolve_temporal_center(
+        query=case.query,
+        cutoff=case.cutoff,
+        session_date=getattr(case, "session_date", None),
+    )
+    return {
+        "temporal_center_date": resolved.center_date,
+        "query_date": resolved.query_date,
+        "query_date_conflict": resolved.conflict,
+        "query_date_decision": resolved.decision,
+    }
+
+
+def case_temporal_identity(case: CasePackCase) -> dict[str, Any]:
+    """Backward-compatible alias for the expected-side helper."""
+    return expected_case_temporal_identity(case)
+
+
+def extract_runtime_temporal_identity(hybrid_result: HybridRetrievalResult) -> dict[str, Any]:
+    """Read the actual temporal identity stamped by the hybrid facade.
+
+    This is the only sanctioned runtime-side reader: it reads
+    ``HybridRetrievalResult`` outer fields and never recomputes the expected
+    identity via ``resolve_temporal_center``.  A missing field (absent
+    attribute) is reported as ``_MISSING`` so validation can distinguish
+    "absent" from a ``None`` value.
+    """
+    return {
+        key: getattr(hybrid_result, key, _MISSING)
+        for key in _TEMPORAL_IDENTITY_KEYS
+    }
+
+
+def _temporal_inner_mismatches(
+    hybrid_result: HybridRetrievalResult,
+    outer: dict[str, Any],
+) -> list[str]:
+    """Served evidence (fusion/final) must carry the same temporal identity as
+    the outer result; otherwise the run cannot claim the stamped identity."""
+    problems: list[str] = []
+    for label in ("fusion_results", "final_results"):
+        results = getattr(hybrid_result, label, ()) or ()
+        for position, item in enumerate(results, start=1):
+            for key in _TEMPORAL_IDENTITY_KEYS:
+                inner = getattr(item, key, _MISSING)
+                if inner != outer[key]:
+                    problems.append(
+                        f"{label}[{position}].{key} {inner!r} != outer {outer[key]!r}"
+                    )
+    return problems
+
+
+def validate_runtime_temporal_identity(
+    case: CasePackCase,
+    hybrid_result: HybridRetrievalResult,
+) -> dict[str, Any]:
+    """Fail-closed per-case binding of the actual runtime temporal identity.
+
+    Compares the hybrid facade's actual identity field-by-field against the
+    approved-case expectation and raises ``RunnerValidationError`` on any
+    mismatch, missing/invalid value, inner/outer inconsistency, or an approved
+    case whose query date conflicts with the structured session date (Wave 2
+    preflight fail-closed; the ordinary online attribution path keeps the
+    ``structured_ignore_query`` recording policy).
+    """
+    expected = expected_case_temporal_identity(case)
+    actual = extract_runtime_temporal_identity(hybrid_result)
+    problems: list[str] = []
+
+    # Attribute absence is always a failure.  ``query_date`` is the one field
+    # whose model contract allows ``None`` (queries without a date), so only
+    # the other required fields must additionally be non-None.
+    for key in _TEMPORAL_IDENTITY_KEYS:
+        if actual[key] is _MISSING:
+            problems.append(f"runtime temporal field {key} absent")
+    for key in ("temporal_center_date", "query_date_conflict", "query_date_decision"):
+        if actual[key] is None:
+            problems.append(f"runtime temporal field {key} missing")
+
+    center = actual.get("temporal_center_date")
+    if center is not None and (
+        not isinstance(center, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", center) is None
+    ):
+        problems.append(f"runtime temporal_center_date invalid: {center!r}")
+    elif center is not None and center != expected["temporal_center_date"]:
+        problems.append(
+            f"runtime temporal_center_date {center!r} != approved {expected['temporal_center_date']!r}"
+        )
+
+    query_date = actual.get("query_date")
+    if query_date is not _MISSING and query_date != expected["query_date"]:
+        problems.append(
+            f"runtime query_date {query_date!r} != expected {expected['query_date']!r}"
+        )
+
+    conflict = actual.get("query_date_conflict")
+    if type(conflict) is not bool:
+        problems.append(f"runtime query_date_conflict must be a strict bool")
+    elif conflict != expected["query_date_conflict"]:
+        problems.append(
+            f"runtime query_date_conflict {conflict!r} != expected {expected['query_date_conflict']!r}"
+        )
+
+    decision = actual.get("query_date_decision")
+    if decision is _MISSING or decision is None or decision not in {"structured", "structured_ignore_query", "none"}:
+        problems.append(f"runtime query_date_decision invalid: {decision!r}")
+    elif decision != expected["query_date_decision"]:
+        problems.append(
+            f"runtime query_date_decision {decision!r} != expected {expected['query_date_decision']!r}"
+        )
+
+    problems.extend(_temporal_inner_mismatches(hybrid_result, actual))
+
+    if expected["query_date_conflict"] is True:
+        problems.append(
+            "approved case query date conflicts with structured session date "
+            "(Wave 2 preflight fail-closed)"
+        )
+
+    if problems:
+        raise RunnerValidationError(
+            "temporal identity validation failed: " + "; ".join(dict.fromkeys(problems))
+        )
+    return actual
+
+
+def build_temporal_identity_validation(cases: list[CasePackCase]) -> dict[str, dict[str, Any]]:
+    """Expected-only fixture helper: build the *expected* identity map.
+
+    The four-arm runner persists the *actual* runtime identity map
+    (``actual_temporal_by_case``); this helper exists for tests and Wave 2
+    evidence builders to construct the approved-case expectation fixture.
+    """
+    return {case.case_id: expected_case_temporal_identity(case) for case in cases}
+
+
+def validate_temporal_identity_validation(
+    raw: Any,
+    cases: list[CasePackCase],
+) -> list[str]:
+    """Fail-closed checks for meta.temporal_identity_validation vs approved cases."""
+    reasons: list[str] = []
+    if not isinstance(raw, dict) or not raw:
+        return ["temporal_identity_validation missing"]
+    expected_ids = [case.case_id for case in cases]
+    actual_ids = set(raw)
+    expected_set = set(expected_ids)
+    if actual_ids != expected_set:
+        missing = sorted(expected_set - actual_ids)
+        extra = sorted(actual_ids - expected_set)
+        reasons.append(
+            f"temporal_identity_validation case set mismatch "
+            f"(missing={missing}, extra={extra})"
+        )
+    for case in cases:
+        entry = raw.get(case.case_id)
+        if not isinstance(entry, dict):
+            reasons.append(f"temporal_identity_validation missing record for {case.case_id}")
+            continue
+        if set(entry) < set(_TEMPORAL_IDENTITY_KEYS):
+            reasons.append(
+                f"temporal_identity_validation {case.case_id} missing required fields"
+            )
+            continue
+        expected = case_temporal_identity(case)
+        if entry.get("temporal_center_date") != expected["temporal_center_date"]:
+            reasons.append(
+                f"temporal_identity_validation {case.case_id} temporal_center_date "
+                f"does not match approved case structured center"
+            )
+        for key in _TEMPORAL_IDENTITY_KEYS:
+            if entry.get(key) != expected[key]:
+                reasons.append(
+                    f"temporal_identity_validation {case.case_id} {key} "
+                    f"does not match approved case identity"
+                )
+                break
+    return reasons
 
 
 class RunnerValidationError(ValueError):
@@ -286,6 +481,56 @@ def _failed_arm(mode_requested: str, reason: str) -> dict[str, Any]:
     }
 
 
+def _compute_effect_metrics(arms: dict[str, dict[str, Any]], hybrid_result: Any) -> dict[str, Any]:
+    """Per-case effect metrics persisted into the arm artifact (AMEND-5)."""
+    hybrid = arms["hybrid"]["results"]
+    reranked = arms["reranked"]["results"]
+    # Persisted hybrid arm is the reranker input contract (AMEND-5.1).
+    reranker_input = len(hybrid)
+    return {
+        "lexical_count": len(arms["fts5"]["results"]),
+        "dense_count": len(arms["dense"]["results"]),
+        "hybrid_count": len(hybrid),
+        "reranked_count": len(reranked),
+        "hybrid_lexical_contribution": sum(
+            1 for result in hybrid if result.get("lexical_rank") is not None
+        ),
+        "hybrid_dense_contribution": sum(
+            1 for result in hybrid if result.get("dense_rank") is not None
+        ),
+        "reranker_input_count": reranker_input,
+        "reranker_output_count": len(reranked),
+        "reranker_provenance": [
+            {
+                "chunk_id": result["chunk_id"],
+                "rank": position,
+                "reranker_score": result.get("reranker_score"),
+                "reranker_rank": result.get("reranker_rank"),
+            }
+            for position, result in enumerate(reranked, start=1)
+        ],
+    }
+
+
+def _effect_validity_problems(arms: dict[str, dict[str, Any]], hybrid_result: Any) -> list[str]:
+    """Effect-validity problems that must block FOUR_ARM_E2E_OK (AMEND-5)."""
+    problems: list[str] = []
+    for name in ARM_ORDER:
+        arm = arms[name]
+        if arm["status"] != "ok":
+            problems.append(f"{name} arm failed")
+        elif not arm["results"]:
+            problems.append(f"{name} arm ok with zero results")
+    hybrid = arms["hybrid"]["results"]
+    if hybrid and not any(result.get("lexical_rank") is not None for result in hybrid):
+        problems.append("hybrid has no lexical contribution")
+    if hybrid and not any(result.get("dense_rank") is not None for result in hybrid):
+        problems.append("hybrid has no dense contribution")
+    if arms["reranked"]["mode_served"] == "reranked" and not arms["reranked"]["results"]:
+        problems.append("reranker output is empty")
+    return problems
+
+
 def _chunk_served_for_case(
     conn: sqlite3.Connection,
     *,
@@ -450,8 +695,11 @@ def _success_token_gate(
     reload_validation: list[dict[str, Any]],
     has_failed_arm: bool,
     has_degradation: bool,
+    effect_problems: list[str],
     revalidated_evidence: ValidatedT4Evidence | None = None,
     evidence_revalidation_error: str | None = None,
+    temporal_identity_validation: dict[str, Any] | None = None,
+    cases: list[CasePackCase] | None = None,
 ) -> tuple[bool, list[str]]:
     """Return (may_write_token, reasons). Token is only writable when both
     validated objects are held, the evidence directory re-validates to an
@@ -491,8 +739,16 @@ def _success_token_gate(
         reasons.append("failed base arm")
     if has_degradation:
         reasons.append("unauthorized degradation (reranker/arm fallback)")
+    if effect_problems:
+        reasons.append("effect-validity: " + "; ".join(dict.fromkeys(effect_problems)))
     if not reload_validation:
         reasons.append("artifact reload/validation failed")
+    if cases is not None:
+        reasons.extend(
+            validate_temporal_identity_validation(temporal_identity_validation, cases)
+        )
+    elif not temporal_identity_validation:
+        reasons.append("temporal_identity_validation missing")
     return (not reasons, reasons)
 
 
@@ -594,9 +850,14 @@ def run_four_arm_cases(
     arms_written = 0
     pools_written = 0
     validation: list[dict[str, Any]] = []
+    effect_problems: list[str] = []
     has_failed_arm = False
     has_degradation = False
     reranker_gate = RerankerGate()
+    # AMEND-5.2C: meta.temporal_identity_validation must be the *actual*
+    # runtime identity extracted from each hybrid result, never a re-computed
+    # expected fixture.  Validation runs before any arm/pool artifact write.
+    actual_temporal_by_case: dict[str, dict[str, Any]] = {}
     try:
         for case in executed_cases:
             query_vector = validate_query_vector(
@@ -613,6 +874,14 @@ def run_four_arm_cases(
                 reranker_gate=reranker_gate,
             )
             hybrid_latency_ms = (time.perf_counter() - started_hybrid) * 1000.0
+
+            # Bind the actual temporal identity before any artifact write:
+            # raises RunnerValidationError on missing/invalid/mismatched
+            # runtime fields, inner/outer inconsistency, or approved-case
+            # query/session date conflict (Wave 2 preflight fail-closed).
+            actual_temporal_by_case[case.case_id] = validate_runtime_temporal_identity(
+                case, hybrid_result,
+            )
 
             arms: dict[str, dict[str, Any]] = {}
             if hybrid_result.lexical_results is None:
@@ -670,6 +939,9 @@ def run_four_arm_cases(
                 db, case=case, arms=arms,
                 manifest_id=identities.corpus_manifest_id,
             )
+            effect_problems.extend(
+                _effect_validity_problems(arms, hybrid_result)
+            )
 
             filters = {
                 "ticker": case.ticker,
@@ -687,6 +959,7 @@ def run_four_arm_cases(
                 filters=filters,
                 retrieval_config=_pinned_retrieval_config(reranker_timeout_seconds),
                 arms=arms,
+                effect_metrics=_compute_effect_metrics(arms, hybrid_result),
                 created_at=started_at,
             )
             final_arm_path = arms_dir / f"{case.case_id}.json"
@@ -717,6 +990,7 @@ def run_four_arm_cases(
         completed_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         meta: dict[str, Any] = {
             "schema_version": META_SCHEMA_VERSION,
+            "run_id": run_id,
             "code_revision": identities.code_revision,
             "index_build_revision": identities.code_revision,
             "git_head": identities.git_head,
@@ -752,6 +1026,7 @@ def run_four_arm_cases(
                     "runtime_git_head is the current runner checkout HEAD"
                 ),
             },
+            "temporal_identity_validation": actual_temporal_by_case,
         }
         meta_path = staging_dir / "meta.json"
         _atomic_write_json(meta_path, meta)
@@ -782,8 +1057,11 @@ def run_four_arm_cases(
             reload_validation=reload_validation,
             has_failed_arm=has_failed_arm,
             has_degradation=has_degradation,
+            effect_problems=effect_problems,
             revalidated_evidence=revalidated_evidence,
             evidence_revalidation_error=evidence_revalidation_error,
+            temporal_identity_validation=meta.get("temporal_identity_validation"),
+            cases=executed_cases,
         )
         token_written = False
         if not may_write:
@@ -823,6 +1101,9 @@ def run_four_arm_cases(
 __all__ = [
     "ARM_ORDER", "META_SCHEMA_VERSION", "SUCCESS_TOKEN", "EmbeddingBoundary",
     "RunIdentities", "RunSummary", "RunnerValidationError",
+    "build_temporal_identity_validation", "case_temporal_identity",
+    "expected_case_temporal_identity", "extract_runtime_temporal_identity",
     "run_four_arm_cases", "validate_embedding_boundary", "validate_query_vector",
+    "validate_runtime_temporal_identity", "validate_temporal_identity_validation",
     "_success_token_gate",
 ]
