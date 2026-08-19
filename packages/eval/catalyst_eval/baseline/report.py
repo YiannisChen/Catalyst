@@ -42,6 +42,16 @@ _SECRET_VALUE = re.compile(
     r"(?:api[_-]?key|token|secret|password|credential|authorization)"
     r"\s*(?::|=|\bis\b)\s*\S+)"
 )
+_AUDITED_SUCCESS_TOKENS = frozenset({"FOUR_ARM_E2E_OK", "USER_SMOKE_OK"})
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def _safe_evidence_token_field(key: str, value: Any) -> bool:
+    if key == "success_token":
+        return isinstance(value, str) and value in _AUDITED_SUCCESS_TOKENS
+    if key == "success_token_sha256":
+        return isinstance(value, str) and _SHA256.fullmatch(value) is not None
+    return False
 
 
 class BaselineReportConflictError(ValueError):
@@ -70,7 +80,10 @@ def _redact_secrets(payload: Any) -> Any:
     if isinstance(payload, dict):
         cleaned: dict[str, Any] = {}
         for key, value in payload.items():
-            if _SECRET_KEY.search(str(key)):
+            key_text = str(key)
+            if _SECRET_KEY.search(key_text) and not _safe_evidence_token_field(
+                key_text, value
+            ):
                 continue
             cleaned[key] = _redact_secrets(value)
         return cleaned

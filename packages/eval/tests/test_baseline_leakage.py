@@ -35,6 +35,23 @@ def test_clean_report_passes():
     assert scan_baseline_report(_clean_report()) == []
 
 
+def test_audited_success_token_evidence_fields_are_safe():
+    report = _clean_report()
+    report["runs"][0].update({
+        "success_token": "FOUR_ARM_E2E_OK",
+        "success_token_sha256": "a" * 64,
+    })
+    assert scan_baseline_report(report) == []
+
+
+def test_unapproved_token_key_still_fails():
+    report = _clean_report()
+    report["runs"][0]["provider_token"] = "not-returned"
+    violations = scan_baseline_report(report)
+    assert violations
+    assert "not-returned" not in "\n".join(violations)
+
+
 def test_secret_key_name_fails():
     report = _clean_report()
     report["runs"][0]["api_key"] = "sk-test-1234567890"

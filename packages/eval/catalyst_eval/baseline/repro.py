@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import hashlib
 import importlib.util
 import io
 import json
@@ -34,10 +35,54 @@ FOUR_ARM_SUCCESS_TOKEN = "FOUR_ARM_E2E_OK"
 USER_SMOKE_SUCCESS_TOKEN = "USER_SMOKE_OK"
 WAVE_TOKEN_FILENAME = "WAVE_TOKEN.txt"
 DEFAULT_OUTPUT_ROOT = "data/run_reports/post_import"
+APPROVED_FROZEN_DB_SHA256 = (
+    "bb37b213091e256033fa00272cb7a85617dbcddf69d6fe9b515840cd9f1ebe40"
+)
 
 
 def _missing_ids(identity: BaselineIdentity) -> tuple[str, ...]:
     return tuple(field for field in DATA_IDENTITY_FIELDS if getattr(identity, field) is None)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _validate_runtime_derivative(
+    frozen_db: str | Path,
+    runtime_db: str | Path,
+    *,
+    expected_frozen_sha: str = APPROVED_FROZEN_DB_SHA256,
+) -> None:
+    """Require a byte-equivalent, writable, independently stored DB copy."""
+    frozen = Path(frozen_db)
+    runtime = Path(runtime_db)
+    if frozen.is_symlink() or runtime.is_symlink():
+        raise ValueError("frozen/runtime DB paths must not be symlinks")
+    if not frozen.is_file() or not runtime.is_file():
+        raise ValueError("frozen and runtime derivative DB files are required")
+    if frozen.resolve() == runtime.resolve():
+        raise ValueError("frozen and runtime derivative DB paths must be distinct")
+    frozen_stat = frozen.stat()
+    runtime_stat = runtime.stat()
+    if (frozen_stat.st_dev, frozen_stat.st_ino) == (
+        runtime_stat.st_dev,
+        runtime_stat.st_ino,
+    ):
+        raise ValueError("runtime derivative must not share frozen DB inode/hardlink")
+    if frozen_stat.st_size <= 0 or runtime_stat.st_size <= 0:
+        raise ValueError("frozen and runtime derivative DBs must be non-empty")
+    frozen_sha = _sha256_file(frozen)
+    if frozen_sha != expected_frozen_sha:
+        raise ValueError("frozen DB sha mismatch")
+    if _sha256_file(runtime) != frozen_sha:
+        raise ValueError("runtime derivative initial sha must match frozen DB sha")
+    if not os.access(runtime, os.W_OK):
+        raise ValueError("runtime derivative DB must be writable")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -106,7 +151,7 @@ def _four_arm_argv(env: Mapping[str, str]) -> list[str]:
             str(REPO_ROOT / "data" / "run_reports" / "post_import" / "case_pack.jsonl"),
         ),
         "--run-id", env.get(
-            "CATALYST_BASELINE_RUN_ID",
+            "CATALYST_BASELINE_FOUR_ARM_RUN_ID",
             f"baseline_repro_four_arm_{uuid.uuid4().hex[:12]}",
         ),
         "--output-root", env.get("CATALYST_BASELINE_OUTPUT_ROOT", DEFAULT_OUTPUT_ROOT),
@@ -133,6 +178,7 @@ def _user_smoke_argv(env: Mapping[str, str]) -> list[str]:
     frozen_db = env.get("CATALYST_BASELINE_FROZEN_DB")
     if not frozen_db:
         raise ValueError("user-smoke gate requires env: CATALYST_BASELINE_FROZEN_DB")
+    _validate_runtime_derivative(frozen_db, env["CATALYST_DB_PATH"])
     argv = [
         "--db", frozen_db,
         "--lancedb-dir", env["CATALYST_LANCEDB_DIR"],
@@ -140,7 +186,7 @@ def _user_smoke_argv(env: Mapping[str, str]) -> list[str]:
         "--t4-evidence-dir", env["CATALYST_BASELINE_T4_EVIDENCE_DIR"],
         "--wave2-evidence-dir", env["CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"],
         "--run-id", env.get(
-            "CATALYST_BASELINE_RUN_ID",
+            "CATALYST_BASELINE_USER_SMOKE_RUN_ID",
             f"baseline_repro_user_smoke_{uuid.uuid4().hex[:12]}",
         ),
         "--output-root", env.get("CATALYST_BASELINE_OUTPUT_ROOT", DEFAULT_OUTPUT_ROOT),
@@ -209,6 +255,45 @@ def _validated_wave_token(payload: Mapping[str, Any], expected: str) -> Path | N
     return meta_path if token == expected else None
 
 
+def _bind_gate_run_row(
+    gate_kind: str,
+    gate: Mapping[str, Any],
+    env: Mapping[str, str],
+) -> dict[str, Any]:
+    """Attach immutable gate/T4 evidence hashes to a baseline run row."""
+    row = gate.get("run_row")
+    if not isinstance(row, dict) or not row.get("run_id"):
+        raise ValueError(f"{gate_kind} gate did not emit a baseline run row")
+    meta_path_raw = gate.get("meta_path")
+    token = gate.get("token")
+    if not isinstance(meta_path_raw, str) or not isinstance(token, str):
+        raise ValueError(f"{gate_kind} gate evidence binding is incomplete")
+    meta_path = Path(meta_path_raw)
+    token_path = meta_path.parent / WAVE_TOKEN_FILENAME
+    t4_dir_raw = env.get("CATALYST_BASELINE_T4_EVIDENCE_DIR")
+    if not t4_dir_raw:
+        raise ValueError("CATALYST_BASELINE_T4_EVIDENCE_DIR is required for evidence binding")
+    t4_meta_path = Path(t4_dir_raw) / "meta.json"
+    for path, label in (
+        (meta_path, "gate meta"),
+        (token_path, "gate token"),
+        (t4_meta_path, "T4 meta"),
+    ):
+        if not path.is_file():
+            raise ValueError(f"{label} file missing for evidence binding")
+    return {
+        **row,
+        "gate_kind": gate_kind,
+        "evidence_ref": str(meta_path.parent.resolve()),
+        "evidence_meta_ref": str(meta_path.resolve()),
+        "evidence_meta_sha256": _sha256_file(meta_path),
+        "success_token": token,
+        "success_token_sha256": _sha256_file(token_path),
+        "t4_evidence_ref": str(Path(t4_dir_raw).resolve()),
+        "t4_meta_sha256": _sha256_file(t4_meta_path),
+    }
+
+
 def run_baseline_repro(
     *,
     four_arm: bool,
@@ -236,20 +321,38 @@ def run_baseline_repro(
     identity = sealed_identity_tuple(env=identity_env)
     missing = _missing_ids(identity)
 
+    gate_env = dict(env)
+    if four_arm and user_smoke:
+        four_run_id = gate_env.get("CATALYST_BASELINE_FOUR_ARM_RUN_ID")
+        smoke_run_id = gate_env.get("CATALYST_BASELINE_USER_SMOKE_RUN_ID")
+        if four_run_id and smoke_run_id and four_run_id == smoke_run_id:
+            raise ValueError("four-arm and user-smoke run IDs must be distinct")
+    if user_smoke and not four_arm and not gate_env.get(
+        "CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"
+    ):
+        raise ValueError(
+            "user-smoke-only requires CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"
+        )
+
     runs: list[dict[str, Any]] = []
     ok = True
     four_arm_token: str | None = None
     user_smoke_evidence_dir: str | None = None
 
     if four_arm:
-        gate = _run_four_arm_gate(env, identity)
+        gate = _run_four_arm_gate(gate_env, identity)
         gate_ok = bool(gate.get("ok")) and gate.get("token") == FOUR_ARM_SUCCESS_TOKEN
         ok = ok and gate_ok
         four_arm_token = gate.get("token")
-        if gate.get("run_row"):
-            runs.append({**gate["run_row"], "promoted_env_recovered": promoted_env_recovered})
-    if user_smoke:
-        gate = _run_user_smoke_gate(env, identity)
+        if gate_ok:
+            bound_row = _bind_gate_run_row("four_arm", gate, gate_env)
+            runs.append({**bound_row, "promoted_env_recovered": promoted_env_recovered})
+            if user_smoke:
+                gate_env["CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"] = str(
+                    Path(str(gate["meta_path"])).parent.resolve()
+                )
+    if user_smoke and (not four_arm or ok):
+        gate = _run_user_smoke_gate(gate_env, identity)
         meta_path = gate.get("meta_path")
         gate_ok = (
             bool(gate.get("ok"))
@@ -259,8 +362,17 @@ def run_baseline_repro(
         )
         ok = ok and gate_ok
         user_smoke_evidence_dir = gate.get("evidence_dir")
-        if gate.get("run_row"):
-            runs.append({**gate["run_row"], "promoted_env_recovered": promoted_env_recovered})
+        if gate_ok:
+            bound_row = _bind_gate_run_row("user_smoke", gate, gate_env)
+            if four_arm and runs and Path(bound_row["evidence_ref"]).resolve() == Path(
+                runs[0]["evidence_ref"]
+            ).resolve():
+                gate_ok = False
+                ok = False
+            else:
+                runs.append(
+                    {**bound_row, "promoted_env_recovered": promoted_env_recovered}
+                )
 
     expected_run_count = int(four_arm) + int(user_smoke)
     data_rows_match = len(runs) == expected_run_count and expected_run_count > 0 and all(

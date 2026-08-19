@@ -21,6 +21,16 @@ _SECRET_VALUE = re.compile(
     r"(?:api[_-]?key|token|secret|password|credential|authorization)"
     r"\s+(?:is\s+)?\S{6,})"
 )
+_AUDITED_SUCCESS_TOKENS = frozenset({"FOUR_ARM_E2E_OK", "USER_SMOKE_OK"})
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def _safe_evidence_token_field(key: str, value: Any) -> bool:
+    if key == "success_token":
+        return isinstance(value, str) and value in _AUDITED_SUCCESS_TOKENS
+    if key == "success_token_sha256":
+        return isinstance(value, str) and _SHA256.fullmatch(value) is not None
+    return False
 
 
 def _walk(
@@ -33,7 +43,9 @@ def _walk(
         for key, value in node.items():
             child_path = f"{path}.{key}" if path else str(key)
             key_text = str(key)
-            if _SECRET_KEY.search(key_text):
+            if _SECRET_KEY.search(key_text) and not _safe_evidence_token_field(
+                key_text, value
+            ):
                 violations.append(f"{child_path}: key name matches secret pattern")
             if _GOLDEN_KEY.search(key_text):
                 violations.append(f"{child_path}: key name matches golden-case pattern")

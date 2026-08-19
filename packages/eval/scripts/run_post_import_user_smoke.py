@@ -85,6 +85,44 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _validate_runtime_derivative(
+    frozen_db: Path,
+    runtime_db: Path,
+    *,
+    expected_frozen_sha: str,
+) -> None:
+    """Require a writable, independent, byte-equivalent runtime derivative."""
+    frozen_db = Path(frozen_db)
+    runtime_db = Path(runtime_db)
+    if frozen_db.is_symlink() or runtime_db.is_symlink():
+        raise ValueError("frozen and runtime DB paths must not be symlinks")
+    if not frozen_db.is_file() or not runtime_db.is_file():
+        raise ValueError("frozen and runtime DB files must both exist")
+    if frozen_db.resolve() == runtime_db.resolve():
+        raise ValueError("runtime DB must be distinct from frozen DB")
+    frozen_stat = frozen_db.stat()
+    runtime_stat = runtime_db.stat()
+    if (frozen_stat.st_dev, frozen_stat.st_ino) == (
+        runtime_stat.st_dev,
+        runtime_stat.st_ino,
+    ):
+        raise ValueError("runtime DB must not share the frozen DB inode")
+    if frozen_stat.st_size == 0 or runtime_stat.st_size == 0:
+        raise ValueError("frozen and runtime DB files must be non-empty")
+    frozen_sha = _sha256_file(frozen_db)
+    if frozen_sha != expected_frozen_sha:
+        raise ValueError("frozen DB sha mismatch")
+    if _sha256_file(runtime_db) != frozen_sha:
+        raise ValueError("runtime DB must begin as a byte-equivalent frozen DB copy")
+    if not os.access(runtime_db, os.W_OK):
+        raise ValueError("runtime DB derivative must be writable")
+
+
+def _verify_frozen_db_unchanged(frozen_db: Path, initial_sha: str) -> None:
+    if _sha256_file(frozen_db) != initial_sha:
+        raise RuntimeError("frozen DB changed during user smoke")
+
+
 def _open_db_readonly(db_path: Path) -> sqlite3.Connection:
     uri = f"{db_path.resolve().as_uri()}?mode=ro&immutable=1"
     return sqlite3.connect(uri, uri=True)
@@ -223,8 +261,14 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"ok": False, "error": "CATALYST_DB_PATH (writable derivative runtime DB) is required"},
                          sort_keys=True))
         return 2
-    if not Path(runtime_db_path).is_file():
-        print(json.dumps({"ok": False, "error": f"CATALYST_DB_PATH file missing: {runtime_db_path}"},
+    try:
+        _validate_runtime_derivative(
+            db_path,
+            Path(runtime_db_path),
+            expected_frozen_sha=APPROVED.db_sha256,
+        )
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"ok": False, "error": f"runtime DB derivative: {exc}"},
                          sort_keys=True))
         return 2
 
@@ -314,6 +358,8 @@ def main(argv: list[str] | None = None) -> int:
     server = None
     thread = None
     http = None
+    summary = None
+    execution_error: Exception | None = None
     try:
         server, thread, bound_port = _start_loopback_server(args.host, args.port)
         http = LoopbackHttpSession(f"http://{args.host}:{bound_port}")
@@ -337,8 +383,7 @@ def main(argv: list[str] | None = None) -> int:
             cost_ceiling_usd=args.cost_ceiling_usd,
         )
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
-        return 2
+        execution_error = exc
     finally:
         if http is not None:
             try:
@@ -352,6 +397,18 @@ def main(argv: list[str] | None = None) -> int:
                 pass
         if thread is not None:
             thread.join(timeout=5.0)
+
+    try:
+        _verify_frozen_db_unchanged(db_path, db_sha)
+    except (OSError, RuntimeError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, sort_keys=True))
+        return 2
+    if execution_error is not None:
+        print(json.dumps({"ok": False, "error": str(execution_error)}, sort_keys=True))
+        return 2
+    if summary is None:
+        print(json.dumps({"ok": False, "error": "user smoke produced no summary"}, sort_keys=True))
+        return 2
 
     print(json.dumps({
         "ok": True,

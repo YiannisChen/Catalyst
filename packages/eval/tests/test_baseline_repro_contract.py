@@ -7,7 +7,9 @@ behavior, comparability, and success-token collection only.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import types
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from catalyst_eval.baseline.repro import (
     _run_four_arm_gate,
     _run_user_smoke_gate,
     _user_smoke_argv,
+    _validate_runtime_derivative,
     run_baseline_repro,
 )
 
@@ -69,10 +72,17 @@ def _pointer_files(tmp_path: Path) -> tuple[Path, Path]:
 
 def _full_env(tmp_path: Path) -> dict[str, str]:
     lancedb_dir, manifest_path = _pointer_files(tmp_path)
+    frozen_db = tmp_path / "frozen.db"
+    runtime_db = tmp_path / "runtime.db"
+    frozen_db.write_bytes(b"independent fixture database")
+    runtime_db.write_bytes(frozen_db.read_bytes())
+    t4_dir = tmp_path / "t4-evidence"
+    t4_dir.mkdir()
+    (t4_dir / "meta.json").write_text('{"schema_version":"t4_probe_meta_v1"}\n')
     return {
         "CATALYST_INTEGRATION_COMMIT_SHA": AUDITED_INTEGRATION_SHA,
-        "CATALYST_DB_PATH": str(tmp_path / "runtime.db"),
-        "CATALYST_BASELINE_FROZEN_DB": str(tmp_path / "frozen.db"),
+        "CATALYST_DB_PATH": str(runtime_db),
+        "CATALYST_BASELINE_FROZEN_DB": str(frozen_db),
         "CATALYST_LANCEDB_DIR": str(lancedb_dir),
         "CATALYST_INDEX_MANIFEST_PATH": str(manifest_path),
         "CATALYST_CORPUS_MANIFEST_ID": CORPUS_ID,
@@ -82,14 +92,26 @@ def _full_env(tmp_path: Path) -> dict[str, str]:
         "CATALYST_PROBE_REPORT_ID": PROBE_ID,
         "CATALYST_POSTBUILD_READINESS_ID": POSTBUILD_ID,
         "CATALYST_DEFAULT_MODEL": "gemini-2.5-flash-nothink",
+        "CATALYST_BASELINE_T4_EVIDENCE_DIR": str(t4_dir),
     }
 
 
 def _ok_four_arm_gate(env, identity):
+    output_root = Path(env["CATALYST_TEST_OUTPUT_DIR"]) if env.get(
+        "CATALYST_TEST_OUTPUT_DIR"
+    ) else Path(env["CATALYST_BASELINE_FROZEN_DB"]).parent
+    evidence_dir = output_root / "four-arm-evidence"
+    evidence_dir.mkdir(exist_ok=True)
+    meta_path = evidence_dir / "meta.json"
+    meta_path.write_text("{}", encoding="utf-8")
+    (evidence_dir / "WAVE_TOKEN.txt").write_text(
+        "FOUR_ARM_E2E_OK\n", encoding="utf-8"
+    )
     return {
         "ok": True,
         "exit_code": 0,
         "token": "FOUR_ARM_E2E_OK",
+        "meta_path": str(meta_path),
         "run_row": {
             "run_id": "four-arm-1",
             "snapshot_id": SNAPSHOT_ID,
@@ -119,6 +141,9 @@ def _ok_user_smoke_gate(env, identity):
     evidence_dir.mkdir(exist_ok=True)
     meta_path = evidence_dir / "meta.json"
     meta_path.write_text("{}", encoding="utf-8")
+    (evidence_dir / "WAVE_TOKEN.txt").write_text(
+        "USER_SMOKE_OK\n", encoding="utf-8"
+    )
     return {
         "ok": True,
         "exit_code": 0,
@@ -180,7 +205,10 @@ def test_incomplete_identity_is_non_comparable_but_gates_complete(tmp_path, monk
     env = {
         "CATALYST_INTEGRATION_COMMIT_SHA": AUDITED_INTEGRATION_SHA,
         "CATALYST_TEST_OUTPUT_DIR": str(tmp_path),
+        "CATALYST_BASELINE_T4_EVIDENCE_DIR": str(tmp_path / "t4-evidence"),
     }
+    (tmp_path / "t4-evidence").mkdir()
+    (tmp_path / "t4-evidence" / "meta.json").write_text("{}")
     result = run_baseline_repro(four_arm=True, user_smoke=True, env=env)
     assert isinstance(result, BaselineReproResult)
     assert result.ok is True
@@ -293,7 +321,9 @@ def test_four_arm_uses_frozen_db_not_writable_runtime_db(tmp_path):
     assert argv[argv.index("--db") + 1] == env["CATALYST_BASELINE_FROZEN_DB"]
 
 
-def test_user_smoke_omits_case_pack_to_use_t4_default(tmp_path):
+def test_user_smoke_omits_case_pack_to_use_t4_default(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_validate_runtime_derivative", lambda *args: None)
     env = _full_env(tmp_path)
     env["CATALYST_BASELINE_T4_EVIDENCE_DIR"] = str(tmp_path / "t4")
     env["CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"] = str(tmp_path / "wave2")
@@ -301,7 +331,164 @@ def test_user_smoke_omits_case_pack_to_use_t4_default(tmp_path):
     assert "--case-pack" not in argv
 
 
-def test_user_smoke_model_is_distinct_from_app_default(tmp_path):
+def test_gate_argv_uses_distinct_run_ids_and_ignores_legacy_shared_id(
+    tmp_path, monkeypatch
+):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_validate_runtime_derivative", lambda *args: None)
+    env = _full_env(tmp_path)
+    env["CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"] = str(tmp_path / "wave2")
+    env["CATALYST_BASELINE_RUN_ID"] = "legacy-shared"
+    env["CATALYST_BASELINE_FOUR_ARM_RUN_ID"] = "four-distinct"
+    env["CATALYST_BASELINE_USER_SMOKE_RUN_ID"] = "smoke-distinct"
+    four_argv = _four_arm_argv(env)
+    smoke_argv = _user_smoke_argv(env)
+    assert four_argv[four_argv.index("--run-id") + 1] == "four-distinct"
+    assert smoke_argv[smoke_argv.index("--run-id") + 1] == "smoke-distinct"
+    assert "legacy-shared" not in four_argv + smoke_argv
+
+
+def test_default_gate_run_ids_have_distinct_prefixes(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_validate_runtime_derivative", lambda *args: None)
+    env = _full_env(tmp_path)
+    env["CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"] = str(tmp_path / "wave2")
+    four_argv = _four_arm_argv(env)
+    smoke_argv = _user_smoke_argv(env)
+    four_id = four_argv[four_argv.index("--run-id") + 1]
+    smoke_id = smoke_argv[smoke_argv.index("--run-id") + 1]
+    assert four_id.startswith("baseline_repro_four_arm_")
+    assert smoke_id.startswith("baseline_repro_user_smoke_")
+    assert four_id != smoke_id
+
+
+def test_dual_gate_rejects_same_explicit_run_id_before_execution(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(
+        repro,
+        "_run_four_arm_gate",
+        lambda env, identity: (_ for _ in ()).throw(AssertionError("must not run")),
+    )
+    env = _full_env(tmp_path)
+    env["CATALYST_BASELINE_FOUR_ARM_RUN_ID"] = "same"
+    env["CATALYST_BASELINE_USER_SMOKE_RUN_ID"] = "same"
+    with pytest.raises(ValueError, match="distinct"):
+        run_baseline_repro(four_arm=True, user_smoke=True, env=env)
+
+
+def test_dual_gate_hands_fresh_four_arm_dir_to_user_smoke(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    calls: list[tuple[str, str | None]] = []
+
+    def four_gate(env, identity):
+        calls.append(("four", env.get("CATALYST_BASELINE_WAVE2_EVIDENCE_DIR")))
+        return _ok_four_arm_gate(env, identity)
+
+    def smoke_gate(env, identity):
+        calls.append(("smoke", env.get("CATALYST_BASELINE_WAVE2_EVIDENCE_DIR")))
+        return _ok_user_smoke_gate(env, identity)
+
+    monkeypatch.setattr(repro, "_run_four_arm_gate", four_gate)
+    monkeypatch.setattr(repro, "_run_user_smoke_gate", smoke_gate)
+    env = _full_env(tmp_path)
+    env["CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"] = str(tmp_path / "stale-wave2")
+    result = run_baseline_repro(four_arm=True, user_smoke=True, env=env)
+    assert result.ok is True
+    assert calls == [
+        ("four", str(tmp_path / "stale-wave2")),
+        ("smoke", str(tmp_path / "four-arm-evidence")),
+    ]
+    assert result.runs[0]["gate_kind"] == "four_arm"
+    assert result.runs[1]["gate_kind"] == "user_smoke"
+    for row in result.runs:
+        assert len(row["evidence_meta_sha256"]) == 64
+        assert len(row["success_token_sha256"]) == 64
+        assert len(row["t4_meta_sha256"]) == 64
+
+
+def test_dual_gate_short_circuits_user_smoke_when_four_arm_fails(
+    tmp_path, monkeypatch
+):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(
+        repro,
+        "_run_four_arm_gate",
+        lambda env, identity: {
+            "ok": False,
+            "token": None,
+            "meta_path": None,
+            "run_row": {},
+        },
+    )
+    monkeypatch.setattr(
+        repro,
+        "_run_user_smoke_gate",
+        lambda env, identity: (_ for _ in ()).throw(
+            AssertionError("user-smoke/provider must not run")
+        ),
+    )
+    result = run_baseline_repro(
+        four_arm=True, user_smoke=True, env=_full_env(tmp_path)
+    )
+    assert result.ok is False
+    assert result.user_smoke_evidence_dir is None
+
+
+def test_dual_gate_rejects_colliding_final_evidence_dirs(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    four_gate = _ok_four_arm_gate
+
+    def colliding_smoke(env, identity):
+        gate = _ok_user_smoke_gate(env, identity)
+        four_dir = tmp_path / "four-arm-evidence"
+        gate["meta_path"] = str(four_dir / "meta.json")
+        gate["evidence_dir"] = str(four_dir)
+        return gate
+
+    monkeypatch.setattr(repro, "_run_four_arm_gate", four_gate)
+    monkeypatch.setattr(repro, "_run_user_smoke_gate", colliding_smoke)
+    result = run_baseline_repro(
+        four_arm=True, user_smoke=True, env=_full_env(tmp_path)
+    )
+    assert result.ok is False
+
+
+def test_runtime_derivative_rejects_same_path_symlink_and_hardlink(tmp_path):
+    frozen = tmp_path / "frozen.db"
+    frozen.write_bytes(b"database")
+    digest = hashlib.sha256(frozen.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="distinct"):
+        _validate_runtime_derivative(frozen, frozen, expected_frozen_sha=digest)
+    symlink = tmp_path / "symlink.db"
+    symlink.symlink_to(frozen)
+    with pytest.raises(ValueError, match="symlink"):
+        _validate_runtime_derivative(frozen, symlink, expected_frozen_sha=digest)
+    hardlink = tmp_path / "hardlink.db"
+    os.link(frozen, hardlink)
+    with pytest.raises(ValueError, match="inode|hardlink"):
+        _validate_runtime_derivative(frozen, hardlink, expected_frozen_sha=digest)
+
+
+def test_runtime_derivative_requires_nonempty_identical_independent_copy(tmp_path):
+    frozen = tmp_path / "frozen.db"
+    frozen.write_bytes(b"database")
+    digest = hashlib.sha256(frozen.read_bytes()).hexdigest()
+    empty = tmp_path / "empty.db"
+    empty.write_bytes(b"")
+    with pytest.raises(ValueError, match="non-empty|sha"):
+        _validate_runtime_derivative(frozen, empty, expected_frozen_sha=digest)
+    different = tmp_path / "different.db"
+    different.write_bytes(b"different")
+    with pytest.raises(ValueError, match="sha"):
+        _validate_runtime_derivative(frozen, different, expected_frozen_sha=digest)
+    derivative = tmp_path / "derivative.db"
+    derivative.write_bytes(frozen.read_bytes())
+    _validate_runtime_derivative(frozen, derivative, expected_frozen_sha=digest)
+
+
+def test_user_smoke_model_is_distinct_from_app_default(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_validate_runtime_derivative", lambda *args: None)
     env = _full_env(tmp_path)
     env["CATALYST_BASELINE_T4_EVIDENCE_DIR"] = str(tmp_path / "t4")
     env["CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"] = str(tmp_path / "wave2")
@@ -361,6 +548,7 @@ def test_user_smoke_payload_without_real_meta_is_not_ok(tmp_path, monkeypatch):
     )
     repro = pytest.importorskip("catalyst_eval.baseline.repro")
     monkeypatch.setattr(repro, "_load_script", lambda path: module)
+    monkeypatch.setattr(repro, "_validate_runtime_derivative", lambda *args: None)
     identity = repro.sealed_identity_tuple(env=env)
     gate = _run_user_smoke_gate(env, identity)
     assert gate["ok"] is False
@@ -385,6 +573,7 @@ def test_user_smoke_rejects_false_or_wrong_token_file(tmp_path, monkeypatch):
     )
     repro = pytest.importorskip("catalyst_eval.baseline.repro")
     monkeypatch.setattr(repro, "_load_script", lambda path: module)
+    monkeypatch.setattr(repro, "_validate_runtime_derivative", lambda *args: None)
     identity = repro.sealed_identity_tuple(env=env)
     assert _run_user_smoke_gate(env, identity)["ok"] is False
     payload["token_written"] = True

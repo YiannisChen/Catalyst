@@ -277,6 +277,40 @@ def test_secret_bearing_string_value_is_removed_from_report(tmp_path, monkeypatc
     assert "operator token is" not in text
 
 
+def test_gate_evidence_binding_survives_safe_report_redaction(tmp_path, monkeypatch):
+    identity = _full_identity(tmp_path, monkeypatch)
+    run = _matching_run()
+    run.update({
+        "gate_kind": "four_arm",
+        "evidence_ref": "/stable/evidence/four-arm",
+        "evidence_meta_ref": "/stable/evidence/four-arm/meta.json",
+        "evidence_meta_sha256": "1" * 64,
+        "success_token": "FOUR_ARM_E2E_OK",
+        "success_token_sha256": "2" * 64,
+        "t4_evidence_ref": "/stable/evidence/t4",
+        "t4_meta_sha256": "3" * 64,
+    })
+    target = write_baseline_report(
+        tmp_path / "reports",
+        identity,
+        [run],
+        generated_at=FIXED_GENERATED_AT,
+        promoted_env_recovered=True,
+    )
+    persisted = json.loads(target.read_text(encoding="utf-8"))["runs"][0]
+    for field in (
+        "gate_kind",
+        "evidence_ref",
+        "evidence_meta_ref",
+        "evidence_meta_sha256",
+        "success_token",
+        "success_token_sha256",
+        "t4_evidence_ref",
+        "t4_meta_sha256",
+    ):
+        assert persisted[field] == run[field]
+
+
 def test_absent_target_is_created_atomically_without_temp_leftovers(tmp_path, monkeypatch):
     report_dir = tmp_path / "reports"
     identity = _full_identity(tmp_path, monkeypatch)
