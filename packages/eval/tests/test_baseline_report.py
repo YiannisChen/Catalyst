@@ -25,7 +25,7 @@ TABLE_NAME = "chunks__staging__b3761f4b943542a8"
 FIXED_GENERATED_AT = "2026-08-19T00:00:00+00:00"
 
 
-def _full_identity(tmp_path, monkeypatch):
+def _full_identity(tmp_path, monkeypatch, *, app_default_db: bool = False):
     lancedb_dir = tmp_path / "lancedb"
     lancedb_dir.mkdir()
     (lancedb_dir / "active_generation.json").write_text(
@@ -60,7 +60,11 @@ def _full_identity(tmp_path, monkeypatch):
     monkeypatch.setattr(identity_module, "_run_git", real_run_git)
     return sealed_identity_tuple(env={
         "CATALYST_INTEGRATION_COMMIT_SHA": AUDITED_INTEGRATION_SHA,
-        "CATALYST_DB_PATH": ".local/live_runtime.db",
+        "CATALYST_DB_PATH": (
+            ".local/live_runtime.db"
+            if app_default_db
+            else str(tmp_path / "runtime.db")
+        ),
         "CATALYST_LANCEDB_DIR": str(lancedb_dir),
         "CATALYST_INDEX_MANIFEST_PATH": str(manifest_path),
         "CATALYST_CORPUS_MANIFEST_ID": CORPUS_ID,
@@ -86,6 +90,7 @@ def _matching_run() -> dict:
         "embedding_model": "BAAI/bge-m3",
         "embedding_dim": "1024",
         "default_model": "gemini-2.5-flash-nothink",
+        "promoted_env_recovered": True,
     }
 
 
@@ -115,7 +120,7 @@ def test_write_baseline_report_creates_canonical_report(tmp_path, monkeypatch):
     assert comparability["model_identity_comparable"] is True
     assert comparability["promoted_env_recovered"] is True
     assert comparability["promoted_env_reason"] == "promoted_environment_tuple_recovered"
-    assert comparability["app_default_db_non_comparable"] is True
+    assert comparability["app_default_db_non_comparable"] is False
     assert comparability["generated_at"] == FIXED_GENERATED_AT
     assert re.fullmatch(r"[0-9a-f]{40}", comparability["git_revision"])
     assert comparability["git_revision"] != identity.integration_commit_sha
@@ -190,6 +195,37 @@ def test_model_comparability_requires_verifiable_model_row(tmp_path, monkeypatch
     assert payload["comparability"]["model_identity_comparable"] is False
 
 
+def test_missing_run_provenance_marker_is_non_comparable(tmp_path, monkeypatch):
+    identity = _full_identity(tmp_path, monkeypatch)
+    run = _matching_run()
+    run.pop("promoted_env_recovered")
+    target = write_baseline_report(
+        tmp_path / "reports",
+        identity,
+        [run],
+        generated_at=FIXED_GENERATED_AT,
+        promoted_env_recovered=True,
+    )
+    comparability = json.loads(target.read_text(encoding="utf-8"))["comparability"]
+    assert comparability["data_identity_comparable"] is False
+    assert comparability["model_identity_comparable"] is False
+
+
+def test_app_default_db_marker_blocks_comparability(tmp_path, monkeypatch):
+    identity = _full_identity(tmp_path, monkeypatch, app_default_db=True)
+    target = write_baseline_report(
+        tmp_path / "reports",
+        identity,
+        [_matching_run()],
+        generated_at=FIXED_GENERATED_AT,
+        promoted_env_recovered=True,
+    )
+    comparability = json.loads(target.read_text(encoding="utf-8"))["comparability"]
+    assert comparability["app_default_db_non_comparable"] is True
+    assert comparability["data_identity_comparable"] is False
+    assert comparability["model_identity_comparable"] is False
+
+
 def test_unrecovered_promoted_env_forces_explicit_non_comparable_report(
     tmp_path, monkeypatch
 ):
@@ -223,6 +259,22 @@ def test_no_secret_like_values_appear_in_report_text(tmp_path, monkeypatch):
     assert "api_key" not in text
     assert "sk-test-1234567890" not in text
     assert "provider_secret" not in text
+
+
+def test_secret_bearing_string_value_is_removed_from_report(tmp_path, monkeypatch):
+    identity = _full_identity(tmp_path, monkeypatch)
+    run = _matching_run()
+    run["note"] = "operator token is short-hidden-value"
+    target = write_baseline_report(
+        tmp_path / "reports",
+        identity,
+        [run],
+        generated_at=FIXED_GENERATED_AT,
+        promoted_env_recovered=True,
+    )
+    text = target.read_text(encoding="utf-8")
+    assert "short-hidden-value" not in text
+    assert "operator token is" not in text
 
 
 def test_absent_target_is_created_atomically_without_temp_leftovers(tmp_path, monkeypatch):

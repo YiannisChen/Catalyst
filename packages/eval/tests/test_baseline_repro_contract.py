@@ -105,6 +105,12 @@ def _ok_four_arm_gate(env, identity):
     }
 
 
+def _ok_modeled_four_arm_gate(env, identity):
+    gate = _ok_four_arm_gate(env, identity)
+    gate["run_row"]["default_model"] = "gemini-2.5-flash-nothink"
+    return gate
+
+
 def _ok_user_smoke_gate(env, identity):
     output_root = Path(env["CATALYST_TEST_OUTPUT_DIR"]) if env.get(
         "CATALYST_TEST_OUTPUT_DIR"
@@ -116,6 +122,7 @@ def _ok_user_smoke_gate(env, identity):
     return {
         "ok": True,
         "exit_code": 0,
+        "token": "USER_SMOKE_OK",
         "evidence_dir": str(evidence_dir),
         "meta_path": str(meta_path),
         "run_row": {
@@ -158,7 +165,12 @@ def test_conflicting_sealed_identity_fails_before_gates_run(tmp_path, monkeypatc
     env = _full_env(tmp_path)
     env["CATALYST_SNAPSHOT_ID"] = "a" * 64
     with pytest.raises(BaselineIdentityConflictError):
-        run_baseline_repro(four_arm=True, user_smoke=False, env=env)
+        run_baseline_repro(
+            four_arm=True,
+            user_smoke=False,
+            env=env,
+            promoted_identity_env=env,
+        )
 
 
 def test_incomplete_identity_is_non_comparable_but_gates_complete(tmp_path, monkeypatch):
@@ -183,7 +195,7 @@ def test_incomplete_identity_is_non_comparable_but_gates_complete(tmp_path, monk
 
 def test_full_identity_comparable_path_mocked(tmp_path, monkeypatch):
     repro = pytest.importorskip("catalyst_eval.baseline.repro")
-    monkeypatch.setattr(repro, "_run_four_arm_gate", _ok_four_arm_gate)
+    monkeypatch.setattr(repro, "_run_four_arm_gate", _ok_modeled_four_arm_gate)
     env = _full_env(tmp_path)
     result = run_baseline_repro(
         four_arm=True,
@@ -208,6 +220,58 @@ def test_complete_local_gate_env_cannot_upgrade_unrecovered_q002(tmp_path, monke
     assert result.ok is True
     assert result.comparable is False
     assert result.promoted_env_recovered is False
+    assert set(result.missing_ids) == {
+        "snapshot_id",
+        "corpus_manifest_id",
+        "index_manifest_id",
+        "source_bundle_id",
+        "probe_report_id",
+        "postbuild_readiness_id",
+        "lancedb_table_name",
+        "embedding_model",
+        "embedding_dim",
+    }
+    assert result.identity.default_model is None
+
+
+def test_no_model_row_is_non_comparable(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_run_four_arm_gate", _ok_four_arm_gate)
+    env = _full_env(tmp_path)
+    result = run_baseline_repro(
+        four_arm=True, user_smoke=False, env=env, promoted_identity_env=env
+    )
+    assert result.ok is True
+    assert result.comparable is False
+
+
+def test_model_mismatch_is_non_comparable(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+
+    def mismatched_gate(env, identity):
+        gate = _ok_four_arm_gate(env, identity)
+        gate["run_row"]["default_model"] = "different-model"
+        return gate
+
+    monkeypatch.setattr(repro, "_run_four_arm_gate", mismatched_gate)
+    env = _full_env(tmp_path)
+    result = run_baseline_repro(
+        four_arm=True, user_smoke=False, env=env, promoted_identity_env=env
+    )
+    assert result.ok is True
+    assert result.comparable is False
+
+
+def test_app_default_db_marker_is_non_comparable(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_run_four_arm_gate", _ok_modeled_four_arm_gate)
+    env = _full_env(tmp_path)
+    env["CATALYST_DB_PATH"] = ".local/live_runtime.db"
+    result = run_baseline_repro(
+        four_arm=True, user_smoke=False, env=env, promoted_identity_env=env
+    )
+    assert result.identity.app_default_db_marked_non_comparable is True
+    assert result.comparable is False
 
 
 def test_no_requested_gate_rows_is_never_comparable(tmp_path):
@@ -224,9 +288,9 @@ def test_no_requested_gate_rows_is_never_comparable(tmp_path):
 
 def test_four_arm_uses_frozen_db_not_writable_runtime_db(tmp_path):
     env = _full_env(tmp_path)
+    env.pop("CATALYST_DB_PATH")
     argv = _four_arm_argv(env)
     assert argv[argv.index("--db") + 1] == env["CATALYST_BASELINE_FROZEN_DB"]
-    assert env["CATALYST_DB_PATH"] not in argv
 
 
 def test_user_smoke_omits_case_pack_to_use_t4_default(tmp_path):
@@ -261,6 +325,30 @@ def test_four_arm_payload_without_exact_token_is_not_ok(tmp_path, monkeypatch):
     assert gate["token"] is None
 
 
+def test_four_arm_rejects_missing_or_wrong_token_file(tmp_path, monkeypatch):
+    env = _full_env(tmp_path)
+    run_dir = tmp_path / "four-arm-output"
+    run_dir.mkdir()
+    meta_path = run_dir / "meta.json"
+    meta_path.write_text("{}", encoding="utf-8")
+    module = types.SimpleNamespace(
+        main=lambda argv: (
+            print(json.dumps({
+                "ok": True,
+                "token_written": True,
+                "meta_path": str(meta_path),
+            })),
+            0,
+        )[1]
+    )
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_load_script", lambda path: module)
+    identity = repro.sealed_identity_tuple(env=env)
+    assert _run_four_arm_gate(env, identity)["ok"] is False
+    (run_dir / "WAVE_TOKEN.txt").write_text("WRONG\n", encoding="utf-8")
+    assert _run_four_arm_gate(env, identity)["ok"] is False
+
+
 def test_user_smoke_payload_without_real_meta_is_not_ok(tmp_path, monkeypatch):
     env = _full_env(tmp_path)
     env["CATALYST_BASELINE_T4_EVIDENCE_DIR"] = str(tmp_path / "t4")
@@ -277,6 +365,31 @@ def test_user_smoke_payload_without_real_meta_is_not_ok(tmp_path, monkeypatch):
     gate = _run_user_smoke_gate(env, identity)
     assert gate["ok"] is False
     assert gate["evidence_dir"] is None
+
+
+def test_user_smoke_rejects_false_or_wrong_token_file(tmp_path, monkeypatch):
+    env = _full_env(tmp_path)
+    env["CATALYST_BASELINE_T4_EVIDENCE_DIR"] = str(tmp_path / "t4")
+    env["CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"] = str(tmp_path / "wave2")
+    run_dir = tmp_path / "user-smoke-output"
+    run_dir.mkdir()
+    meta_path = run_dir / "meta.json"
+    meta_path.write_text("{}", encoding="utf-8")
+    payload = {
+        "ok": True,
+        "token_written": False,
+        "meta_path": str(meta_path),
+    }
+    module = types.SimpleNamespace(
+        main=lambda argv: (print(json.dumps(payload)), 0)[1]
+    )
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_load_script", lambda path: module)
+    identity = repro.sealed_identity_tuple(env=env)
+    assert _run_user_smoke_gate(env, identity)["ok"] is False
+    payload["token_written"] = True
+    (run_dir / "WAVE_TOKEN.txt").write_text("WRONG\n", encoding="utf-8")
+    assert _run_user_smoke_gate(env, identity)["ok"] is False
 
 
 def test_gate_failure_is_reflected_in_ok(tmp_path, monkeypatch):

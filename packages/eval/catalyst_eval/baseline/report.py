@@ -37,6 +37,11 @@ DATA_IDENTITY_FIELDS = (
 )
 
 _SECRET_KEY = re.compile(r"(?i)(api[_-]?key|token|secret|password|credential|authorization)")
+_SECRET_VALUE = re.compile(
+    r"(?i)(\bsk-[a-z0-9_-]{8,}|"
+    r"(?:api[_-]?key|token|secret|password|credential|authorization)"
+    r"\s*(?::|=|\bis\b)\s*\S+)"
+)
 
 
 class BaselineReportConflictError(ValueError):
@@ -71,6 +76,8 @@ def _redact_secrets(payload: Any) -> Any:
         return cleaned
     if isinstance(payload, list):
         return [_redact_secrets(item) for item in payload]
+    if isinstance(payload, str) and _SECRET_VALUE.search(payload):
+        return None
     return payload
 
 
@@ -114,10 +121,14 @@ def _build_report(
     git_revision: str,
     promoted_env_recovered: bool,
 ) -> dict:
-    run_provenance_allows_comparison = all(
-        run.get("promoted_env_recovered") is not False for run in runs
+    run_provenance_allows_comparison = bool(runs) and all(
+        run.get("promoted_env_recovered") is True for run in runs
     )
-    comparison_allowed = promoted_env_recovered and run_provenance_allows_comparison
+    comparison_allowed = (
+        promoted_env_recovered
+        and run_provenance_allows_comparison
+        and not identity.app_default_db_marked_non_comparable
+    )
     return {
         "schema_version": _SCHEMA_VERSION,
         "identity": _redact_secrets(dataclasses.asdict(identity)),

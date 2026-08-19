@@ -31,6 +31,8 @@ USER_SMOKE_SCRIPT = (
     REPO_ROOT / "packages" / "eval" / "scripts" / "run_post_import_user_smoke.py"
 )
 FOUR_ARM_SUCCESS_TOKEN = "FOUR_ARM_E2E_OK"
+USER_SMOKE_SUCCESS_TOKEN = "USER_SMOKE_OK"
+WAVE_TOKEN_FILENAME = "WAVE_TOKEN.txt"
 DEFAULT_OUTPUT_ROOT = "data/run_reports/post_import"
 
 
@@ -89,7 +91,6 @@ def _run_cli(module, argv: list[str]) -> tuple[int, dict[str, Any]]:
 
 def _four_arm_argv(env: Mapping[str, str]) -> list[str]:
     required = (
-        "CATALYST_DB_PATH",
         "CATALYST_BASELINE_FROZEN_DB",
         "CATALYST_LANCEDB_DIR",
         "CATALYST_INDEX_MANIFEST_PATH",
@@ -159,12 +160,13 @@ def _run_four_arm_gate(env: Mapping[str, str], identity: BaselineIdentity) -> di
     with _applied_env(env):
         code, payload = _run_cli(module, _four_arm_argv(env))
     row = payload.get("baseline_run_row") if isinstance(payload.get("baseline_run_row"), dict) else {}
-    token_written = bool(payload.get("token_written"))
-    ok = code == 0 and payload.get("ok") is True and token_written
+    meta_path = _validated_wave_token(payload, FOUR_ARM_SUCCESS_TOKEN)
+    ok = code == 0 and payload.get("ok") is True and meta_path is not None
     return {
         "ok": ok,
         "exit_code": code,
-        "token": FOUR_ARM_SUCCESS_TOKEN if token_written else None,
+        "token": FOUR_ARM_SUCCESS_TOKEN if meta_path is not None else None,
+        "meta_path": str(meta_path) if meta_path is not None else None,
         "run_row": row,
         "error": payload.get("error"),
     }
@@ -176,18 +178,35 @@ def _run_user_smoke_gate(env: Mapping[str, str], identity: BaselineIdentity) -> 
     with _applied_env(env):
         code, payload = _run_cli(module, _user_smoke_argv(env))
     row = payload.get("baseline_run_row") if isinstance(payload.get("baseline_run_row"), dict) else {}
-    raw_meta_path = payload.get("meta_path")
-    meta_path = Path(raw_meta_path) if isinstance(raw_meta_path, str) else None
-    has_evidence = bool(meta_path and meta_path.is_file() and meta_path.parent.is_dir())
-    evidence_dir = str(meta_path.parent) if has_evidence and meta_path else None
+    meta_path = _validated_wave_token(payload, USER_SMOKE_SUCCESS_TOKEN)
+    evidence_dir = str(meta_path.parent) if meta_path is not None else None
     return {
-        "ok": code == 0 and payload.get("ok") is True and has_evidence,
+        "ok": code == 0 and payload.get("ok") is True and meta_path is not None,
         "exit_code": code,
+        "token": USER_SMOKE_SUCCESS_TOKEN if meta_path is not None else None,
         "evidence_dir": evidence_dir,
-        "meta_path": str(meta_path) if has_evidence and meta_path else None,
+        "meta_path": str(meta_path) if meta_path is not None else None,
         "run_row": row,
         "error": payload.get("error"),
     }
+
+
+def _validated_wave_token(payload: Mapping[str, Any], expected: str) -> Path | None:
+    """Return a real meta path only when its sibling token is exact."""
+    if payload.get("token_written") is not True:
+        return None
+    raw_meta_path = payload.get("meta_path")
+    if not isinstance(raw_meta_path, str):
+        return None
+    meta_path = Path(raw_meta_path)
+    if not meta_path.is_file() or not meta_path.parent.is_dir():
+        return None
+    token_path = meta_path.parent / WAVE_TOKEN_FILENAME
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return meta_path if token == expected else None
 
 
 def run_baseline_repro(
@@ -205,9 +224,16 @@ def run_baseline_repro(
     produce a comparable seal.
     """
     promoted_env_recovered = promoted_identity_env is not None
-    identity = sealed_identity_tuple(
-        env=promoted_identity_env if promoted_identity_env is not None else env
+    identity_env = (
+        promoted_identity_env
+        if promoted_identity_env is not None
+        else {
+            "CATALYST_INTEGRATION_COMMIT_SHA": env.get(
+                "CATALYST_INTEGRATION_COMMIT_SHA", ""
+            )
+        }
     )
+    identity = sealed_identity_tuple(env=identity_env)
     missing = _missing_ids(identity)
 
     runs: list[dict[str, Any]] = []
@@ -217,18 +243,27 @@ def run_baseline_repro(
 
     if four_arm:
         gate = _run_four_arm_gate(env, identity)
-        ok = ok and bool(gate.get("ok"))
+        gate_ok = bool(gate.get("ok")) and gate.get("token") == FOUR_ARM_SUCCESS_TOKEN
+        ok = ok and gate_ok
         four_arm_token = gate.get("token")
         if gate.get("run_row"):
             runs.append({**gate["run_row"], "promoted_env_recovered": promoted_env_recovered})
     if user_smoke:
         gate = _run_user_smoke_gate(env, identity)
-        ok = ok and bool(gate.get("ok"))
+        meta_path = gate.get("meta_path")
+        gate_ok = (
+            bool(gate.get("ok"))
+            and gate.get("token") == USER_SMOKE_SUCCESS_TOKEN
+            and isinstance(meta_path, str)
+            and Path(meta_path).is_file()
+        )
+        ok = ok and gate_ok
         user_smoke_evidence_dir = gate.get("evidence_dir")
         if gate.get("run_row"):
             runs.append({**gate["run_row"], "promoted_env_recovered": promoted_env_recovered})
 
-    data_rows_match = bool(runs) and all(
+    expected_run_count = int(four_arm) + int(user_smoke)
+    data_rows_match = len(runs) == expected_run_count and expected_run_count > 0 and all(
         all(
             field in row
             and row[field] is not None
@@ -237,11 +272,23 @@ def run_baseline_repro(
         )
         for row in runs
     )
+    run_models = [
+        row.get("default_model") or row.get("model_id")
+        for row in runs
+        if row.get("default_model") is not None or row.get("model_id") is not None
+    ]
+    model_rows_match = (
+        identity.default_model is not None
+        and bool(run_models)
+        and all(model == identity.default_model for model in run_models)
+    )
     comparable = (
         promoted_env_recovered
         and not missing
         and ok
         and data_rows_match
+        and model_rows_match
+        and not identity.app_default_db_marked_non_comparable
     )
     comparability_reason = (
         "promoted_environment_tuple_recovered"
@@ -265,5 +312,6 @@ def run_baseline_repro(
 __all__ = [
     "BaselineReproResult",
     "FOUR_ARM_SUCCESS_TOKEN",
+    "USER_SMOKE_SUCCESS_TOKEN",
     "run_baseline_repro",
 ]
