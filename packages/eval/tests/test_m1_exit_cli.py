@@ -248,3 +248,48 @@ def test_preflight_environment_rejects_app_default_runtime_db(tmp_path, monkeypa
     args = module._parse_args(argv)
     with pytest.raises(ValueError, match="live_runtime"):
         module._preflight_environment(args, {"DEEPSEEK_API_KEY": "presence-only"})
+
+
+def test_exit_cli_binds_fresh_t4_case_pack_for_gates(tmp_path, monkeypatch):
+    """The operator CLI must pass the fresh T4 case_pack.jsonl to the gates
+    via CATALYST_BASELINE_CASE_PACK instead of depending on the gitignored
+    repo-default case pack path."""
+    module = _load_script()
+    captured: dict = {}
+    monkeypatch.setattr(module, "_preflight_environment", lambda args, env: None)
+
+    def run_t4(args):
+        evidence_dir = Path(args.output_root) / args.t4_run_id
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        (evidence_dir / "meta.json").write_text("{}", encoding="utf-8")
+        (evidence_dir / "case_pack.jsonl").write_text("", encoding="utf-8")
+        return evidence_dir
+
+    monkeypatch.setattr(module, "_run_t4", run_t4)
+    monkeypatch.setattr(
+        module,
+        "run_baseline_repro",
+        lambda **kwargs: captured.update(kwargs) or _result(tmp_path),
+    )
+    monkeypatch.setattr(
+        module,
+        "_preview_report",
+        lambda result, generated_at, git_revision: {"runs": []},
+    )
+
+    def write_report(report_dir, identity, runs, **kwargs):
+        target = Path(report_dir) / "v1_1_baseline_66666666.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(module._LAST_PREVIEW), encoding="utf-8")
+        return target
+
+    monkeypatch.setattr(module, "write_baseline_report", write_report)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "never-print-this-secret")
+
+    rc = module.main(_argv(tmp_path))
+
+    assert rc == 0
+    gate_env = captured["env"]
+    assert gate_env["CATALYST_BASELINE_CASE_PACK"] == str(
+        tmp_path / "evidence" / "m1-t4" / "case_pack.jsonl"
+    )

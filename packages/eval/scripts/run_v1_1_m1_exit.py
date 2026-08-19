@@ -156,7 +156,11 @@ def _run_t4(args: argparse.Namespace) -> Path:
     with contextlib.redirect_stdout(buffer):
         code = module.main(t4_argv)
     evidence_dir = Path(args.output_root) / args.t4_run_id
-    if code != 0 or not (evidence_dir / "meta.json").is_file():
+    if (
+        code != 0
+        or not (evidence_dir / "meta.json").is_file()
+        or not (evidence_dir / "case_pack.jsonl").is_file()
+    ):
         raise ExitGateError("T4 evidence generation failed")
     return evidence_dir
 
@@ -200,6 +204,9 @@ def main(argv: list[str] | None = None) -> int:
             "CATALYST_BASELINE_FOUR_ARM_RUN_ID": args.four_arm_run_id,
             "CATALYST_BASELINE_USER_SMOKE_RUN_ID": args.user_smoke_run_id,
             "CATALYST_BASELINE_EMBEDDING_MODE": "production_pinned",
+            # Fresh T4 case pack is authoritative for both gates; never fall
+            # back to the gitignored repo-default data/run_reports case pack.
+            "CATALYST_BASELINE_CASE_PACK": str(evidence_dir / "case_pack.jsonl"),
         }
         result = run_baseline_repro(
             four_arm=True,
