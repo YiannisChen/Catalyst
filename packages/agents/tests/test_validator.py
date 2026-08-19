@@ -140,8 +140,10 @@ def test_unexplained_gate_fails_when_an_explanatory_gate_passes():
     result = validator(state)
     by_cause = {item["cause_label"]: item for item in result["hypotheses"]}
 
+    # Failed-gate drafts are never published: only the compatible draft remains.
+    assert set(by_cause) == {"earnings_guidance"}
     assert by_cause["earnings_guidance"]["prerequisite_gate_passed"] is True
-    assert by_cause["unexplained"]["prerequisite_gate_passed"] is False
+    assert "unexplained" not in by_cause
 
 
 def test_structured_market_direction_mismatch_fails_gate():
@@ -154,7 +156,92 @@ def test_structured_market_direction_mismatch_fails_gate():
     })
 
     result = validator(state)
-    hypothesis = result["hypotheses"][0]
 
-    assert hypothesis["prerequisite_gate_passed"] is False
-    assert "direction_mismatch" in hypothesis["validation_violations"]
+    # The failed-gate draft is dropped from publication and cannot reach
+    # SUFFICIENT; the run abstains instead of emitting an ungrounded cause.
+    assert result["hypotheses"] == []
+    assert result["causes"] == []
+    assert result["output_status"] == OutputStatus.ABSTAIN
+
+
+# ── AMEND-6: failed-gate drafts are never published ───────────────────────────
+
+def test_published_hypotheses_and_causes_never_include_failed_gate_drafts():
+    """A published/final cause list must never contain a hypothesis whose
+    prerequisite gate failed."""
+    state = _state()
+    state["hypothesis_drafts"].append({
+        **state["hypothesis_drafts"][0],
+        "cause_label": "product_demand",
+        "transmission_mechanism": "Demand weakness after the guidance cut",
+    })
+
+    result = validator(state)
+
+    published = result["hypotheses"]
+    assert published
+    assert all(item["prerequisite_gate_passed"] is True for item in published)
+    published_causes = {item["cause_label"] for item in published}
+    assert published_causes == {"earnings_guidance"}
+    published_categories = {item["category"] for item in result["causes"]}
+    assert published_categories == {"earnings_guidance"}
+
+
+def test_compatible_and_incompatible_draft_on_same_chunk_keeps_compatible_only():
+    """If Judge drafts a compatible cause (earnings_guidance) and an
+    incompatible cause (product_demand) on the same earnings-category chunk,
+    the published set keeps only the compatible draft, its prerequisite gates
+    pass, and SUFFICIENT remains possible."""
+    state = _state()
+    state["hypothesis_drafts"].append({
+        **state["hypothesis_drafts"][0],
+        "cause_label": "product_demand",
+        "transmission_mechanism": "Demand weakness after the guidance cut",
+    })
+
+    result = validator(state)
+
+    assert [h["cause_label"] for h in result["hypotheses"]] == ["earnings_guidance"]
+    assert result["output_status"] == OutputStatus.SUFFICIENT
+
+
+def test_incompatible_only_drafts_cannot_become_sufficient():
+    """A draft whose only cause is incompatible with the chunk's critic
+    category must be dropped; the run cannot publish it or reach SUFFICIENT."""
+    state = _state()
+    state["hypothesis_drafts"] = [{
+        **state["hypothesis_drafts"][0],
+        "cause_label": "product_demand",
+        "transmission_mechanism": "Demand weakness after the guidance cut",
+    }]
+
+    result = validator(state)
+
+    assert result["hypotheses"] == []
+    assert result["causes"] == []
+    assert result["output_status"] == OutputStatus.ABSTAIN
+
+
+def test_published_gate_results_pass_assurance_prerequisite_gates():
+    """gate_results derived from the published hypotheses (exactly as the
+    trace writer builds them) must pass the prerequisite_gates assurance
+    check even when the Judge drafted an incompatible cause on the same
+    earnings-category chunk."""
+    from attribution_fixtures import mock_run_artifacts
+    from catalyst_agents.runtime.assurance.checks import run_all_checks
+
+    state = _state()
+    state["hypothesis_drafts"].append({
+        **state["hypothesis_drafts"][0],
+        "cause_label": "product_demand",
+        "transmission_mechanism": "Demand weakness after the guidance cut",
+    })
+
+    result = validator(state)
+    gate_results = [
+        (h["cause_label"], h["prerequisite_gate_passed"], h["prerequisite_gate_reason"])
+        for h in result["hypotheses"]
+    ]
+    artifacts = mock_run_artifacts(gate_results=gate_results, citations=["c1"])
+    by_name = {check.check_name: check.status for check in run_all_checks("run-001", artifacts)}
+    assert by_name["prerequisite_gates"] == "pass"

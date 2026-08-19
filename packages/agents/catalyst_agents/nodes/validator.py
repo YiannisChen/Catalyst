@@ -297,8 +297,14 @@ def validator(state: AttributionState, *, llm: Any = None, cutoff_policy: Any = 
                 repair_count = 1
             except Exception:
                 violations = sorted(set([*violations, "repair_failed"]))
+        # AMEND-6: failed-gate drafts are never published. Assurance treats
+        # "all emitted hypotheses" as the published set, so the emitted
+        # hypothesis/cause list must contain only gate-passed drafts; a draft
+        # whose critic category is incompatible with its support (or that
+        # otherwise fails prerequisite gates) is dropped here.
+        published = [h for h in hypotheses if h.prerequisite_gate_passed]
         status = determine_status(
-            hypotheses,
+            published,
             cutoff_violations=violations.count("cutoff_violation"),
             citation_all_resolve="evidence_id_missing" not in violations,
             coverage_degraded=bool(state.get("is_degraded", False)),
@@ -306,10 +312,10 @@ def validator(state: AttributionState, *, llm: Any = None, cutoff_policy: Any = 
             error_occurred=bool(state.get("error_type") == "system_error"),
         )
         return {
-            "hypotheses": [h.model_dump(mode="json") for h in hypotheses],
+            "hypotheses": [h.model_dump(mode="json") for h in published],
             "causes": [
                 {"text": h.transmission_mechanism, "category": h.cause_label, "evidence_ids": list(h.supporting_evidence_ids), "direction": h.direction}
-                for h in hypotheses
+                for h in published
             ],
             "summary_md": summary_md,
             "output_status": status,
@@ -317,7 +323,7 @@ def validator(state: AttributionState, *, llm: Any = None, cutoff_policy: Any = 
             "validator_attempts": validator_attempts,
             "repair_count": repair_count,
             "source_support_flags": {
-                name: any(h.source_support_flags.get(name, False) for h in hypotheses)
+                name: any(h.source_support_flags.get(name, False) for h in published)
                 for name in ("opinion_only_support", "unknown_origin_support", "issuer_claim_only_support")
             },
             "validator_cutoff": cutoff,

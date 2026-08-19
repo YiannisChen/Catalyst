@@ -981,3 +981,63 @@ def test_user_smoke_script_defaults_to_loopback_only():
     assert args.host == "127.0.0.1"
     assert args.port == 0
     assert args.cost_ceiling_usd == 5.0
+
+
+def test_user_smoke_runtime_db_rejects_aliases_and_incomplete_derivatives(
+    tmp_path,
+):
+    module = _load(USER_SMOKE_SCRIPT)
+    frozen = tmp_path / "frozen.db"
+    frozen.write_bytes(b"complete frozen sqlite fixture")
+    expected_sha = hashlib.sha256(frozen.read_bytes()).hexdigest()
+
+    with pytest.raises(ValueError, match="distinct"):
+        module._validate_runtime_derivative(
+            frozen, frozen, expected_frozen_sha=expected_sha
+        )
+
+    symlink = tmp_path / "runtime-symlink.db"
+    symlink.symlink_to(frozen)
+    with pytest.raises(ValueError, match="symlink"):
+        module._validate_runtime_derivative(
+            frozen, symlink, expected_frozen_sha=expected_sha
+        )
+
+    hardlink = tmp_path / "runtime-hardlink.db"
+    hardlink.hardlink_to(frozen)
+    with pytest.raises(ValueError, match="inode"):
+        module._validate_runtime_derivative(
+            frozen, hardlink, expected_frozen_sha=expected_sha
+        )
+
+    incomplete = tmp_path / "runtime-incomplete.db"
+    incomplete.write_bytes(b"different")
+    with pytest.raises(ValueError, match="byte-equivalent"):
+        module._validate_runtime_derivative(
+            frozen, incomplete, expected_frozen_sha=expected_sha
+        )
+
+
+def test_user_smoke_runtime_db_accepts_independent_byte_equivalent_copy(tmp_path):
+    module = _load(USER_SMOKE_SCRIPT)
+    frozen = tmp_path / "frozen.db"
+    runtime = tmp_path / "runtime.db"
+    frozen.write_bytes(b"complete frozen sqlite fixture")
+    runtime.write_bytes(frozen.read_bytes())
+    expected_sha = hashlib.sha256(frozen.read_bytes()).hexdigest()
+
+    module._validate_runtime_derivative(
+        frozen, runtime, expected_frozen_sha=expected_sha
+    )
+    assert frozen.stat().st_ino != runtime.stat().st_ino
+
+
+def test_user_smoke_detects_frozen_db_mutation_after_execution(tmp_path):
+    module = _load(USER_SMOKE_SCRIPT)
+    frozen = tmp_path / "frozen.db"
+    frozen.write_bytes(b"before")
+    original_sha = hashlib.sha256(frozen.read_bytes()).hexdigest()
+    frozen.write_bytes(b"after")
+
+    with pytest.raises(RuntimeError, match="changed during user smoke"):
+        module._verify_frozen_db_unchanged(frozen, original_sha)
