@@ -64,6 +64,28 @@ JUDGE_RESPONSE = json.dumps({
     "summary_md": "AAPL dropped after [c1] guidance weakness.",
 })
 
+# Critic-less baseline mode grades evidence as category "unknown", so
+# evidence causes cannot pass prerequisite gates there. A market cause is
+# grounded by benchmark OHLCV alone and is the passable baseline-mode cause.
+BASELINE_JUDGE_RESPONSE = json.dumps({
+    "hypotheses": [
+        {
+            "cause_label": "market",
+            "direction": "negative",
+            "transmission_mechanism": "Broad market weakness reduced expectations",
+            "supporting_evidence_ids": ["c1"],
+            "counter_evidence_ids": [],
+            "missing_evidence": [],
+            "change_condition": "Reassess if benchmark direction reverses",
+            "facts": ["Benchmark fell ahead of the session"],
+            "calculations": [],
+            "inferences": ["AAPL followed the broad market"],
+            "unavailable_evidence": [],
+        }
+    ],
+    "summary_md": "AAPL dropped after [c1] broad market weakness.",
+})
+
 
 class MockUsage:
     def __init__(self):
@@ -174,7 +196,7 @@ def test_mcj_graph_accumulates_total_costs(monkeypatch):
 def test_baseline_graph_skips_critic(monkeypatch):
     """With use_critic=False, critic node is bypassed and no critic cost is recorded."""
     llm = MockLLM()
-    llm._responses = [JUDGE_RESPONSE]  # Only judge response — critic never called
+    llm._responses = [BASELINE_JUDGE_RESPONSE]  # Only judge response — critic never called
     graph = _graph(use_critic=False, llm=llm)
 
     result = graph.invoke(_base_state())
@@ -188,7 +210,7 @@ def test_baseline_graph_skips_critic(monkeypatch):
 def test_baseline_graph_passes_usable_evidence_to_judge(monkeypatch):
     """Baseline Miner->Judge must still expose evidence IDs for grounding and citations."""
     llm = MockLLM()
-    llm._responses = [JUDGE_RESPONSE]  # Judge only in baseline mode
+    llm._responses = [BASELINE_JUDGE_RESPONSE]  # Judge only in baseline mode
     graph = _graph(use_critic=False, llm=llm)
 
     result = graph.invoke(_base_state())
