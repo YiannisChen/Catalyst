@@ -85,6 +85,7 @@ def _matching_run() -> dict:
         "lancedb_table_name": TABLE_NAME,
         "embedding_model": "BAAI/bge-m3",
         "embedding_dim": "1024",
+        "default_model": "gemini-2.5-flash-nothink",
     }
 
 
@@ -92,7 +93,11 @@ def test_write_baseline_report_creates_canonical_report(tmp_path, monkeypatch):
     report_dir = tmp_path / "reports"
     identity = _full_identity(tmp_path, monkeypatch)
     target = write_baseline_report(
-        report_dir, identity, [_matching_run()], generated_at=FIXED_GENERATED_AT
+        report_dir,
+        identity,
+        [_matching_run()],
+        generated_at=FIXED_GENERATED_AT,
+        promoted_env_recovered=True,
     )
     assert target == report_dir / f"v1_1_baseline_{identity.code_git_sha[:8]}.json"
     assert target.is_file()
@@ -108,6 +113,8 @@ def test_write_baseline_report_creates_canonical_report(tmp_path, monkeypatch):
     comparability = payload["comparability"]
     assert comparability["data_identity_comparable"] is True
     assert comparability["model_identity_comparable"] is True
+    assert comparability["promoted_env_recovered"] is True
+    assert comparability["promoted_env_reason"] == "promoted_environment_tuple_recovered"
     assert comparability["app_default_db_non_comparable"] is True
     assert comparability["generated_at"] == FIXED_GENERATED_AT
     assert re.fullmatch(r"[0-9a-f]{40}", comparability["git_revision"])
@@ -137,6 +144,70 @@ def test_missing_identity_fields_are_non_comparable(tmp_path, monkeypatch):
     payload = json.loads(target.read_text(encoding="utf-8"))
     assert payload["comparability"]["data_identity_comparable"] is False
     assert payload["comparability"]["model_identity_comparable"] is False
+
+
+def test_complete_identity_without_required_run_rows_is_non_comparable(tmp_path, monkeypatch):
+    identity = _full_identity(tmp_path, monkeypatch)
+    target = write_baseline_report(
+        tmp_path / "reports",
+        identity,
+        [],
+        generated_at=FIXED_GENERATED_AT,
+        promoted_env_recovered=True,
+    )
+    comparability = json.loads(target.read_text(encoding="utf-8"))["comparability"]
+    assert comparability["data_identity_comparable"] is False
+    assert comparability["model_identity_comparable"] is False
+
+
+def test_incomplete_required_run_row_is_non_comparable(tmp_path, monkeypatch):
+    identity = _full_identity(tmp_path, monkeypatch)
+    run = _matching_run()
+    run.pop("probe_report_id")
+    target = write_baseline_report(
+        tmp_path / "reports",
+        identity,
+        [run],
+        generated_at=FIXED_GENERATED_AT,
+        promoted_env_recovered=True,
+    )
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["comparability"]["data_identity_comparable"] is False
+
+
+def test_model_comparability_requires_verifiable_model_row(tmp_path, monkeypatch):
+    identity = _full_identity(tmp_path, monkeypatch)
+    run = _matching_run()
+    run.pop("default_model")
+    target = write_baseline_report(
+        tmp_path / "reports",
+        identity,
+        [run],
+        generated_at=FIXED_GENERATED_AT,
+        promoted_env_recovered=True,
+    )
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert payload["comparability"]["model_identity_comparable"] is False
+
+
+def test_unrecovered_promoted_env_forces_explicit_non_comparable_report(
+    tmp_path, monkeypatch
+):
+    identity = _full_identity(tmp_path, monkeypatch)
+    target = write_baseline_report(
+        tmp_path / "reports",
+        identity,
+        [_matching_run()],
+        generated_at=FIXED_GENERATED_AT,
+        promoted_env_recovered=False,
+    )
+    comparability = json.loads(target.read_text(encoding="utf-8"))["comparability"]
+    assert comparability["promoted_env_recovered"] is False
+    assert comparability["promoted_env_reason"] == (
+        "q_002_promoted_environment_tuple_unrecovered"
+    )
+    assert comparability["data_identity_comparable"] is False
+    assert comparability["model_identity_comparable"] is False
 
 
 def test_no_secret_like_values_appear_in_report_text(tmp_path, monkeypatch):

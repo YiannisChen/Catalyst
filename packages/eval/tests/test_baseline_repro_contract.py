@@ -8,11 +8,20 @@ behavior, comparability, and success-token collection only.
 from __future__ import annotations
 
 import json
+import types
 from pathlib import Path
 
 import pytest
 
-from catalyst_eval.baseline.repro import BaselineReproResult, run_baseline_repro
+from catalyst_eval.baseline.identity import BaselineIdentityConflictError
+from catalyst_eval.baseline.repro import (
+    BaselineReproResult,
+    _four_arm_argv,
+    _run_four_arm_gate,
+    _run_user_smoke_gate,
+    _user_smoke_argv,
+    run_baseline_repro,
+)
 
 AUDITED_INTEGRATION_SHA = "549d5ffad0d995b7ce2767461109e19fb0ca5384"
 SNAPSHOT_ID = "7a004accb187a17dd5661821913f5b84785af7fe448d6a92331f0bd8aea92f49"
@@ -63,6 +72,7 @@ def _full_env(tmp_path: Path) -> dict[str, str]:
     return {
         "CATALYST_INTEGRATION_COMMIT_SHA": AUDITED_INTEGRATION_SHA,
         "CATALYST_DB_PATH": str(tmp_path / "runtime.db"),
+        "CATALYST_BASELINE_FROZEN_DB": str(tmp_path / "frozen.db"),
         "CATALYST_LANCEDB_DIR": str(lancedb_dir),
         "CATALYST_INDEX_MANIFEST_PATH": str(manifest_path),
         "CATALYST_CORPUS_MANIFEST_ID": CORPUS_ID,
@@ -96,10 +106,18 @@ def _ok_four_arm_gate(env, identity):
 
 
 def _ok_user_smoke_gate(env, identity):
+    output_root = Path(env["CATALYST_TEST_OUTPUT_DIR"]) if env.get(
+        "CATALYST_TEST_OUTPUT_DIR"
+    ) else Path(env["CATALYST_DB_PATH"]).parent
+    evidence_dir = output_root / "user-smoke-evidence"
+    evidence_dir.mkdir(exist_ok=True)
+    meta_path = evidence_dir / "meta.json"
+    meta_path.write_text("{}", encoding="utf-8")
     return {
         "ok": True,
         "exit_code": 0,
-        "evidence_dir": "/tmp/baseline_user_smoke_evidence",
+        "evidence_dir": str(evidence_dir),
+        "meta_path": str(meta_path),
         "run_row": {
             "run_id": "user-smoke-1",
             "snapshot_id": SNAPSHOT_ID,
@@ -137,9 +155,9 @@ def test_conflicting_sealed_identity_fails_before_gates_run(tmp_path, monkeypatc
         raise AssertionError("gate must not run on conflicting identity")
 
     monkeypatch.setattr(repro, "_run_four_arm_gate", _boom_gate)
-    env = _full_env(tmp_path, ) if False else _full_env(tmp_path)
+    env = _full_env(tmp_path)
     env["CATALYST_SNAPSHOT_ID"] = "a" * 64
-    with pytest.raises(Exception):
+    with pytest.raises(BaselineIdentityConflictError):
         run_baseline_repro(four_arm=True, user_smoke=False, env=env)
 
 
@@ -147,26 +165,118 @@ def test_incomplete_identity_is_non_comparable_but_gates_complete(tmp_path, monk
     repro = pytest.importorskip("catalyst_eval.baseline.repro")
     monkeypatch.setattr(repro, "_run_four_arm_gate", _ok_four_arm_gate)
     monkeypatch.setattr(repro, "_run_user_smoke_gate", _ok_user_smoke_gate)
-    env = {"CATALYST_INTEGRATION_COMMIT_SHA": AUDITED_INTEGRATION_SHA}
+    env = {
+        "CATALYST_INTEGRATION_COMMIT_SHA": AUDITED_INTEGRATION_SHA,
+        "CATALYST_TEST_OUTPUT_DIR": str(tmp_path),
+    }
     result = run_baseline_repro(four_arm=True, user_smoke=True, env=env)
     assert isinstance(result, BaselineReproResult)
     assert result.ok is True
     assert result.comparable is False
     assert result.missing_ids
     assert result.four_arm_token == "FOUR_ARM_E2E_OK"
-    assert result.user_smoke_evidence_dir == "/tmp/baseline_user_smoke_evidence"
+    assert result.user_smoke_evidence_dir == str(tmp_path / "user-smoke-evidence")
     assert len(result.runs) == 2
+    assert result.promoted_env_recovered is False
+    assert result.comparability_reason == "q_002_promoted_environment_tuple_unrecovered"
 
 
 def test_full_identity_comparable_path_mocked(tmp_path, monkeypatch):
     repro = pytest.importorskip("catalyst_eval.baseline.repro")
     monkeypatch.setattr(repro, "_run_four_arm_gate", _ok_four_arm_gate)
-    result = run_baseline_repro(four_arm=True, user_smoke=False, env=_full_env(tmp_path))
+    env = _full_env(tmp_path)
+    result = run_baseline_repro(
+        four_arm=True,
+        user_smoke=False,
+        env=env,
+        promoted_identity_env=env,
+    )
     assert result.ok is True
     assert result.comparable is True
     assert result.missing_ids == ()
     assert result.four_arm_token == "FOUR_ARM_E2E_OK"
     assert result.runs[0]["lancedb_table_name"] == TABLE_NAME
+    assert result.promoted_env_recovered is True
+
+
+def test_complete_local_gate_env_cannot_upgrade_unrecovered_q002(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_run_four_arm_gate", _ok_four_arm_gate)
+    result = run_baseline_repro(
+        four_arm=True, user_smoke=False, env=_full_env(tmp_path)
+    )
+    assert result.ok is True
+    assert result.comparable is False
+    assert result.promoted_env_recovered is False
+
+
+def test_no_requested_gate_rows_is_never_comparable(tmp_path):
+    env = _full_env(tmp_path)
+    result = run_baseline_repro(
+        four_arm=False,
+        user_smoke=False,
+        env=env,
+        promoted_identity_env=env,
+    )
+    assert result.ok is True
+    assert result.comparable is False
+
+
+def test_four_arm_uses_frozen_db_not_writable_runtime_db(tmp_path):
+    env = _full_env(tmp_path)
+    argv = _four_arm_argv(env)
+    assert argv[argv.index("--db") + 1] == env["CATALYST_BASELINE_FROZEN_DB"]
+    assert env["CATALYST_DB_PATH"] not in argv
+
+
+def test_user_smoke_omits_case_pack_to_use_t4_default(tmp_path):
+    env = _full_env(tmp_path)
+    env["CATALYST_BASELINE_T4_EVIDENCE_DIR"] = str(tmp_path / "t4")
+    env["CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"] = str(tmp_path / "wave2")
+    argv = _user_smoke_argv(env)
+    assert "--case-pack" not in argv
+
+
+def test_user_smoke_model_is_distinct_from_app_default(tmp_path):
+    env = _full_env(tmp_path)
+    env["CATALYST_BASELINE_T4_EVIDENCE_DIR"] = str(tmp_path / "t4")
+    env["CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"] = str(tmp_path / "wave2")
+    argv = _user_smoke_argv(env)
+    assert argv[argv.index("--model-id") + 1] == "deepseek-v4-flash"
+    env["CATALYST_BASELINE_SMOKE_MODEL_ID"] = "audited-smoke-model"
+    argv = _user_smoke_argv(env)
+    assert argv[argv.index("--model-id") + 1] == "audited-smoke-model"
+
+
+def test_four_arm_payload_without_exact_token_is_not_ok(tmp_path, monkeypatch):
+    env = _full_env(tmp_path)
+    module = types.SimpleNamespace(
+        main=lambda argv: (print(json.dumps({"ok": True, "token_written": False})), 0)[1]
+    )
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_load_script", lambda path: module)
+    identity = repro.sealed_identity_tuple(env=env)
+    gate = _run_four_arm_gate(env, identity)
+    assert gate["ok"] is False
+    assert gate["token"] is None
+
+
+def test_user_smoke_payload_without_real_meta_is_not_ok(tmp_path, monkeypatch):
+    env = _full_env(tmp_path)
+    env["CATALYST_BASELINE_T4_EVIDENCE_DIR"] = str(tmp_path / "t4")
+    env["CATALYST_BASELINE_WAVE2_EVIDENCE_DIR"] = str(tmp_path / "wave2")
+    module = types.SimpleNamespace(
+        main=lambda argv: (
+            print(json.dumps({"ok": True, "meta_path": str(tmp_path / "missing.json")})),
+            0,
+        )[1]
+    )
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_load_script", lambda path: module)
+    identity = repro.sealed_identity_tuple(env=env)
+    gate = _run_user_smoke_gate(env, identity)
+    assert gate["ok"] is False
+    assert gate["evidence_dir"] is None
 
 
 def test_gate_failure_is_reflected_in_ok(tmp_path, monkeypatch):

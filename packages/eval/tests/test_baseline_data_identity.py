@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 import pytest
 
 from catalyst_eval.baseline.data_identity import lancedb_identity, snapshot_identity
+from catalyst_eval.baseline.identity import (
+    BaselineIdentityConflictError,
+    BaselineIdentitySourceError,
+)
 
 FIXTURE_SQL = Path(__file__).parent / "fixtures" / "baseline_snapshot_fixture.sql"
 
@@ -133,3 +138,51 @@ def test_missing_lancedb_dir_returns_none_facts(tmp_path: Path):
     assert result["lancedb_table_name"] is None
     assert result["index_manifest_id"] is None
     assert result["embedding_model"] is None
+
+
+def test_lancedb_identity_conflict_fails_closed(tmp_path: Path):
+    lancedb_dir, manifest_path = _lancedb_fixture(tmp_path)
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["snapshot_id"] = "a" * 64
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(BaselineIdentityConflictError) as excinfo:
+        lancedb_identity(lancedb_dir, index_manifest_path=manifest_path)
+    assert excinfo.value.field == "snapshot_id"
+    assert set(excinfo.value.sources) == {"active_generation", "index_manifest"}
+    assert "a" * 64 not in str(excinfo.value)
+
+
+def test_relative_data_paths_resolve_against_repo_root_not_cwd(tmp_path, monkeypatch):
+    fake_root = tmp_path / "repo"
+    (fake_root / ".git").mkdir(parents=True)
+    (fake_root / "packages" / "eval").mkdir(parents=True)
+    data_dir = fake_root / "fixtures"
+    data_dir.mkdir()
+    lancedb_dir, manifest_path = _lancedb_fixture(data_dir)
+    db_path = data_dir / "snapshot.db"
+    db_path.write_bytes(b"")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    result = lancedb_identity(
+        os.path.relpath(lancedb_dir, fake_root),
+        index_manifest_path=os.path.relpath(manifest_path, fake_root),
+        repo_root=fake_root,
+    )
+    assert result["snapshot_id"] == AUDITED["snapshot_id"]
+    assert result["index_manifest_path"] == str(manifest_path)
+
+
+@pytest.mark.parametrize("payload", ["not-json", "[]"])
+def test_present_malformed_lancedb_pointer_fails_closed(tmp_path: Path, payload: str):
+    lancedb_dir, manifest_path = _lancedb_fixture(tmp_path)
+    (lancedb_dir / "active_generation.json").write_text(payload, encoding="utf-8")
+    with pytest.raises(BaselineIdentitySourceError, match="active_generation"):
+        lancedb_identity(lancedb_dir, index_manifest_path=manifest_path)
+
+
+def test_present_malformed_lancedb_manifest_fails_closed(tmp_path: Path):
+    lancedb_dir, manifest_path = _lancedb_fixture(tmp_path)
+    manifest_path.write_text("{", encoding="utf-8")
+    with pytest.raises(BaselineIdentitySourceError, match="index_manifest"):
+        lancedb_identity(lancedb_dir, index_manifest_path=manifest_path)

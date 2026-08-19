@@ -52,6 +52,14 @@ def test_provider_key_value_fails():
     assert "sk-live-abcdefgh123456" not in violations[0]
 
 
+def test_generic_secret_bearing_note_value_fails_without_echoing_value():
+    report = _clean_report()
+    report["runs"][0]["note"] = "operator credential is short-hidden-value"
+    violations = scan_baseline_report(report)
+    assert violations
+    assert "short-hidden-value" not in "\n".join(violations)
+
+
 def test_golden_answer_key_in_run_row_fails():
     report = _clean_report()
     report["runs"][0]["oracle_answer"] = "AAPL rose because of strong earnings"

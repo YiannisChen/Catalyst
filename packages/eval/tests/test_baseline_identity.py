@@ -17,6 +17,7 @@ import pytest
 from catalyst_eval.baseline.identity import (
     BaselineIdentity,
     BaselineIdentityConflictError,
+    BaselineIdentitySourceError,
     PackageVersions,
     is_app_default_db,
     reconcile_identity,
@@ -280,7 +281,7 @@ def test_repository_root_invariant_under_cwd(tmp_path, monkeypatch):
     outside.mkdir()
     monkeypatch.chdir(outside)
     root = repository_root()
-    assert root == Path("/Users/yiannischen/Projects/Catalyst-v1.1-m1").resolve()
+    assert root == Path(__file__).resolve().parents[3]
     assert (root / "packages" / "eval").is_dir()
     assert (root / ".git").exists()
 
@@ -288,6 +289,62 @@ def test_repository_root_invariant_under_cwd(tmp_path, monkeypatch):
 def test_repository_root_injected_path_fails_closed(tmp_path):
     with pytest.raises(ValueError):
         repository_root(start=tmp_path / "not-a-repo")
+
+
+def test_repository_root_rejects_ambiguous_nested_repositories(tmp_path):
+    outer = tmp_path / "outer"
+    inner = outer / "inner"
+    for root in (outer, inner):
+        (root / ".git").mkdir(parents=True)
+        (root / "packages" / "eval").mkdir(parents=True)
+    with pytest.raises(ValueError, match="ambiguous"):
+        repository_root(start=inner / "packages" / "eval")
+
+
+def test_identity_paths_resolve_against_repo_root_not_cwd(tmp_path, monkeypatch):
+    root = repository_root()
+    lancedb_dir, manifest_path = _write_pointer_files(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    env = _full_env(other)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    env["CATALYST_LANCEDB_DIR"] = os.path.relpath(lancedb_dir, root)
+    env["CATALYST_INDEX_MANIFEST_PATH"] = os.path.relpath(manifest_path, root)
+    identity = sealed_identity_tuple(env=env, repo_root=root)
+    assert identity.snapshot_id == AUDITED_POINTER["snapshot_id"]
+    assert identity.index_manifest_id == AUDITED_POINTER["index_manifest_id"]
+
+
+@pytest.mark.parametrize("source", ["pointer", "manifest"])
+def test_present_malformed_identity_json_fails_closed(tmp_path, source):
+    lancedb_dir, manifest_path = _write_pointer_files(tmp_path)
+    target = (
+        lancedb_dir / "active_generation.json"
+        if source == "pointer"
+        else manifest_path
+    )
+    target.write_text("not-json", encoding="utf-8")
+    other = tmp_path / "other"
+    other.mkdir()
+    env = _full_env(other)
+    env["CATALYST_LANCEDB_DIR"] = str(lancedb_dir)
+    env["CATALYST_INDEX_MANIFEST_PATH"] = str(manifest_path)
+    with pytest.raises(BaselineIdentitySourceError, match=source):
+        sealed_identity_tuple(env=env)
+
+
+def test_present_non_object_identity_manifest_fails_closed(tmp_path):
+    lancedb_dir, manifest_path = _write_pointer_files(tmp_path)
+    manifest_path.write_text("[]", encoding="utf-8")
+    other = tmp_path / "other"
+    other.mkdir()
+    env = _full_env(other)
+    env["CATALYST_LANCEDB_DIR"] = str(lancedb_dir)
+    env["CATALYST_INDEX_MANIFEST_PATH"] = str(manifest_path)
+    with pytest.raises(BaselineIdentitySourceError, match="manifest"):
+        sealed_identity_tuple(env=env)
 
 
 def test_is_app_default_db_resolves_relative_against_repo_root(tmp_path, monkeypatch):

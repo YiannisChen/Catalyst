@@ -17,7 +17,9 @@ _SECRET_KEY = re.compile(
 _GOLDEN_KEY = re.compile(r"(?i)(oracle_|golden|gold_answer|expected_answer)")
 _SECRET_VALUE = re.compile(
     r"(?i)\b(sk-[a-z0-9_-]{8,}|"
-    r"(deepseek|openai|anthropic|aihubmix|siliconflow|gemini|glm|zai)_api_key\s*[:=]\s*\S+)"
+    r"(deepseek|openai|anthropic|aihubmix|siliconflow|gemini|glm|zai)_api_key\s*[:=]\s*\S+|"
+    r"(?:api[_-]?key|token|secret|password|credential|authorization)"
+    r"\s+(?:is\s+)?\S{6,})"
 )
 
 

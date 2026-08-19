@@ -33,7 +33,7 @@ def _build_fixture_db(tmp_path: Path, *, with_assurance: bool = False) -> Path:
                 started_at TEXT, ended_at TEXT, latency_ms INTEGER, model_id TEXT,
                 input_tokens INTEGER, output_tokens INTEGER, cost_usd REAL,
                 decision TEXT, error_type TEXT, error_message TEXT,
-                status_before TEXT, status_after TEXT
+                status_before TEXT, status_after TEXT, credential_note TEXT
             );
             CREATE TABLE node_artifacts (
                 run_id TEXT, event_seq INTEGER, node TEXT, artifact_type TEXT,
@@ -45,23 +45,38 @@ def _build_fixture_db(tmp_path: Path, *, with_assurance: bool = False) -> Path:
             conn.executescript(
                 """
                 CREATE TABLE run_assurance (
-                    run_id TEXT, schema_version TEXT, verdict TEXT, detail_json TEXT
+                    run_id TEXT, schema_version TEXT, record_json TEXT, created_at TEXT
                 );
                 """
             )
             conn.execute(
-                "INSERT INTO run_assurance VALUES (?, 'v1', 'ok', ?)",
-                (RUN_ID, json.dumps({"citations_resolved": True, "secret_token": "sk-hidden"})),
+                "INSERT INTO run_assurance VALUES (?, '1.0.0', ?, 'now')",
+                (RUN_ID, json.dumps({
+                    "run_id": RUN_ID,
+                    "output_status": "SUFFICIENT",
+                    "checks": [{
+                        "check_name": "cutoff",
+                        "status": "pass",
+                        "detail": "credential=short-hidden",
+                    }],
+                    "secret_token": "sk-hidden",
+                })),
             )
         conn.execute(
             "INSERT INTO agent_runs VALUES (?, ?, 'AAPL', '2025-09-08', 'COMPLETED', "
             "'2026-05-28T01:50:17Z', '2026-05-28T01:50:18Z', '2026-05-28T01:50:19Z', "
-            "1000, 0.01, '{}', '{}', NULL, 'internal secret error message')",
-            (RUN_ID, "trace-1"),
+            "1000, 0.01, ?, ?, NULL, 'internal secret error message')",
+            (
+                RUN_ID,
+                "trace-1",
+                json.dumps({"writer": "model-safe", "secret_token": "model-hidden"}),
+                json.dumps({"api_key": "short-key", "mode": "baseline"}),
+            ),
         )
         conn.execute(
             "INSERT INTO trace_events VALUES (?, ?, 1, 'critic', 't0', 't1', 10, 'gemini-x', "
-            "10, 20, 0.001, 'continue', NULL, 'hidden trace error', 'RUNNING', 'RUNNING')",
+            "10, 20, 0.001, 'continue', NULL, 'hidden trace error', 'RUNNING', 'RUNNING', "
+            "'token=trace-hidden')",
             (RUN_ID, "trace-1"),
         )
         artifacts = [
@@ -101,6 +116,8 @@ def test_legacy_reader_returns_versioned_redacted_dict(tmp_path):
     assert result["run_id"] == RUN_ID
     assert result["agent_run"]["status"] == "COMPLETED"
     assert result["agent_run"]["error_message"] is None
+    assert "config" not in result["agent_run"]
+    assert "agent_run.config" in result["redacted_fields"]
     assert "agent_run.error_message" in result["redacted_fields"]
     assert len(result["trace_events"]) == 1
     assert result["trace_events"][0]["error_message"] is None
@@ -150,10 +167,30 @@ def test_public_display_fields_are_bounded_truncated(tmp_path):
 def test_run_assurance_is_read_and_secret_keys_redacted(tmp_path):
     db_path = _build_fixture_db(tmp_path, with_assurance=True)
     result = read_legacy_run_artifacts(db_path, RUN_ID)
-    assert result["run_assurance"]["verdict"] == "ok"
+    assert result["run_assurance"]["schema_version"] == "1.0.0"
+    assert result["run_assurance"]["record"]["output_status"] == "SUFFICIENT"
     text = json.dumps(result)
     assert "sk-hidden" not in text
+    assert "short-hidden" not in text
     assert "secret_token" in result["redacted_fields"]
+
+
+def test_secret_bearing_agent_trace_and_assurance_fields_never_survive(tmp_path):
+    db_path = _build_fixture_db(tmp_path, with_assurance=True)
+    result = read_legacy_run_artifacts(db_path, RUN_ID)
+    text = json.dumps(result)
+    for forbidden in (
+        "short-key",
+        "model-hidden",
+        "token=trace-hidden",
+        "credential=short-hidden",
+    ):
+        assert forbidden not in text
+    assert "config" not in result["agent_run"]
+    assert "credential_note" not in result["trace_events"][0]
+    assert "secret_token" not in result["run_assurance"]["record"]
+    assert "agent_run.config" in result["redacted_fields"]
+    assert "trace_events.credential_note" in result["redacted_fields"]
 
 
 def test_missing_run_returns_empty_artifacts(tmp_path):

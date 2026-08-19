@@ -13,6 +13,12 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from catalyst_eval.baseline.identity import (
+    BaselineIdentitySourceError,
+    reconcile_identity,
+    repository_root,
+)
+
 SNAPSHOT_IDENTITY_SCHEMA = "snapshot_identity_v1"
 LANCEDB_IDENTITY_SCHEMA = "lancedb_identity_v1"
 
@@ -51,14 +57,24 @@ _LANCEDB_EMPTY: dict[str, Any] = {
 }
 
 
-def _read_json_pointer(path: Path) -> dict:
-    if not path.is_file():
+def _read_json_pointer(path: Path, *, source: str) -> dict:
+    if not path.exists():
         return {}
+    if not path.is_file():
+        raise BaselineIdentitySourceError(source)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+        raise BaselineIdentitySourceError(source) from None
+    if not isinstance(payload, dict):
+        raise BaselineIdentitySourceError(source)
+    return payload
+
+
+def _resolve_path(value: str | Path, repo_root: Path | None) -> Path:
+    root = repository_root(start=repo_root) if repo_root is not None else repository_root()
+    path = Path(value)
+    return (path if path.is_absolute() else root / path).resolve()
 
 
 def _count(conn: sqlite3.Connection, table: str) -> int | None:
@@ -113,7 +129,9 @@ def _lexical_facts(conn: sqlite3.Connection) -> dict[str, Any]:
     }
 
 
-def snapshot_identity(db_path: str | Path | None) -> dict[str, Any]:
+def snapshot_identity(
+    db_path: str | Path | None, *, repo_root: Path | None = None
+) -> dict[str, Any]:
     """Read frozen-snapshot identity facts through a read-only connection.
 
     Missing DB/file yields all-``None`` facts (explicitly NON-COMPARABLE),
@@ -121,7 +139,7 @@ def snapshot_identity(db_path: str | Path | None) -> dict[str, Any]:
     """
     if db_path is None:
         return dict(_SNAPSHOT_EMPTY)
-    path = Path(db_path)
+    path = _resolve_path(db_path, repo_root)
     if not path.is_file():
         return dict(_SNAPSHOT_EMPTY)
 
@@ -155,6 +173,7 @@ def lancedb_identity(
     lancedb_dir: str | Path | None,
     *,
     index_manifest_path: str | Path | None = None,
+    repo_root: Path | None = None,
 ) -> dict[str, Any]:
     """Read the active LanceDB pointer and clean-import index manifest.
 
@@ -163,17 +182,19 @@ def lancedb_identity(
     """
     if lancedb_dir is None:
         return dict(_LANCEDB_EMPTY)
-    base = Path(lancedb_dir)
+    base = _resolve_path(lancedb_dir, repo_root)
     if not base.is_dir():
         return dict(_LANCEDB_EMPTY)
 
-    pointer = _read_json_pointer(base / "active_generation.json")
+    pointer = _read_json_pointer(
+        base / "active_generation.json", source="active_generation"
+    )
     manifest_file = (
-        Path(index_manifest_path)
+        _resolve_path(index_manifest_path, repo_root)
         if index_manifest_path is not None
         else base / "index_manifest.json"
     )
-    manifest = _read_json_pointer(manifest_file)
+    manifest = _read_json_pointer(manifest_file, source="index_manifest")
 
     def _value(payload: dict, key: str) -> Any:
         value = payload.get(key)
@@ -184,19 +205,29 @@ def lancedb_identity(
         return None
 
     dimension = _value(manifest, "dimension")
+    def _reconciled(field: str, pointer_key: str | None = None) -> str | None:
+        key = pointer_key or field
+        pointer_value = _value(pointer, key)
+        manifest_value = _value(manifest, key)
+        return reconcile_identity(
+            field,
+            {
+                "active_generation": (
+                    str(pointer_value) if pointer_value is not None else None
+                ),
+                "index_manifest": (
+                    str(manifest_value) if manifest_value is not None else None
+                ),
+            },
+        )
+
     return {
         "schema_version": LANCEDB_IDENTITY_SCHEMA,
-        "lancedb_table_name": _value(pointer, "table_name") or _value(manifest, "table_name"),
-        "snapshot_id": _value(pointer, "snapshot_id") or _value(manifest, "snapshot_id"),
-        "corpus_manifest_id": (
-            _value(pointer, "corpus_manifest_id") or _value(manifest, "corpus_manifest_id")
-        ),
-        "index_manifest_id": (
-            _value(pointer, "index_manifest_id") or _value(manifest, "index_manifest_id")
-        ),
-        "source_bundle_id": (
-            _value(pointer, "source_bundle_id") or _value(manifest, "source_bundle_id")
-        ),
+        "lancedb_table_name": _reconciled("lancedb_table_name", "table_name"),
+        "snapshot_id": _reconciled("snapshot_id"),
+        "corpus_manifest_id": _reconciled("corpus_manifest_id"),
+        "index_manifest_id": _reconciled("index_manifest_id"),
+        "source_bundle_id": _reconciled("source_bundle_id"),
         "probe_report_id": _value(manifest, "probe_report_id"),
         "postbuild_readiness_id": _value(manifest, "postbuild_readiness_id"),
         "embedding_model": _value(manifest, "model_name"),

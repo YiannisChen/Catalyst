@@ -26,6 +26,29 @@ _REASONING = re.compile(r"(?i)reasoning|chain[_-]?of[_-]?thought")
 _SECRET = re.compile(
     r"(?i)(api[_-]?key|token|secret|password|credential|authorization|_key\b)"
 )
+_SECRET_VALUE = re.compile(
+    r"(?i)(\bsk-[a-z0-9_-]+|\b(?:api[_-]?key|token|secret|password|"
+    r"credential|authorization)\s*[:=]\s*\S+)"
+)
+
+_AGENT_RUN_FIELDS = frozenset(
+    {
+        "run_id", "trace_id", "ticker", "trade_date", "status", "queued_at",
+        "started_at", "ended_at", "total_latency_ms", "total_cost_usd",
+        "model_id_per_role", "error_type", "error_message",
+    }
+)
+_TRACE_EVENT_FIELDS = frozenset(
+    {
+        "run_id", "trace_id", "event_seq", "node", "started_at", "ended_at",
+        "latency_ms", "model_id", "input_tokens", "output_tokens", "cost_usd",
+        "decision", "error_type", "error_message", "status_before", "status_after",
+    }
+)
+_ARTIFACT_FIELDS = frozenset(
+    {"run_id", "event_seq", "node", "artifact_type", "created_at"}
+)
+_ASSURANCE_FIELDS = frozenset({"run_id", "schema_version", "created_at"})
 
 # Artifacts whose payloads are always redacted as raw/internal model state.
 _RAW_ARTIFACT_TYPES = frozenset(
@@ -82,6 +105,25 @@ _ALLOWED_PUBLIC_FIELDS = frozenset(
         "decision",
         "summary_md",
         "status",
+        "schema_version",
+        "run_id",
+        "trace_id",
+        "output_status",
+        "cutoff",
+        "corpus_manifest_id",
+        "index_manifest_id",
+        "model_ids",
+        "prompt_versions",
+        "checks",
+        "source_support_flags",
+        "retry_count",
+        "repair_count",
+        "budget_exhausted",
+        "is_degraded",
+        "created_at",
+        "check_name",
+        "detail",
+        "checked_at",
     }
 )
 
@@ -109,9 +151,13 @@ def _redact_node(
             _redact_node(item, redacted_fields, truncated_fields, f"{path}[{index}]")
             for index, item in enumerate(node)
         ]
-    if isinstance(node, str) and len(node) > MAX_DISPLAY_LENGTH:
-        truncated_fields.append(path)
-        return node[:MAX_DISPLAY_LENGTH]
+    if isinstance(node, str):
+        if _SECRET_VALUE.search(node):
+            redacted_fields.append(path)
+            return None
+        if len(node) > MAX_DISPLAY_LENGTH:
+            truncated_fields.append(path)
+            return node[:MAX_DISPLAY_LENGTH]
     return node
 
 
@@ -125,6 +171,41 @@ def _redact_payload(
         redacted_fields.append(f"{artifact_type}.payload")
         return None
     return _redact_node(payload, redacted_fields, truncated_fields)
+
+
+def _redact_unstructured(
+    node: Any,
+    redacted_fields: list[str],
+    truncated_fields: list[str],
+    path: str,
+) -> Any:
+    """Preserve public unstructured metadata while removing semantic secrets."""
+    if isinstance(node, dict):
+        cleaned: dict[str, Any] = {}
+        for key, value in node.items():
+            child_path = f"{path}.{key}"
+            if _REASONING.search(str(key)) or _SECRET.search(str(key)):
+                redacted_fields.append(child_path)
+                continue
+            cleaned[key] = _redact_unstructured(
+                value, redacted_fields, truncated_fields, child_path
+            )
+        return cleaned
+    if isinstance(node, list):
+        return [
+            _redact_unstructured(
+                value, redacted_fields, truncated_fields, f"{path}[{index}]"
+            )
+            for index, value in enumerate(node)
+        ]
+    if isinstance(node, str):
+        if _SECRET_VALUE.search(node):
+            redacted_fields.append(path)
+            return None
+        if len(node) > MAX_DISPLAY_LENGTH:
+            truncated_fields.append(path)
+            return node[:MAX_DISPLAY_LENGTH]
+    return node
 
 
 def _open_readonly(db_path: Path) -> sqlite3.Connection:
@@ -143,6 +224,22 @@ def _read_rows(conn: sqlite3.Connection, table: str, run_id: str) -> list[tuple]
 
 def _row_to_dict(row: tuple, columns: list[str]) -> dict:
     return {name: value for name, value in zip(columns, row)}
+
+
+def _public_row(
+    row: dict[str, Any], allowed: frozenset[str], prefix: str, redacted_fields: list[str]
+) -> dict[str, Any]:
+    public: dict[str, Any] = {}
+    for key, value in row.items():
+        if key not in allowed:
+            redacted_fields.append(f"{prefix}.{key}")
+            continue
+        if isinstance(value, str) and _SECRET_VALUE.search(value):
+            redacted_fields.append(f"{prefix}.{key}")
+            public[key] = None
+            continue
+        public[key] = value
+    return public
 
 
 def read_legacy_run_artifacts(db_path: str | Path | None, run_id: str) -> dict[str, Any]:
@@ -171,31 +268,59 @@ def read_legacy_run_artifacts(db_path: str | Path | None, run_id: str) -> dict[s
             column[1] for column in conn.execute("PRAGMA table_info(agent_runs)").fetchall()
         ]
         for row in _read_rows(conn, "agent_runs", run_id):
-            agent_run = _row_to_dict(row, agent_columns)
+            agent_run = _public_row(
+                _row_to_dict(row, agent_columns),
+                _AGENT_RUN_FIELDS,
+                "agent_run",
+                redacted_fields,
+            )
             if agent_run.get("error_message") is not None:
                 redacted_fields.append("agent_run.error_message")
                 agent_run["error_message"] = None
-            if agent_run.get("config") and isinstance(agent_run["config"], str):
-                agent_run["config"] = agent_run["config"][:MAX_DISPLAY_LENGTH]
+            if agent_run.get("model_id_per_role") is not None:
+                agent_run["model_id_per_role"] = _redact_unstructured(
+                    _parse_payload(agent_run["model_id_per_role"]),
+                    redacted_fields,
+                    truncated_fields,
+                    "$.agent_run.model_id_per_role",
+                )
             result["agent_run"] = agent_run
 
         trace_columns = [
             column[1] for column in conn.execute("PRAGMA table_info(trace_events)").fetchall()
         ]
         for row in _read_rows(conn, "trace_events", run_id):
-            event = _row_to_dict(row, trace_columns)
+            event = _public_row(
+                _row_to_dict(row, trace_columns),
+                _TRACE_EVENT_FIELDS,
+                "trace_events",
+                redacted_fields,
+            )
             if event.get("error_message") is not None:
                 redacted_fields.append("trace_events.error_message")
                 event["error_message"] = None
+            if event.get("decision") is not None:
+                event["decision"] = _redact_unstructured(
+                    _parse_payload(event["decision"]),
+                    redacted_fields,
+                    truncated_fields,
+                    "$.trace_events.decision",
+                )
             result["trace_events"].append(event)
 
         artifact_columns = [
             column[1] for column in conn.execute("PRAGMA table_info(node_artifacts)").fetchall()
         ]
         for row in _read_rows(conn, "node_artifacts", run_id):
-            artifact = _row_to_dict(row, artifact_columns)
+            raw_artifact = _row_to_dict(row, artifact_columns)
+            artifact = _public_row(
+                raw_artifact,
+                _ARTIFACT_FIELDS,
+                "node_artifacts",
+                redacted_fields,
+            )
             artifact_type = artifact.get("artifact_type") or "unknown"
-            raw_payload = artifact.get("payload_json")
+            raw_payload = raw_artifact.get("payload_json")
             artifact["payload"] = _redact_payload(
                 _parse_payload(raw_payload),
                 artifact_type,
@@ -209,12 +334,19 @@ def read_legacy_run_artifacts(db_path: str | Path | None, run_id: str) -> dict[s
             column[1] for column in conn.execute("PRAGMA table_info(run_assurance)").fetchall()
         ]
         for row in _read_rows(conn, "run_assurance", run_id):
-            assurance = _row_to_dict(row, assurance_columns)
-            detail = _parse_payload(assurance.get("detail_json"))
-            assurance["detail"] = _redact_node(
-                detail, redacted_fields, truncated_fields, "$.run_assurance"
+            raw_assurance = _row_to_dict(row, assurance_columns)
+            assurance = _public_row(
+                raw_assurance,
+                _ASSURANCE_FIELDS,
+                "run_assurance",
+                redacted_fields,
             )
-            assurance.pop("detail_json", None)
+            assurance["record"] = _redact_node(
+                _parse_payload(raw_assurance.get("record_json")),
+                redacted_fields,
+                truncated_fields,
+                "$.run_assurance.record",
+            )
             result["run_assurance"] = assurance
     finally:
         conn.close()

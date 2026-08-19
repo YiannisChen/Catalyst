@@ -78,7 +78,7 @@ def _run_data_identity_comparable(run: dict, identity: BaselineIdentity) -> bool
     for field in DATA_IDENTITY_FIELDS:
         row_value = run.get(field)
         if row_value is None:
-            continue
+            return False
         if row_value != getattr(identity, field):
             return False
     return True
@@ -87,17 +87,23 @@ def _run_data_identity_comparable(run: dict, identity: BaselineIdentity) -> bool
 def _data_identity_comparable(identity: BaselineIdentity, runs: list[dict]) -> bool:
     if any(getattr(identity, field) is None for field in DATA_IDENTITY_FIELDS):
         return False
+    if not runs:
+        return False
     return all(_run_data_identity_comparable(run, identity) for run in runs)
 
 
 def _model_identity_comparable(identity: BaselineIdentity, runs: list[dict]) -> bool:
     if identity.default_model is None:
         return False
+    verified = 0
     for run in runs:
         run_model = run.get("default_model") or run.get("model_id")
-        if run_model is not None and run_model != identity.default_model:
+        if run_model is None:
+            continue
+        verified += 1
+        if run_model != identity.default_model:
             return False
-    return True
+    return verified > 0
 
 
 def _build_report(
@@ -106,14 +112,29 @@ def _build_report(
     *,
     generated_at: str,
     git_revision: str,
+    promoted_env_recovered: bool,
 ) -> dict:
+    run_provenance_allows_comparison = all(
+        run.get("promoted_env_recovered") is not False for run in runs
+    )
+    comparison_allowed = promoted_env_recovered and run_provenance_allows_comparison
     return {
         "schema_version": _SCHEMA_VERSION,
         "identity": _redact_secrets(dataclasses.asdict(identity)),
         "runs": [_redact_secrets(run) for run in runs],
         "comparability": {
-            "data_identity_comparable": _data_identity_comparable(identity, runs),
-            "model_identity_comparable": _model_identity_comparable(identity, runs),
+            "data_identity_comparable": (
+                comparison_allowed and _data_identity_comparable(identity, runs)
+            ),
+            "model_identity_comparable": (
+                comparison_allowed and _model_identity_comparable(identity, runs)
+            ),
+            "promoted_env_recovered": promoted_env_recovered,
+            "promoted_env_reason": (
+                "promoted_environment_tuple_recovered"
+                if promoted_env_recovered
+                else "q_002_promoted_environment_tuple_unrecovered"
+            ),
             "app_default_db_non_comparable": identity.app_default_db_marked_non_comparable,
             "generated_at": generated_at,
             "git_revision": git_revision,
@@ -137,6 +158,7 @@ def write_baseline_report(
     runs: list[dict],
     *,
     generated_at: str | None = None,
+    promoted_env_recovered: bool = False,
 ) -> Path:
     """Publish the sealed baseline report at ``<report_dir>/v1_1_baseline_<sha8>.json``.
 
@@ -149,7 +171,15 @@ def write_baseline_report(
 
     timestamp = generated_at or datetime.now(timezone.utc).isoformat()
     git_revision = _git_head(repository_root())
-    payload = _build_report(identity, runs, generated_at=timestamp, git_revision=git_revision)
+    if not isinstance(promoted_env_recovered, bool):
+        raise TypeError("promoted_env_recovered must be bool")
+    payload = _build_report(
+        identity,
+        runs,
+        generated_at=timestamp,
+        git_revision=git_revision,
+        promoted_env_recovered=promoted_env_recovered,
+    )
     canonical = _canonical_bytes(payload)
 
     if target.exists():

@@ -59,6 +59,14 @@ class BaselineIdentityConflictError(ValueError):
         )
 
 
+class BaselineIdentitySourceError(ValueError):
+    """A present identity source cannot be read as a JSON object."""
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        super().__init__(f"baseline identity source {source!r} is unreadable or malformed")
+
+
 @dataclasses.dataclass(frozen=True)
 class BaselineIdentity:
     """The sealed M1 baseline identity tuple."""
@@ -87,9 +95,15 @@ def repository_root(start: Path | None = None) -> Path:
     ``packages/eval``. Never consults process CWD. Fails closed on absence.
     """
     candidate = (start or Path(__file__).resolve().parent).resolve()
-    for current in (candidate, *candidate.parents):
-        if (current / ".git").exists() and (current / "packages" / "eval").is_dir():
-            return current
+    matches = [
+        current
+        for current in (candidate, *candidate.parents)
+        if (current / ".git").exists() and (current / "packages" / "eval").is_dir()
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError("ambiguous Catalyst repository root")
     raise ValueError(
         "cannot discover Catalyst repository root from "
         f"{start or Path(__file__).resolve()}"
@@ -138,14 +152,23 @@ def _run_git(repo_root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _read_json_pointer(path: Path) -> dict:
-    if not path.is_file():
+def _resolve_repo_path(root: Path, raw_path: str | Path) -> Path:
+    path = Path(raw_path)
+    return path if path.is_absolute() else root / path
+
+
+def _read_json_pointer(path: Path, *, source: str) -> dict:
+    if not path.exists():
         return {}
+    if not path.is_file():
+        raise BaselineIdentitySourceError(source)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+        raise BaselineIdentitySourceError(source) from None
+    if not isinstance(payload, dict):
+        raise BaselineIdentitySourceError(source)
+    return payload
 
 
 def _validate_integration_commit_sha(root: Path, sha: str) -> str:
@@ -224,12 +247,17 @@ def sealed_identity_tuple(
     lancedb_dir = resolved_env.get("CATALYST_LANCEDB_DIR")
     pointer: dict = {}
     if lancedb_dir:
-        pointer = _read_json_pointer(Path(lancedb_dir) / "active_generation.json")
+        pointer = _read_json_pointer(
+            _resolve_repo_path(root, lancedb_dir) / "active_generation.json",
+            source="pointer",
+        )
 
     manifest_path = resolved_env.get("CATALYST_INDEX_MANIFEST_PATH")
     manifest: dict = {}
     if manifest_path:
-        manifest = _read_json_pointer(Path(manifest_path))
+        manifest = _read_json_pointer(
+            _resolve_repo_path(root, manifest_path), source="manifest"
+        )
 
     def _value(payload: dict, key: str) -> str | None:
         value = payload.get(key)
@@ -331,6 +359,7 @@ __all__ = [
     "AUDITED_CODE_BASELINE",
     "BaselineIdentity",
     "BaselineIdentityConflictError",
+    "BaselineIdentitySourceError",
     "PackageVersions",
     "is_app_default_db",
     "reconcile_identity",

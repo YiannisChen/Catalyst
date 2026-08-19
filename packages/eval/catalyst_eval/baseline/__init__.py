@@ -5,6 +5,7 @@ from __future__ import annotations
 from catalyst_eval.baseline.identity import (
     BaselineIdentity,
     BaselineIdentityConflictError,
+    BaselineIdentitySourceError,
     PackageVersions,
     is_app_default_db,
     reconcile_identity,
@@ -15,6 +16,7 @@ from catalyst_eval.baseline.identity import (
 __all__ = [
     "BaselineIdentity",
     "BaselineIdentityConflictError",
+    "BaselineIdentitySourceError",
     "PackageVersions",
     "is_app_default_db",
     "reconcile_identity",
