@@ -103,7 +103,8 @@ def _ok_four_arm_gate(env, identity):
     evidence_dir = output_root / "four-arm-evidence"
     evidence_dir.mkdir(exist_ok=True)
     meta_path = evidence_dir / "meta.json"
-    meta_path.write_text("{}", encoding="utf-8")
+    run_id = env["CATALYST_BASELINE_FOUR_ARM_RUN_ID"]
+    meta_path.write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
     (evidence_dir / "WAVE_TOKEN.txt").write_text(
         "FOUR_ARM_E2E_OK\n", encoding="utf-8"
     )
@@ -113,7 +114,7 @@ def _ok_four_arm_gate(env, identity):
         "token": "FOUR_ARM_E2E_OK",
         "meta_path": str(meta_path),
         "run_row": {
-            "run_id": "four-arm-1",
+            "run_id": run_id,
             "snapshot_id": SNAPSHOT_ID,
             "corpus_manifest_id": CORPUS_ID,
             "index_manifest_id": INDEX_ID,
@@ -140,7 +141,8 @@ def _ok_user_smoke_gate(env, identity):
     evidence_dir = output_root / "user-smoke-evidence"
     evidence_dir.mkdir(exist_ok=True)
     meta_path = evidence_dir / "meta.json"
-    meta_path.write_text("{}", encoding="utf-8")
+    run_id = env["CATALYST_BASELINE_USER_SMOKE_RUN_ID"]
+    meta_path.write_text(json.dumps({"run_id": run_id}), encoding="utf-8")
     (evidence_dir / "WAVE_TOKEN.txt").write_text(
         "USER_SMOKE_OK\n", encoding="utf-8"
     )
@@ -151,7 +153,7 @@ def _ok_user_smoke_gate(env, identity):
         "evidence_dir": str(evidence_dir),
         "meta_path": str(meta_path),
         "run_row": {
-            "run_id": "user-smoke-1",
+            "run_id": run_id,
             "snapshot_id": SNAPSHOT_ID,
             "corpus_manifest_id": CORPUS_ID,
             "index_manifest_id": INDEX_ID,
@@ -441,6 +443,13 @@ def test_dual_gate_rejects_colliding_final_evidence_dirs(tmp_path, monkeypatch):
     def colliding_smoke(env, identity):
         gate = _ok_user_smoke_gate(env, identity)
         four_dir = tmp_path / "four-arm-evidence"
+        # The smoke gate binds a valid user-smoke meta into the four-arm
+        # evidence dir, so run-ID binding succeeds and the dir-collision
+        # check is the only thing that fails the run.
+        (four_dir / "meta.json").write_text(
+            json.dumps({"run_id": env["CATALYST_BASELINE_USER_SMOKE_RUN_ID"]}),
+            encoding="utf-8",
+        )
         gate["meta_path"] = str(four_dir / "meta.json")
         gate["evidence_dir"] = str(four_dir)
         return gate
@@ -451,6 +460,79 @@ def test_dual_gate_rejects_colliding_final_evidence_dirs(tmp_path, monkeypatch):
         four_arm=True, user_smoke=True, env=_full_env(tmp_path)
     )
     assert result.ok is False
+
+
+@pytest.mark.parametrize(
+    ("mismatch_field", "wrong_run_id"),
+    (("row", "wrong-row"), ("meta", "wrong-meta")),
+)
+def test_gate_evidence_binding_rejects_run_id_mismatch(
+    tmp_path, monkeypatch, mismatch_field, wrong_run_id
+):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+
+    def four_gate(env, identity):
+        gate = _ok_four_arm_gate(env, identity)
+        if mismatch_field == "row":
+            gate["run_row"]["run_id"] = wrong_run_id
+        else:
+            Path(gate["meta_path"]).write_text(
+                json.dumps({"run_id": wrong_run_id}), encoding="utf-8"
+            )
+        return gate
+
+    monkeypatch.setattr(repro, "_run_four_arm_gate", four_gate)
+    with pytest.raises(ValueError, match="run ID mismatch"):
+        run_baseline_repro(
+            four_arm=True,
+            user_smoke=False,
+            env=_full_env(tmp_path),
+        )
+
+
+def test_bound_rows_carry_requested_run_ids(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    monkeypatch.setattr(repro, "_run_four_arm_gate", _ok_four_arm_gate)
+    monkeypatch.setattr(repro, "_run_user_smoke_gate", _ok_user_smoke_gate)
+    env = _full_env(tmp_path)
+    env["CATALYST_BASELINE_FOUR_ARM_RUN_ID"] = "four-requested"
+    env["CATALYST_BASELINE_USER_SMOKE_RUN_ID"] = "smoke-requested"
+    result = run_baseline_repro(four_arm=True, user_smoke=True, env=env)
+    assert result.ok is True
+    assert len(result.runs) == 2
+    by_kind = {row["gate_kind"]: row for row in result.runs}
+    assert by_kind["four_arm"]["run_id"] == "four-requested"
+    assert by_kind["user_smoke"]["run_id"] == "smoke-requested"
+
+
+def test_missing_run_ids_are_filled_by_setdefault_and_bind(tmp_path, monkeypatch):
+    repro = pytest.importorskip("catalyst_eval.baseline.repro")
+    captured: dict[str, dict[str, str]] = {}
+
+    def four_gate(env, identity):
+        captured["four"] = dict(env)
+        return _ok_four_arm_gate(env, identity)
+
+    def smoke_gate(env, identity):
+        captured["smoke"] = dict(env)
+        return _ok_user_smoke_gate(env, identity)
+
+    monkeypatch.setattr(repro, "_run_four_arm_gate", four_gate)
+    monkeypatch.setattr(repro, "_run_user_smoke_gate", smoke_gate)
+    env = _full_env(tmp_path)
+    env.pop("CATALYST_BASELINE_FOUR_ARM_RUN_ID", None)
+    env.pop("CATALYST_BASELINE_USER_SMOKE_RUN_ID", None)
+    result = run_baseline_repro(four_arm=True, user_smoke=True, env=env)
+    assert result.ok is True
+    assert len(result.runs) == 2
+    by_kind = {row["gate_kind"]: row for row in result.runs}
+    four_id = captured["four"]["CATALYST_BASELINE_FOUR_ARM_RUN_ID"]
+    smoke_id = captured["smoke"]["CATALYST_BASELINE_USER_SMOKE_RUN_ID"]
+    assert four_id.startswith("baseline_repro_four_arm_")
+    assert smoke_id.startswith("baseline_repro_user_smoke_")
+    assert four_id != smoke_id
+    assert by_kind["four_arm"]["run_id"] == four_id
+    assert by_kind["user_smoke"]["run_id"] == smoke_id
 
 
 def test_runtime_derivative_rejects_same_path_symlink_and_hardlink(tmp_path):

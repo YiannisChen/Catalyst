@@ -281,6 +281,29 @@ def _bind_gate_run_row(
     ):
         if not path.is_file():
             raise ValueError(f"{label} file missing for evidence binding")
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        raise ValueError(
+            f"{gate_kind} gate run ID mismatch: meta is unreadable or malformed"
+        ) from None
+    if not isinstance(meta, dict):
+        raise ValueError(
+            f"{gate_kind} gate run ID mismatch: meta must be a JSON object"
+        )
+    run_id_env_key = {
+        "four_arm": "CATALYST_BASELINE_FOUR_ARM_RUN_ID",
+        "user_smoke": "CATALYST_BASELINE_USER_SMOKE_RUN_ID",
+    }.get(gate_kind)
+    if run_id_env_key is None:
+        raise ValueError("unsupported baseline gate kind")
+    requested_run_id = env.get(run_id_env_key)
+    if (
+        not requested_run_id
+        or row.get("run_id") != requested_run_id
+        or meta.get("run_id") != requested_run_id
+    ):
+        raise ValueError(f"{gate_kind} gate run ID mismatch across request/row/meta")
     return {
         **row,
         "gate_kind": gate_kind,
@@ -322,6 +345,16 @@ def run_baseline_repro(
     missing = _missing_ids(identity)
 
     gate_env = dict(env)
+    if four_arm:
+        gate_env.setdefault(
+            "CATALYST_BASELINE_FOUR_ARM_RUN_ID",
+            f"baseline_repro_four_arm_{uuid.uuid4().hex[:12]}",
+        )
+    if user_smoke:
+        gate_env.setdefault(
+            "CATALYST_BASELINE_USER_SMOKE_RUN_ID",
+            f"baseline_repro_user_smoke_{uuid.uuid4().hex[:12]}",
+        )
     if four_arm and user_smoke:
         four_run_id = gate_env.get("CATALYST_BASELINE_FOUR_ARM_RUN_ID")
         smoke_run_id = gate_env.get("CATALYST_BASELINE_USER_SMOKE_RUN_ID")
