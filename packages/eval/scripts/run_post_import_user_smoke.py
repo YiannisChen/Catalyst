@@ -362,6 +362,19 @@ def main(argv: list[str] | None = None) -> int:
         "total_cost_usd": summary.total_cost_usd,
         "meta_path": str(summary.meta_path),
         "failure_paths": [{"name": r.name, "ok": r.ok, "provider_calls": r.provider_calls} for r in summary.failure_path_results],
+        "baseline_run_row": {
+            "run_id": summary.run_id,
+            "snapshot_id": resolved.snapshot_id,
+            "corpus_manifest_id": resolved.corpus_manifest_id,
+            "index_manifest_id": resolved.index_manifest_id,
+            "source_bundle_id": resolved.source_bundle_id,
+            "probe_report_id": resolved.probe_report_id,
+            "postbuild_readiness_id": resolved.postbuild_readiness_id,
+            "lancedb_table_name": resolved.active_table_name,
+            "embedding_model": resolved.model_name,
+            "embedding_dim": str(resolved.dimension),
+            "default_model": args.model_id,
+        },
     }, sort_keys=True))
     return 0
 

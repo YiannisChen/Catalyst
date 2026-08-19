@@ -278,6 +278,18 @@ def main(argv: list[str] | None = None) -> int:
         "embedding_mode": summary.embedding_mode,
         "meta_path": str(summary.meta_path),
         "token_written": summary.token_written,
+        "baseline_run_row": {
+            "run_id": summary.run_id,
+            "snapshot_id": identities.snapshot_id,
+            "corpus_manifest_id": identities.corpus_manifest_id,
+            "index_manifest_id": identities.index_manifest_id,
+            "source_bundle_id": identities.source_bundle_id,
+            "probe_report_id": identities.probe_report_id,
+            "postbuild_readiness_id": identities.postbuild_readiness_id,
+            "lancedb_table_name": identities.active_table_name,
+            "embedding_model": identities.model_name,
+            "embedding_dim": str(identities.dimension),
+        },
     }, sort_keys=True))
     return 0
 
