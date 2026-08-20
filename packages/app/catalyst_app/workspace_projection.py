@@ -235,9 +235,12 @@ def _build_evidence(
         key = (a.get("node", ""), a.get("artifact_type", ""))
         parsed[key] = payload
 
-    # Get cited IDs from judge_causes
+    # Get cited IDs from judge_causes. AMEND-7: the Validator node owns the
+    # post-filter judge_causes artifact; fall back to legacy Judge-owned rows.
     cited_ids: set[str] = set()
-    judge_causes = parsed.get(("judge", "judge_causes"), {})
+    judge_causes = parsed.get(("validator", "judge_causes"))
+    if judge_causes is None:
+        judge_causes = parsed.get(("judge", "judge_causes"), {})
     for cause in judge_causes.get("causes", []):
         for eid in cause.get("evidence_ids", []):
             cited_ids.add(eid)
@@ -323,8 +326,12 @@ def _build_result(
         key = (a.get("node", ""), a.get("artifact_type", ""))
         parsed[key] = payload
 
-    judge_causes = parsed.get(("judge", "judge_causes"), {})
-    judge_summary = parsed.get(("judge", "judge_summary"), {})
+    judge_causes = parsed.get(("validator", "judge_causes"))
+    if judge_causes is None:
+        judge_causes = parsed.get(("judge", "judge_causes"), {})
+    judge_summary = parsed.get(("validator", "judge_summary"))
+    if judge_summary is None:
+        judge_summary = parsed.get(("judge", "judge_summary"), {})
     validator = parsed.get(("validator", "validator_decision"), {})
 
     causes = []

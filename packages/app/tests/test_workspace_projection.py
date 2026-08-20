@@ -413,3 +413,59 @@ def test_fundamentals_no_future_leak(tmp_path):
     assert payload["metrics"].get("revenue") == "85777000000", \
         f"Expected Q3 revenue 85777000000, got {payload['metrics']}"
     assert payload["reference_date"] == "2025-06-28"
+
+
+# ── AMEND-7: public result cannot surface leaked failed-gate causal text ──────
+
+def test_workspace_result_uses_validator_projected_summary_and_causes():
+    """The public /workspace result must be built from post-filter
+    validator-owned judge_summary/judge_causes artifacts. Raw Judge causal text
+    (written before gate filtering) must never reach the public summary."""
+    from catalyst_app.workspace_projection import project_workspace
+
+    summary = {
+        "run_id": "ws-run-abstain",
+        "status": "ABSTAIN",
+        "ticker": "AAPL",
+        "trade_date": "2026-01-15",
+        "model_id": "model-default",
+        "started_at": "2026-01-15T14:30:00Z",
+        "ended_at": "2026-01-15T14:30:05Z",
+        "last_completed_node": "finalizer",
+        "predicted_next_node": None,
+    }
+    events = [
+        {"run_id": "ws-run-abstain", "trace_id": "t1", "event_seq": 3,
+         "node": "judge", "status_after": "ABSTAIN"},
+        {"run_id": "ws-run-abstain", "trace_id": "t1", "event_seq": 4,
+         "node": "validator", "status_after": "ABSTAIN"},
+        {"run_id": "ws-run-abstain", "trace_id": "t1", "event_seq": 5,
+         "node": "finalizer", "status_after": "ABSTAIN"},
+    ]
+    canonical = (
+        "Catalyst abstained for AAPL on 2026-01-15 because no drafted "
+        "hypothesis satisfied the required evidence gates. This may indicate the "
+        "price move was driven by factors outside our data coverage (private "
+        "information, market microstructure, or sources we do not ingest)."
+    )
+    artifacts = [
+        # Judge node persists only evidence/raw artifacts, never raw causal text.
+        {"run_id": "ws-run-abstain", "event_seq": 3, "node": "judge",
+         "artifact_type": "judge_evidence", "payload_json": json.dumps({"items": []})},
+        # Validator-owned post-filter artifacts.
+        {"run_id": "ws-run-abstain", "event_seq": 4, "node": "validator",
+         "artifact_type": "judge_causes", "payload_json": json.dumps({"causes": []})},
+        {"run_id": "ws-run-abstain", "event_seq": 4, "node": "validator",
+         "artifact_type": "judge_summary", "payload_json": json.dumps({"summary_md": canonical, "grounding_rate": 0.0})},
+        {"run_id": "ws-run-abstain", "event_seq": 4, "node": "validator",
+         "artifact_type": "validator_decision", "payload_json": json.dumps({"output_status": "ABSTAIN"})},
+    ]
+
+    projection = project_workspace(summary, events, artifacts)
+    result = projection["result"]
+
+    assert result is not None
+    assert result["output_status"] == "ABSTAIN"
+    assert result["causes"] == []
+    assert result["summary_md"] == canonical
+    assert "demand weakness" not in (result["summary_md"] or "")

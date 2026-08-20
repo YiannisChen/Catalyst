@@ -100,10 +100,14 @@ REQUIRED_NODE_ARTIFACT_MATRIX: dict[str, frozenset[tuple[str, str]]] = {
     }),
     "judge_validator": frozenset({
         ("judge", "judge_evidence"),
-        ("judge", "judge_causes"),
-        ("judge", "judge_summary"),
         ("judge", "raw_llm_response"),
         ("judge", "state_snapshot"),
+        # AMEND-7: judge_causes/judge_summary are owned by the Validator node
+        # so the persisted public artifacts are projected from the post-filter
+        # state. The same artifact types remain required on every
+        # judge/validator path; this is not a gate weakening.
+        ("validator", "judge_causes"),
+        ("validator", "judge_summary"),
         ("validator", "validator_decision"),
         ("validator", "raw_llm_response"),
         ("validator", "state_snapshot"),

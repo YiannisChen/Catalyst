@@ -245,3 +245,51 @@ def test_published_gate_results_pass_assurance_prerequisite_gates():
     artifacts = mock_run_artifacts(gate_results=gate_results, citations=["c1"])
     by_name = {check.check_name: check.status for check in run_all_checks("run-001", artifacts)}
     assert by_name["prerequisite_gates"] == "pass"
+
+
+# ── AMEND-7: failed-gate causal text never survives in the public summary ─────
+
+def test_all_filtered_drafts_use_canonical_non_causal_abstain_summary():
+    """When every draft fails prerequisite gates the public summary must be the
+    canonical non-causal ABSTAIN text, never the Judge's causal summary."""
+    state = _state()
+    state["hypothesis_drafts"] = [{
+        **state["hypothesis_drafts"][0],
+        "cause_label": "product_demand",
+        "transmission_mechanism": "Demand weakness after the guidance cut",
+    }]
+    state["summary_md"] = "AAPL dropped after [c1] demand weakness."
+
+    result = validator(state)
+
+    assert result["hypotheses"] == []
+    assert result["causes"] == []
+    assert result["output_status"] == OutputStatus.ABSTAIN
+    # The leaked causal assertion must be gone from the public summary.
+    assert "demand weakness" not in result["summary_md"]
+    assert "AAPL dropped after [c1]" not in result["summary_md"]
+    # The canonical ABSTAIN wording is present.
+    assert "abstain" in result["summary_md"].lower()
+
+
+def test_partial_filter_summary_mentions_only_surviving_hypotheses():
+    """When only some drafts pass, the public summary must be derived only
+    from the surviving hypotheses and must not mention discarded drafts."""
+    state = _state()
+    state["hypothesis_drafts"].append({
+        **state["hypothesis_drafts"][0],
+        "cause_label": "product_demand",
+        "transmission_mechanism": "Demand weakness after the guidance cut",
+    })
+    state["summary_md"] = "AAPL dropped after [c1] guidance weakness and demand weakness."
+
+    result = validator(state)
+
+    assert [h["cause_label"] for h in result["hypotheses"]] == ["earnings_guidance"]
+    assert result["output_status"] == OutputStatus.SUFFICIENT
+    # Discarded hypothesis text and its causal statement are absent.
+    assert "demand" not in result["summary_md"].lower()
+    assert "AAPL dropped after [c1] guidance weakness and demand weakness" not in result["summary_md"]
+    # The surviving hypothesis and its evidence are present.
+    assert "earnings_guidance" in result["summary_md"]
+    assert "c1" in result["summary_md"]
