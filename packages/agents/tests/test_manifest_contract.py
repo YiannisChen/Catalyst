@@ -1,8 +1,10 @@
-"""V1.1 RunManifest contract tests (M2-7).
+"""V1.1 RunManifest contract tests (M2-7, corrective).
 
 Agents-owned production run identity. It references DataRuntimeIdentity by
-ref/hash and must not duplicate an independently recomputed data identity
-(Final Migration TSD §14).
+ref/hash, never duplicates an independently recomputed data identity, enforces
+the production corrective bounds (1 round, 1 action), enforces the initial
+60-second run deadline, rejects zero/negative token/deadline/budget values,
+and uses a typed runtime configuration (Final Migration TSD §14–15).
 """
 from __future__ import annotations
 
@@ -12,7 +14,12 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from catalyst_agents.runtime.manifest import RunManifest
+from catalyst_agents.runtime.manifest import (
+    ContextBudgetPolicy,
+    ObservationPolicyConfig,
+    RunManifest,
+    RuntimeConfiguration,
+)
 from catalyst_data.canonical.temporal import TemporalIdentity
 from catalyst_data.trading_calendar import session_close_utc
 
@@ -31,6 +38,37 @@ def _temporal() -> TemporalIdentity:
         session_close_at=tuesday_close,
         information_window_start_at=monday_close,
         cutoff_at=tuesday_close,
+    )
+
+
+def _runtime_config() -> RuntimeConfiguration:
+    return RuntimeConfiguration(
+        observation_policy=ObservationPolicyConfig(
+            material_target_return_pct=2.0,
+            material_prior_return_pct=1.5,
+            quiet_target_return_pct=0.5,
+            flat_reference_return_pct=0.25,
+            aligned_residual_pct=1.0,
+            volume_elevated_ratio=1.5,
+            volume_extreme_ratio=3.0,
+            minimum_peer_count=3,
+            require_sector_and_peer_for_broad_sector=True,
+            scenario_policy_version="sp:v1",
+        ),
+        context_budget=ContextBudgetPolicy(
+            model_context_limit=128_000,
+            reserved_output_tokens=2_000,
+            reserved_system_instruction_tokens=1_000,
+            observation_tokens=300,
+            coverage_summary_tokens=200,
+            research_history_tokens=100,
+            inventory_tokens=500,
+            evidence_payload_tokens=60_000,
+            per_news_item_max_tokens=800,
+            per_sec_chunk_max_tokens=1_200,
+            lead_only_tokens=1_000,
+            safety_margin_tokens=2_000,
+        ),
     )
 
 
@@ -58,7 +96,7 @@ def _manifest(**overrides: Any) -> dict[str, Any]:
         "max_actions_per_batch": 1,
         "run_timeout_seconds": 60,
         "provider_capability_revision": "cap:v1",
-        "runtime_configuration": {"admission_slots": 4},
+        "runtime_configuration": _runtime_config(),
     }
     base.update(overrides)
     return base
@@ -94,11 +132,71 @@ def test_run_manifest_fields() -> None:
     assert manifest.temporal_identity.session_date == "2026-01-06"
 
 
-def test_run_manifest_production_freeze_defaults() -> None:
+def test_run_manifest_production_freeze_bounds_are_enforced() -> None:
+    assert RunManifest(**_manifest()).max_corrective_rounds == 1
+    assert RunManifest(**_manifest()).max_actions_per_batch == 1
+    assert RunManifest(**_manifest()).run_timeout_seconds == 60
+    with pytest.raises(ValidationError):
+        RunManifest(**_manifest(max_corrective_rounds=99))
+    with pytest.raises(ValidationError):
+        RunManifest(**_manifest(max_actions_per_batch=2))
+    with pytest.raises(ValidationError):
+        RunManifest(**_manifest(run_timeout_seconds=300))
+
+
+def test_run_manifest_rejects_zero_or_negative_deadline_budget_values() -> None:
+    with pytest.raises(ValidationError):
+        RunManifest(**_manifest(run_timeout_seconds=0))
+    with pytest.raises(ValidationError):
+        RunManifest(**_manifest(run_timeout_seconds=-60))
+    with pytest.raises(ValidationError):
+        RunManifest(**_manifest(context_token_budget=0))
+    with pytest.raises(ValidationError):
+        RunManifest(**_manifest(context_token_budget=-1))
+
+
+def test_run_manifest_uses_typed_runtime_configuration() -> None:
     manifest = RunManifest(**_manifest())
-    assert manifest.max_corrective_rounds == 1
-    assert manifest.max_actions_per_batch == 1
-    assert manifest.run_timeout_seconds == 60
+    assert isinstance(manifest.runtime_configuration, RuntimeConfiguration)
+    assert manifest.runtime_configuration.observation_policy.material_target_return_pct == 2.0
+    assert manifest.runtime_configuration.context_budget.model_context_limit == 128_000
+    with pytest.raises(ValidationError):
+        RunManifest(
+            **_manifest(
+                runtime_configuration={"admission_slots": 4}  # untyped dict rejected
+            )
+        )
+
+
+def test_typed_runtime_configuration_rejects_negative_policy_values() -> None:
+    with pytest.raises(ValidationError):
+        ObservationPolicyConfig(
+            material_target_return_pct=-1.0,
+            material_prior_return_pct=1.5,
+            quiet_target_return_pct=0.5,
+            flat_reference_return_pct=0.25,
+            aligned_residual_pct=1.0,
+            volume_elevated_ratio=1.5,
+            volume_extreme_ratio=3.0,
+            minimum_peer_count=3,
+            require_sector_and_peer_for_broad_sector=True,
+            scenario_policy_version="sp:v1",
+        )
+    with pytest.raises(ValidationError):
+        ContextBudgetPolicy(
+            model_context_limit=128_000,
+            reserved_output_tokens=2_000,
+            reserved_system_instruction_tokens=1_000,
+            observation_tokens=300,
+            coverage_summary_tokens=200,
+            research_history_tokens=100,
+            inventory_tokens=500,
+            evidence_payload_tokens=60_000,
+            per_news_item_max_tokens=800,
+            per_sec_chunk_max_tokens=1_200,
+            lead_only_tokens=1_000,
+            safety_margin_tokens=-5,
+        )
 
 
 def test_run_manifest_hashes_are_hex_strings() -> None:
