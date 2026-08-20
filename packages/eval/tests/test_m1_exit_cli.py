@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
@@ -9,6 +10,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
 
 SCRIPT = (
     Path(__file__).resolve().parents[3]
@@ -53,18 +60,30 @@ def _argv(tmp_path: Path) -> list[str]:
 
 def _bound_row(gate_kind: str, run_id: str, tmp_path: Path) -> dict:
     evidence = tmp_path / f"{gate_kind}-evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    meta = evidence / "meta.json"
+    meta.write_text(f"meta-{gate_kind}", encoding="utf-8")
+    token = evidence / "WAVE_TOKEN.txt"
+    token.write_text(
+        "FOUR_ARM_E2E_OK" if gate_kind == "four_arm" else "USER_SMOKE_OK",
+        encoding="utf-8",
+    )
+    t4_dir = tmp_path / "evidence" / "m1-t4"
+    t4_dir.mkdir(parents=True, exist_ok=True)
+    t4_meta = t4_dir / "meta.json"
+    t4_meta.write_text("t4-meta", encoding="utf-8")
     return {
         "gate_kind": gate_kind,
         "run_id": run_id,
         "evidence_ref": str(evidence),
-        "evidence_meta_ref": str(evidence / "meta.json"),
-        "evidence_meta_sha256": "1" * 64,
+        "evidence_meta_ref": str(meta),
+        "evidence_meta_sha256": _sha256_bytes(meta.read_bytes()),
         "success_token": (
             "FOUR_ARM_E2E_OK" if gate_kind == "four_arm" else "USER_SMOKE_OK"
         ),
-        "success_token_sha256": "2" * 64,
-        "t4_evidence_ref": str(tmp_path / "evidence" / "m1-t4"),
-        "t4_meta_sha256": "3" * 64,
+        "success_token_sha256": _sha256_bytes(token.read_bytes()),
+        "t4_evidence_ref": str(t4_dir),
+        "t4_meta_sha256": _sha256_bytes(t4_meta.read_bytes()),
         "promoted_env_recovered": False,
     }
 
@@ -92,7 +111,11 @@ def _install_success_seams(module, tmp_path, monkeypatch, *, result=None):
 
     def run_t4(args):
         calls.append("t4")
-        return Path(args.output_root) / args.t4_run_id
+        evidence_dir = Path(args.output_root) / args.t4_run_id
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        (evidence_dir / "meta.json").write_text("t4-meta", encoding="utf-8")
+        (evidence_dir / "case_pack.jsonl").write_text("", encoding="utf-8")
+        return evidence_dir
 
     monkeypatch.setattr(module, "_run_t4", run_t4)
     monkeypatch.setattr(
@@ -122,6 +145,19 @@ def _install_success_seams(module, tmp_path, monkeypatch, *, result=None):
         return target
 
     monkeypatch.setattr(module, "write_baseline_report", write_report)
+    # Stable provenance seams so the real publication recheck passes.
+    frozen_db = tmp_path / "frozen.db"
+    frozen_db.write_bytes(b"frozen-bytes")
+    monkeypatch.setattr(module, "APPROVED_FROZEN_DB_SHA256", _sha256_bytes(b"frozen-bytes"))
+    monkeypatch.setattr(module, "_git_head", lambda repo: "a" * 40)
+    monkeypatch.setattr(module, "_git_status_porcelain", lambda repo: "")
+    real_recheck = module._recheck_provenance
+
+    def recheck(args, rows, t4_evidence_dir):
+        calls.append("recheck")
+        return real_recheck(args, rows, t4_evidence_dir)
+
+    monkeypatch.setattr(module, "_recheck_provenance", recheck)
     return calls
 
 
@@ -134,7 +170,7 @@ def test_exit_cli_success_orders_t4_gates_and_single_report_write(
     rc = module.main(_argv(tmp_path))
     output = capsys.readouterr().out
     assert rc == 0
-    assert calls == ["preflight", "t4", "gates", "write"]
+    assert calls == ["preflight", "t4", "gates", "recheck", "write"]
     assert "never-print-this-secret" not in output
     assert json.loads(output)["ok"] is True
 
@@ -284,6 +320,11 @@ def test_exit_cli_binds_fresh_t4_case_pack_for_gates(tmp_path, monkeypatch):
         return target
 
     monkeypatch.setattr(module, "write_baseline_report", write_report)
+    # Stable provenance seams so the real publication recheck passes.
+    frozen_db = tmp_path / "frozen.db"
+    frozen_db.write_bytes(b"frozen-bytes")
+    monkeypatch.setattr(module, "APPROVED_FROZEN_DB_SHA256", _sha256_bytes(b"frozen-bytes"))
+    _stable_recheck_seams(module, monkeypatch)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "never-print-this-secret")
 
     rc = module.main(_argv(tmp_path))
@@ -293,3 +334,161 @@ def test_exit_cli_binds_fresh_t4_case_pack_for_gates(tmp_path, monkeypatch):
     assert gate_env["CATALYST_BASELINE_CASE_PACK"] == str(
         tmp_path / "evidence" / "m1-t4" / "case_pack.jsonl"
     )
+
+
+# ── AMEND-8: provenance recheck immediately before report publication ────────
+
+def _install_gate_seams(module, tmp_path, monkeypatch, *, result=None):
+    """Mock preflight + gate execution; leave the publication recheck real."""
+    calls: list[str] = []
+    monkeypatch.setattr(module, "_preflight_environment", lambda args, env: calls.append("preflight"))
+
+    def run_t4(args):
+        calls.append("t4")
+        evidence_dir = Path(args.output_root) / args.t4_run_id
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        (evidence_dir / "meta.json").write_text("t4-meta", encoding="utf-8")
+        (evidence_dir / "case_pack.jsonl").write_text("", encoding="utf-8")
+        return evidence_dir
+
+    monkeypatch.setattr(module, "_run_t4", run_t4)
+    monkeypatch.setattr(
+        module,
+        "run_baseline_repro",
+        lambda **kwargs: calls.append("gates") or (result or _result(tmp_path)),
+    )
+    monkeypatch.setattr(
+        module,
+        "_preview_report",
+        lambda result, generated_at, git_revision: {"runs": []},
+    )
+    write_seen: list[bool] = []
+
+    def write_report(report_dir, identity, runs, **kwargs):
+        write_seen.append(True)
+        target = Path(report_dir) / "v1_1_baseline_66666666.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("{}", encoding="utf-8")
+        return target
+
+    monkeypatch.setattr(module, "write_baseline_report", write_report)
+    frozen_db = tmp_path / "frozen.db"
+    frozen_db.write_bytes(b"frozen-bytes")
+    monkeypatch.setattr(module, "APPROVED_FROZEN_DB_SHA256", _sha256_bytes(b"frozen-bytes"))
+    return calls, write_seen
+
+
+def _stable_recheck_seams(module, monkeypatch):
+    monkeypatch.setattr(module, "_git_head", lambda repo: "a" * 40)
+    monkeypatch.setattr(module, "_git_status_porcelain", lambda repo: "")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "presence-only")
+
+
+def test_head_moved_between_preflight_and_publication_prevents_report(
+    tmp_path, monkeypatch
+):
+    """A HEAD change after the gates must prevent report creation."""
+    module = _load_script()
+    calls, write_seen = _install_gate_seams(module, tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "_git_head", lambda repo: "c" * 40)
+    monkeypatch.setattr(module, "_git_status_porcelain", lambda repo: "")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "presence-only")
+
+    rc = module.main(_argv(tmp_path))
+
+    assert rc == 2
+    assert write_seen == []
+    assert not (tmp_path / "reports").exists()
+
+
+def test_worktree_dirty_between_preflight_and_publication_prevents_report(
+    tmp_path, monkeypatch
+):
+    """A worktree that became dirty after the gates must prevent report creation."""
+    module = _load_script()
+    calls, write_seen = _install_gate_seams(module, tmp_path, monkeypatch)
+    _stable_recheck_seams(module, monkeypatch)
+    monkeypatch.setattr(module, "_git_status_porcelain", lambda repo: " M unexpected.py")
+
+    rc = module.main(_argv(tmp_path))
+
+    assert rc == 2
+    assert write_seen == []
+    assert not (tmp_path / "reports").exists()
+
+
+def test_frozen_db_sha_changed_between_preflight_and_publication_prevents_report(
+    tmp_path, monkeypatch
+):
+    """A frozen DB SHA change after the gates must prevent report creation."""
+    module = _load_script()
+    calls, write_seen = _install_gate_seams(module, tmp_path, monkeypatch)
+    _stable_recheck_seams(module, monkeypatch)
+    # Simulate the frozen DB being modified after the gates completed.
+    (tmp_path / "frozen.db").write_bytes(b"tampered-bytes")
+
+    rc = module.main(_argv(tmp_path))
+
+    assert rc == 2
+    assert write_seen == []
+    assert not (tmp_path / "reports").exists()
+
+
+def test_gate_evidence_change_after_gates_prevents_report(tmp_path, monkeypatch):
+    """Evidence that changed after the gates completed must prevent report creation."""
+    module = _load_script()
+    calls, write_seen = _install_gate_seams(module, tmp_path, monkeypatch)
+    _stable_recheck_seams(module, monkeypatch)
+
+    def run_gates(**kwargs):
+        calls.append("gates")
+        res = _result(tmp_path)
+        # Simulate the four-arm evidence meta file being swapped after the
+        # gates completed but before publication.
+        (tmp_path / "four-arm-evidence" / "meta.json").write_text("tampered", encoding="utf-8")
+        return res
+
+    monkeypatch.setattr(module, "run_baseline_repro", run_gates)
+
+    rc = module.main(_argv(tmp_path))
+
+    assert rc == 2
+    assert write_seen == []
+    assert not (tmp_path / "reports").exists()
+
+
+def test_gate_row_bound_to_different_t4_directory_prevents_report(
+    tmp_path, monkeypatch
+):
+    """Every gate row must point at this invocation's fresh T4 directory.
+
+    A self-consistent hash for some other T4 directory is not evidence that the
+    gate consumed the T4 run requested by this operator invocation.
+    """
+    module = _load_script()
+    calls, write_seen = _install_gate_seams(module, tmp_path, monkeypatch)
+    _stable_recheck_seams(module, monkeypatch)
+
+    def run_gates(**kwargs):
+        calls.append("gates")
+        res = _result(tmp_path)
+        other_t4 = tmp_path / "evidence" / "other-t4"
+        other_t4.mkdir(parents=True)
+        other_meta = other_t4 / "meta.json"
+        other_meta.write_text("other-t4-meta", encoding="utf-8")
+        rows = []
+        for row in res.runs:
+            rows.append({
+                **row,
+                "t4_evidence_ref": str(other_t4),
+                "t4_meta_sha256": _sha256_bytes(other_meta.read_bytes()),
+            })
+        return SimpleNamespace(**{**res.__dict__, "runs": tuple(rows)})
+
+    monkeypatch.setattr(module, "run_baseline_repro", run_gates)
+
+    rc = module.main(_argv(tmp_path))
+
+    assert rc == 2
+    assert write_seen == []
+    assert not (tmp_path / "reports").exists()

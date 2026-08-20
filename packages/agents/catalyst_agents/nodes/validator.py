@@ -14,7 +14,7 @@ from catalyst_agents.attribution.output_status import determine_status
 from catalyst_agents.runtime.assurance.checks import compute_source_flags
 from catalyst_agents.cost_tracker import track_cost
 from catalyst_agents.nodes.critic import M_THRESHOLD
-from catalyst_agents.nodes.judge import _parse_judge_response
+from catalyst_agents.nodes.judge import _compute_grounding_rate, _parse_judge_response
 from catalyst_agents.state import AttributionState, OutputStatus, Phase
 
 
@@ -51,6 +51,36 @@ def _status_from_state(state: AttributionState) -> OutputStatus:
     if decision.sufficiency == "partial":
         return OutputStatus.PARTIAL
     return OutputStatus.ABSTAIN
+
+
+def _canonical_abstain_summary(ticker: str, trade_date: str) -> str:
+    """Canonical non-causal ABSTAIN summary when no hypothesis is publishable.
+
+    Mirrors the repository's ``insufficient_handler`` convention: a
+    ticker/date-bound lead sentence plus the standard disclosure that the move
+    may be driven by factors outside local data coverage. Never asserts a cause.
+    """
+    return (
+        f"Catalyst abstained for {ticker} on {trade_date} because no drafted "
+        "hypothesis satisfied the required evidence gates. This may indicate the "
+        "price move was driven by factors outside our data coverage (private "
+        "information, market microstructure, or sources we do not ingest)."
+    )
+
+
+def _published_summary(ticker: str, trade_date: str, published: list[Hypothesis]) -> str:
+    """Deterministic public summary derived only from surviving hypotheses."""
+    lines = [f"Catalyst attributes {ticker}'s move on {trade_date} primarily to:"]
+    for hypothesis in published:
+        citations = " ".join(
+            f"[{evidence_id}]" for evidence_id in hypothesis.supporting_evidence_ids
+        )
+        citation_suffix = f" {citations}" if citations else ""
+        lines.append(
+            f"- {hypothesis.cause_label}: "
+            f"{hypothesis.transmission_mechanism}{citation_suffix}"
+        )
+    return "\n".join(lines)
 
 
 def _evidence_lookup(state: AttributionState) -> dict[str, dict]:
@@ -303,6 +333,15 @@ def validator(state: AttributionState, *, llm: Any = None, cutoff_policy: Any = 
         # whose critic category is incompatible with its support (or that
         # otherwise fails prerequisite gates) is dropped here.
         published = [h for h in hypotheses if h.prerequisite_gate_passed]
+        # AMEND-7: the public summary must never assert a discarded draft.
+        # Rebuild it deterministically whenever any draft was filtered: the
+        # canonical non-causal ABSTAIN text when nothing survives, otherwise a
+        # summary derived only from the surviving hypotheses. The raw Judge
+        # summary is kept only when every draft is published.
+        if not published:
+            summary_md = _canonical_abstain_summary(state["ticker"], state["trade_date"])
+        elif len(published) < len(hypotheses):
+            summary_md = _published_summary(state["ticker"], state["trade_date"], published)
         status = determine_status(
             published,
             cutoff_violations=violations.count("cutoff_violation"),
@@ -311,13 +350,24 @@ def validator(state: AttributionState, *, llm: Any = None, cutoff_policy: Any = 
             context_quality_ok=bool(state.get("context_artifact")),
             error_occurred=bool(state.get("error_type") == "system_error"),
         )
+        published_causes = [
+            {
+                "text": h.transmission_mechanism,
+                "category": h.cause_label,
+                "evidence_ids": list(h.supporting_evidence_ids),
+                "direction": h.direction,
+            }
+            for h in published
+        ]
+        grounding_rate = _compute_grounding_rate(
+            published_causes,
+            set(_critic_lookup(state)),
+        )
         return {
             "hypotheses": [h.model_dump(mode="json") for h in published],
-            "causes": [
-                {"text": h.transmission_mechanism, "category": h.cause_label, "evidence_ids": list(h.supporting_evidence_ids), "direction": h.direction}
-                for h in published
-            ],
+            "causes": published_causes,
             "summary_md": summary_md,
+            "grounding_rate": grounding_rate,
             "output_status": status,
             "validation_error": violations[0] if violations else None,
             "validator_attempts": validator_attempts,

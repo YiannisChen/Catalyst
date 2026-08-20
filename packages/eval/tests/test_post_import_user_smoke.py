@@ -583,11 +583,13 @@ class FakeGraph:
             _art("critic", "raw_llm_response", {"text": "critic raw response"})
             _art("critic", "state_snapshot", {"state": {}})
             if not abstain:
-                _art("judge", "judge_causes", {"causes": causes})
                 _art("judge", "judge_evidence", {"items": []})
-                _art("judge", "judge_summary", {"summary": ""})
                 _art("judge", "raw_llm_response", {"text": "judge raw"})
                 _art("judge", "state_snapshot", {"state": {}})
+                # AMEND-7: judge_causes/judge_summary are validator-owned so the
+                # persisted public artifacts reflect the post-filter state.
+                _art("validator", "judge_causes", {"causes": causes})
+                _art("validator", "judge_summary", {"summary": ""})
                 _art("validator", "validator_decision", {"decision": "pass"})
                 _art("validator", "raw_llm_response", {"text": "validator raw"})
                 _art("validator", "state_snapshot", {"state": {}})
@@ -1531,6 +1533,11 @@ def test_required_node_artifact_matrix_covers_paths():
     assert ("miner", "retrieved_chunks") in base
     assert ("judge", "judge_evidence") in base
     assert ("validator", "validator_decision") in base
+    # AMEND-7: judge_causes/judge_summary are required on the validator node.
+    assert ("validator", "judge_causes") in base
+    assert ("validator", "judge_summary") in base
+    assert ("judge", "judge_causes") not in base
+    assert ("judge", "judge_summary") not in base
     abstain = required_node_artifact_pairs(output_status="ABSTAIN", entered_judge_validator=False)
     assert ("insufficient_handler", "state_snapshot") in abstain
     assert ("judge", "judge_evidence") not in abstain

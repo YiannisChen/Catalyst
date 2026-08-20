@@ -12,8 +12,12 @@ _NODE_ARTIFACT_TYPES: dict[str, list[str]] = {
     "critic": ["graded_evidence", "all_graded_chunks", "critic_decision", "raw_llm_response", "state_snapshot"],
     "decision_router": ["state_snapshot"],
     "expand_macro": ["state_snapshot"],
-    "judge": ["judge_causes", "judge_summary", "judge_evidence", "raw_llm_response", "state_snapshot"],
-    "validator": ["validator_decision", "raw_llm_response", "state_snapshot"],
+    # AMEND-7: judge_causes/judge_summary are projected by the Validator node
+    # from the post-filter state. The Judge node runs before prerequisite gates,
+    # so persisting its raw causal summary here would leak failed-gate
+    # assertions into the public/persisted judge_summary.
+    "judge": ["judge_evidence", "raw_llm_response", "state_snapshot"],
+    "validator": ["judge_causes", "judge_summary", "validator_decision", "raw_llm_response", "state_snapshot"],
     "finalizer": ["state_snapshot"],
     "insufficient_handler": ["state_snapshot"],
     "system_error_handler": ["error_snapshot"],

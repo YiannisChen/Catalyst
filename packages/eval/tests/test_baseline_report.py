@@ -345,3 +345,87 @@ def test_existing_different_report_raises_conflict_unchanged(tmp_path, monkeypat
     with pytest.raises(BaselineReportConflictError):
         write_baseline_report(report_dir, identity, [other_run], generated_at=FIXED_GENERATED_AT)
     assert first.read_bytes() == before
+
+
+# ── AMEND-8: expected git revision guard on the sealed writer ─────────────────
+
+def test_write_baseline_report_rejects_expected_git_revision_mismatch(
+    tmp_path, monkeypatch
+):
+    """The sealed writer must refuse to publish when the live HEAD no longer
+    matches the expected execution revision, and must create no file."""
+    from catalyst_eval.baseline import report as report_module
+
+    monkeypatch.setattr(report_module, "_git_head", lambda root: "a" * 40)
+    identity = _full_identity(tmp_path, monkeypatch)
+    report_dir = tmp_path / "reports"
+
+    with pytest.raises(ValueError, match="expected"):
+        write_baseline_report(
+            report_dir,
+            identity,
+            [],
+            expected_git_revision="b" * 40,
+        )
+    assert not report_dir.exists() or not any(report_dir.iterdir())
+
+
+def test_write_baseline_report_accepts_matching_expected_git_revision(
+    tmp_path, monkeypatch
+):
+    """When the live HEAD matches the expected execution revision the sealed
+    writer publishes normally."""
+    from catalyst_eval.baseline import report as report_module
+
+    monkeypatch.setattr(report_module, "_git_head", lambda root: "a" * 40)
+    identity = _full_identity(tmp_path, monkeypatch)
+    report_dir = tmp_path / "reports"
+
+    path = write_baseline_report(
+        report_dir,
+        identity,
+        [],
+        expected_git_revision="a" * 40,
+    )
+    assert path.exists()
+
+
+def test_write_baseline_report_supports_explicit_corrective_seal_name(
+    tmp_path, monkeypatch
+):
+    """The supplemental corrective-seal report uses the documented filename
+    stem and never collides with the original sealed report."""
+    from catalyst_eval.baseline import report as report_module
+
+    monkeypatch.setattr(report_module, "_git_head", lambda root: "a" * 40)
+    identity = _full_identity(tmp_path, monkeypatch)
+    report_dir = tmp_path / "reports"
+
+    path = write_baseline_report(
+        report_dir,
+        identity,
+        [],
+        expected_git_revision="a" * 40,
+        report_name="v1_1_baseline_621375bc_corrective_seal",
+    )
+
+    assert path.name == "v1_1_baseline_621375bc_corrective_seal.json"
+    assert not (report_dir / "v1_1_baseline_621375bc.json").exists()
+
+
+def test_write_baseline_report_rejects_path_bearing_report_name(
+    tmp_path, monkeypatch
+):
+    """report_name must be a bare stem; path separators are rejected."""
+    from catalyst_eval.baseline import report as report_module
+
+    monkeypatch.setattr(report_module, "_git_head", lambda root: "a" * 40)
+    identity = _full_identity(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="report_name"):
+        write_baseline_report(
+            tmp_path / "reports",
+            identity,
+            [],
+            report_name="sub/dir/report",
+        )
