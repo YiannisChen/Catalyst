@@ -9,6 +9,8 @@ fails integrity validation when immutable metadata conflicts.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 from datetime import datetime
@@ -21,7 +23,7 @@ from catalyst_data.canonical.identity import DataRuntimeIdentity
 from catalyst_data.canonical.model import AssetType, ContentState, SourceClass
 from catalyst_data.canonical.temporal import TemporalIdentity
 
-from catalyst_agents.retrieval.task import EvidenceNeed, ResearchTaskResult
+from catalyst_agents.retrieval.task import EvidenceNeed
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -67,6 +69,56 @@ class RetrievalContribution(BaseModel):
         if value is not None and value < 1:
             raise ValueError("ranks must be positive integers")
         return value
+
+
+class ResearchTaskResultStatus(str, Enum):
+    SUCCEEDED = "SUCCEEDED"
+    PARTIAL = "PARTIAL"
+    DEGRADED = "DEGRADED"
+    FAILED_CAPABILITY = "FAILED_CAPABILITY"
+    FAILED_INTEGRITY = "FAILED_INTEGRITY"
+
+
+class ResearchTaskResult(BaseModel):
+    """Bounded task execution result (Phase 3 §8).
+
+    Carries per-task evidence/fact payloads and the runtime identity under
+    which the task ran; values are typed and never fabricated.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    task_id: str
+    task_fingerprint: str
+    priority: int
+    status: ResearchTaskResultStatus
+    started_at: datetime
+    ended_at: datetime
+    latency_ms: int
+    deadline_exhausted: bool
+    evidence_items: tuple[EvidenceStateItem, ...] = ()
+    structured_facts: tuple[EvidenceStateItem, ...] = ()
+    mode_requested: str
+    mode_served: str | None = None
+    degradation_reasons: tuple[str, ...] = ()
+    error_code: str | None = None
+    data_runtime_identity: DataRuntimeIdentity
+
+    @model_validator(mode="after")
+    def _task_timing_and_identity(self) -> "ResearchTaskResult":
+        if self.priority < 0:
+            raise ValueError("priority must be non-negative")
+        if self.started_at > self.ended_at:
+            raise ValueError("started_at must not exceed ended_at")
+        if self.latency_ms < 0:
+            raise ValueError("latency_ms must be non-negative")
+        for item in self.evidence_items:
+            if item.chunk_id is None:
+                raise ValueError("evidence_items must be text chunk items")
+        for item in self.structured_facts:
+            if item.chunk_id is not None:
+                raise ValueError("structured_facts must be fact items")
+        return self
 
 
 class RetrievalDegradation(BaseModel):
@@ -205,6 +257,7 @@ class EvidenceState(BaseModel):
         Same evidence id merges contributions: contributing task ids and
         retrieval contributions are unioned and the first-seen round is
         preserved. Conflicting immutable metadata raises an integrity failure.
+        The returned state carries a recomputed canonical state_hash.
         """
         for index, existing in enumerate(self.evidence_items):
             if existing.evidence_id != item.evidence_id:
@@ -238,18 +291,24 @@ class EvidenceState(BaseModel):
             )
             items = list(self.evidence_items)
             items[index] = merged
-            return self.model_copy(
-                update={
-                    "evidence_items": tuple(items),
-                    "state_hash": self.state_hash,
-                }
+            candidate = self.model_copy(update={"evidence_items": tuple(items)})
+            return candidate.model_copy(
+                update={"state_hash": compute_state_hash(candidate)}
             )
-        return self.model_copy(
-            update={
-                "evidence_items": self.evidence_items + (item,),
-                "state_hash": self.state_hash,
-            }
+        candidate = self.model_copy(
+            update={"evidence_items": self.evidence_items + (item,)}
         )
+        return candidate.model_copy(update={"state_hash": compute_state_hash(candidate)})
+
+
+def compute_state_hash(state: EvidenceState) -> str:
+    """Canonical SHA-256 over the state contents excluding state_hash.
+
+    Deterministic canonical JSON: sorted keys, compact separators, UTF-8.
+    """
+    payload = state.model_dump(mode="json", exclude={"state_hash"})
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 __all__ = [
@@ -258,6 +317,9 @@ __all__ = [
     "EvidenceStateItem",
     "IndependenceStatus",
     "MaterialCapability",
+    "ResearchTaskResult",
+    "ResearchTaskResultStatus",
     "RetrievalContribution",
     "RetrievalDegradation",
+    "compute_state_hash",
 ]

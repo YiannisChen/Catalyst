@@ -71,7 +71,7 @@ class CoverageSummary(BaseModel):
     unknown_independence_asset_count: int
     known_duplicate_or_syndicated_asset_count: int
     content_state_counts: dict[str, int]
-    parse_degraded_count: int
+    parse_degraded_item_count: int
     retrieval_degradations: tuple[RetrievalDegradation, ...] = ()
     data_coverage_gaps: tuple[DataCoverageGap, ...] = ()
     capability_gaps: tuple[CapabilityGap, ...] = ()
@@ -107,11 +107,14 @@ class CoverageSummary(BaseModel):
             "eligible_reported_news_group_count",
             "unknown_independence_asset_count",
             "known_duplicate_or_syndicated_asset_count",
-            "parse_degraded_count",
+            "parse_degraded_item_count",
         ]
         for field in count_fields:
             if getattr(self, field) < 0:
                 raise ValueError(f"{field} must be non-negative")
+        group_ids = [group.independence_group_id for group in self.independence_groups]
+        if group_ids != sorted(group_ids):
+            raise ValueError("independence_groups must be sorted by group id")
         return self
 
 

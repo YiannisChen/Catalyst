@@ -18,7 +18,45 @@ from catalyst_agents.attribution.coverage import (
     IndependenceGroupSummary,
 )
 from catalyst_agents.attribution.evidence_state import RetrievalDegradation
-from catalyst_agents.attribution.move_profile import SessionAlignment
+from catalyst_agents.attribution.move_profile import (
+    PeerSummary,
+    SessionAlignment,
+    VolumeAbnormality,
+)
+
+
+def _peer_summary(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "schema_version": "1.0",
+        "expected_peer_count": 2,
+        "available_peer_count": 2,
+        "peer_returns": (
+            {"ticker": "MSFT", "return_pct": 0.5},
+            {"ticker": "NVDA", "return_pct": 1.25},
+        ),
+        "median_return_pct": 0.875,
+        "target_minus_median_pct": 2.325,
+        "coverage_state": "AVAILABLE",
+        "reason_codes": (),
+    }
+    base.update(overrides)
+    return base
+
+
+def _volume(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "schema_version": "1.0",
+        "target_volume": 9_500_000,
+        "baseline_median_volume": 5_000_000,
+        "ratio": 1.9,
+        "expected_session_count": 20,
+        "valid_session_count": 20,
+        "band": "ELEVATED",
+        "availability": "AVAILABLE",
+        "reason_codes": (),
+    }
+    base.update(overrides)
+    return base
 
 
 def _coverage(**overrides: Any) -> dict[str, Any]:
@@ -43,7 +81,7 @@ def _coverage(**overrides: Any) -> dict[str, Any]:
             "EMPTY": 0,
             "FAILED": 5,
         },
-        "parse_degraded_count": 3,
+        "parse_degraded_item_count": 3,
         "retrieval_degradations": (),
         "data_coverage_gaps": (),
         "capability_gaps": (),
@@ -84,7 +122,7 @@ def test_coverage_summary_uses_exactly_final_tsd_6_4_observable_names() -> None:
         "unknown_independence_asset_count",
         "known_duplicate_or_syndicated_asset_count",
         "content_state_counts",
-        "parse_degraded_count",
+        "parse_degraded_item_count",
         "retrieval_degradations",
         "data_coverage_gaps",
         "capability_gaps",
@@ -126,7 +164,7 @@ def test_all_counts_are_non_negative() -> None:
     with pytest.raises(ValidationError):
         CoverageSummary(**_coverage(eligible_item_count=-1))
     with pytest.raises(ValidationError):
-        CoverageSummary(**_coverage(parse_degraded_count=-3))
+        CoverageSummary(**_coverage(parse_degraded_item_count=-3))
     with pytest.raises(ValidationError):
         CoverageSummary(**_coverage(eligible_reported_news_group_count=-2))
 
@@ -186,6 +224,35 @@ def test_independence_group_summary_is_typed() -> None:
             member_asset_ids=(),
             representative_asset_id="asset:1",
         )
+
+
+def test_independence_groups_must_be_sorted() -> None:
+    from catalyst_agents.attribution.coverage import IndependenceGroupSummary
+
+    with pytest.raises(ValidationError):
+        CoverageSummary(
+            **_coverage(
+                independence_groups=(
+                    IndependenceGroupSummary(
+                        independence_group_id="syndication:g2",
+                        member_asset_ids=("asset:3",),
+                    ),
+                    IndependenceGroupSummary(
+                        independence_group_id="syndication:g1",
+                        member_asset_ids=("asset:1",),
+                    ),
+                )
+            )
+        )
+
+
+def test_peer_and_volume_values_reject_nan_inf_and_negative_ratio() -> None:
+    with pytest.raises(ValidationError):
+        PeerSummary(**_peer_summary(median_return_pct=float("nan")))
+    with pytest.raises(ValidationError):
+        VolumeAbnormality(**_volume(ratio=float("inf")))
+    with pytest.raises(ValidationError):
+        VolumeAbnormality(**_volume(ratio=-1.0))
 
 
 def test_alignments_are_typed_session_alignment_and_scheduled_macro_is_nullable() -> None:

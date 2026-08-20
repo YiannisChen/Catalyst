@@ -95,39 +95,6 @@ class ResearchTask(BaseModel):
         return self
 
 
-class ResearchTaskResultStatus(str, Enum):
-    SUCCEEDED = "SUCCEEDED"
-    PARTIAL = "PARTIAL"
-    DEGRADED = "DEGRADED"
-    FAILED_CAPABILITY = "FAILED_CAPABILITY"
-    FAILED_INTEGRITY = "FAILED_INTEGRITY"
-
-
-class ResearchTaskResult(BaseModel):
-    """Bounded task execution result (Phase 3 §8).
-
-    M2 defines the typed result record; evidence/fact payloads are referenced
-    by ID at the contract spine and materialized by the M4 executor.
-    """
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    task_id: str
-    task_fingerprint: str
-    priority: int
-    status: ResearchTaskResultStatus
-    started_at: datetime
-    ended_at: datetime
-    latency_ms: int
-    deadline_exhausted: bool
-    evidence_item_ids: tuple[str, ...] = ()
-    structured_fact_ids: tuple[str, ...] = ()
-    mode_requested: str
-    mode_served: str | None = None
-    degradation_reasons: tuple[str, ...] = ()
-    error_code: str | None = None
-
-
 _RETRIEVAL_STRATEGY_MAPPING: dict[EvidenceNeed, RetrievalStrategy] = {
     EvidenceNeed.COMPANY_PRIMARY: RetrievalStrategy.HYBRID_TEXT,
     EvidenceNeed.COMPANY_NEWS: RetrievalStrategy.HYBRID_TEXT,
@@ -147,8 +114,6 @@ def retrieval_strategy_for(evidence_need: EvidenceNeed) -> RetrievalStrategy:
 __all__ = [
     "EvidenceNeed",
     "ResearchTask",
-    "ResearchTaskResult",
-    "ResearchTaskResultStatus",
     "RetrievalStrategy",
     "ScenarioType",
     "TimeScope",

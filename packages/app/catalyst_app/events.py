@@ -247,7 +247,7 @@ class PublicRunEvent(BaseModel):
     sequence: int = Field(ge=1)
     event_type: RunEventType
     emitted_at: datetime
-    stage: str
+    stage: str | None = None
     payload: RunEventPayload
     artifact_refs: tuple[ArtifactRef, ...] = ()
 

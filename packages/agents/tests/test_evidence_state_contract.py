@@ -21,10 +21,10 @@ from catalyst_data.trading_calendar import session_close_utc
 from catalyst_agents.attribution.evidence_state import (
     EvidenceState,
     EvidenceStateItem,
+    ResearchTaskResult,
     RetrievalContribution,
+    compute_state_hash,
 )
-
-from catalyst_agents.retrieval.task import ResearchTaskResult
 
 
 def _utc(iso: str) -> datetime:
@@ -258,3 +258,65 @@ def test_evidence_state_is_immutable() -> None:
     state = EvidenceState(**_state())
     with pytest.raises(ValidationError):
         state.evidence_items = ()  # frozen
+
+
+def test_research_task_result_full_phase_3_contract() -> None:
+    result = ResearchTaskResult(
+        task_id="task-1",
+        task_fingerprint="b" * 64,
+        priority=1,
+        status="SUCCEEDED",
+        started_at=_utc("2026-01-06T14:00:00Z"),
+        ended_at=_utc("2026-01-06T14:00:02Z"),
+        latency_ms=2000,
+        deadline_exhausted=False,
+        evidence_items=(EvidenceStateItem(**_item()),),
+        structured_facts=(),
+        mode_requested="hybrid",
+        mode_served="hybrid",
+        degradation_reasons=(),
+        error_code=None,
+        data_runtime_identity=_runtime(),
+    )
+    assert result.status == "SUCCEEDED"
+    assert result.data_runtime_identity.data_snapshot_id == "snapshot:7a004"
+    with pytest.raises(ValidationError):
+        ResearchTaskResult(
+            task_id="task-1",
+            task_fingerprint="b" * 64,
+            priority=1,
+            status="SUCCEEDED",
+            started_at=_utc("2026-01-06T14:00:00Z"),
+            ended_at=_utc("2026-01-06T13:59:59Z"),
+            latency_ms=2000,
+            deadline_exhausted=False,
+            mode_requested="hybrid",
+            data_runtime_identity=_runtime(),
+        )
+    with pytest.raises(ValidationError):
+        ResearchTaskResult(
+            task_id="task-1",
+            task_fingerprint="b" * 64,
+            priority=1,
+            status="SUCCEEDED",
+            started_at=_utc("2026-01-06T14:00:00Z"),
+            ended_at=_utc("2026-01-06T14:00:02Z"),
+            latency_ms=-1,
+            deadline_exhausted=False,
+            mode_requested="hybrid",
+            data_runtime_identity=_runtime(),
+        )
+
+
+def test_merged_state_hash_is_recomputed_canonically() -> None:
+    state = EvidenceState(**_state())
+    merged = state.upsert(
+        EvidenceStateItem(
+            **_item(
+                contributing_task_ids=("task-2",),
+                retrieval_contributions=(_contribution(task_id="task-2"),),
+            )
+        )
+    )
+    assert merged.state_hash == compute_state_hash(merged)
+    assert merged.state_hash != state.state_hash

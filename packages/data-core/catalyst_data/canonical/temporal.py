@@ -7,7 +7,7 @@ ordering semantics stay unambiguous (data-core TSD §7).
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 

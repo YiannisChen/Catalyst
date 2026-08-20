@@ -255,6 +255,19 @@ def test_sse_frame_uses_run_id_sequence_and_event_type() -> None:
     assert frame.endswith("\n\n")
 
 
+def test_stage_is_optional_per_phase_5_11_1() -> None:
+    event = PublicRunEvent(
+        schema_version="v1",
+        run_id="run:1",
+        sequence=1,
+        event_type="run.accepted",
+        emitted_at=_utc("2026-01-06T14:00:00Z"),
+        stage=None,
+        payload=RunAcceptedPayload(**_accepted_payload()),
+    )
+    assert event.stage is None
+
+
 def test_heartbeat_is_a_non_persisted_comment() -> None:
     assert HEARTBEAT_COMMENT.startswith(":")
     assert "event:" not in HEARTBEAT_COMMENT

@@ -84,6 +84,13 @@ class PeerSummary(BaseModel):
             raise ValueError("expected_peer_count must be non-negative")
         return value
 
+    @field_validator("median_return_pct", "target_minus_median_pct")
+    @classmethod
+    def _finite_returns(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("peer return fields must be finite")
+        return value
+
     @model_validator(mode="after")
     def _counts_and_order(self) -> "PeerSummary":
         if self.available_peer_count < 0 or self.available_peer_count > self.expected_peer_count:
@@ -113,6 +120,13 @@ class VolumeAbnormality(BaseModel):
     availability: AvailabilityState
     reason_codes: tuple[str, ...] = ()
 
+    @field_validator("target_volume", "baseline_median_volume", "ratio")
+    @classmethod
+    def _finite_values(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("volume fields must be finite")
+        return value
+
     @model_validator(mode="after")
     def _counts_and_unknown_semantics(self) -> "VolumeAbnormality":
         if self.expected_session_count < 0:
@@ -126,6 +140,8 @@ class VolumeAbnormality(BaseModel):
                 raise ValueError("unavailable volume must be band UNKNOWN, never NORMAL")
             if self.ratio is not None:
                 raise ValueError("unavailable volume must not fabricate a ratio")
+        if self.ratio is not None and self.ratio < 0:
+            raise ValueError("volume ratio must be non-negative")
         return self
 
 

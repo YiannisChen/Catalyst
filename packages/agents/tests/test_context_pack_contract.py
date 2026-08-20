@@ -125,7 +125,7 @@ def _coverage() -> CoverageSummary:
         unknown_independence_asset_count=0,
         known_duplicate_or_syndicated_asset_count=0,
         content_state_counts={"FULL_TEXT": 1},
-        parse_degraded_count=0,
+        parse_degraded_item_count=0,
         retrieval_degradations=(),
         data_coverage_gaps=(),
         capability_gaps=(),
