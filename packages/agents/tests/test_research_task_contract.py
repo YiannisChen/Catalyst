@@ -1,8 +1,8 @@
-"""V1.1 ResearchTask contract tests (M2-4).
+"""V1.1 ResearchTask contract tests (M2-4, corrective).
 
-EvidenceNeed/TimeScope and the frozen EvidenceNeed retrieval strategy mapping
-(Frozen §6.2). MARKET_STRUCTURE has no V1.1 backend and must never produce a
-retrieval action.
+Phase 3 TSD §7 ResearchTask contract and the frozen EvidenceNeed retrieval
+strategy mapping (Frozen §6.2). MARKET_STRUCTURE has no V1.1 backend and must
+never produce a retrieval action.
 """
 from __future__ import annotations
 
@@ -22,12 +22,20 @@ from catalyst_agents.retrieval.task import (
 
 def _task(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
-        "task_id": "task-1",
+        "schema_version": "1.0",
+        "task_id": "research:1:1:a1b2c3",
+        "round": 1,
+        "priority": 1,
+        "scenario": "COMPANY_SPECIFIC",
         "evidence_need": "COMPANY_NEWS",
         "time_scope": "SESSION_INFORMATION_WINDOW",
         "lookback_sessions": None,
+        "ticker_scope": ("AAPL",),
+        "source_classes": ("reported_news",),
+        "evidence_types": ("full_text",),
         "query_hints": ("AAPL guidance",),
         "retrieval_policy_id": "qp:v1",
+        "task_fingerprint": "b" * 64,
     }
     base.update(overrides)
     return base
@@ -53,8 +61,16 @@ def test_time_scope_enum_is_exactly_the_three_frozen_values() -> None:
     ]
 
 
-def test_research_task_is_strict_and_frozen() -> None:
+def test_research_task_full_phase_3_contract() -> None:
     task = ResearchTask(**_task())
+    assert task.schema_version == "1.0"
+    assert task.round == 1
+    assert task.priority == 1
+    assert task.scenario == "COMPANY_SPECIFIC"
+    assert task.ticker_scope == ("AAPL",)
+    assert task.source_classes == ("reported_news",)
+    assert task.evidence_types == ("full_text",)
+    assert task.task_fingerprint == "b" * 64
     assert task.evidence_need is EvidenceNeed.COMPANY_NEWS
     assert task.time_scope is TimeScope.SESSION_INFORMATION_WINDOW
     assert task.lookback_sessions is None
@@ -71,6 +87,13 @@ def test_research_task_rejects_unknown_evidence_need_and_time_scope() -> None:
         ResearchTask(**_task(time_scope="YESTERDAY"))
 
 
+def test_research_task_fingerprint_is_sha256_hex() -> None:
+    with pytest.raises(ValidationError):
+        ResearchTask(**_task(task_fingerprint="not-a-hash"))
+    with pytest.raises(ValidationError):
+        ResearchTask(**_task(task_fingerprint="Z" * 64))
+
+
 def test_lookback_sessions_requires_lookback_time_scope() -> None:
     with pytest.raises(ValidationError):
         ResearchTask(
@@ -83,6 +106,17 @@ def test_lookback_sessions_requires_lookback_time_scope() -> None:
         **_task(time_scope="LOOKBACK_SESSIONS", lookback_sessions=5)
     )
     assert task.lookback_sessions == 5
+
+
+def test_lookback_sessions_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        ResearchTask(
+            **_task(time_scope="LOOKBACK_SESSIONS", lookback_sessions=0)
+        )
+    with pytest.raises(ValidationError):
+        ResearchTask(
+            **_task(time_scope="LOOKBACK_SESSIONS", lookback_sessions=-3)
+        )
 
 
 def test_market_structure_strategy_is_no_backend_capability_gap() -> None:

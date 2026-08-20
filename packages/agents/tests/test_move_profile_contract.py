@@ -1,8 +1,8 @@
-"""V1.1 MoveProfile typed contract tests (M2-3).
+"""V1.1 MoveProfile typed contract tests (M2-3, corrective).
 
-Schemas only in M2; classification formulas land in M4 (Frozen §6.2,
-Final Migration TSD §6.2). Unknown/degraded fields stay explicit and are
-never inferred.
+Phase 3 TSD §4 exact shared enums and nested shapes; no invented percentile
+fields. Schemas only in M2; classification formulas land in M4. Unknown and
+degraded fields stay explicit and are never inferred.
 """
 from __future__ import annotations
 
@@ -12,26 +12,170 @@ import pytest
 from pydantic import ValidationError
 
 from catalyst_agents.attribution.move_profile import (
+    AlignmentBand,
+    AvailabilityState,
     CoverageFlag,
     DegradedField,
+    DirectionRelation,
     MoveProfile,
+    PeerReturn,
     PeerSummary,
     ScheduledMacroFlag,
     ScenarioPredicateInputs,
     SessionAlignment,
     VolumeAbnormality,
+    VolumeBand,
 )
 
 
 def _peer_summary(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
-        "median_return_pct": 1.25,
-        "pct_25_return_pct": -0.5,
-        "pct_75_return_pct": 2.0,
-        "coverage": "partial",
+        "schema_version": "1.0",
+        "expected_peer_count": 2,
+        "available_peer_count": 2,
+        "peer_returns": (
+            {"ticker": "MSFT", "return_pct": 0.5},
+            {"ticker": "NVDA", "return_pct": 1.25},
+        ),
+        "median_return_pct": 0.875,
+        "target_minus_median_pct": 2.325,
+        "coverage_state": "AVAILABLE",
+        "reason_codes": (),
     }
     base.update(overrides)
     return base
+
+
+def _volume(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "schema_version": "1.0",
+        "target_volume": 9_500_000,
+        "baseline_median_volume": 5_000_000,
+        "ratio": 1.9,
+        "expected_session_count": 20,
+        "valid_session_count": 20,
+        "band": "ELEVATED",
+        "availability": "AVAILABLE",
+        "reason_codes": (),
+    }
+    base.update(overrides)
+    return base
+
+
+def _alignment(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "schema_version": "1.0",
+        "reference_kind": "MARKET",
+        "target_return_pct": 3.2,
+        "reference_return_pct": 0.8,
+        "residual_return_pct": 2.4,
+        "direction_relation": "SAME_DIRECTION",
+        "band": "ALIGNED",
+        "availability": "AVAILABLE",
+        "reason_codes": (),
+    }
+    base.update(overrides)
+    return base
+
+
+def test_shared_enums_are_exact_phase_3_values() -> None:
+    assert [a.value for a in AvailabilityState] == ["AVAILABLE", "PARTIAL", "UNAVAILABLE"]
+    assert [b.value for b in AlignmentBand] == ["ALIGNED", "DIVERGENT", "UNKNOWN"]
+    assert [d.value for d in DirectionRelation] == [
+        "SAME_DIRECTION",
+        "OPPOSITE_DIRECTION",
+        "TARGET_FLAT",
+        "REFERENCE_FLAT",
+        "UNKNOWN",
+    ]
+    assert [v.value for v in VolumeBand] == ["NORMAL", "ELEVATED", "EXTREME", "UNKNOWN"]
+
+
+def test_peer_summary_carries_schema_counts_bounded_returns_and_reason_codes() -> None:
+    summary = PeerSummary(**_peer_summary())
+    assert summary.schema_version == "1.0"
+    assert summary.expected_peer_count == 2
+    assert summary.available_peer_count == 2
+    assert [p.ticker for p in summary.peer_returns] == ["MSFT", "NVDA"]
+    assert summary.median_return_pct == 0.875
+    assert summary.target_minus_median_pct == 2.325
+    assert summary.coverage_state == "AVAILABLE"
+    assert summary.reason_codes == ()
+
+
+def test_peer_summary_rejects_impossible_counts_and_unsorted_returns() -> None:
+    with pytest.raises(ValidationError):
+        PeerSummary(**_peer_summary(available_peer_count=3))  # > expected
+    with pytest.raises(ValidationError):
+        PeerSummary(**_peer_summary(expected_peer_count=-1))
+    with pytest.raises(ValidationError):
+        PeerSummary(
+            **_peer_summary(
+                peer_returns=(
+                    {"ticker": "NVDA", "return_pct": 1.25},
+                    {"ticker": "MSFT", "return_pct": 0.5},
+                )
+            )
+        )  # not sorted by ticker
+
+
+def test_peer_summary_rejects_invented_percentile_fields() -> None:
+    assert "pct_25_return_pct" not in PeerSummary.model_fields
+    assert "pct_75_return_pct" not in PeerSummary.model_fields
+    with pytest.raises(ValidationError):
+        PeerSummary(**_peer_summary(pct_25_return_pct=-0.5))
+
+
+def test_volume_abnormality_full_contract() -> None:
+    volume = VolumeAbnormality(**_volume())
+    assert volume.schema_version == "1.0"
+    assert volume.target_volume == 9_500_000
+    assert volume.baseline_median_volume == 5_000_000
+    assert volume.ratio == 1.9
+    assert volume.expected_session_count == 20
+    assert volume.valid_session_count == 20
+    assert volume.band == "ELEVATED"
+    assert volume.availability == "AVAILABLE"
+    for value in ("NORMAL", "ELEVATED", "EXTREME", "UNKNOWN"):
+        assert VolumeAbnormality(**_volume(band=value)).band == value
+    with pytest.raises(ValidationError):
+        VolumeAbnormality(**_volume(band="HIGH"))
+
+
+def test_volume_abnormality_never_becomes_normal_when_unavailable() -> None:
+    with pytest.raises(ValidationError):
+        VolumeAbnormality(**_volume(availability="UNAVAILABLE", band="NORMAL"))
+    unavailable = VolumeAbnormality(
+        **_volume(availability="UNAVAILABLE", band="UNKNOWN", ratio=None)
+    )
+    assert unavailable.ratio is None
+
+
+def test_session_alignment_full_contract() -> None:
+    alignment = SessionAlignment(**_alignment())
+    assert alignment.schema_version == "1.0"
+    assert alignment.reference_kind == "MARKET"
+    assert alignment.target_return_pct == 3.2
+    assert alignment.reference_return_pct == 0.8
+    assert alignment.residual_return_pct == 2.4
+    assert alignment.direction_relation == "SAME_DIRECTION"
+    assert alignment.band == "ALIGNED"
+    assert alignment.availability == "AVAILABLE"
+    for kind in ("MARKET", "SECTOR", "PEER_MEDIAN"):
+        assert SessionAlignment(**_alignment(reference_kind=kind)).reference_kind == kind
+    with pytest.raises(ValidationError):
+        SessionAlignment(**_alignment(reference_kind="INDEX"))
+
+
+def test_session_alignment_unavailable_is_explicitly_unknown() -> None:
+    with pytest.raises(ValidationError):
+        SessionAlignment(**_alignment(availability="UNAVAILABLE", band="ALIGNED"))
+    with pytest.raises(ValidationError):
+        SessionAlignment(
+            **_alignment(
+                availability="UNAVAILABLE", direction_relation="SAME_DIRECTION"
+            )
+        )
 
 
 def test_move_profile_serialized_fields_match_frozen_section_6_2() -> None:
@@ -44,11 +188,11 @@ def test_move_profile_serialized_fields_match_frozen_section_6_2() -> None:
         peer_summary=PeerSummary(**_peer_summary()),
         market_adjusted_return=2.4,
         sector_adjusted_return=1.3,
-        volume_abnormality=VolumeAbnormality(metric=2.1, band="ELEVATED"),
+        volume_abnormality=VolumeAbnormality(**_volume()),
         scheduled_macro_flags=(ScheduledMacroFlag(name="fomc"),),
-        market_comove=SessionAlignment(metric=0.6, band="ALIGNED"),
-        sector_comove=SessionAlignment(metric=0.3, band="PARTIAL"),
-        peer_comove=SessionAlignment(metric=0.1, band="UNKNOWN"),
+        market_comove=SessionAlignment(**_alignment()),
+        sector_comove=SessionAlignment(**_alignment(reference_kind="SECTOR")),
+        peer_comove=SessionAlignment(**_alignment(reference_kind="PEER_MEDIAN")),
         coverage_flags=("sector_proxy_unavailable",),
         degraded_fields=(DegradedField(field="gap_return", reason_code="open_unavailable"),),
     )
@@ -88,33 +232,9 @@ def test_unknown_fields_stay_none_with_explicit_degraded_fields() -> None:
     assert profile.volume_abnormality is None
     assert profile.market_comove is None
     assert profile.degraded_fields[0].field == "peer_summary"
-    # Nothing was inferred for unknown values.
     dumped = profile.model_dump()
     assert dumped["peer_summary"] is None
     assert dumped["volume_abnormality"] is None
-
-
-def test_peer_summary_coverage_is_closed_enum() -> None:
-    for value in ("full", "partial", "unknown"):
-        assert PeerSummary(**_peer_summary(coverage=value)).coverage == value
-    with pytest.raises(ValidationError):
-        PeerSummary(**_peer_summary(coverage="none"))
-
-
-def test_volume_abnormality_metric_and_band() -> None:
-    for value in ("NORMAL", "ELEVATED", "EXTREME", "UNKNOWN"):
-        assert VolumeAbnormality(metric=1.0, band=value).band == value
-    with pytest.raises(ValidationError):
-        VolumeAbnormality(metric=1.0, band="HIGH")
-    assert VolumeAbnormality(metric=None, band="UNKNOWN").metric is None
-
-
-def test_session_alignment_metric_and_band() -> None:
-    for value in ("ALIGNED", "PARTIAL", "UNALIGNED", "UNKNOWN"):
-        assert SessionAlignment(metric=0.5, band=value).band == value
-    with pytest.raises(ValidationError):
-        SessionAlignment(metric=0.5, band="CORRELATED")
-    assert SessionAlignment(metric=None, band="UNKNOWN").metric is None
 
 
 def test_scheduled_macro_flag_and_coverage_flag_are_typed() -> None:
@@ -124,6 +244,14 @@ def test_scheduled_macro_flag_and_coverage_flag_are_typed() -> None:
     profile = MoveProfile(coverage_flags=("macro_calendar_unavailable",))
     assert profile.coverage_flags == ("macro_calendar_unavailable",)
     assert CoverageFlag is str
+
+
+def test_peer_return_is_bounded_ticker_and_return_pair() -> None:
+    peer = PeerReturn(ticker="MSFT", return_pct=0.5)
+    assert peer.ticker == "MSFT"
+    assert peer.return_pct == 0.5
+    with pytest.raises(ValidationError):
+        PeerReturn(ticker="MSFT", return_pct=float("nan"))
 
 
 def test_scenario_predicate_inputs_are_typed_and_never_depend_on_news_or_evidence() -> None:
@@ -139,8 +267,6 @@ def test_scenario_predicate_inputs_are_typed_and_never_depend_on_news_or_evidenc
     assert inputs.target_return_pct == 3.2
     assert inputs.prior_session_return_pct == 1.1
     assert inputs.volume_band == "ELEVATED"
-    # The typed predicate surface contains no news/evidence dependency; a
-    # CONTINUATION classification must not consult news or evidence.
     field_names = set(ScenarioPredicateInputs.model_fields)
     assert field_names == {
         "target_return_pct",

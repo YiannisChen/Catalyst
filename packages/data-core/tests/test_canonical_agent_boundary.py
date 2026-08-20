@@ -80,40 +80,76 @@ def test_v1_retrieval_set_serializes_losslessly_across_packages() -> None:
     assert restored.data_runtime_identity == _runtime()
 
 
+def _state_item(hit: RetrievalHit, **overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "evidence_id": hit.evidence_id,
+        "canonical_asset_id": hit.canonical_asset_id,
+        "canonical_content_version_id": hit.content_version_id,
+        "corpus_document_id": hit.corpus_document_id,
+        "chunk_id": hit.chunk_id,
+        "section_key": None,
+        "chunk_ordinal": None,
+        "asset_type": "NEWS" if hit.chunk_id is not None else "STRUCTURED_CONTEXT",
+        "provider": hit.provider,
+        "publisher": hit.publisher,
+        "canonical_url": None,
+        "source_class": hit.source_class,
+        "evidence_role": "INDEPENDENT_REPORT"
+        if hit.source_class == "reported_news"
+        else "STRUCTURED_CONTEXT",
+        "eligible_at": hit.eligible_at,
+        "temporal_precision": "published_utc",
+        "content_state": hit.content_state,
+        "material_capability": "MATERIAL_CAPABLE",
+        "serving_status": "active",
+        "parse_quality": hit.parse_quality,
+        "independence_group_id": None,
+        "independence_status": "UNKNOWN",
+        "content_hash": None,
+        "text_ref": hit.evidence_id,
+        "excerpt_text": hit.excerpt,
+        "first_seen_round": 1,
+        "contributing_task_ids": ("task-1",),
+        "retrieval_contributions": (),
+    }
+    base.update(overrides)
+    return base
+
+
+def _state_for(hit: RetrievalHit) -> EvidenceState:
+    from catalyst_agents.attribution.evidence_state import EvidenceState
+
+    return EvidenceState(
+        schema_version="1.0",
+        run_id="run:1",
+        round=1,
+        temporal_identity=_temporal(),
+        data_runtime_identity=_runtime(),
+        research_policy_version="rp:v1",
+        task_results=(),
+        evidence_items=(EvidenceStateItem(**_state_item(hit)),),
+        structured_facts=(),
+        degradations=(),
+        capability_gaps=(),
+        state_hash="e" * 64,
+    )
+
+
 def test_agents_consumes_chunk_id_and_fact_id_unchanged() -> None:
     from catalyst_agents.attribution.evidence_state import (
-        EvidenceState,
         EvidenceStateItem,
     )
 
     hit = _text_hit()
-    state = EvidenceState().upsert(
-        EvidenceStateItem(
-            evidence_id=hit.evidence_id,
-            first_seen_round=1,
-            research_task_ids=("task-1",),
-            state="accepted",
-            canonical_asset_id=hit.canonical_asset_id,
-            content_version_id=hit.content_version_id,
-            chunk_id=hit.chunk_id,
-            fact_id=hit.fact_id,
-            content_state=hit.content_state,
-            source_class=hit.source_class,
-            independence_group=None,
-            dedup_cluster_id=hit.dedup_cluster_id,
-        )
-    )
-    item = state.items[0]
+    item = EvidenceStateItem(**_state_item(hit))
     assert item.chunk_id == hit.chunk_id
     assert item.evidence_id == hit.evidence_id
-    assert item.fact_id == hit.fact_id
+    assert item.fact_id is None  # structured property absent for text items
+    assert item.independence_status == "UNKNOWN"
 
 
 def test_structured_hit_fact_id_flows_to_agents_unchanged() -> None:
-    from catalyst_agents.attribution.evidence_state import (
-        EvidenceState,
-        EvidenceStateItem,
-    )
+    from catalyst_agents.attribution.evidence_state import EvidenceStateItem
 
     hit = RetrievalHit(
         evidence_id="fact:42",
@@ -136,21 +172,7 @@ def test_structured_hit_fact_id_flows_to_agents_unchanged() -> None:
         temporal_identity=_temporal(),
         data_runtime_identity=_runtime(),
     )
-    state = EvidenceState().upsert(
-        EvidenceStateItem(
-            evidence_id=hit.evidence_id,
-            first_seen_round=1,
-            research_task_ids=("task-1",),
-            state="accepted",
-            canonical_asset_id=hit.canonical_asset_id,
-            content_version_id=hit.content_version_id,
-            chunk_id=hit.chunk_id,
-            fact_id=hit.fact_id,
-            content_state=hit.content_state,
-            source_class=hit.source_class,
-            independence_group=None,
-            dedup_cluster_id=hit.dedup_cluster_id,
-        )
-    )
-    assert state.items[0].fact_id == "fact:42"
-    assert state.items[0].chunk_id is None
+    item = EvidenceStateItem(**_state_item(hit, independence_status="KNOWN_GROUP"))
+    assert item.evidence_id == "fact:42"
+    assert item.chunk_id is None
+    assert item.fact_id == "fact:42"  # structured identity: evidence_id == fact_id
