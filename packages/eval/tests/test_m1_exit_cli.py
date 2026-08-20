@@ -455,3 +455,40 @@ def test_gate_evidence_change_after_gates_prevents_report(tmp_path, monkeypatch)
     assert rc == 2
     assert write_seen == []
     assert not (tmp_path / "reports").exists()
+
+
+def test_gate_row_bound_to_different_t4_directory_prevents_report(
+    tmp_path, monkeypatch
+):
+    """Every gate row must point at this invocation's fresh T4 directory.
+
+    A self-consistent hash for some other T4 directory is not evidence that the
+    gate consumed the T4 run requested by this operator invocation.
+    """
+    module = _load_script()
+    calls, write_seen = _install_gate_seams(module, tmp_path, monkeypatch)
+    _stable_recheck_seams(module, monkeypatch)
+
+    def run_gates(**kwargs):
+        calls.append("gates")
+        res = _result(tmp_path)
+        other_t4 = tmp_path / "evidence" / "other-t4"
+        other_t4.mkdir(parents=True)
+        other_meta = other_t4 / "meta.json"
+        other_meta.write_text("other-t4-meta", encoding="utf-8")
+        rows = []
+        for row in res.runs:
+            rows.append({
+                **row,
+                "t4_evidence_ref": str(other_t4),
+                "t4_meta_sha256": _sha256_bytes(other_meta.read_bytes()),
+            })
+        return SimpleNamespace(**{**res.__dict__, "runs": tuple(rows)})
+
+    monkeypatch.setattr(module, "run_baseline_repro", run_gates)
+
+    rc = module.main(_argv(tmp_path))
+
+    assert rc == 2
+    assert write_seen == []
+    assert not (tmp_path / "reports").exists()

@@ -270,6 +270,8 @@ def test_all_filtered_drafts_use_canonical_non_causal_abstain_summary():
     assert "AAPL dropped after [c1]" not in result["summary_md"]
     # The canonical ABSTAIN wording is present.
     assert "abstain" in result["summary_md"].lower()
+    # The post-filter metric must not inherit the Judge's pre-filter value.
+    assert result["grounding_rate"] == 0.0
 
 
 def test_partial_filter_summary_mentions_only_surviving_hypotheses():
@@ -292,4 +294,6 @@ def test_partial_filter_summary_mentions_only_surviving_hypotheses():
     assert "AAPL dropped after [c1] guidance weakness and demand weakness" not in result["summary_md"]
     # The surviving hypothesis and its evidence are present.
     assert "earnings_guidance" in result["summary_md"]
-    assert "c1" in result["summary_md"]
+    assert "[c1]" in result["summary_md"]
+    # The post-filter metric is recomputed from the published cause set.
+    assert result["grounding_rate"] == 1.0

@@ -14,7 +14,7 @@ from catalyst_agents.attribution.output_status import determine_status
 from catalyst_agents.runtime.assurance.checks import compute_source_flags
 from catalyst_agents.cost_tracker import track_cost
 from catalyst_agents.nodes.critic import M_THRESHOLD
-from catalyst_agents.nodes.judge import _parse_judge_response
+from catalyst_agents.nodes.judge import _compute_grounding_rate, _parse_judge_response
 from catalyst_agents.state import AttributionState, OutputStatus, Phase
 
 
@@ -72,12 +72,13 @@ def _published_summary(ticker: str, trade_date: str, published: list[Hypothesis]
     """Deterministic public summary derived only from surviving hypotheses."""
     lines = [f"Catalyst attributes {ticker}'s move on {trade_date} primarily to:"]
     for hypothesis in published:
-        if hypothesis.supporting_evidence_ids:
-            evidence = ", ".join(hypothesis.supporting_evidence_ids)
-        else:
-            evidence = "no supporting evidence"
+        citations = " ".join(
+            f"[{evidence_id}]" for evidence_id in hypothesis.supporting_evidence_ids
+        )
+        citation_suffix = f" {citations}" if citations else ""
         lines.append(
-            f"- {hypothesis.cause_label}: {hypothesis.transmission_mechanism} (evidence: {evidence})"
+            f"- {hypothesis.cause_label}: "
+            f"{hypothesis.transmission_mechanism}{citation_suffix}"
         )
     return "\n".join(lines)
 
@@ -349,13 +350,24 @@ def validator(state: AttributionState, *, llm: Any = None, cutoff_policy: Any = 
             context_quality_ok=bool(state.get("context_artifact")),
             error_occurred=bool(state.get("error_type") == "system_error"),
         )
+        published_causes = [
+            {
+                "text": h.transmission_mechanism,
+                "category": h.cause_label,
+                "evidence_ids": list(h.supporting_evidence_ids),
+                "direction": h.direction,
+            }
+            for h in published
+        ]
+        grounding_rate = _compute_grounding_rate(
+            published_causes,
+            set(_critic_lookup(state)),
+        )
         return {
             "hypotheses": [h.model_dump(mode="json") for h in published],
-            "causes": [
-                {"text": h.transmission_mechanism, "category": h.cause_label, "evidence_ids": list(h.supporting_evidence_ids), "direction": h.direction}
-                for h in published
-            ],
+            "causes": published_causes,
             "summary_md": summary_md,
+            "grounding_rate": grounding_rate,
             "output_status": status,
             "validation_error": violations[0] if violations else None,
             "validator_attempts": validator_attempts,

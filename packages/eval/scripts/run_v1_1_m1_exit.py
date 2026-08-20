@@ -158,19 +158,45 @@ def _evidence_still_bound(
         "four_arm": args.four_arm_run_id,
         "user_smoke": args.user_smoke_run_id,
     }
+    expected_tokens = {
+        "four_arm": "FOUR_ARM_E2E_OK",
+        "user_smoke": "USER_SMOKE_OK",
+    }
+    if len(rows) != len(expected_run_ids) or {
+        row.get("gate_kind") for row in rows
+    } != set(expected_run_ids):
+        return False
+    expected_t4_dir = (Path(args.output_root) / args.t4_run_id).resolve()
     for row in rows:
-        if row.get("run_id") != expected_run_ids.get(row.get("gate_kind")):
+        gate_kind = row.get("gate_kind")
+        if row.get("run_id") != expected_run_ids.get(gate_kind):
             return False
+        evidence_dir = Path(row.get("evidence_ref") or "")
         meta_path = Path(row.get("evidence_meta_ref") or "")
-        if not meta_path.is_file() or _sha256_file(meta_path) != row.get("evidence_meta_sha256"):
+        if (
+            not evidence_dir.is_dir()
+            or not meta_path.is_file()
+            or meta_path.resolve().parent != evidence_dir.resolve()
+            or _sha256_file(meta_path) != row.get("evidence_meta_sha256")
+        ):
             return False
-        token_path = Path(row.get("evidence_ref") or "") / WAVE_TOKEN_FILENAME
-        if not token_path.is_file() or _sha256_file(token_path) != row.get("success_token_sha256"):
+        token_path = evidence_dir / WAVE_TOKEN_FILENAME
+        expected_token = expected_tokens.get(gate_kind)
+        if (
+            expected_token is None
+            or row.get("success_token") != expected_token
+            or not token_path.is_file()
+            or token_path.read_text(encoding="utf-8").strip() != expected_token
+            or _sha256_file(token_path) != row.get("success_token_sha256")
+        ):
             return False
-        t4_meta_path = Path(row.get("t4_evidence_ref") or "") / "meta.json"
+        row_t4_dir = Path(row.get("t4_evidence_ref") or "")
+        if not row_t4_dir.is_dir() or row_t4_dir.resolve() != expected_t4_dir:
+            return False
+        t4_meta_path = row_t4_dir / "meta.json"
         if not t4_meta_path.is_file() or _sha256_file(t4_meta_path) != row.get("t4_meta_sha256"):
             return False
-    if Path(t4_evidence_dir).resolve() != (Path(args.output_root) / args.t4_run_id).resolve():
+    if Path(t4_evidence_dir).resolve() != expected_t4_dir:
         return False
     return True
 
