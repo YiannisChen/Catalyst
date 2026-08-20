@@ -14,28 +14,48 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Final Migration TSD §4.2 singular ownership table (V1.1 classes only).
+# Includes the complete ownership set exercised by the M2 corrective pass:
+# data-core canonical/identity, agents semantic/run artifacts, app runtime
+# lifecycle/public event/DTO boundary, eval golden/manifest artifacts.
 V1_1_OWNERS: dict[str, str] = {
     "TemporalIdentity": "data-core",
     "CanonicalAsset": "data-core",
+    "CanonicalContentVersion": "data-core",
+    "CanonicalEvidenceChain": "data-core",
+    "TextEvidenceIdentity": "data-core",
+    "StructuredEvidenceIdentity": "data-core",
     "DataRuntimeIdentity": "data-core",
     "RetrievalHit": "data-core",
     "RetrievalResultSet": "data-core",
     "MoveProfile": "agents",
     "ResearchTask": "agents",
+    "ResearchTaskResult": "agents",
     "EvidenceState": "agents",
+    "EvidenceStateItem": "agents",
     "CoverageSummary": "agents",
     "EvidenceAnalystContextPack": "agents",
     "AnalystDecision": "agents",
+    "CandidateHypothesis": "agents",
     "EvidenceAssessment": "agents",
     "MissingEvidence": "agents",
+    "CorrectiveResearchAction": "agents",
     "CorrectiveResearchBatch": "agents",
     "ClaimPlan": "agents",
     "ValidatedClaimPlan": "agents",
     "WriterInput": "agents",
     "RunManifest": "agents",
+    "RunAssuranceRecord": "agents",
     "PublicRunEvent": "app",
+    "RunLifecycleStatus": "app",
+    "RunEventType": "app",
+    "RunDTO": "app",
+    "ArtifactRefDTO": "app",
     "GoldenCase": "eval",
+    "GoldenCaseLineage": "eval",
+    "EvidenceJudgmentV1": "eval",
     "EvalManifest": "eval",
+    "EvalOutcome": "eval",
+    "EligibleExperiment": "eval",
 }
 
 # Documented legacy BASELINE_ONLY definitions that share a V1.1 class name.
@@ -95,3 +115,50 @@ def test_no_duplicated_v1_1_artifact_owner() -> None:
                     "BASELINE_ONLY)"
                 )
         assert expected_owner in owners, f"{name} has no definition in {expected_owner}"
+
+
+def test_no_duplicate_v1_1_definition_within_owner_package() -> None:
+    """A V1.1 artifact may be defined in exactly one module of its owner
+    package; re-exports through __init__ are not class definitions.
+    Documented BASELINE_ONLY legacy definitions are excluded."""
+    definitions = _class_definitions()
+    for name, expected_owner in V1_1_OWNERS.items():
+        baseline = BASELINE_ONLY_DEFINITIONS.get(name, ())
+        paths = [
+            path
+            for path in definitions.get(name, {}).get(expected_owner, [])
+            if not any(path.endswith(bp) for bp in baseline)
+        ]
+        assert len(paths) == 1, (
+            f"{name} must be defined exactly once in {expected_owner}, found: {paths}"
+        )
+
+
+def test_runtime_lifecycle_and_dto_ownership_complete() -> None:
+    """The Final TSD §4.2 table includes app-owned runtime lifecycle, public
+    event envelope, and frontend projection DTOs."""
+    from catalyst_app.api_dto import (
+        ArtifactRefDTO,
+        RunDTO,
+        WorkbenchProjectionDTO,
+    )
+    from catalyst_app.events import PublicRunEvent, RunEventType
+    from catalyst_app.lifecycle import RunLifecycleStatus
+
+    assert RunLifecycleStatus.__module__ == "catalyst_app.lifecycle"
+    assert PublicRunEvent.__module__ == "catalyst_app.events"
+    assert RunEventType.__module__ == "catalyst_app.events"
+    assert RunDTO.__module__ == "catalyst_app.api_dto"
+    assert ArtifactRefDTO.__module__ == "catalyst_app.api_dto"
+    assert WorkbenchProjectionDTO.__module__ == "catalyst_app.api_dto"
+
+
+def test_baseline_only_definitions_remain_documented() -> None:
+    """Documented BASELINE_ONLY definitions stay explicit; the legacy live
+    retrieval/result.py contract is not a V1.1 owner."""
+    assert BASELINE_ONLY_DEFINITIONS["RetrievalResultSet"] == (
+        "catalyst_data/retrieval/result.py",
+    )
+    legacy_path = REPO_ROOT / "packages" / "data-core" / "catalyst_data" / "retrieval" / "result.py"
+    assert legacy_path.is_file()
+    assert "RetrievalResultSet" in legacy_path.read_text(encoding="utf-8")

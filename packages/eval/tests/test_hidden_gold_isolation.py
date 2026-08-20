@@ -59,3 +59,30 @@ def test_golden_case_fixture_directory_lives_under_eval() -> None:
     golden_set = REPO_ROOT / "packages" / "eval" / "golden_set"
     assert golden_set.is_dir(), "eval golden_set directory missing"
     assert golden_set.relative_to(REPO_ROOT).parts[1] == "eval"
+
+
+def test_production_source_never_names_golden_contracts() -> None:
+    """Production source cannot reference GoldenCase/EvalManifest identifiers;
+    gold data lives under eval only."""
+    hits: list[str] = []
+    for root in _PRODUCTION_SOURCE_ROOTS:
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            for marker in ("GoldenCase", "EvalManifest", "golden_set"):
+                if marker in text:
+                    hits.append(
+                        f"{path.relative_to(REPO_ROOT)} contains {marker!r}"
+                    )
+    assert hits == [], f"production source names golden contracts: {hits}"
+
+
+def test_production_fixtures_never_reference_golden_case_identifiers() -> None:
+    hits: list[str] = []
+    for root in _PRODUCTION_FIXTURE_ROOTS:
+        if not root.is_dir():
+            continue
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8")
+            if "GoldenCase" in text or "EvalManifest" in text:
+                hits.append(str(path.relative_to(REPO_ROOT)))
+    assert hits == [], f"production fixtures reference golden identifiers: {hits}"
