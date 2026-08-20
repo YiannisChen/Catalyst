@@ -12,6 +12,7 @@ from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from catalyst_agents.retrieval.corrective import GapReasonCode
 from catalyst_agents.retrieval.task import EvidenceNeed, TimeScope
 
 
@@ -161,10 +162,6 @@ class AnalystDecision(BaseModel):
                 )
         return self
 
-
-# Imported at the bottom to avoid a circular import: GapReasonCode is defined
-# in the corrective module (agents-owned ontology shared by both contracts).
-from catalyst_agents.retrieval.corrective import GapReasonCode  # noqa: E402
 
 __all__ = [
     "AnalystDecision",
