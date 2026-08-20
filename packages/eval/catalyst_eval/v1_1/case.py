@@ -1,16 +1,19 @@
-"""V1.1 GoldenCase contract (M2-10).
+"""V1.1 GoldenCase contract (M2-10, corrective).
 
-Eval-owned human truth (eval TSD §6; Frozen §7.2). Value spaces are mirrored
-with eval-local Literal aliases so eval does not add a reverse production
-dependency merely to reuse agents/data-core classes. GoldenCase lives in eval
-only and never enters production packages, prompts, RunManifest, or DTOs.
+Eval-owned human truth (eval TSD §6; Frozen §7.2). Judgments preserve
+canonical asset + content/chunk/fact + evidence-group identity; materiality
+and temporal eligibility stay separate; typed human rationale/lineage fields
+are retained. Value spaces are mirrored with eval-local Literal aliases so
+eval does not add a reverse production dependency merely to reuse
+agents/data-core classes. GoldenCase lives in eval only and never enters
+production packages, prompts, RunManifest, or DTOs.
 """
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 OracleStatusV1 = Literal["SUFFICIENT", "PARTIAL", "ABSTAIN"]
 AttributionTypeV1 = Literal[
@@ -60,6 +63,7 @@ EvidenceJudgmentRoleV1 = Literal[
     "irrelevant",
     "ineligible",
 ]
+AdjudicationStateV1 = Literal["resolved", "pending", "second_pass_required"]
 
 
 class AcceptableCauseLabel(BaseModel):
@@ -72,17 +76,33 @@ class AcceptableCauseLabel(BaseModel):
 
 
 class EvidenceJudgmentV1(BaseModel):
-    """Human judgment keyed by canonical evidence/chunk id (eval TSD §6)."""
+    """Human judgment keyed by canonical evidence/chunk/fact id (eval TSD §6)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     evidence_id: str
     canonical_asset_id: str
+    canonical_content_version_id: str
+    chunk_id: str | None = None
+    fact_id: str | None = None
     role: EvidenceJudgmentRoleV1
     support: bool
     materiality: MaterialityV1
     temporal_eligible: bool
     independence_group: str | None = None
+    rationale: str | None = Field(default=None, max_length=500)
+    annotator: str | None = None
+    annotated_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def _identity_invariants(self) -> "EvidenceJudgmentV1":
+        if (self.chunk_id is None) == (self.fact_id is None):
+            raise ValueError("exactly one of chunk_id or fact_id must be set")
+        if self.chunk_id is not None and self.evidence_id != self.chunk_id:
+            raise ValueError("text evidence_id must equal chunk_id")
+        if self.fact_id is not None and self.evidence_id != self.fact_id:
+            raise ValueError("structured evidence_id must equal fact_id")
+        return self
 
 
 class AcceptableCorrectiveAction(BaseModel):
@@ -102,6 +122,18 @@ class ExpectedResearchBehavior(BaseModel):
     corrective_required: bool
 
 
+class GoldenCaseLineage(BaseModel):
+    """Typed lineage/adjudication metadata (eval TSD §6)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    source: str
+    model_assisted_fields: tuple[str, ...] = ()
+    human_confirmed_fields: tuple[str, ...] = ()
+    annotated_at: datetime
+    adjudication_state: AdjudicationStateV1
+
+
 class GoldenCase(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -119,12 +151,13 @@ class GoldenCase(BaseModel):
     expected_research_behavior: ExpectedResearchBehavior
     notes: str | None = None
     dataset_version: str
-    lineage: dict[str, str]
+    lineage: GoldenCaseLineage
 
 
 __all__ = [
     "AcceptableCauseLabel",
     "AcceptableCorrectiveAction",
+    "AdjudicationStateV1",
     "AttributionTypeV1",
     "CauseTypeV1",
     "DirectionV1",
@@ -134,6 +167,7 @@ __all__ = [
     "ExpectedResearchBehavior",
     "GapReasonCodeV1",
     "GoldenCase",
+    "GoldenCaseLineage",
     "MaterialityV1",
     "OracleStatusV1",
     "TimeScopeV1",

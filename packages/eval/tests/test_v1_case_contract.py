@@ -1,7 +1,9 @@
-"""V1.1 GoldenCase contract tests (M2-10).
+"""V1.1 GoldenCase contract tests (M2-10, corrective).
 
-Eval-owned human truth per eval TSD §6 / Frozen §7.2. GoldenCase lives in
-catalyst_eval only and never enters production packages, prompts, or DTOs.
+Eval-owned human truth per eval TSD §6 / Frozen §7.2. Judgments preserve
+canonical asset + content/chunk/fact + evidence-group identity; materiality
+and temporal eligibility stay separate; typed human rationale/lineage fields
+are retained; all gold fields live in catalyst_eval only.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ from catalyst_eval.v1_1.case import (
     EvidenceJudgmentV1,
     ExpectedResearchBehavior,
     GoldenCase,
+    GoldenCaseLineage,
 )
 
 
@@ -38,11 +41,29 @@ def _judgment(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "evidence_id": "corpus:chunk:0001",
         "canonical_asset_id": "issuer:AAPL:news:0001",
+        "canonical_content_version_id": "content:v1:0001",
+        "chunk_id": "corpus:chunk:0001",
+        "fact_id": None,
         "role": "primary_support",
         "support": True,
         "materiality": "material",
         "temporal_eligible": True,
         "independence_group": None,
+        "rationale": "Direct issuer disclosure within cutoff.",
+        "annotator": "reviewer-1",
+        "annotated_at": _utc("2026-01-07T10:00:00Z"),
+    }
+    base.update(overrides)
+    return base
+
+
+def _lineage(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "source": "t4-0001",
+        "model_assisted_fields": (),
+        "human_confirmed_fields": ("oracle_status", "evidence_judgments"),
+        "annotated_at": _utc("2026-01-07T10:00:00Z"),
+        "adjudication_state": "resolved",
     }
     base.update(overrides)
     return base
@@ -81,7 +102,7 @@ def _case(**overrides: Any) -> dict[str, Any]:
         "expected_research_behavior": ExpectedResearchBehavior(**_research_behavior()),
         "notes": None,
         "dataset_version": "v1",
-        "lineage": {"source_case_id": "t4-0001"},
+        "lineage": GoldenCaseLineage(**_lineage()),
     }
     base.update(overrides)
     return base
@@ -107,6 +128,7 @@ def test_golden_case_fields_match_eval_tsd_6() -> None:
         "lineage",
     }
     assert case.cutoff == _utc("2026-01-06T21:00:00Z")
+    assert case.lineage.adjudication_state == "resolved"
 
 
 def test_golden_case_is_strict_and_frozen() -> None:
@@ -136,6 +158,43 @@ def test_evidence_judgment_roles_are_closed() -> None:
         assert EvidenceJudgmentV1(**_judgment(role=role)).role == role
     with pytest.raises(ValidationError):
         EvidenceJudgmentV1(**_judgment(role="supporting"))
+
+
+def test_evidence_judgment_preserves_content_and_evidence_group_identity() -> None:
+    judgment = EvidenceJudgmentV1(**_judgment())
+    assert judgment.canonical_content_version_id == "content:v1:0001"
+    assert judgment.chunk_id == "corpus:chunk:0001"
+    assert judgment.evidence_id == judgment.chunk_id
+    with pytest.raises(ValidationError):
+        EvidenceJudgmentV1(**_judgment(fact_id="fact:1"))  # chunk+fact conflict
+    structured = EvidenceJudgmentV1(
+        **_judgment(
+            evidence_id="fact:42",
+            canonical_asset_id="issuer:AAPL:struct:1",
+            chunk_id=None,
+            fact_id="fact:42",
+            role="secondary_support",
+        )
+    )
+    assert structured.evidence_id == structured.fact_id
+    grouped = EvidenceJudgmentV1(**_judgment(independence_group="syndication:g1"))
+    assert grouped.independence_group == "syndication:g1"
+
+
+def test_evidence_judgment_materiality_and_temporal_eligibility_stay_separate() -> None:
+    judgment = EvidenceJudgmentV1(
+        **_judgment(
+            materiality="non_material",
+            temporal_eligible=False,
+        )
+    )
+    assert judgment.materiality == "non_material"
+    assert judgment.temporal_eligible is False
+
+
+def test_evidence_judgment_rationale_is_bounded() -> None:
+    with pytest.raises(ValidationError):
+        EvidenceJudgmentV1(**_judgment(rationale="x" * 501))
 
 
 def test_acceptable_cause_labels_use_only_causal_types() -> None:
