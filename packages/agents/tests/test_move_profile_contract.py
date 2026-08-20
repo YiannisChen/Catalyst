@@ -123,7 +123,7 @@ def test_scheduled_macro_flag_and_coverage_flag_are_typed() -> None:
     assert isinstance(flag, ScheduledMacroFlag)
     profile = MoveProfile(coverage_flags=("macro_calendar_unavailable",))
     assert profile.coverage_flags == ("macro_calendar_unavailable",)
-    assert CoverageFlag is str or True  # CoverageFlag is a str alias
+    assert CoverageFlag is str
 
 
 def test_scenario_predicate_inputs_are_typed_and_never_depend_on_news_or_evidence() -> None:

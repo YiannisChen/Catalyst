@@ -17,8 +17,6 @@ from catalyst_data.canonical.identity import DataRuntimeIdentity
 from catalyst_data.canonical.model import ContentState, SourceClass
 from catalyst_data.canonical.temporal import TemporalIdentity
 
-STAGE_RANK_KEY = str
-
 
 class RetrievalHit(BaseModel):
     """A single V1.1 retrieval hit with complete canonical evidence identity.

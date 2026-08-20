@@ -6,7 +6,6 @@ chain, TemporalIdentity windows, and DataRuntimeIdentity.
 """
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import Any, get_args
 

@@ -205,9 +205,8 @@ def test_v1_hit_carries_structured_fact_identity_without_chunk() -> None:
     assert hit.fact_id == "fact:42"
 
 
-def test_live_retrieval_result_module_is_byte_unchanged_audited_shape() -> None:
-    """No-mutation guard: live legacy result.py is BASELINE_ONLY in M2."""
-    import catalyst_data.retrieval.result as live_module
+def test_live_retrieval_result_module_audited_shape_unchanged() -> None:
+    """No-mutation guard: live legacy result.py keeps its audited legacy shape."""
     from catalyst_data.retrieval import result as result_module_alias
 
     source = result_module_alias.__file__

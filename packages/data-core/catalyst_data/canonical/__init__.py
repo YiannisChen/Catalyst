@@ -2,6 +2,7 @@
 
 from catalyst_data.canonical.identity import DataRuntimeIdentity
 from catalyst_data.canonical.model import (
+    AssetType,
     CanonicalAsset,
     CanonicalContentVersion,
     CanonicalEvidenceChain,
@@ -15,6 +16,7 @@ from catalyst_data.canonical.model import (
 from catalyst_data.canonical.temporal import TemporalIdentity
 
 __all__ = [
+    "AssetType",
     "CanonicalAsset",
     "CanonicalContentVersion",
     "CanonicalEvidenceChain",
