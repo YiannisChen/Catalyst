@@ -31,12 +31,18 @@ def _utc(iso: str) -> datetime:
 
 def _decision() -> AnalystDecision:
     return AnalystDecision(
+        schema_version="1.0",
         evidence_decisions=(
-            EvidenceDecision(evidence_id="corpus:chunk:0001", decision="SUPPORT"),
+            EvidenceDecision(
+                evidence_id="corpus:chunk:0001",
+                disposition="SUPPORT",
+                supports_hypothesis_refs=("h1",),
+                reason_code="material_support",
+            ),
         ),
         candidate_hypotheses=(
             CandidateHypothesis(
-                hypothesis_id="h-1",
+                hypothesis_ref="h1",
                 cause_type="COMPANY_SPECIFIC_CATALYST",
                 statement="AAPL rose on record guidance.",
                 supporting_evidence_ids=("corpus:chunk:0001",),
@@ -72,6 +78,8 @@ def _assessment(**overrides: Any) -> dict[str, Any]:
         "status_ceiling": "PARTIAL",
         "corrective_batch": CorrectiveResearchBatch(
             batch_id="batch:1",
+            run_id="run:1",
+            round=1,
             actions=(
                 CorrectiveResearchAction(
                     action_id="action:1",
@@ -83,7 +91,10 @@ def _assessment(**overrides: Any) -> dict[str, Any]:
                 ),
             ),
             shared_deadline=_utc("2026-01-06T21:00:00Z"),
+            internal_deadline=_utc("2026-01-06T21:00:00Z"),
             total_result_budget=20,
+            policy_version="cp:v1",
+            cancellation_token_ref=None,
         ),
         "normalization_violations": (),
         "decision_hash": "d" * 64,
