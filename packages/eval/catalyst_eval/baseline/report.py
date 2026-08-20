@@ -183,18 +183,40 @@ def write_baseline_report(
     *,
     generated_at: str | None = None,
     promoted_env_recovered: bool = False,
+    expected_git_revision: str | None = None,
+    report_name: str | None = None,
 ) -> Path:
-    """Publish the sealed baseline report at ``<report_dir>/v1_1_baseline_<sha8>.json``.
+    """Publish the sealed baseline report at ``<report_dir>/<stem>.json``.
 
-    Atomic create-or-idempotent-return. Never overwrites or truncates an
-    existing final pathname and never leaves a partially written final path.
+    Default stem is ``v1_1_baseline_<sha8>``; a corrective seal passes an
+    explicit ``report_name`` (bare filename stem, no ``.json`` suffix). The
+    writer fails closed before creating any file when ``expected_git_revision``
+    is supplied and the live HEAD differs. Atomic create-or-idempotent-return;
+    never overwrites or truncates an existing final pathname and never leaves a
+    partially written final path.
     """
     report_dir = Path(report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
-    target = report_dir / f"v1_1_baseline_{identity.code_git_sha[:8]}.json"
+    if report_name is not None:
+        if (
+            not report_name
+            or report_name.endswith(".json")
+            or Path(report_name).name != report_name
+        ):
+            raise ValueError(
+                "report_name must be a bare filename stem without .json or path separators"
+            )
+        stem = report_name
+    else:
+        stem = f"v1_1_baseline_{identity.code_git_sha[:8]}"
+    target = report_dir / f"{stem}.json"
 
     timestamp = generated_at or datetime.now(timezone.utc).isoformat()
     git_revision = _git_head(repository_root())
+    if expected_git_revision is not None and git_revision != expected_git_revision:
+        raise ValueError(
+            "git HEAD no longer matches the expected execution revision"
+        )
     if not isinstance(promoted_env_recovered, bool):
         raise TypeError("promoted_env_recovered must be bool")
     payload = _build_report(

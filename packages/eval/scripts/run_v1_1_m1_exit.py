@@ -30,6 +30,9 @@ from catalyst_eval.baseline.identity import is_app_default_db
 from catalyst_eval.baseline.leakage import scan_baseline_report
 from catalyst_eval.baseline.report import _build_report, write_baseline_report
 from catalyst_eval.baseline.repro import (
+    APPROVED_FROZEN_DB_SHA256,
+    WAVE_TOKEN_FILENAME,
+    _sha256_file,
     _validate_runtime_derivative,
     run_baseline_repro,
 )
@@ -57,6 +60,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--index-manifest", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--report-dir", required=True, type=Path)
+    parser.add_argument(
+        "--report-name",
+        default=None,
+        help=(
+            "sealed report filename stem (default v1_1_baseline_<code_sha8>); "
+            "the corrective seal uses v1_1_baseline_621375bc_corrective_seal"
+        ),
+    )
     parser.add_argument("--t4-run-id", required=True)
     parser.add_argument("--four-arm-run-id", required=True)
     parser.add_argument("--user-smoke-run-id", required=True)
@@ -135,6 +146,62 @@ def _preflight_environment(args: argparse.Namespace, env: dict[str, str]) -> Non
             "runtime DB must not be the app default .local/live_runtime.db"
         )
     _validate_runtime_derivative(args.frozen_db, args.runtime_db)
+
+
+def _evidence_still_bound(
+    args: argparse.Namespace,
+    rows: list[dict[str, Any]],
+    t4_evidence_dir: Path,
+) -> bool:
+    """Return True only when gate/T4 evidence is still bound to this execution."""
+    expected_run_ids = {
+        "four_arm": args.four_arm_run_id,
+        "user_smoke": args.user_smoke_run_id,
+    }
+    for row in rows:
+        if row.get("run_id") != expected_run_ids.get(row.get("gate_kind")):
+            return False
+        meta_path = Path(row.get("evidence_meta_ref") or "")
+        if not meta_path.is_file() or _sha256_file(meta_path) != row.get("evidence_meta_sha256"):
+            return False
+        token_path = Path(row.get("evidence_ref") or "") / WAVE_TOKEN_FILENAME
+        if not token_path.is_file() or _sha256_file(token_path) != row.get("success_token_sha256"):
+            return False
+        t4_meta_path = Path(row.get("t4_evidence_ref") or "") / "meta.json"
+        if not t4_meta_path.is_file() or _sha256_file(t4_meta_path) != row.get("t4_meta_sha256"):
+            return False
+    if Path(t4_evidence_dir).resolve() != (Path(args.output_root) / args.t4_run_id).resolve():
+        return False
+    return True
+
+
+def _recheck_provenance(
+    args: argparse.Namespace,
+    rows: list[dict[str, Any]],
+    t4_evidence_dir: Path,
+) -> None:
+    """Fail-closed recheck immediately before report publication.
+
+    The initial preflight runs before the gates; this recheck confirms the same
+    provenance facts still hold after gate execution so the sealed report's
+    ``git_revision`` and evidence bindings cannot disagree with reality.
+    """
+    if _git_head(REPO_ROOT) != args.expected_head:
+        raise ExitGateError(
+            "provenance recheck failed: git HEAD changed since preflight"
+        )
+    if _git_status_porcelain(REPO_ROOT):
+        raise ExitGateError(
+            "provenance recheck failed: worktree is not clean"
+        )
+    if _sha256_file(args.frozen_db) != APPROVED_FROZEN_DB_SHA256:
+        raise ExitGateError(
+            "provenance recheck failed: frozen DB SHA changed since preflight"
+        )
+    if not _evidence_still_bound(args, rows, t4_evidence_dir):
+        raise ExitGateError(
+            "provenance recheck failed: gate/T4 evidence changed since gates completed"
+        )
 
 
 def _run_t4(args: argparse.Namespace) -> Path:
@@ -233,12 +300,16 @@ def main(argv: list[str] | None = None) -> int:
         if scan_baseline_report(preview):
             return _fail("baseline report leakage scan failed before publication")
 
+        _recheck_provenance(args, list(result.runs), evidence_dir)
+
         report_path = write_baseline_report(
             args.report_dir,
             result.identity,
             list(result.runs),
             generated_at=generated_at,
             promoted_env_recovered=False,
+            expected_git_revision=args.expected_head,
+            report_name=args.report_name,
         )
 
         published = json.loads(Path(report_path).read_text(encoding="utf-8"))
