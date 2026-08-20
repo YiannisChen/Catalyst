@@ -1,18 +1,23 @@
-"""V1.1 public API DTO boundary + idempotency request hash (M2-9).
+"""V1.1 public API DTO boundary + idempotency request hash (M2-9, corrective).
 
 packages/app is the sole live public DTO/projection boundary (Final Migration
-TSD §20/§21). DTOs never expose LangGraph state, raw internal semantic fields,
-provider objects, credentials, or internal node names. compute_request_hash is
+TSD §20/§21; Phase 5 TSD §21/§23). DTOs never expose LangGraph state, raw
+internal semantic fields, provider objects, credentials, or internal node
+names. Only COMPLETED runs may carry attribution status/type. Artifact refs
+retain version/hash/same-run metadata; evidence detail preserves chunk/fact
+identity; capability uses the exact Phase 5 §23.2 fields; health types
+process/executor/runtime-DB/event-store readiness. compute_request_hash is
 SHA-256 over canonical JSON of the documented semantic inputs only.
 """
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from catalyst_agents.attribution.analyst import (
     AttributionStatus,
@@ -22,6 +27,8 @@ from catalyst_agents.attribution.claims import ClaimRole
 from catalyst_data.canonical.model import ContentState, SourceClass
 from catalyst_app.events import PublicRunEvent
 from catalyst_app.lifecycle import RunLifecycleStatus
+
+_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class RunAcceptedResponse(BaseModel):
@@ -52,7 +59,16 @@ class RunDTO(BaseModel):
     duration_ms: int | None = None
     failure: RunFailureDTO | None = None
     manifest_summary: dict[str, str] = {}
-    terminal_artifact_refs: tuple[str, ...] = ()
+    terminal_artifact_refs: tuple[ArtifactRefDTO, ...] = ()
+
+    @model_validator(mode="after")
+    def _attribution_only_on_completed(self) -> "RunDTO":
+        if self.lifecycle_status is not RunLifecycleStatus.COMPLETED:
+            if self.attribution_status is not None or self.attribution_type is not None:
+                raise ValueError(
+                    "non-COMPLETED runs cannot carry attribution status/type"
+                )
+        return self
 
 
 class CancelResponse(BaseModel):
@@ -67,10 +83,23 @@ PublicRunEventDTO = PublicRunEvent
 
 
 class ArtifactRefDTO(BaseModel):
+    """Artifact ref with version/hash/same-run metadata (Phase 5 §18.2)."""
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     artifact_id: str
     artifact_type: str
+    schema_version: str | None = None
+    content_sha256: str | None = None
+    run_id: str
+
+    @model_validator(mode="after")
+    def _hash_shape(self) -> "ArtifactRefDTO":
+        if self.content_sha256 is not None and _SHA256_RE.fullmatch(
+            self.content_sha256
+        ) is None:
+            raise ValueError("content_sha256 must be a lowercase SHA-256 hex digest")
+        return self
 
 
 class ArtifactDTO(BaseModel):
@@ -80,7 +109,7 @@ class ArtifactDTO(BaseModel):
     artifact_type: str
     stage: str | None = None
     created_at: datetime | None = None
-    ref: ArtifactRefDTO | None = None
+    ref: ArtifactRefDTO
 
 
 class EvidenceDetailDTO(BaseModel):
@@ -102,9 +131,19 @@ class EvidenceDetailDTO(BaseModel):
     publisher: str | None = None
     dedup_cluster_id: str | None = None
 
+    @model_validator(mode="after")
+    def _identity_invariants(self) -> "EvidenceDetailDTO":
+        if (self.chunk_id is None) == (self.fact_id is None):
+            raise ValueError("exactly one of chunk_id or fact_id must be set")
+        if self.chunk_id is not None and self.evidence_id != self.chunk_id:
+            raise ValueError("text evidence_id must equal chunk_id")
+        if self.fact_id is not None and self.evidence_id != self.fact_id:
+            raise ValueError("structured evidence_id must equal fact_id")
+        return self
+
 
 class ClaimDetailDTO(BaseModel):
-    """Validated claim and bound support/counter evidence IDs."""
+    """Validated claim and bound support/counter/citation evidence IDs."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -115,6 +154,20 @@ class ClaimDetailDTO(BaseModel):
     support_evidence_ids: tuple[str, ...] = ()
     counter_evidence_ids: tuple[str, ...] = ()
     limitations: tuple[str, ...] = ()
+    citation_evidence_ids: tuple[str, ...] = ()
+    validation_status: str
+    validation_codes: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _citation_refs_resolve(self) -> "ClaimDetailDTO":
+        allowed = set(self.support_evidence_ids) | set(self.counter_evidence_ids)
+        unknown = set(self.citation_evidence_ids) - allowed
+        if unknown:
+            raise ValueError(
+                f"citation evidence must be bound to claim {self.claim_id!r}: "
+                f"{sorted(unknown)}"
+            )
+        return self
 
 
 class WorkbenchProjectionDTO(BaseModel):
@@ -130,19 +183,36 @@ class WorkbenchProjectionDTO(BaseModel):
     evidence: tuple[EvidenceDetailDTO, ...] = ()
     answer: str | None = None
     limitations: tuple[str, ...] = ()
-    artifact_refs: tuple[str, ...] = ()
+    artifact_refs: tuple[ArtifactRefDTO, ...] = ()
+
+    @model_validator(mode="after")
+    def _attribution_only_on_completed(self) -> "WorkbenchProjectionDTO":
+        if self.lifecycle_status is not RunLifecycleStatus.COMPLETED:
+            if self.attribution_status is not None or self.attribution_type is not None:
+                raise ValueError(
+                    "non-COMPLETED runs cannot carry attribution status/type"
+                )
+        return self
 
 
 class CapabilityModelDTO(BaseModel):
+    """Exact Phase 5 TSD §23.2 capability fields."""
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     provider: str
     model_id: str
-    streaming: bool
-    structured_output: bool
-    cancellation: bool
-    token_accounting: bool
-    readiness: bool
+    executable: bool
+    writer_streaming: bool
+    analyst_structured_output: bool
+    cancellation: Literal["supported", "unsupported", "unknown"]
+    token_usage: Literal["exact", "provider_reported", "estimated", "unavailable"]
+    timeout_seconds: int | None = Field(default=None, gt=0)
+    offline_only: bool
+    readiness: Literal["ready", "degraded", "unavailable"]
+    reason_code: str | None = None
+    capability_probe_at: datetime | None = None
+    revision: str
 
 
 class CapabilityResponse(BaseModel):
@@ -152,10 +222,15 @@ class CapabilityResponse(BaseModel):
 
 
 class HealthDTO(BaseModel):
+    """Typed local health: process/executor/runtime DB/event store readiness."""
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     status: Literal["ready", "degraded", "failed"]
-    components: dict[str, Literal["ready", "degraded", "failed"]] = {}
+    process: Literal["ready", "degraded", "failed"]
+    executor: Literal["ready", "degraded", "failed"]
+    runtime_db: Literal["ready", "degraded", "failed"]
+    event_store: Literal["ready", "degraded", "failed"]
 
 
 def compute_request_hash(

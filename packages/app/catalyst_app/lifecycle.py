@@ -77,10 +77,11 @@ def attribution_status_for(
 ) -> AttributionStatus | None:
     """Project the nullable attribution status for a lifecycle.
 
-    FAILED and CANCELLED never synthesize an AttributionStatus; non-terminal
-    and COMPLETED states carry the supplied value unchanged (may be None).
+    Only COMPLETED may carry an AttributionStatus. FAILED, CANCELLED, and all
+    non-COMPLETED lifecycle states never synthesize an AttributionStatus
+    (Final Migration TSD §10; Phase 5 TSD §8.1).
     """
-    if lifecycle in (RunLifecycleStatus.FAILED, RunLifecycleStatus.CANCELLED):
+    if lifecycle is not RunLifecycleStatus.COMPLETED:
         return None
     return attribution_status
 

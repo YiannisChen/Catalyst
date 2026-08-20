@@ -1,9 +1,10 @@
-"""V1.1 public DTO boundary + idempotency hash contract tests (M2-9).
+"""V1.1 public DTO boundary + idempotency hash contract tests (M2-9, corrective).
 
-Final Migration TSD §20/§21 and Phase 5 TSD §21: the sole public DTO boundary
-must not expose LangGraph state, raw internal semantic fields, provider
-objects, credentials, or internal node names. compute_request_hash is a
-canonical-JSON SHA-256 over the documented fields only.
+Phase 5 TSD §21/§23: the sole public DTO boundary must not expose LangGraph
+state, raw internal semantic fields, provider objects, credentials, or
+internal node names. Lifecycle/result invariants, typed artifact refs,
+chunk/fact identity, capability fields, health readiness, and request-hash
+secret exclusion are enforced.
 """
 from __future__ import annotations
 
@@ -31,6 +32,11 @@ from catalyst_app.api_dto import (
     WorkbenchProjectionDTO,
     compute_request_hash,
 )
+from catalyst_app.lifecycle import RunLifecycleStatus
+from catalyst_agents.attribution.analyst import (
+    AttributionStatus,
+    AttributionType,
+)
 
 
 def _accepted_response(**overrides: Any) -> dict[str, Any]:
@@ -40,6 +46,18 @@ def _accepted_response(**overrides: Any) -> dict[str, Any]:
         "stream_url": "/api/live-runs/run:1/stream",
         "request_hash_prefix": "a" * 8,
         "model_capability_label": "streaming-v1",
+    }
+    base.update(overrides)
+    return base
+
+
+def _artifact_ref(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "artifact_id": "artifact:1",
+        "artifact_type": "evidence_state",
+        "schema_version": "v1",
+        "content_sha256": "c" * 64,
+        "run_id": "run:1",
     }
     base.update(overrides)
     return base
@@ -74,6 +92,9 @@ def _claim_detail(**overrides: Any) -> dict[str, Any]:
         "support_evidence_ids": ("corpus:chunk:0001",),
         "counter_evidence_ids": (),
         "limitations": (),
+        "citation_evidence_ids": ("corpus:chunk:0001",),
+        "validation_status": "validated",
+        "validation_codes": (),
     }
     base.update(overrides)
     return base
@@ -124,6 +145,7 @@ def test_dtos_do_not_expose_internal_semantic_fields() -> None:
         "secret",
         "raw_llm_response",
         "state_snapshot",
+        "headers",
     }
     for cls in ALL_DTO_CLASSES:
         fields = set(cls.model_fields)
@@ -131,13 +153,43 @@ def test_dtos_do_not_expose_internal_semantic_fields() -> None:
         assert not overlap, f"{cls.__name__} exposes forbidden fields {overlap}"
 
 
-def test_evidence_detail_and_claim_detail_are_bounded_projections() -> None:
+def test_evidence_detail_identity_invariants() -> None:
     evidence = EvidenceDetailDTO(**_evidence_detail())
     assert evidence.evidence_id == "corpus:chunk:0001"
-    claim = ClaimDetailDTO(**_claim_detail())
-    assert claim.support_evidence_ids == ("corpus:chunk:0001",)
+    with pytest.raises(ValidationError):
+        EvidenceDetailDTO(**{**_evidence_detail(), "fact_id": "fact:1"})  # both chunk+fact
+    with pytest.raises(ValidationError):
+        EvidenceDetailDTO(
+            **_evidence_detail(
+                evidence_id="corpus:chunk:9999",
+            )
+        )  # text evidence_id must equal chunk_id
     with pytest.raises(ValidationError):
         EvidenceDetailDTO(**_evidence_detail(), critic_reasoning="hidden")
+
+
+def test_artifact_refs_retain_version_hash_and_same_run_metadata() -> None:
+    ref = ArtifactRefDTO(**_artifact_ref())
+    assert ref.schema_version == "v1"
+    assert ref.content_sha256 == "c" * 64
+    assert ref.run_id == "run:1"
+    with pytest.raises(ValidationError):
+        ArtifactRefDTO(**_artifact_ref(content_sha256="not-hex"))
+    artifact = ArtifactDTO(
+        artifact_id="artifact:1",
+        artifact_type="evidence_state",
+        stage="INITIAL_RESEARCH",
+        created_at=datetime(2026, 1, 6, 14, 0, tzinfo=timezone.utc),
+        ref=ArtifactRefDTO(**_artifact_ref()),
+    )
+    assert artifact.ref.schema_version == "v1"
+
+
+def test_claim_detail_retains_authoritative_relations() -> None:
+    claim = ClaimDetailDTO(**_claim_detail())
+    assert claim.support_evidence_ids == ("corpus:chunk:0001",)
+    assert claim.citation_evidence_ids == ("corpus:chunk:0001",)
+    assert claim.validation_status == "validated"
 
 
 def test_workbench_projection_has_no_raw_graph_state() -> None:
@@ -150,7 +202,7 @@ def test_workbench_projection_has_no_raw_graph_state() -> None:
         evidence=(EvidenceDetailDTO(**_evidence_detail()),),
         answer="AAPL rose on record guidance.",
         limitations=("magnitude coverage is partial",),
-        artifact_refs=("artifact:1",),
+        artifact_refs=(ArtifactRefDTO(**_artifact_ref()),),
     )
     assert projection.lifecycle_status == "COMPLETED"
     fields = set(WorkbenchProjectionDTO.model_fields)
@@ -158,22 +210,90 @@ def test_workbench_projection_has_no_raw_graph_state() -> None:
     assert "critic_reasoning" not in fields
 
 
-def test_capability_and_health_dtos() -> None:
+def test_run_dto_non_completed_states_cannot_carry_attribution() -> None:
+    with pytest.raises(ValidationError):
+        RunDTO(
+            run_id="run:1",
+            lifecycle_status="RUNNING",
+            attribution_status="PARTIAL",
+            created_at=datetime(2026, 1, 6, 14, 0, tzinfo=timezone.utc),
+        )
+    with pytest.raises(ValidationError):
+        RunDTO(
+            run_id="run:1",
+            lifecycle_status="FAILED",
+            attribution_status="SUFFICIENT",
+            created_at=datetime(2026, 1, 6, 14, 0, tzinfo=timezone.utc),
+        )
+    with pytest.raises(ValidationError):
+        WorkbenchProjectionDTO(
+            run_id="run:1",
+            lifecycle_status="RUNNING",
+            attribution_status="PARTIAL",
+        )
+    valid = RunDTO(
+        run_id="run:1",
+        lifecycle_status="COMPLETED",
+        attribution_status="ABSTAIN",
+        attribution_type="EVIDENCE_BACKED_CAUSAL",
+        created_at=datetime(2026, 1, 6, 14, 0, tzinfo=timezone.utc),
+    )
+    assert valid.attribution_status is AttributionStatus.ABSTAIN
+
+
+def test_capability_model_uses_exact_phase_5_23_2_fields() -> None:
     capability = CapabilityModelDTO(
         provider="anthropic",
         model_id="claude-x",
-        streaming=True,
-        structured_output=True,
-        cancellation=True,
-        token_accounting=True,
-        readiness=True,
+        executable=True,
+        writer_streaming=True,
+        analyst_structured_output=True,
+        cancellation="supported",
+        token_usage="provider_reported",
+        timeout_seconds=120,
+        offline_only=False,
+        readiness="ready",
+        reason_code=None,
+        capability_probe_at=datetime(2026, 1, 6, 14, 0, tzinfo=timezone.utc),
+        revision="cap:v1",
     )
+    assert capability.writer_streaming is True
+    assert capability.analyst_structured_output is True
+    assert capability.revision == "cap:v1"
+    fields = set(CapabilityModelDTO.model_fields)
+    assert fields == {
+        "provider",
+        "model_id",
+        "executable",
+        "writer_streaming",
+        "analyst_structured_output",
+        "cancellation",
+        "token_usage",
+        "timeout_seconds",
+        "offline_only",
+        "readiness",
+        "reason_code",
+        "capability_probe_at",
+        "revision",
+    }
     response = CapabilityResponse(models=(capability,))
-    assert response.models[0].streaming is True
-    health = HealthDTO(status="ready", components={"sqlite": "ready"})
+    assert response.models[0].readiness == "ready"
+
+
+def test_health_dto_types_process_executor_runtime_db_and_event_store() -> None:
+    health = HealthDTO(
+        status="ready",
+        process="ready",
+        executor="ready",
+        runtime_db="ready",
+        event_store="ready",
+    )
     assert health.status == "ready"
+    assert health.event_store == "ready"
     with pytest.raises(ValidationError):
-        HealthDTO(status="unknown", components={})
+        HealthDTO(status="unknown", process="ready", executor="ready", runtime_db="ready", event_store="ready")
+    with pytest.raises(ValidationError):
+        HealthDTO(status="ready", process="ready", executor="ready", runtime_db="ready", event_store="nope")
 
 
 def test_compute_request_hash_is_stable_sha256_over_canonical_json() -> None:

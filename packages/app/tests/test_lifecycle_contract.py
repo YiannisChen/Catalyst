@@ -117,3 +117,24 @@ def test_failed_and_cancelled_never_synthesize_attribution_status() -> None:
         attribution_status_for(RunLifecycleStatus.FAILED, None)
         is None
     )
+
+
+def test_non_completed_states_never_carry_attribution_status() -> None:
+    """Phase 6 corrective: only COMPLETED may carry an attribution status."""
+    for lifecycle in (
+        RunLifecycleStatus.ACCEPTED,
+        RunLifecycleStatus.RUNNING,
+        RunLifecycleStatus.CANCEL_REQUESTED,
+    ):
+        assert (
+            attribution_status_for(lifecycle, AttributionStatus.PARTIAL)
+            is None
+        )
+        assert (
+            attribution_status_for(lifecycle, AttributionStatus.SUFFICIENT)
+            is None
+        )
+        assert (
+            attribution_status_for(lifecycle, AttributionStatus.ABSTAIN)
+            is None
+        )
