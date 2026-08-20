@@ -1,13 +1,15 @@
 """V1.1 TemporalIdentity contract (M2-1).
 
 Data-core owns the exchange-calendar-backed temporal identity used by every
-retrieval arm (Frozen §5.3, §5.4).
+retrieval arm (Frozen §5.3, §5.4). All temporal datetimes are normalized to
+UTC: naive timestamps and mixed/foreign timezone offsets are rejected so PIT
+ordering semantics stay unambiguous (data-core TSD §7).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 
 class TemporalIdentity(BaseModel):
@@ -19,6 +21,20 @@ class TemporalIdentity(BaseModel):
     session_close_at: datetime
     information_window_start_at: datetime
     cutoff_at: datetime
+
+    @field_validator(
+        "session_open_at",
+        "session_close_at",
+        "information_window_start_at",
+        "cutoff_at",
+    )
+    @classmethod
+    def _utc_normalized(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("temporal timestamps must be timezone-aware")
+        if value.utcoffset().total_seconds() != 0:
+            raise ValueError("temporal timestamps must be normalized to UTC")
+        return value
 
     @model_validator(mode="after")
     def _temporal_order(self) -> "TemporalIdentity":

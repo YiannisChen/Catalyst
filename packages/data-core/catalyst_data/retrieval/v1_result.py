@@ -4,6 +4,10 @@ This is a separate typed contract from the live legacy ``retrieval/result.py``
 contract. The legacy ``RetrievalResult``/``RetrievalResultSet`` remain
 BASELINE_ONLY until their named migration gate (M3-11); the V1.1 contract is
 not wired into any live call site in M2.
+
+Phase 2 corrective: the result set itself binds TemporalIdentity and
+DataRuntimeIdentity so identity passes unchanged through RetrievalResultSet
+even when hits are empty; every hit must match the set-level identity.
 """
 from __future__ import annotations
 
@@ -88,6 +92,8 @@ class RetrievalResultSet(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     hits: tuple[RetrievalHit, ...] = ()
+    temporal_identity: TemporalIdentity
+    data_runtime_identity: DataRuntimeIdentity
 
     @model_validator(mode="after")
     def _ranks_contiguous_within_stage(self) -> "RetrievalResultSet":
@@ -102,6 +108,15 @@ class RetrievalResultSet(BaseModel):
                 raise ValueError(
                     f"ranks for stage {stage!r} must be contiguous within the "
                     "participating stage"
+                )
+        for hit in self.hits:
+            if hit.temporal_identity != self.temporal_identity:
+                raise ValueError(
+                    "hit temporal identity must match the set-level TemporalIdentity"
+                )
+            if hit.data_runtime_identity != self.data_runtime_identity:
+                raise ValueError(
+                    "hit runtime identity must match the set-level DataRuntimeIdentity"
                 )
         return self
 

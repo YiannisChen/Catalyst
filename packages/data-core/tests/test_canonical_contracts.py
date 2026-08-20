@@ -253,3 +253,54 @@ def test_data_runtime_identity_fields_are_exact_and_strict() -> None:
             query_policy_version="qp:v1",
             invented_field=True,
         )
+
+
+def test_temporal_identity_rejects_naive_timestamps() -> None:
+    """Phase 2 corrective: naive datetimes are not PIT-safe and must be rejected."""
+    from catalyst_data.canonical.temporal import TemporalIdentity
+
+    monday_close = _utc(session_close_utc("2026-01-05"))
+    tuesday_close = _utc(session_close_utc("2026-01-06"))
+    naive = datetime(2026, 1, 6, 14, 30, 0)  # no tzinfo
+    with pytest.raises(ValidationError):
+        TemporalIdentity(
+            session_date="2026-01-06",
+            market_timezone="America/New_York",
+            session_open_at=naive,
+            session_close_at=tuesday_close,
+            information_window_start_at=monday_close,
+            cutoff_at=tuesday_close,
+        )
+    with pytest.raises(ValidationError):
+        TemporalIdentity(
+            session_date="2026-01-06",
+            market_timezone="America/New_York",
+            session_open_at=_utc("2026-01-06T14:30:00Z"),
+            session_close_at=tuesday_close,
+            information_window_start_at=monday_close,
+            cutoff_at=naive,
+        )
+
+
+def test_temporal_identity_rejects_mixed_timezones() -> None:
+    """Phase 2 corrective: all temporal datetimes must be normalized to UTC."""
+    from datetime import timezone as dt_timezone
+    from zoneinfo import ZoneInfo
+
+    from catalyst_data.canonical.temporal import TemporalIdentity
+
+    monday_close = _utc(session_close_utc("2026-01-05"))
+    tuesday_close = _utc(session_close_utc("2026-01-06"))
+    new_york_open = datetime(
+        2026, 1, 6, 9, 30, 0, tzinfo=ZoneInfo("America/New_York")
+    )
+    with pytest.raises(ValidationError):
+        TemporalIdentity(
+            session_date="2026-01-06",
+            market_timezone="America/New_York",
+            session_open_at=new_york_open,  # aware but not UTC
+            session_close_at=tuesday_close,
+            information_window_start_at=monday_close,
+            cutoff_at=tuesday_close,
+        )
+    assert tuesday_close.tzinfo is dt_timezone.utc

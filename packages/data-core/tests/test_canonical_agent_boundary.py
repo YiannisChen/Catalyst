@@ -64,7 +64,11 @@ def _text_hit() -> RetrievalHit:
 
 
 def test_v1_retrieval_set_serializes_losslessly_across_packages() -> None:
-    result_set = RetrievalResultSet(hits=(_text_hit(),))
+    result_set = RetrievalResultSet(
+        hits=(_text_hit(),),
+        temporal_identity=_temporal(),
+        data_runtime_identity=_runtime(),
+    )
     restored = RetrievalResultSet.model_validate_json(result_set.model_dump_json())
     assert restored == result_set
     hit = restored.hits[0]
@@ -72,6 +76,8 @@ def test_v1_retrieval_set_serializes_losslessly_across_packages() -> None:
     assert hit.fact_id is None
     assert hit.evidence_id == hit.chunk_id
     assert hit.temporal_identity.session_date == "2026-01-06"
+    assert restored.temporal_identity == _temporal()
+    assert restored.data_runtime_identity == _runtime()
 
 
 def test_agents_consumes_chunk_id_and_fact_id_unchanged() -> None:

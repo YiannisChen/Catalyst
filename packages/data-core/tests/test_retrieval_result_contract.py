@@ -178,7 +178,11 @@ def test_v1_set_accepts_contiguous_ranks_and_is_frozen() -> None:
             ranks={"lexical": 2, "dense": None, "fusion": None, "reranked": None},
         )
     )
-    result_set = RetrievalResultSet(hits=(first, second))
+    result_set = RetrievalResultSet(
+        hits=(first, second),
+        temporal_identity=_temporal_identity(),
+        data_runtime_identity=_runtime_identity(),
+    )
     assert len(result_set.hits) == 2
     with pytest.raises(ValidationError):
         result_set.hits = (first,)  # frozen
@@ -252,3 +256,87 @@ def test_live_retrieval_result_module_audited_shape_unchanged() -> None:
     from catalyst_data.retrieval.v1_result import RetrievalHit
 
     assert RetrievalHit.__module__ == "catalyst_data.retrieval.v1_result"
+
+
+def test_v1_set_binds_temporal_and_runtime_identity_even_when_empty() -> None:
+    """Phase 2 corrective: RetrievalResultSet carries set-level identity even
+    with zero hits; identity passes unchanged through the result set."""
+    from catalyst_data.retrieval.v1_result import RetrievalResultSet
+
+    empty = RetrievalResultSet(
+        hits=(),
+        temporal_identity=_temporal_identity(),
+        data_runtime_identity=_runtime_identity(),
+    )
+    assert empty.hits == ()
+    assert empty.temporal_identity == _temporal_identity()
+    assert empty.data_runtime_identity == _runtime_identity()
+
+
+def test_v1_set_requires_set_level_identity() -> None:
+    """Phase 2 corrective: set-level TemporalIdentity/DataRuntimeIdentity are
+    required even when hits are empty; omitting them fails validation."""
+    from catalyst_data.retrieval.v1_result import RetrievalResultSet
+
+    with pytest.raises(ValidationError):
+        RetrievalResultSet(hits=())
+
+
+def test_v1_set_rejects_hit_with_mismatched_temporal_identity() -> None:
+    """Phase 2 corrective: every hit must match the set-level temporal identity."""
+    from catalyst_data.retrieval.v1_result import RetrievalHit, RetrievalResultSet
+
+    other_temporal = TemporalIdentity(
+        session_date="2026-01-07",
+        market_timezone="America/New_York",
+        session_open_at=_utc("2026-01-07T14:30:00Z"),
+        session_close_at=_utc(session_close_utc("2026-01-07")),
+        information_window_start_at=_utc(session_close_utc("2026-01-06")),
+        cutoff_at=_utc(session_close_utc("2026-01-07")),
+    )
+    hit = RetrievalHit(**_hit(temporal_identity=other_temporal))
+    with pytest.raises(ValidationError):
+        RetrievalResultSet(
+            hits=(hit,),
+            temporal_identity=_temporal_identity(),
+            data_runtime_identity=_runtime_identity(),
+        )
+
+
+def test_v1_set_rejects_hit_with_mismatched_runtime_identity() -> None:
+    """Phase 2 corrective: every hit must match the set-level runtime identity."""
+    from catalyst_data.retrieval.v1_result import RetrievalHit, RetrievalResultSet
+
+    other_runtime = DataRuntimeIdentity(
+        data_snapshot_id="snapshot:other",
+        corpus_manifest_id="d" * 64,
+        fts_index_version="fts:v2",
+        query_policy_version="qp:v0",
+    )
+    hit = RetrievalHit(**_hit(data_runtime_identity=other_runtime))
+    with pytest.raises(ValidationError):
+        RetrievalResultSet(
+            hits=(hit,),
+            temporal_identity=_temporal_identity(),
+            data_runtime_identity=_runtime_identity(),
+        )
+
+
+def test_v1_set_accepts_matching_hits_and_preserves_identity() -> None:
+    """Phase 2 corrective: hits matching the set identity validate and the
+    set-level identity round-trips losslessly."""
+    from catalyst_data.retrieval.v1_result import RetrievalHit, RetrievalResultSet
+
+    hit = RetrievalHit(
+        **_hit(
+            ranks={"lexical": 1, "dense": None, "fusion": 1, "reranked": None}
+        )
+    )
+    result_set = RetrievalResultSet(
+        hits=(hit,),
+        temporal_identity=_temporal_identity(),
+        data_runtime_identity=_runtime_identity(),
+    )
+    assert result_set.temporal_identity == _temporal_identity()
+    assert result_set.data_runtime_identity == _runtime_identity()
+    assert result_set.hits[0].temporal_identity == _temporal_identity()
