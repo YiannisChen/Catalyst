@@ -18,6 +18,7 @@ from catalyst_agents.attribution.analyst import (
     AttributionStatus,
     AttributionType,
 )
+from catalyst_agents.attribution.claims import ClaimRole
 from catalyst_data.canonical.model import ContentState, SourceClass
 from catalyst_app.events import PublicRunEvent
 from catalyst_app.lifecycle import RunLifecycleStatus
@@ -108,7 +109,7 @@ class ClaimDetailDTO(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     claim_id: str
-    role: Literal["PRIMARY", "SECONDARY", "CONTEXT", "LIMITATION"]
+    role: ClaimRole
     statement: str
     mechanism: str | None = None
     support_evidence_ids: tuple[str, ...] = ()
