@@ -1,4 +1,4 @@
-"""V1.1 claim boundary contracts (M2-7, corrective).
+"""V1.1 claim boundary contracts (M2-7, corrective; maximum public surface).
 
 ClaimPlan/ValidatedClaimPlan/WriterInput (Frozen §6.5; Phase 4 TSD §§23, 27,
 28; Final Migration TSD §13). The detailed Phase TSD shapes govern over the
@@ -7,19 +7,24 @@ magnitude fit, conflict references, required citation IDs and deterministic
 ordering metadata; plans carry assessment/ContextPack/EvidenceState identities
 and hashes, required limitations, exact citation map, permitted claim/evidence
 IDs, source-role/independence summary, ordering policy and plan hashes.
-Derivation of those values (hash computation, deterministic construction,
-citation-map building) is M5 ClaimPlan construction; the schema contract lives
-here. AGENT-01 lock: an ABSTAIN WriterInput always uses the fixed abstention
-path — no PRIMARY/SECONDARY causal claims, no NO_MATERIAL attribution type,
-and is_fixed_abstention validates the actual structure.
+Maximum-public-surface seal: the canonical plan types cannot be instantiated
+incompletely — artifact identity/hash fields, ordering policy, plan hash and
+the validated source-role/independence summary are required; citation_map is
+the exact per-claim representation of citation_evidence_ids; permitted IDs are
+exact sets; WriterInput may not exceed the validated plan surface (snippet
+keys ⊆ permitted evidence, required_limitations and citation_map equal the
+plan, format/style contract required and bounded). Derivation of those values
+(hash computation, deterministic construction, citation-map building) is M5
+ClaimPlan construction; the schema contract lives here. AGENT-01 lock: an
+ABSTAIN WriterInput always uses the fixed abstention path — no PRIMARY/SECONDARY
+causal claims, no NO_MATERIAL attribution type, and is_fixed_abstention
+validates the actual structure.
 """
 from __future__ import annotations
 
 import re
 from enum import Enum
-from typing import Any
-
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from catalyst_agents.attribution.analyst import (
     AttributionStatus,
@@ -28,6 +33,9 @@ from catalyst_agents.attribution.analyst import (
 )
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+_FORMAT_ITEM_MAX_LENGTH = 200
+_FORMAT_COLLECTION_MAX_ITEMS = 16
 
 
 class ClaimRole(str, Enum):
@@ -80,6 +88,15 @@ class Claim(BaseModel):
             )
         if self.order_index is not None and self.order_index < 0:
             raise ValueError("order_index must be non-negative")
+        if self.role in (ClaimRole.PRIMARY, ClaimRole.SECONDARY):
+            if self.source_hypothesis_id is None:
+                raise ValueError(
+                    f"causal claim {self.claim_id!r} requires source_hypothesis_id"
+                )
+            if self.magnitude_fit is None:
+                raise ValueError(
+                    f"causal claim {self.claim_id!r} requires magnitude_fit"
+                )
         return self
 
 
@@ -97,9 +114,9 @@ def _validate_claim_ids_and_primary(claims: tuple[Claim, ...]) -> None:
         raise ValueError("claim order_index values must be unique within the plan")
 
 
-def _validate_sha256_hashes(**hashes: str | None) -> None:
+def _validate_sha256_hashes(**hashes: str) -> None:
     for name, value in hashes.items():
-        if value is not None and _SHA256_RE.fullmatch(value) is None:
+        if _SHA256_RE.fullmatch(value) is None:
             raise ValueError(f"{name} must be a lowercase SHA-256 hex digest")
 
 
@@ -123,19 +140,24 @@ class SourceRoleIndependenceSummary(BaseModel):
 
 
 class ClaimPlan(BaseModel):
-    """Minimal claim list binding claims to evidence (Frozen §6.5; Phase 4 §23)."""
+    """Deterministic pre-validation claim proposal (Frozen §6.5; Phase 4 §23).
+
+    Artifact identity/hash fields, ordering policy and plan hash are required:
+    an incomplete ClaimPlan cannot be instantiated (maximum-public-surface
+    seal). Value derivation is M5 ClaimPlan construction.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     status: AttributionStatus
     attribution_type: AttributionType
     claims: tuple[Claim, ...] = ()
-    assessment_hash: str | None = None
-    context_pack_sha256: str | None = None
-    evidence_state_hash: str | None = None
+    assessment_hash: str
+    context_pack_sha256: str
+    evidence_state_hash: str
     required_limitations: tuple[str, ...] = ()
-    ordering_policy_version: str | None = None
-    plan_hash: str | None = None
+    ordering_policy_version: str
+    plan_hash: str
 
     @model_validator(mode="after")
     def _claim_invariants(self) -> "ClaimPlan":
@@ -152,7 +174,9 @@ class ClaimPlan(BaseModel):
 class ValidatedClaimPlan(BaseModel):
     """Maximum public semantic surface the Writer may express (Phase 4 §27).
 
-    Contains no numeric confidence or probability fields.
+    Contains no numeric confidence or probability fields. The citation map is
+    the exact per-claim representation of citation_evidence_ids (including
+    explicit empty tuples); permitted claim/evidence IDs are exact sets.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -160,16 +184,16 @@ class ValidatedClaimPlan(BaseModel):
     status: AttributionStatus
     attribution_type: AttributionType
     claims: tuple[Claim, ...] = ()
-    assessment_hash: str | None = None
-    context_pack_sha256: str | None = None
-    evidence_state_hash: str | None = None
+    assessment_hash: str
+    context_pack_sha256: str
+    evidence_state_hash: str
     required_limitations: tuple[str, ...] = ()
     citation_map: dict[str, tuple[str, ...]] = {}
     permitted_claim_ids: tuple[str, ...] = ()
     permitted_evidence_ids: tuple[str, ...] = ()
-    source_role_independence_summary: SourceRoleIndependenceSummary | None = None
-    ordering_policy_version: str | None = None
-    plan_hash: str | None = None
+    source_role_independence_summary: SourceRoleIndependenceSummary
+    ordering_policy_version: str
+    plan_hash: str
 
     @model_validator(mode="after")
     def _claim_invariants(self) -> "ValidatedClaimPlan":
@@ -181,20 +205,16 @@ class ValidatedClaimPlan(BaseModel):
             plan_hash=self.plan_hash,
         )
         plan_claims = {claim.claim_id: claim for claim in self.claims}
-        for claim_id, evidence_ids in self.citation_map.items():
-            claim = plan_claims.get(claim_id)
-            if claim is None:
-                raise ValueError(
-                    f"citation_map references unknown claim {claim_id!r}"
-                )
-            allowed = set(claim.support_evidence_ids) | set(
-                claim.counter_evidence_ids
+        if set(self.citation_map) != set(plan_claims):
+            raise ValueError(
+                "citation_map must contain exactly one entry per plan claim"
             )
-            unknown = set(evidence_ids) - allowed
-            if unknown:
+        for claim_id, claim in plan_claims.items():
+            mapped = tuple(self.citation_map[claim_id])
+            if mapped != claim.citation_evidence_ids:
                 raise ValueError(
-                    f"citation_map references evidence not bound to claim "
-                    f"{claim_id!r}: {sorted(unknown)}"
+                    f"citation_map for {claim_id!r} must exactly equal its "
+                    "citation_evidence_ids"
                 )
         if set(self.permitted_claim_ids) != set(plan_claims):
             raise ValueError(
@@ -205,11 +225,10 @@ class ValidatedClaimPlan(BaseModel):
             used_evidence.update(claim.support_evidence_ids)
             used_evidence.update(claim.counter_evidence_ids)
             used_evidence.update(claim.citation_evidence_ids)
-        missing_permitted = used_evidence - set(self.permitted_evidence_ids)
-        if missing_permitted:
+        if set(self.permitted_evidence_ids) != used_evidence:
             raise ValueError(
-                "permitted_evidence_ids must cover every claim evidence ref: "
-                f"{sorted(missing_permitted)}"
+                "permitted_evidence_ids must exactly equal the union of claim "
+                "evidence refs (no missing IDs and no arbitrary superset)"
             )
         return self
 
@@ -225,14 +244,28 @@ class WriterFormatStyleContract(BaseModel):
     @model_validator(mode="after")
     def _bounded(self) -> "WriterFormatStyleContract":
         for field in ("required_sections", "style_instructions"):
-            for item in getattr(self, field):
-                if len(item) > 200:
+            items = getattr(self, field)
+            if not items:
+                raise ValueError(f"{field} must not be empty")
+            if len(items) > _FORMAT_COLLECTION_MAX_ITEMS:
+                raise ValueError(
+                    f"{field} must not exceed {_FORMAT_COLLECTION_MAX_ITEMS} items"
+                )
+            if len(items) != len(set(items)):
+                raise ValueError(f"{field} items must be unique")
+            for item in items:
+                if len(item) > _FORMAT_ITEM_MAX_LENGTH:
                     raise ValueError(f"{field} items must be length-bounded")
         return self
 
 
 class WriterInput(BaseModel):
-    """Narrow Writer input over the ValidatedClaimPlan (Phase 4 §28)."""
+    """Narrow Writer input over the ValidatedClaimPlan (Phase 4 §28).
+
+    The Writer may not exceed the validated plan surface: final status/type
+    match the plan, citation_map and required_limitations equal the plan, and
+    supporting snippet keys stay within the permitted evidence surface.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -242,8 +275,8 @@ class WriterInput(BaseModel):
     validated_claim_plan: ValidatedClaimPlan
     narrowly_bound_supporting_snippets: dict[str, str]
     citation_map: dict[str, tuple[str, ...]]
-    required_limitations: tuple[str, ...] = ()
-    format_style_contract: WriterFormatStyleContract | None = None
+    required_limitations: tuple[str, ...]
+    format_style_contract: WriterFormatStyleContract
 
     @model_validator(mode="after")
     def _plan_consistency(self) -> "WriterInput":
@@ -256,6 +289,20 @@ class WriterInput(BaseModel):
         if self.citation_map != self.validated_claim_plan.citation_map:
             raise ValueError(
                 "WriterInput citation_map must equal the ValidatedClaimPlan citation map"
+            )
+        if self.required_limitations != self.validated_claim_plan.required_limitations:
+            raise ValueError(
+                "WriterInput required_limitations must equal the ValidatedClaimPlan "
+                "required limitations"
+            )
+        allowed_snippet_keys = set(self.validated_claim_plan.permitted_evidence_ids)
+        unknown_snippet_keys = set(self.narrowly_bound_supporting_snippets) - (
+            allowed_snippet_keys
+        )
+        if unknown_snippet_keys:
+            raise ValueError(
+                "supporting snippet keys must stay within the permitted evidence "
+                f"surface: {sorted(unknown_snippet_keys)}"
             )
         return self
 

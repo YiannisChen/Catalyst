@@ -17,7 +17,13 @@ from catalyst_agents.attribution.analyst import (
     CandidateHypothesis,
     EvidenceDecision,
 )
-from catalyst_agents.attribution.claims import Claim, ValidatedClaimPlan, WriterInput
+from catalyst_agents.attribution.claims import (
+    Claim,
+    SourceRoleIndependenceSummary,
+    ValidatedClaimPlan,
+    WriterFormatStyleContract,
+    WriterInput,
+)
 from catalyst_agents.retrieval.corrective import (
     CorrectiveResearchAction,
     CorrectiveResearchBatch,
@@ -199,6 +205,53 @@ def test_empty_corrective_batch_is_rejected() -> None:
         )
 
 
+def _canonical_validated_plan() -> ValidatedClaimPlan:
+    """Canonical Phase 4 §27 plan used by the Writer bypass reproductions."""
+    return ValidatedClaimPlan(
+        status="PARTIAL",
+        attribution_type="EVIDENCE_BACKED_CAUSAL",
+        claims=(
+            Claim(
+                claim_id="claim-1",
+                role="PRIMARY",
+                statement="AAPL rose on guidance.",
+                support_evidence_ids=("corpus:chunk:0001",),
+                citation_evidence_ids=("corpus:chunk:0001",),
+                source_hypothesis_id="hyp:1",
+                magnitude_fit="STRONG",
+            ),
+        ),
+        assessment_hash="a" * 64,
+        context_pack_sha256="b" * 64,
+        evidence_state_hash="c" * 64,
+        required_limitations=("magnitude coverage is partial",),
+        citation_map={"claim-1": ("corpus:chunk:0001",)},
+        permitted_claim_ids=("claim-1",),
+        permitted_evidence_ids=("corpus:chunk:0001",),
+        source_role_independence_summary=SourceRoleIndependenceSummary(),
+        ordering_policy_version="op:v1",
+        plan_hash="d" * 64,
+    )
+
+
+def _canonical_writer_input(**overrides) -> dict:
+    base = dict(
+        final_status="PARTIAL",
+        attribution_type="EVIDENCE_BACKED_CAUSAL",
+        observed_move="AAPL +3.2%",
+        validated_claim_plan=_canonical_validated_plan(),
+        narrowly_bound_supporting_snippets={"corpus:chunk:0001": "guidance"},
+        citation_map={"claim-1": ("corpus:chunk:0001",)},
+        required_limitations=("magnitude coverage is partial",),
+        format_style_contract=WriterFormatStyleContract(
+            required_sections=("summary",),
+            style_instructions=("neutral tone",),
+        ),
+    )
+    base.update(overrides)
+    return base
+
+
 def test_abstain_with_primary_causal_claim_is_rejected() -> None:
     with pytest.raises(ValidationError):
         WriterInput(
@@ -214,14 +267,63 @@ def test_abstain_with_primary_causal_claim_is_rejected() -> None:
                         role="PRIMARY",
                         statement="AAPL rose on guidance.",
                         support_evidence_ids=("corpus:chunk:0001",),
+                        citation_evidence_ids=("corpus:chunk:0001",),
+                        source_hypothesis_id="hyp:1",
+                        magnitude_fit="STRONG",
                     ),
                 ),
+                assessment_hash="a" * 64,
+                context_pack_sha256="b" * 64,
+                evidence_state_hash="c" * 64,
+                required_limitations=(),
+                citation_map={"claim-1": ("corpus:chunk:0001",)},
+                permitted_claim_ids=("claim-1",),
+                permitted_evidence_ids=("corpus:chunk:0001",),
+                source_role_independence_summary=SourceRoleIndependenceSummary(),
+                ordering_policy_version="op:v1",
+                plan_hash="d" * 64,
             ),
             narrowly_bound_supporting_snippets={
                 "corpus:chunk:0001": "guidance"
             },
             citation_map={"claim-1": ("corpus:chunk:0001",)},
             required_limitations=(),
+            format_style_contract=WriterFormatStyleContract(
+                required_sections=("limitations",),
+                style_instructions=("neutral tone",),
+            ),
+        )
+
+
+def test_writer_public_surface_bypasses_are_rejected() -> None:
+    # Unbound snippet key outside the validated permitted/citation surface.
+    with pytest.raises(ValidationError):
+        WriterInput(
+            **_canonical_writer_input(
+                narrowly_bound_supporting_snippets={
+                    "corpus:chunk:0001": "guidance",
+                    "corpus:chunk:9999": "unbound text",
+                }
+            )
+        )
+    # Writer limitations differ from the validated plan limitations.
+    with pytest.raises(ValidationError):
+        WriterInput(
+            **_canonical_writer_input(
+                required_limitations=("a different limitation",)
+            )
+        )
+    # Writer omits the required format/style contract.
+    writer = _canonical_writer_input()
+    del writer["format_style_contract"]
+    with pytest.raises(ValidationError):
+        WriterInput(**writer)
+    # Citation-map relation differs from the plan/claim citation relation.
+    with pytest.raises(ValidationError):
+        WriterInput(
+            **_canonical_writer_input(
+                citation_map={"claim-1": ()}
+            )
         )
 
 

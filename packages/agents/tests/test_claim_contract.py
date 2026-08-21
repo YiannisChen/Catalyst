@@ -4,7 +4,9 @@ ClaimPlan/ValidatedClaimPlan/WriterInput plus the two ClaimValidator failure
 classes (Final Migration TSD §13; Frozen §6.5). AGENT-01 lock: an ABSTAIN
 WriterInput follows the fixed abstention path — no PRIMARY/SECONDARY causal
 claims, no NO_MATERIAL attribution type, and is_fixed_abstention validates the
-actual structure rather than a boolean marker.
+actual structure rather than a boolean marker. Maximum-public-surface seal:
+the canonical plan types cannot be instantiated incompletely (Phase 4
+§§23/27/28), and WriterInput may not exceed the validated plan surface.
 """
 from __future__ import annotations
 
@@ -22,6 +24,7 @@ from catalyst_agents.attribution.claims import (
     Claim,
     ClaimPlan,
     ClaimRole,
+    SourceRoleIndependenceSummary,
     ValidatedClaimPlan,
     WriterFormatStyleContract,
     WriterInput,
@@ -31,6 +34,11 @@ from catalyst_agents.attribution.analyst import (
     AttributionStatus,
     AttributionType,
 )
+
+H64 = "a" * 64
+H64_B = "b" * 64
+H64_C = "c" * 64
+H64_D = "d" * 64
 
 
 def _claim(**overrides: Any) -> dict[str, Any]:
@@ -42,6 +50,11 @@ def _claim(**overrides: Any) -> dict[str, Any]:
         "support_evidence_ids": ("corpus:chunk:0001",),
         "counter_evidence_ids": (),
         "limitations": (),
+        "source_hypothesis_id": "hyp:1",
+        "magnitude_fit": "STRONG",
+        "conflict_refs": (),
+        "citation_evidence_ids": (),
+        "order_index": 0,
     }
     base.update(overrides)
     return base
@@ -52,14 +65,20 @@ def _plan(**overrides: Any) -> dict[str, Any]:
         "status": "PARTIAL",
         "attribution_type": "EVIDENCE_BACKED_CAUSAL",
         "claims": (Claim(**_claim()),),
+        "assessment_hash": H64,
+        "context_pack_sha256": H64_B,
+        "evidence_state_hash": H64_C,
+        "required_limitations": ("magnitude coverage is partial",),
+        "ordering_policy_version": "op:v1",
+        "plan_hash": H64_D,
     }
     base.update(overrides)
     return base
 
 
 def _validated_plan(**overrides: Any) -> dict[str, Any]:
-    """A ValidatedClaimPlan fixture carrying the Phase 4 §27 permitted-ID
-    surface consistent with its (possibly overridden) claims."""
+    """A ValidatedClaimPlan fixture carrying the Phase 4 §27 permitted-ID and
+    citation surfaces consistent with its (possibly overridden) claims."""
     data = {**_plan(), **overrides}
     claims = data["claims"]
     if "permitted_claim_ids" not in data:
@@ -71,6 +90,12 @@ def _validated_plan(**overrides: Any) -> dict[str, Any]:
             evidence_ids.update(claim.counter_evidence_ids)
             evidence_ids.update(claim.citation_evidence_ids)
         data["permitted_evidence_ids"] = tuple(sorted(evidence_ids))
+    if "citation_map" not in data:
+        data["citation_map"] = {
+            claim.claim_id: tuple(claim.citation_evidence_ids) for claim in claims
+        }
+    if "source_role_independence_summary" not in data:
+        data["source_role_independence_summary"] = SourceRoleIndependenceSummary()
     return data
 
 
@@ -84,6 +109,7 @@ def _abstention_plan(**overrides: Any) -> dict[str, Any]:
                 role="LIMITATION",
                 statement="No accepted cause under eligible evidence.",
                 limitations=(),
+                order_index=0,
             ),
         ),
     }
@@ -92,13 +118,25 @@ def _abstention_plan(**overrides: Any) -> dict[str, Any]:
 
 
 def _writer_input(**overrides: Any) -> dict[str, Any]:
+    claim = Claim(
+        **_claim(
+            support_evidence_ids=("corpus:chunk:0001",),
+            citation_evidence_ids=("corpus:chunk:0001",),
+        )
+    )
+    plan = ValidatedClaimPlan(
+        **_validated_plan(
+            claims=(claim,),
+            citation_map={"claim-1": ("corpus:chunk:0001",)},
+            permitted_claim_ids=("claim-1",),
+            permitted_evidence_ids=("corpus:chunk:0001",),
+        )
+    )
     base: dict[str, Any] = {
         "final_status": "PARTIAL",
         "attribution_type": "EVIDENCE_BACKED_CAUSAL",
         "observed_move": "AAPL +3.2%",
-        "validated_claim_plan": ValidatedClaimPlan(
-            **_validated_plan(citation_map={"claim-1": ("corpus:chunk:0001",)})
-        ),
+        "validated_claim_plan": plan,
         "narrowly_bound_supporting_snippets": {
             "corpus:chunk:0001": "AAPL reported record quarterly revenue."
         },
@@ -174,6 +212,31 @@ def test_claim_roles_are_closed() -> None:
         Claim(**_claim(role="DRIVER"))
 
 
+def test_causal_claims_require_hypothesis_identity_and_magnitude_fit() -> None:
+    with pytest.raises(ValidationError):
+        Claim(**_claim(source_hypothesis_id=None))
+    with pytest.raises(ValidationError):
+        Claim(**_claim(magnitude_fit=None))
+    with pytest.raises(ValidationError):
+        Claim(**_claim(role="SECONDARY", source_hypothesis_id=None))
+    with pytest.raises(ValidationError):
+        Claim(**_claim(role="SECONDARY", magnitude_fit=None))
+    limitation = Claim(
+        claim_id="limit-1",
+        role="LIMITATION",
+        statement="No accepted cause.",
+    )
+    assert limitation.source_hypothesis_id is None
+    assert limitation.magnitude_fit is None
+    context = Claim(
+        claim_id="ctx-1",
+        role="CONTEXT",
+        statement="Broad market context.",
+    )
+    assert context.source_hypothesis_id is None
+    assert context.magnitude_fit is None
+
+
 def test_validated_claim_plan_is_maximum_public_surface_without_confidence() -> None:
     fields = set(ValidatedClaimPlan.model_fields)
     assert fields == {
@@ -210,7 +273,7 @@ def test_writer_input_final_status_and_type_match_validated_plan() -> None:
             **_writer_input(
                 attribution_type="NO_MATERIAL_PUBLIC_CATALYST",
                 validated_claim_plan=ValidatedClaimPlan(
-                    **_plan(attribution_type="EVIDENCE_BACKED_CAUSAL")
+                    **_validated_plan(attribution_type="EVIDENCE_BACKED_CAUSAL")
                 ),
             )
         )
@@ -253,6 +316,8 @@ def test_abstain_writer_input_rejects_primary_and_secondary_causal_claims() -> N
                                 role="SECONDARY",
                                 statement="Secondary factor.",
                                 support_evidence_ids=("corpus:chunk:0001",),
+                                source_hypothesis_id="hyp:2",
+                                magnitude_fit="PLAUSIBLE",
                             ),
                         ),
                     )
@@ -298,6 +363,9 @@ def test_fixed_abstention_accepts_only_limitation_and_context_surface() -> None:
                     citation_map={"limit-1": ()},
                     permitted_claim_ids=("limit-1",),
                     permitted_evidence_ids=(),
+                    required_limitations=(
+                        "No accepted cause under eligible evidence.",
+                    ),
                 )
             ),
             citation_map={"limit-1": ()},
@@ -311,16 +379,23 @@ def test_fixed_abstention_accepts_only_limitation_and_context_surface() -> None:
 
 
 def test_citation_map_must_reference_known_claims_and_evidence() -> None:
+    plan = ValidatedClaimPlan(
+        **_validated_plan(
+            claims=(Claim(**_claim(citation_evidence_ids=("corpus:chunk:0001",))),),
+        )
+    )
     with pytest.raises(ValidationError):
         WriterInput(
             **_writer_input(
-                citation_map={"claim-unknown": ("corpus:chunk:0001",)}
+                validated_claim_plan=plan,
+                citation_map={"claim-unknown": ("corpus:chunk:0001",)},
             )
         )
     with pytest.raises(ValidationError):
         WriterInput(
             **_writer_input(
-                citation_map={"claim-1": ("corpus:chunk:9999",)}
+                validated_claim_plan=plan,
+                citation_map={"claim-1": ("corpus:chunk:9999",)},
             )
         )
 
@@ -452,27 +527,25 @@ def test_validated_claim_plan_permitted_ids_are_consistent() -> None:
     )
     with pytest.raises(ValidationError):
         ValidatedClaimPlan(
-            **_plan(
+            **_validated_plan(
                 claims=(claim,),
                 permitted_claim_ids=("claim-other",),
             )
         )
     with pytest.raises(ValidationError):
         ValidatedClaimPlan(
-            **_plan(
+            **_validated_plan(
                 claims=(claim,),
                 permitted_evidence_ids=(),
             )
         )
     plan = ValidatedClaimPlan(
-        **_plan(
+        **_validated_plan(
             claims=(claim,),
-            permitted_claim_ids=("claim-1",),
-            permitted_evidence_ids=("corpus:chunk:0001",),
-            citation_map={"claim-1": ("corpus:chunk:0001",)},
         )
     )
     assert plan.permitted_claim_ids == ("claim-1",)
+    assert plan.permitted_evidence_ids == ("corpus:chunk:0001",)
 
 
 def test_writer_input_uses_typed_format_style_contract() -> None:
@@ -503,11 +576,8 @@ def test_writer_input_citation_map_matches_validated_plan() -> None:
         )
     )
     plan = ValidatedClaimPlan(
-        **_plan(
+        **_validated_plan(
             claims=(claim,),
-            citation_map={"claim-1": ("corpus:chunk:0001",)},
-            permitted_claim_ids=("claim-1",),
-            permitted_evidence_ids=("corpus:chunk:0001",),
         )
     )
     with pytest.raises(ValidationError):
@@ -521,7 +591,163 @@ def test_writer_input_citation_map_matches_validated_plan() -> None:
         **_writer_input(
             validated_claim_plan=plan,
             citation_map={"claim-1": ("corpus:chunk:0001",)},
-            format_style_contract=None,
         )
     )
     assert ok.citation_map == {"claim-1": ("corpus:chunk:0001",)}
+
+
+# ---------------------------------------------------------------------------
+# Maximum public surface seal (2026-08-21 supervisor FIX THEN PROCEED)
+# ---------------------------------------------------------------------------
+
+
+def test_citation_map_must_exactly_represent_each_claim_citations() -> None:
+    claim = Claim(**_claim(citation_evidence_ids=("corpus:chunk:0001",)))
+    with pytest.raises(ValidationError):
+        ValidatedClaimPlan(
+            **_validated_plan(
+                claims=(claim,),
+                citation_map={},
+            )
+        )
+    with pytest.raises(ValidationError):
+        ValidatedClaimPlan(
+            **_validated_plan(
+                claims=(claim,),
+                citation_map={"claim-1": ()},
+            )
+        )
+    claim2 = Claim(
+        **_claim(
+            support_evidence_ids=("corpus:chunk:0001", "corpus:chunk:0002"),
+            counter_evidence_ids=(),
+            citation_evidence_ids=("corpus:chunk:0001",),
+        )
+    )
+    with pytest.raises(ValidationError):
+        ValidatedClaimPlan(
+            **_validated_plan(
+                claims=(claim2,),
+                citation_map={"claim-1": ("corpus:chunk:0002",)},
+            )
+        )
+
+
+def test_citation_map_represents_explicitly_empty_citation_tuples() -> None:
+    plan = ValidatedClaimPlan(
+        **_validated_plan(
+            claims=(Claim(**_claim(citation_evidence_ids=())),),
+        )
+    )
+    assert plan.citation_map == {"claim-1": ()}
+
+
+def test_permitted_evidence_ids_cannot_be_superset() -> None:
+    claim = Claim(
+        **_claim(
+            support_evidence_ids=("corpus:chunk:0001",),
+            citation_evidence_ids=("corpus:chunk:0001",),
+        )
+    )
+    with pytest.raises(ValidationError):
+        ValidatedClaimPlan(
+            **_validated_plan(
+                claims=(claim,),
+                permitted_evidence_ids=("corpus:chunk:0001", "corpus:chunk:9999"),
+            )
+        )
+    with pytest.raises(ValidationError):
+        ValidatedClaimPlan(
+            **_validated_plan(
+                claims=(claim,),
+                permitted_evidence_ids=("corpus:chunk:0001", "arbitrary:unbound"),
+            )
+        )
+
+
+def test_writer_input_snippet_keys_must_stay_within_permitted_surface() -> None:
+    with pytest.raises(ValidationError):
+        WriterInput(
+            **_writer_input(
+                narrowly_bound_supporting_snippets={
+                    "corpus:chunk:0001": "AAPL record revenue.",
+                    "corpus:chunk:9999": "unbound text",
+                }
+            )
+        )
+    with pytest.raises(ValidationError):
+        WriterInput(
+            **_writer_input(
+                narrowly_bound_supporting_snippets={
+                    "corpus:chunk:9999": "unbound text",
+                }
+            )
+        )
+
+
+def test_writer_input_required_limitations_must_equal_plan() -> None:
+    with pytest.raises(ValidationError):
+        WriterInput(
+            **_writer_input(
+                required_limitations=("a different limitation",),
+            )
+        )
+
+
+def test_writer_input_format_style_contract_is_required() -> None:
+    with pytest.raises(ValidationError):
+        WriterInput(**_writer_input(format_style_contract=None))
+    partial = {k: v for k, v in _writer_input().items() if k != "format_style_contract"}
+    with pytest.raises(ValidationError):
+        WriterInput(**partial)
+
+
+def test_claim_plan_identity_and_hash_fields_are_required() -> None:
+    for field in (
+        "assessment_hash",
+        "context_pack_sha256",
+        "evidence_state_hash",
+        "ordering_policy_version",
+        "plan_hash",
+    ):
+        incomplete = {k: v for k, v in _plan().items() if k != field}
+        with pytest.raises(ValidationError):
+            ClaimPlan(**incomplete)
+    incomplete_validated = {
+        k: v
+        for k, v in _validated_plan().items()
+        if k != "source_role_independence_summary"
+    }
+    with pytest.raises(ValidationError):
+        ValidatedClaimPlan(**incomplete_validated)
+    for field in (
+        "assessment_hash",
+        "context_pack_sha256",
+        "evidence_state_hash",
+        "ordering_policy_version",
+        "plan_hash",
+    ):
+        incomplete = {k: v for k, v in _validated_plan().items() if k != field}
+        with pytest.raises(ValidationError):
+            ValidatedClaimPlan(**incomplete)
+
+
+def test_writer_format_style_contract_rejects_duplicate_empty_and_unbounded() -> None:
+    with pytest.raises(ValidationError):
+        WriterFormatStyleContract(required_sections=("summary", "summary"))
+    with pytest.raises(ValidationError):
+        WriterFormatStyleContract(style_instructions=("neutral", "neutral"))
+    with pytest.raises(ValidationError):
+        WriterFormatStyleContract(required_sections=())
+    with pytest.raises(ValidationError):
+        WriterFormatStyleContract(style_instructions=())
+    with pytest.raises(ValidationError):
+        WriterFormatStyleContract(
+            required_sections=tuple(f"section-{i}" for i in range(17))
+        )
+    with pytest.raises(ValidationError):
+        WriterFormatStyleContract(
+            style_instructions=tuple(f"style-{i}" for i in range(17))
+        )
+    with pytest.raises(ValidationError):
+        WriterFormatStyleContract(style_instructions=("x" * 201,))
