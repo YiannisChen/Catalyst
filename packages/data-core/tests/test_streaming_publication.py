@@ -24,6 +24,7 @@ from catalyst_data.corpus.streaming_publication import (
     ensure_streaming_publication_schema,
     iter_chunk_pages,
 )
+from catalyst_data.migrations import CURRENT_SCHEMA_VERSION
 from catalyst_data.storage.sqlite import init_db
 
 
@@ -439,7 +440,7 @@ def test_streaming_schema_upgrades_legacy_checkpoints_without_version_change(
     }
     assert {"batch_digest", "checkpoint_chunk_id"} <= batch_columns
     assert {"lexical_generation_id", "lexical_digest"} <= lexical_columns
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == version_before == 13
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == version_before == CURRENT_SCHEMA_VERSION
 
 
 @pytest.mark.parametrize(

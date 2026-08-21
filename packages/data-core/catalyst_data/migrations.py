@@ -14,6 +14,8 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 
+from catalyst_data.canonical.registry import CANONICAL_REGISTRY_DDL
+
 logger = logging.getLogger(__name__)
 
 CORPUS_CHUNKS_FTS_DDL = """CREATE VIRTUAL TABLE IF NOT EXISTS corpus_chunks_fts USING fts5(
@@ -1089,11 +1091,59 @@ MIGRATIONS: list[Migration] = [
         "-- v13: rebuild corpus_chunks for filing_v3; add filing_documents.document_id.",
         "-- Applied via _apply_migration_v13() within SAVEPOINT.",
     ], reversible=False),
+    Migration(version=14, name="canonical_registry", statements=[
+        "-- v14: additive canonical registry (canonical_assets, content versions,",
+        "-- associations, structured-fact refs) plus repair-persistence columns.",
+        "-- Applied via _apply_migration_v14() within SAVEPOINT.",
+    ], reversible=False),
 
 ]
 
 # Bootstrap, snapshot, and tests derive the current schema from the registry.
 CURRENT_SCHEMA_VERSION: int = max(migration.version for migration in MIGRATIONS)
+
+
+def _apply_migration_v14(conn: sqlite3.Connection) -> None:
+    """Apply v14 canonical_registry DDL (execution-lock §B).
+
+    Additive canonical tables plus repair-persistence columns on
+    normalized_provenance, filings, and articles. Per-statement idempotent:
+    duplicate-column/already-exists errors are skipped so reruns are safe.
+    """
+    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current_version >= 14:
+        return
+    for stmt in CANONICAL_REGISTRY_DDL:
+        if stmt.strip().startswith("--"):
+            continue
+        # v13 precedent: subtype tables created outside the migration registry
+        # (filings/filing_documents via storage.sqlite init) may be absent on a
+        # minimal/partial DB; skip the additive ALTER rather than failing.
+        normalized_stmt = " ".join(stmt.split()).lower()
+        table = None
+        if normalized_stmt.startswith("alter table"):
+            table = normalized_stmt[len("alter table "):].split(" ", 1)[0].strip('"')
+        elif normalized_stmt.startswith("create index"):
+            # CREATE INDEX [IF NOT EXISTS] <name> ON <table>(...) [WHERE ...]
+            on_clause = normalized_stmt.split(" on ", 1)
+            if len(on_clause) == 2:
+                table = on_clause[1].split("(", 1)[0].strip().strip('"')
+        if table is not None:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if not exists:
+                logger.debug("Migration v14: skipping statement for missing table %s", table)
+                continue
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as exc:
+            err = str(exc).lower()
+            if "duplicate column name" in err or "already exists" in err:
+                logger.debug("Migration v14: statement already applied, skipping")
+                continue
+            raise
 
 
 def run_migrations(conn: sqlite3.Connection) -> int:
@@ -1142,6 +1192,19 @@ def run_migrations(conn: sqlite3.Connection) -> int:
             conn.execute(f"SAVEPOINT migration_v{migration.version}")
             try:
                 _apply_migration_v13(conn)
+                conn.execute(f"PRAGMA user_version = {migration.version}")
+                conn.execute(f"RELEASE SAVEPOINT migration_v{migration.version}")
+            except Exception:
+                conn.execute(f"ROLLBACK TO SAVEPOINT migration_v{migration.version}")
+                conn.execute(f"RELEASE SAVEPOINT migration_v{migration.version}")
+                raise
+            logger.info("Applied migration v%d (%s)", migration.version, migration.name)
+            continue
+
+        if migration.version == 14:
+            conn.execute(f"SAVEPOINT migration_v{migration.version}")
+            try:
+                _apply_migration_v14(conn)
                 conn.execute(f"PRAGMA user_version = {migration.version}")
                 conn.execute(f"RELEASE SAVEPOINT migration_v{migration.version}")
             except Exception:
