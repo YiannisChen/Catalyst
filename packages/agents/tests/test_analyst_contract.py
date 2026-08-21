@@ -380,3 +380,201 @@ def test_ontology_enums_are_distinct() -> None:
         "CONTEXT",
         "REJECTED",
     }
+
+
+def _decision_for_tests(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "schema_version": "1.0",
+        "evidence_decisions": (
+            EvidenceDecision(
+                evidence_id="corpus:chunk:0001",
+                disposition="SUPPORT",
+                supports_hypothesis_refs=("h1",),
+                contradicts_hypothesis_refs=(),
+                reason_code="material_support",
+            ),
+        ),
+        "candidate_hypotheses": (CandidateHypothesis(**_hypothesis()),),
+        "conflicts": (),
+        "proposed_missing_evidence": (),
+        "research_decision": "READY",
+        "recommended_status": "SUFFICIENT",
+        "proposed_attribution_type": "EVIDENCE_BACKED_CAUSAL",
+        "proposed_corrective_intents": (),
+    }
+    base.update(overrides)
+    return base
+
+
+def test_candidate_evidence_must_resolve_to_evidence_decisions() -> None:
+    with pytest.raises(ValidationError):
+        AnalystDecision(
+            **_decision_for_tests(
+                evidence_decisions=(
+                    EvidenceDecision(
+                        evidence_id="corpus:chunk:0001",
+                        disposition="SUPPORT",
+                        supports_hypothesis_refs=("h1",),
+                        reason_code="material_support",
+                    ),
+                ),
+                candidate_hypotheses=(
+                    CandidateHypothesis(
+                        **_hypothesis(
+                            supporting_evidence_ids=("corpus:chunk:9999",),
+                        )
+                    ),
+                ),
+            )
+        )
+
+
+def test_candidate_evidence_relations_must_match_evidence_decisions() -> None:
+    """A candidate may not list an evidence as support when the decision binds
+    that evidence as contradiction for the same hypothesis, or vice versa."""
+    with pytest.raises(ValidationError):
+        AnalystDecision(
+            **_decision_for_tests(
+                evidence_decisions=(
+                    EvidenceDecision(
+                        evidence_id="corpus:chunk:0001",
+                        disposition="CONTRADICT",
+                        contradicts_hypothesis_refs=("h1",),
+                        reason_code="material_contradiction",
+                    ),
+                ),
+                candidate_hypotheses=(
+                    CandidateHypothesis(
+                        **_hypothesis(supporting_evidence_ids=("corpus:chunk:0001",)),
+                    ),
+                ),
+            )
+        )
+    with pytest.raises(ValidationError):
+        AnalystDecision(
+            **_decision_for_tests(
+                evidence_decisions=(
+                    EvidenceDecision(
+                        evidence_id="corpus:chunk:0001",
+                        disposition="SUPPORT",
+                        supports_hypothesis_refs=("h1",),
+                        reason_code="material_support",
+                    ),
+                ),
+                candidate_hypotheses=(
+                    CandidateHypothesis(
+                        **_hypothesis(contradicting_evidence_ids=("corpus:chunk:0001",)),
+                    ),
+                ),
+            )
+        )
+
+
+def test_at_most_one_primary_candidate_proposal() -> None:
+    with pytest.raises(ValidationError):
+        AnalystDecision(
+            **_decision_for_tests(
+                candidate_hypotheses=(
+                    CandidateHypothesis(**_hypothesis()),
+                    CandidateHypothesis(
+                        **_hypothesis(
+                            hypothesis_ref="h2",
+                            proposed_role="PRIMARY",
+                        )
+                    ),
+                ),
+            )
+        )
+    # A single PRIMARY plus SECONDARY/CONTEXT/REJECTED is structurally valid.
+    decision = AnalystDecision(
+        **_decision_for_tests(
+            evidence_decisions=(
+                EvidenceDecision(
+                    evidence_id="corpus:chunk:0001",
+                    disposition="SUPPORT",
+                    supports_hypothesis_refs=("h1",),
+                    reason_code="material_support",
+                ),
+                EvidenceDecision(
+                    evidence_id="corpus:chunk:0002",
+                    disposition="SUPPORT",
+                    supports_hypothesis_refs=("h2",),
+                    reason_code="material_support",
+                ),
+            ),
+            candidate_hypotheses=(
+                CandidateHypothesis(**_hypothesis()),
+                CandidateHypothesis(
+                    **_hypothesis(
+                        hypothesis_ref="h2",
+                        proposed_role="SECONDARY",
+                        supporting_evidence_ids=("corpus:chunk:0002",),
+                    )
+                ),
+            ),
+        )
+    )
+    assert len(decision.candidate_hypotheses) == 2
+
+
+def test_related_hypothesis_refs_must_resolve_to_candidates() -> None:
+    with pytest.raises(ValidationError):
+        AnalystDecision(
+            **_decision_for_tests(
+                proposed_missing_evidence=(
+                    ProposedMissingEvidence(
+                        proposal_ref="p-1",
+                        evidence_need="COMPANY_PRIMARY",
+                        time_scope="PRIOR_SESSION",
+                        expected_information="confirmation",
+                        reason_code="MISSING_PRIMARY_CONFIRMATION",
+                        related_hypothesis_refs=("h-unknown",),
+                    ),
+                ),
+            )
+        )
+
+
+def test_related_conflict_refs_must_resolve_to_conflict_records() -> None:
+    with pytest.raises(ValidationError):
+        AnalystDecision(
+            **_decision_for_tests(
+                conflicts=(),
+                proposed_missing_evidence=(
+                    ProposedMissingEvidence(
+                        proposal_ref="p-1",
+                        evidence_need="COMPANY_PRIMARY",
+                        time_scope="PRIOR_SESSION",
+                        expected_information="confirmation",
+                        reason_code="CONFLICT_REQUIRES_RESOLUTION",
+                        related_conflict_refs=("conflict-unknown",),
+                    ),
+                ),
+            )
+        )
+    decision = AnalystDecision(
+        **_decision_for_tests(
+            conflicts=("conflict:1",),
+            proposed_missing_evidence=(
+                ProposedMissingEvidence(
+                    proposal_ref="p-1",
+                    evidence_need="COMPANY_PRIMARY",
+                    time_scope="PRIOR_SESSION",
+                    expected_information="confirmation",
+                    reason_code="CONFLICT_REQUIRES_RESOLUTION",
+                    related_conflict_refs=("conflict:1",),
+                ),
+            ),
+        )
+    )
+    assert decision.proposed_missing_evidence[0].related_conflict_refs == ("conflict:1",)
+
+
+def test_candidate_support_and_contradiction_overlap_rejected() -> None:
+    with pytest.raises(ValidationError):
+        CandidateHypothesis(
+            **_hypothesis(
+                supporting_evidence_ids=("corpus:chunk:0001",),
+                contradicting_evidence_ids=("corpus:chunk:0001",),
+            )
+        )

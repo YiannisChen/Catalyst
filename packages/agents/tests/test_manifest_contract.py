@@ -14,8 +14,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from catalyst_agents.attribution.context_pack import ContextBudget
 from catalyst_agents.runtime.manifest import (
-    ContextBudgetPolicy,
     ObservationPolicyConfig,
     RunManifest,
     RuntimeConfiguration,
@@ -55,7 +55,7 @@ def _runtime_config() -> RuntimeConfiguration:
             require_sector_and_peer_for_broad_sector=True,
             scenario_policy_version="sp:v1",
         ),
-        context_budget=ContextBudgetPolicy(
+        context_budget=ContextBudget(
             model_context_limit=128_000,
             reserved_output_tokens=2_000,
             reserved_system_instruction_tokens=1_000,
@@ -183,7 +183,7 @@ def test_typed_runtime_configuration_rejects_negative_policy_values() -> None:
             scenario_policy_version="sp:v1",
         )
     with pytest.raises(ValidationError):
-        ContextBudgetPolicy(
+        ContextBudget(
             model_context_limit=128_000,
             reserved_output_tokens=2_000,
             reserved_system_instruction_tokens=1_000,
@@ -230,3 +230,76 @@ def test_run_manifest_is_strict_and_frozen() -> None:
         manifest.run_id = "run:2"  # frozen
     with pytest.raises(ValidationError):
         RunManifest(**_manifest(), unknown_field=True)  # extra forbidden
+
+
+def test_run_manifest_rejects_invalid_nested_context_budget() -> None:
+    """The same invalid context-budget configuration must be rejected when it
+    appears inside RunManifest.runtime_configuration (supervisor Task 2)."""
+    from catalyst_agents.attribution.context_pack import ContextBudget
+
+    with pytest.raises(ValidationError):
+        RunManifest(
+            **_manifest(
+                runtime_configuration=RuntimeConfiguration(
+                    observation_policy=ObservationPolicyConfig(
+                        material_target_return_pct=2.0,
+                        material_prior_return_pct=1.5,
+                        quiet_target_return_pct=0.5,
+                        flat_reference_return_pct=0.25,
+                        aligned_residual_pct=1.0,
+                        volume_elevated_ratio=1.5,
+                        volume_extreme_ratio=3.0,
+                        minimum_peer_count=3,
+                        require_sector_and_peer_for_broad_sector=True,
+                        scenario_policy_version="sp:v1",
+                    ),
+                    context_budget=ContextBudget(
+                        model_context_limit=0,  # zero context is impossible
+                        reserved_output_tokens=2_000,
+                        reserved_system_instruction_tokens=1_000,
+                        observation_tokens=300,
+                        coverage_summary_tokens=200,
+                        research_history_tokens=100,
+                        inventory_tokens=500,
+                        evidence_payload_tokens=60_000,
+                        per_news_item_max_tokens=800,
+                        per_sec_chunk_max_tokens=1_200,
+                        lead_only_tokens=1_000,
+                        safety_margin_tokens=2_000,
+                    ),
+                )
+            )
+        )
+    with pytest.raises(ValidationError):
+        RunManifest(
+            **_manifest(
+                runtime_configuration=RuntimeConfiguration(
+                    observation_policy=ObservationPolicyConfig(
+                        material_target_return_pct=2.0,
+                        material_prior_return_pct=1.5,
+                        quiet_target_return_pct=0.5,
+                        flat_reference_return_pct=0.25,
+                        aligned_residual_pct=1.0,
+                        volume_elevated_ratio=1.5,
+                        volume_extreme_ratio=3.0,
+                        minimum_peer_count=3,
+                        require_sector_and_peer_for_broad_sector=True,
+                        scenario_policy_version="sp:v1",
+                    ),
+                    context_budget=ContextBudget(
+                        model_context_limit=128_000,
+                        reserved_output_tokens=2_000,
+                        reserved_system_instruction_tokens=1_000,
+                        observation_tokens=300,
+                        coverage_summary_tokens=200,
+                        research_history_tokens=100,
+                        inventory_tokens=500,
+                        evidence_payload_tokens=60_000,
+                        per_news_item_max_tokens=800,
+                        per_sec_chunk_max_tokens=1_200,
+                        lead_only_tokens=1_000,
+                        safety_margin_tokens=-5,
+                    ),
+                )
+            )
+        )

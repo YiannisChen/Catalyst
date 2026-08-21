@@ -121,6 +121,14 @@ class CandidateHypothesis(BaseModel):
             set(self.contradicting_evidence_ids)
         ):
             raise ValueError("contradicting_evidence_ids must be unique")
+        overlap = set(self.supporting_evidence_ids) & set(
+            self.contradicting_evidence_ids
+        )
+        if overlap:
+            raise ValueError(
+                "same evidence cannot support and contradict one hypothesis: "
+                f"{sorted(overlap)}"
+            )
         if len(self.unresolved_gap_refs) != len(set(self.unresolved_gap_refs)):
             raise ValueError("unresolved_gap_refs must be unique")
         return self
@@ -216,6 +224,9 @@ class AnalystDecision(BaseModel):
     def _local_references_resolve(self) -> "AnalystDecision":
         hypothesis_refs = {item.hypothesis_ref for item in self.candidate_hypotheses}
         proposal_refs = {item.proposal_ref for item in self.proposed_missing_evidence}
+        conflict_records = set(self.conflicts)
+
+        # Decisions may only bind hypotheses that exist in this response.
         for decision in self.evidence_decisions:
             unknown = (
                 set(decision.supports_hypothesis_refs)
@@ -226,13 +237,97 @@ class AnalystDecision(BaseModel):
                     "evidence decision references unknown hypothesis refs: "
                     f"{sorted(unknown)}"
                 )
+
+        # Candidate evidence relations must resolve to evidence decisions and
+        # must agree with the decision bindings in both directions.
+        decision_by_evidence = {
+            item.evidence_id: item for item in self.evidence_decisions
+        }
         for hypothesis in self.candidate_hypotheses:
+            for evidence_id in hypothesis.supporting_evidence_ids:
+                decision = decision_by_evidence.get(evidence_id)
+                if decision is None:
+                    raise ValueError(
+                        "candidate supporting evidence must have an "
+                        f"EvidenceDecision: {evidence_id!r}"
+                    )
+                if hypothesis.hypothesis_ref not in decision.supports_hypothesis_refs:
+                    raise ValueError(
+                        "candidate support relation is inconsistent with the "
+                        f"EvidenceDecision for {evidence_id!r}"
+                    )
+            for evidence_id in hypothesis.contradicting_evidence_ids:
+                decision = decision_by_evidence.get(evidence_id)
+                if decision is None:
+                    raise ValueError(
+                        "candidate contradicting evidence must have an "
+                        f"EvidenceDecision: {evidence_id!r}"
+                    )
+                if (
+                    hypothesis.hypothesis_ref
+                    not in decision.contradicts_hypothesis_refs
+                ):
+                    raise ValueError(
+                        "candidate contradiction relation is inconsistent with "
+                        f"the EvidenceDecision for {evidence_id!r}"
+                    )
             unknown = set(hypothesis.unresolved_gap_refs) - proposal_refs
             if unknown:
                 raise ValueError(
                     "candidate references unknown missing-evidence proposal refs: "
                     f"{sorted(unknown)}"
                 )
+        hypothesis_by_ref = {
+            item.hypothesis_ref: item for item in self.candidate_hypotheses
+        }
+        for decision in self.evidence_decisions:
+            for ref in decision.supports_hypothesis_refs:
+                if (
+                    decision.evidence_id
+                    not in hypothesis_by_ref[ref].supporting_evidence_ids
+                ):
+                    raise ValueError(
+                        "EvidenceDecision support binding is inconsistent with "
+                        f"candidate {ref!r}"
+                    )
+            for ref in decision.contradicts_hypothesis_refs:
+                if (
+                    decision.evidence_id
+                    not in hypothesis_by_ref[ref].contradicting_evidence_ids
+                ):
+                    raise ValueError(
+                        "EvidenceDecision contradiction binding is inconsistent "
+                        f"with candidate {ref!r}"
+                    )
+
+        # At most one candidate may be proposed as PRIMARY (Phase 4 §11).
+        primary_count = sum(
+            1
+            for hypothesis in self.candidate_hypotheses
+            if hypothesis.proposed_role is HypothesisRole.PRIMARY
+        )
+        if primary_count > 1:
+            raise ValueError(
+                "multiple incompatible PRIMARY candidate proposals are not "
+                "structurally valid"
+            )
+
+        # Proposals may only reference hypotheses and conflict records that
+        # exist in this response.
+        for proposal in self.proposed_missing_evidence:
+            unknown_hypotheses = set(proposal.related_hypothesis_refs) - hypothesis_refs
+            if unknown_hypotheses:
+                raise ValueError(
+                    "proposal references unknown hypothesis refs: "
+                    f"{sorted(unknown_hypotheses)}"
+                )
+            unknown_conflicts = set(proposal.related_conflict_refs) - conflict_records
+            if unknown_conflicts:
+                raise ValueError(
+                    "proposal references unknown conflict records: "
+                    f"{sorted(unknown_conflicts)}"
+                )
+
         for intent in self.proposed_corrective_intents:
             if intent.proposal_ref not in proposal_refs:
                 raise ValueError(

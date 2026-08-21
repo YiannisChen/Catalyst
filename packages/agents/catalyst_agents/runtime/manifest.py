@@ -12,6 +12,7 @@ import re
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from catalyst_agents.attribution.context_pack import ContextBudget
 from catalyst_data.canonical.temporal import TemporalIdentity
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -45,43 +46,19 @@ class ObservationPolicyConfig(BaseModel):
         return self
 
 
-class ContextBudgetPolicy(BaseModel):
-    """Versioned ContextBudget policy (Phase 3 TSD §14)."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    model_context_limit: int
-    reserved_output_tokens: int
-    reserved_system_instruction_tokens: int
-    observation_tokens: int
-    coverage_summary_tokens: int
-    research_history_tokens: int
-    inventory_tokens: int
-    evidence_payload_tokens: int
-    per_news_item_max_tokens: int
-    per_sec_chunk_max_tokens: int
-    lead_only_tokens: int
-    safety_margin_tokens: int
-
-    @model_validator(mode="after")
-    def _non_negative(self) -> "ContextBudgetPolicy":
-        for field, value in self.model_dump().items():
-            if value < 0:
-                raise ValueError(f"{field} must be non-negative")
-        return self
-
-
 class RuntimeConfiguration(BaseModel):
     """Typed run runtime configuration (Phase 3 §6/§14).
 
     Carries policy/budget values only; never an identity-bearing free-form
-    dict and never a duplicate DataRuntimeIdentity.
+    dict and never a duplicate DataRuntimeIdentity. The context budget is the
+    canonical agents-owned ContextBudget type so pack and manifest budgets
+    cannot diverge.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     observation_policy: ObservationPolicyConfig
-    context_budget: ContextBudgetPolicy
+    context_budget: ContextBudget
 
 
 class RunManifest(BaseModel):
@@ -144,7 +121,7 @@ class RunManifest(BaseModel):
 
 
 __all__ = [
-    "ContextBudgetPolicy",
+    "ContextBudget",
     "INITIAL_RUN_TIMEOUT_SECONDS",
     "MAX_ACTIONS_PER_BATCH_PRODUCTION",
     "MAX_CORRECTIVE_ROUNDS_PRODUCTION",

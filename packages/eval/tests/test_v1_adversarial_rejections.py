@@ -23,8 +23,8 @@ from catalyst_agents.retrieval.corrective import (
     CorrectiveResearchBatch,
     MissingEvidence,
 )
+from catalyst_agents.attribution.context_pack import ContextBudget
 from catalyst_agents.runtime.manifest import (
-    ContextBudgetPolicy,
     ObservationPolicyConfig,
     RunManifest,
     RuntimeConfiguration,
@@ -77,7 +77,7 @@ def _runtime_config() -> RuntimeConfiguration:
             require_sector_and_peer_for_broad_sector=True,
             scenario_policy_version="sp:v1",
         ),
-        context_budget=ContextBudgetPolicy(
+        context_budget=ContextBudget(
             model_context_limit=128_000,
             reserved_output_tokens=2_000,
             reserved_system_instruction_tokens=1_000,

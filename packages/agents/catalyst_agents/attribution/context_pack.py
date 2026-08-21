@@ -53,7 +53,9 @@ class ContextBudget(BaseModel):
     safety_margin_tokens: int
 
     @model_validator(mode="after")
-    def _non_negative(self) -> "ContextBudget":
+    def _positive_and_non_negative(self) -> "ContextBudget":
+        if self.model_context_limit < 1:
+            raise ValueError("model_context_limit must be positive")
         for field, value in self.model_dump().items():
             if value < 0:
                 raise ValueError(f"{field} must be non-negative")
@@ -206,30 +208,132 @@ class EvidenceAnalystContextPack(BaseModel):
             raise ValueError("round must be positive")
         if self.round == 1 and self.prior_assessment_context is not None:
             raise ValueError("round-one pack must not carry prior assessment context")
-        inventory_ids = {item.evidence_id for item in self.evidence_inventory}
-        role_arrays = (
-            self.direct_primary_evidence,
-            self.primary_authority_evidence,
-            self.independent_reports,
-            self.lead_only_evidence,
+
+        # Evidence inventory is a set of unique records keyed by evidence_id.
+        inventory_by_id: dict[str, EvidencePayloadItem] = {}
+        for item in self.evidence_inventory:
+            if item.evidence_id in inventory_by_id:
+                raise ValueError(
+                    f"duplicate evidence_id in evidence_inventory: {item.evidence_id!r}"
+                )
+            inventory_by_id[item.evidence_id] = item
+
+        # Role arrays are exact deterministic views over the inventory: each
+        # member must be the same inventory object (field-for-field equality),
+        # must carry the role that the array owns, and no evidence ID may
+        # appear in more than one array or twice within one array.
+        role_array_expectations: tuple[
+            tuple[tuple[EvidencePayloadItem, ...], frozenset[str]], ...
+        ] = (
+            (self.direct_primary_evidence, frozenset({"DIRECT_PRIMARY"})),
+            (self.primary_authority_evidence, frozenset({"PRIMARY_AUTHORITY"})),
+            (self.independent_reports, frozenset({"INDEPENDENT_REPORT"})),
+            (self.lead_only_evidence, frozenset({"COMMENTARY_LEAD", "UNKNOWN"})),
         )
         seen: set[str] = set()
-        for array in role_arrays:
+        for array, allowed_roles in role_array_expectations:
+            array_seen: set[str] = set()
             for item in array:
-                if item.evidence_id not in inventory_ids:
+                inventory_item = inventory_by_id.get(item.evidence_id)
+                if inventory_item is None:
                     raise ValueError(
-                        "role arrays must be views over the evidence inventory"
+                        "role arrays must be views over the evidence inventory: "
+                        f"unknown evidence_id {item.evidence_id!r}"
                     )
+                if item != inventory_item:
+                    raise ValueError(
+                        "role array items must be the exact inventory object; "
+                        f"payload metadata differs for {item.evidence_id!r}"
+                    )
+                if item.evidence_role not in allowed_roles:
+                    raise ValueError(
+                        f"evidence_role {item.evidence_role!r} does not belong "
+                        f"in the role array for {item.evidence_id!r}"
+                    )
+                if item.evidence_id in array_seen:
+                    raise ValueError(
+                        "duplicate role membership within one role array: "
+                        f"{item.evidence_id!r}"
+                    )
+                array_seen.add(item.evidence_id)
                 if item.evidence_id in seen:
                     raise ValueError(
                         "one evidence ID cannot appear in multiple role arrays"
                     )
                 seen.add(item.evidence_id)
         for item in self.structured_context:
-            if item.evidence_id not in inventory_ids:
+            inventory_item = inventory_by_id.get(item.evidence_id)
+            if inventory_item is None:
                 raise ValueError(
-                    "structured_context must be a view over the evidence inventory"
+                    "structured_context must be a view over the evidence inventory: "
+                    f"unknown evidence_id {item.evidence_id!r}"
                 )
+            if item != inventory_item:
+                raise ValueError(
+                    "structured_context items must be the exact inventory object; "
+                    f"payload metadata differs for {item.evidence_id!r}"
+                )
+
+        # included/excluded/delta/truncation reference lists resolve to the
+        # inventory, and included/excluded are disjoint.
+        reference_lists = (
+            ("included_evidence_ids", self.included_evidence_ids),
+            ("excluded_evidence_ids", self.excluded_evidence_ids),
+            ("delta_evidence_ids", self.delta_evidence_ids),
+        )
+        for name, refs in reference_lists:
+            unknown = set(refs) - set(inventory_by_id)
+            if unknown:
+                raise ValueError(
+                    f"{name} reference unknown inventory records: {sorted(unknown)}"
+                )
+        overlap = set(self.included_evidence_ids) & set(self.excluded_evidence_ids)
+        if overlap:
+            raise ValueError(
+                "included_evidence_ids and excluded_evidence_ids cannot overlap: "
+                f"{sorted(overlap)}"
+            )
+        unknown_truncation = {
+            record.evidence_id
+            for record in self.truncation_metadata
+            if record.evidence_id not in inventory_by_id
+        }
+        if unknown_truncation:
+            raise ValueError(
+                "truncation_metadata reference unknown inventory records: "
+                f"{sorted(unknown_truncation)}"
+            )
+
+        # Phase 3 §14 token invariant: the rendered-input report must agree
+        # with the context budget reservations and never exceed the limit.
+        budget = self.context_budget
+        report = self.token_count_report
+        if report.reserved_output_tokens != budget.reserved_output_tokens:
+            raise ValueError(
+                "token_count_report reserved_output_tokens must equal "
+                "context_budget.reserved_output_tokens"
+            )
+        if report.safety_margin_tokens != budget.safety_margin_tokens:
+            raise ValueError(
+                "token_count_report safety_margin_tokens must equal "
+                "context_budget.safety_margin_tokens"
+            )
+        used = (
+            report.rendered_messages_tokens
+            + report.reserved_output_tokens
+            + report.safety_margin_tokens
+        )
+        if used > budget.model_context_limit:
+            raise ValueError(
+                "rendered_messages_tokens + reserved_output_tokens + "
+                "safety_margin_tokens must not exceed model_context_limit"
+            )
+        expected_remaining = budget.model_context_limit - used
+        if report.remaining_payload_tokens != expected_remaining:
+            raise ValueError(
+                "remaining_payload_tokens must equal model_context_limit minus "
+                "rendered/reserved/safety tokens"
+            )
         return self
 
 

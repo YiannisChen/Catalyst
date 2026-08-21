@@ -318,6 +318,7 @@ def test_structured_context_is_typed_fact_view() -> None:
             evidence_inventory=(fact,),
             direct_primary_evidence=(),
             structured_context=(fact,),
+            included_evidence_ids=(),
         )
     )
     assert pack.structured_context[0].evidence_id == "fact:42"
@@ -364,3 +365,282 @@ def _budget_dict(**overrides: Any) -> dict[str, Any]:
         "safety_margin_tokens": 2_000,
         **overrides,
     }
+
+
+def test_role_view_must_be_exact_inventory_object() -> None:
+    """A role array is an exact deterministic view of the inventory object:
+    sharing only the evidence_id is insufficient (supervisor Task 1)."""
+    item = EvidencePayloadItem(**_payload_item())
+    altered_excerpt = EvidencePayloadItem(
+        **_payload_item(excerpt_text="Different excerpt text.")
+    )
+    altered_hash = EvidencePayloadItem(
+        **_payload_item(content_hash="f" * 64)
+    )
+    altered_offset = EvidencePayloadItem(
+        **_payload_item(source_start_offset=10, source_end_offset=30)
+    )
+    altered_materiality = EvidencePayloadItem(
+        **_payload_item(material_capability="LEAD_ONLY")
+    )
+    altered_identity = EvidencePayloadItem(
+        **_payload_item(canonical_content_version_id="content:v2:0001")
+    )
+    for impostor in (
+        altered_excerpt,
+        altered_hash,
+        altered_offset,
+        altered_materiality,
+        altered_identity,
+    ):
+        with pytest.raises(ValidationError):
+            EvidenceAnalystContextPack(
+                **_pack(
+                    evidence_inventory=(item,),
+                    direct_primary_evidence=(impostor,),
+                )
+            )
+
+
+def test_role_array_membership_must_match_evidence_role() -> None:
+    """COMMENTARY_LEAD items cannot appear in direct_primary_evidence and
+    equivalent role/array mismatches are rejected."""
+    lead = EvidencePayloadItem(
+        **_payload_item(
+            evidence_id="corpus:chunk:0002",
+            chunk_id="corpus:chunk:0002",
+            evidence_role="COMMENTARY_LEAD",
+            excerpt_text="Analyst commentary.",
+        )
+    )
+    unknown = EvidencePayloadItem(
+        **_payload_item(
+            evidence_id="corpus:chunk:0003",
+            chunk_id="corpus:chunk:0003",
+            source_class="aggregated_unknown",
+            evidence_role="UNKNOWN",
+            excerpt_text="Unknown lineage item.",
+        )
+    )
+    primary = EvidencePayloadItem(
+        **_payload_item(
+            evidence_id="corpus:chunk:0004",
+            chunk_id="corpus:chunk:0004",
+            source_class="official_government",
+            evidence_role="PRIMARY_AUTHORITY",
+            excerpt_text="Official filing.",
+        )
+    )
+    independent = EvidencePayloadItem(
+        **_payload_item(
+            evidence_id="corpus:chunk:0005",
+            chunk_id="corpus:chunk:0005",
+            evidence_role="INDEPENDENT_REPORT",
+            excerpt_text="Independent report.",
+        )
+    )
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                evidence_inventory=(lead,),
+                direct_primary_evidence=(lead,),
+            )
+        )
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                evidence_inventory=(primary,),
+                independent_reports=(primary,),
+            )
+        )
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                evidence_inventory=(independent,),
+                primary_authority_evidence=(independent,),
+            )
+        )
+    # Lead-only arrays accept COMMENTARY_LEAD and UNKNOWN roles.
+    pack = EvidenceAnalystContextPack(
+        **_pack(
+            evidence_inventory=(lead, unknown),
+            direct_primary_evidence=(),
+            lead_only_evidence=(lead, unknown),
+            included_evidence_ids=(),
+        )
+    )
+    assert pack.lead_only_evidence == (lead, unknown)
+
+
+def test_duplicate_inventory_evidence_id_rejected() -> None:
+    item = EvidencePayloadItem(**_payload_item())
+    duplicate = EvidencePayloadItem(**_payload_item(excerpt_text="Second copy."))
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                evidence_inventory=(item, duplicate),
+                direct_primary_evidence=(),
+            )
+        )
+
+
+def test_duplicate_role_membership_rejected() -> None:
+    item = EvidencePayloadItem(**_payload_item())
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                evidence_inventory=(item,),
+                direct_primary_evidence=(item, item),
+            )
+        )
+    other = EvidencePayloadItem(
+        **_payload_item(
+            evidence_id="corpus:chunk:0002",
+            chunk_id="corpus:chunk:0002",
+            excerpt_text="Second chunk.",
+        )
+    )
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                evidence_inventory=(item, other),
+                direct_primary_evidence=(item,),
+                independent_reports=(item,),
+            )
+        )
+
+
+def test_included_and_excluded_evidence_ids_cannot_overlap() -> None:
+    item = EvidencePayloadItem(**_payload_item())
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                evidence_inventory=(item,),
+                direct_primary_evidence=(item,),
+                included_evidence_ids=("corpus:chunk:0001",),
+                excluded_evidence_ids=("corpus:chunk:0001",),
+            )
+        )
+
+
+def test_reference_lists_resolve_to_inventory_records() -> None:
+    item = EvidencePayloadItem(**_payload_item())
+    base = dict(
+        evidence_inventory=(item,),
+        direct_primary_evidence=(item,),
+        included_evidence_ids=("corpus:chunk:0001",),
+    )
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(**{**base, "included_evidence_ids": ("corpus:chunk:9999",)})
+        )
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(**{**base, "excluded_evidence_ids": ("corpus:chunk:9999",)})
+        )
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(**{**base, "delta_evidence_ids": ("corpus:chunk:9999",)})
+        )
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                **{
+                    **base,
+                    "truncation_metadata": (
+                        TruncationRecord(
+                            evidence_id="corpus:chunk:9999",
+                            action="EXCLUDED_BUDGET",
+                            included_token_count=0,
+                            tokenizer_identity="registered:test",
+                            reason_code="budget",
+                        ),
+                    ),
+                }
+            )
+        )
+
+
+def test_token_invariant_rejects_overflow() -> None:
+    """Phase 3 §14: rendered + reserved_output + safety_margin must not exceed
+    model_context_limit (supervisor Task 2)."""
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                context_budget=_budget(),
+                token_count_report=TokenCountReport(
+                    tokenizer_identity="registered:test",
+                    rendered_messages_tokens=130_000,
+                    reserved_output_tokens=2_000,
+                    safety_margin_tokens=2_000,
+                    remaining_payload_tokens=0,
+                ),
+            )
+        )
+    boundary = EvidenceAnalystContextPack(
+        **_pack(
+            context_budget=_budget(),
+            token_count_report=TokenCountReport(
+                tokenizer_identity="registered:test",
+                rendered_messages_tokens=124_000,
+                reserved_output_tokens=2_000,
+                safety_margin_tokens=2_000,
+                remaining_payload_tokens=0,
+            ),
+        )
+    )
+    assert boundary.token_count_report.remaining_payload_tokens == 0
+
+
+def test_token_report_reservations_must_agree_with_context_budget() -> None:
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                context_budget=_budget(),
+                token_count_report=TokenCountReport(
+                    tokenizer_identity="registered:test",
+                    rendered_messages_tokens=5_000,
+                    reserved_output_tokens=4_000,  # differs from budget 2_000
+                    safety_margin_tokens=2_000,
+                    remaining_payload_tokens=119_000,
+                ),
+            )
+        )
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                context_budget=_budget(),
+                token_count_report=TokenCountReport(
+                    tokenizer_identity="registered:test",
+                    rendered_messages_tokens=5_000,
+                    reserved_output_tokens=2_000,
+                    safety_margin_tokens=1_000,  # differs from budget 2_000
+                    remaining_payload_tokens=119_000,
+                ),
+            )
+        )
+
+
+def test_remaining_payload_tokens_must_be_exact() -> None:
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(
+            **_pack(
+                context_budget=_budget(),
+                token_count_report=TokenCountReport(
+                    tokenizer_identity="registered:test",
+                    rendered_messages_tokens=5_000,
+                    reserved_output_tokens=2_000,
+                    safety_margin_tokens=2_000,
+                    remaining_payload_tokens=118_999,  # wrong remainder
+                ),
+            )
+        )
+
+
+def test_model_context_limit_must_be_positive_and_possible() -> None:
+    with pytest.raises(ValidationError):
+        ContextBudget(**_budget_dict(model_context_limit=0))
+    with pytest.raises(ValidationError):
+        ContextBudget(**_budget_dict(model_context_limit=-128))
+    with pytest.raises(ValidationError):
+        ContextBudget(**_budget_dict(safety_margin_tokens=-1))
