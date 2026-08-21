@@ -8,11 +8,15 @@ from typing import Any
 from urllib.parse import urljoin
 
 
+SEC_INDEX_PARSER_VERSION = "sec_index_v1"
+
+
 @dataclass(frozen=True)
 class IndexParseResult:
     status: str  # success | failed
     documents: tuple[dict[str, Any], ...]
     error: str | None = None
+    parser_version: str | None = None
 
 
 _ROW_RE = re.compile(
@@ -36,9 +40,13 @@ def parse_filing_index_html(
     *,
     base_url: str,
     primary_document: str | None = None,
+    parser_version: str = SEC_INDEX_PARSER_VERSION,
 ) -> IndexParseResult:
     if not html or not html.strip():
-        return IndexParseResult(status="failed", documents=(), error="empty_html")
+        return IndexParseResult(
+            status="failed", documents=(), error="empty_html",
+            parser_version=parser_version,
+        )
 
     docs: list[dict[str, Any]] = []
     # Prefer structured table rows with Sequence / Description / Document / Type
@@ -87,7 +95,10 @@ def parse_filing_index_html(
         )
 
     if not docs:
-        return IndexParseResult(status="failed", documents=(), error="no_documents")
+        return IndexParseResult(
+            status="failed", documents=(), error="no_documents",
+            parser_version=parser_version,
+        )
 
     # Ensure exactly one primary if primary_document provided
     if primary_document:
@@ -100,7 +111,8 @@ def parse_filing_index_html(
                 d["is_primary"] = False
         if not matched:
             return IndexParseResult(
-                status="failed", documents=(), error="primary_not_found"
+                status="failed", documents=(), error="primary_not_found",
+                parser_version=parser_version,
             )
     primaries = [d for d in docs if d.get("is_primary")]
     if len(primaries) != 1:
@@ -113,10 +125,14 @@ def parse_filing_index_html(
             primaries = [d for d in docs if d.get("is_primary")]
         if len(primaries) != 1:
             return IndexParseResult(
-                status="failed", documents=tuple(docs), error="no_primary"
+                status="failed", documents=tuple(docs), error="no_primary",
+                parser_version=parser_version,
             )
 
-    return IndexParseResult(status="success", documents=tuple(docs), error=None)
+    return IndexParseResult(
+        status="success", documents=tuple(docs), error=None,
+        parser_version=parser_version,
+    )
 
 
 INDEX_URL_CANDIDATES = (

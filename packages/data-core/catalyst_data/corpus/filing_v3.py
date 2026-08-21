@@ -40,7 +40,9 @@ class FilingV3Profile:
         if not text:
             return
 
-        degraded = False
+        # M3-4: the reparse result may carry the section-degradation flag;
+        # when present it overrides the internal detection (consumed signal).
+        degraded = bool(document.get("section_parse_degraded", False))
         sections: list[dict[str, str]] = []
 
         if role.startswith("exhibit_99") or form.upper().startswith("EX-99"):
@@ -55,7 +57,8 @@ class FilingV3Profile:
             matches = list(_ITEM_RE.finditer(text))
             if not matches:
                 sections = [{"section_key": "unknown_000", "heading": "", "text": text}]
-                degraded = True
+                if not document.get("section_parse_degraded"):
+                    degraded = True
             else:
                 preamble = text[: matches[0].start()].strip()
                 if preamble:

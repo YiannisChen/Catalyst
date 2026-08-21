@@ -9,7 +9,10 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
-from catalyst_data.sec.extract import extract_document_text
+from catalyst_data.sec.extract import (
+    SEC_EXTRACT_PARSER_VERSION,
+    extract_document_text,
+)
 from catalyst_data.sec.index_parser import filing_index_urls, parse_filing_index_html
 from catalyst_data.manifests.universe import sha256_identity
 
@@ -32,6 +35,8 @@ class MaterializeResult:
     logical_fetch_id: str | None = None
     request_count: int = 0
     error: str | None = None
+    parser_version: str | None = None
+    content_hash: str | None = None
 
 
 def logical_fetch_id(run_id: str, cell_id: str) -> str:
@@ -283,6 +288,7 @@ def materialize_sec_document(
         content_type=content_type,
         is_primary=is_primary,
         requiredness=ext.get("requiredness", "mandatory"),
+        parser_version=SEC_EXTRACT_PARSER_VERSION,
     )
     if outcome.status != "success":
         return MaterializeResult(
@@ -292,6 +298,7 @@ def materialize_sec_document(
             logical_fetch_id=lfid,
             request_count=request_count,
             error=outcome.error_class,
+            parser_version=outcome.parser_version,
         )
 
     text_sha = _sha256_bytes(outcome.text.encode("utf-8"))
@@ -300,7 +307,7 @@ def materialize_sec_document(
             "document_id": document_id,
             "response_sha256": response_sha,
             "extracted_text_sha256": text_sha,
-            "extraction_normalizer_version": "sec_extract_v1",
+            "extraction_normalizer_version": SEC_EXTRACT_PARSER_VERSION,
         }
     )
     # ensure filing exists for FK if present
@@ -333,7 +340,7 @@ def materialize_sec_document(
             entity_type, entity_id, entity_version, raw_asset_id,
             normalizer_version, created_at
         ) VALUES ('filing',?,?,?,?,?)""",
-        (document_id, entity_version, raw_asset_id, "sec_extract_v1", _now()),
+        (document_id, entity_version, raw_asset_id, SEC_EXTRACT_PARSER_VERSION, _now()),
     )
     return MaterializeResult(
         status="success",
@@ -341,6 +348,8 @@ def materialize_sec_document(
         raw_asset_id=raw_asset_id,
         logical_fetch_id=lfid,
         request_count=request_count,
+        parser_version=SEC_EXTRACT_PARSER_VERSION,
+        content_hash=text_sha,
     )
 
 
