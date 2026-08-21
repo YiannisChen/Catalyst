@@ -327,3 +327,24 @@ def test_outcome_append_cannot_alter_predeclared_eligibility_identity() -> None:
     assert completed.eligible_experiments[0].observed_denominator is None
     with pytest.raises(ValidationError):
         completed.evaluation_identity.ordered_case_ids = ()  # frozen identity
+
+
+def test_eval_manifest_rejects_identity_replacement_and_raw_outcomes() -> None:
+    manifest = EvalManifest(**_manifest())
+    with pytest.raises((TypeError, ValueError, ValidationError)):
+        manifest.model_copy(update={
+            "evaluation_identity": EvaluationIdentity(**_evaluation(eval_id="other"))
+        })
+    with pytest.raises((TypeError, ValueError, ValidationError)):
+        manifest.append_outcome(_outcome())  # type: ignore[arg-type]
+
+
+def test_evaluation_and_retrieval_identity_are_nonempty_unique_and_ordered() -> None:
+    with pytest.raises(ValidationError):
+        EvaluationIdentity(**_evaluation(ordered_case_ids=()))
+    with pytest.raises(ValidationError):
+        EvaluationIdentity(**_evaluation(ordered_case_ids=("stage1-001", "stage1-001")))
+    with pytest.raises(ValidationError):
+        RetrievalPolicyIdentity(**_retrieval_policy(
+            arm_names=("fts5", "fts5"), arm_order=("fts5", "fts5"),
+        ))

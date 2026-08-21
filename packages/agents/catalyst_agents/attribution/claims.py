@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import re
 from enum import Enum
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from catalyst_agents.attribution.analyst import (
     AttributionStatus,
@@ -36,6 +36,8 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 _FORMAT_ITEM_MAX_LENGTH = 200
 _FORMAT_COLLECTION_MAX_ITEMS = 16
+_CLAIM_TEXT_MAX_LENGTH = 4_000
+_SNIPPET_TEXT_MAX_LENGTH = 4_000
 
 
 class ClaimRole(str, Enum):
@@ -59,7 +61,7 @@ class Claim(BaseModel):
     magnitude_fit: MagnitudeFit | None = None
     conflict_refs: tuple[str, ...] = ()
     citation_evidence_ids: tuple[str, ...] = ()
-    order_index: int | None = None
+    order_index: int
 
     @model_validator(mode="after")
     def _unique_and_disjoint_evidence_refs(self) -> "Claim":
@@ -86,7 +88,25 @@ class Claim(BaseModel):
                 f"citation_evidence_ids must be bound to claim {self.claim_id!r}: "
                 f"{sorted(unknown_citations)}"
             )
-        if self.order_index is not None and self.order_index < 0:
+        if not self.claim_id or not self.statement:
+            raise ValueError("claim_id and statement must not be empty")
+        if len(self.statement) > _CLAIM_TEXT_MAX_LENGTH:
+            raise ValueError("claim statement must be length-bounded")
+        if self.mechanism is not None and (
+            not self.mechanism or len(self.mechanism) > _CLAIM_TEXT_MAX_LENGTH
+        ):
+            raise ValueError("claim mechanism must be non-empty and length-bounded")
+        for field in ("limitations", "conflict_refs", "citation_evidence_ids"):
+            values = getattr(self, field)
+            if len(values) != len(set(values)) or any(not value for value in values):
+                raise ValueError(f"{field} must contain unique non-empty values")
+            if field == "limitations" and any(
+                len(value) > _CLAIM_TEXT_MAX_LENGTH for value in values
+            ):
+                raise ValueError("claim limitations must be length-bounded")
+        if self.source_hypothesis_id == "":
+            raise ValueError("source_hypothesis_id must not be empty")
+        if self.order_index < 0:
             raise ValueError("order_index must be non-negative")
         if self.role in (ClaimRole.PRIMARY, ClaimRole.SECONDARY):
             if self.source_hypothesis_id is None:
@@ -107,11 +127,9 @@ def _validate_claim_ids_and_primary(claims: tuple[Claim, ...]) -> None:
     primary_count = sum(1 for claim in claims if claim.role is ClaimRole.PRIMARY)
     if primary_count > 1:
         raise ValueError("at most one PRIMARY claim is permitted")
-    order_indices = [
-        claim.order_index for claim in claims if claim.order_index is not None
-    ]
-    if len(order_indices) != len(set(order_indices)):
-        raise ValueError("claim order_index values must be unique within the plan")
+    order_indices = [claim.order_index for claim in claims]
+    if order_indices != list(range(len(claims))):
+        raise ValueError("claim order_index values must be contiguous and match tuple order")
 
 
 def _validate_sha256_hashes(**hashes: str) -> None:
@@ -171,6 +189,47 @@ class ClaimPlan(BaseModel):
         return self
 
 
+class CitationMapEntry(BaseModel):
+    """One immutable exact citation mapping for a validated claim."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    claim_id: str
+    citation_evidence_ids: tuple[str, ...]
+
+    @model_validator(mode="after")
+    def _canonical(self) -> "CitationMapEntry":
+        if not self.claim_id or len(self.citation_evidence_ids) != len(
+            set(self.citation_evidence_ids)
+        ) or any(not evidence_id for evidence_id in self.citation_evidence_ids):
+            raise ValueError("citation-map entry must contain canonical non-empty IDs")
+        return self
+
+
+class SupportingSnippet(BaseModel):
+    """Bounded source-addressable Writer snippet (Phase 4 §28)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    evidence_id: str
+    snippet_text: str
+    content_sha256: str
+    source_start_offset: int = 0
+    source_end_offset: int
+
+    @model_validator(mode="after")
+    def _bound_identity(self) -> "SupportingSnippet":
+        if not self.evidence_id or not self.snippet_text:
+            raise ValueError("supporting snippet identity and text must not be empty")
+        if len(self.snippet_text) > _SNIPPET_TEXT_MAX_LENGTH:
+            raise ValueError("supporting snippet text must be length-bounded")
+        if _SHA256_RE.fullmatch(self.content_sha256) is None:
+            raise ValueError("supporting snippet content_sha256 must be a lowercase SHA-256 hex digest")
+        if self.source_start_offset < 0 or self.source_end_offset <= self.source_start_offset:
+            raise ValueError("supporting snippet offsets must be non-negative and ordered")
+        return self
+
+
 class ValidatedClaimPlan(BaseModel):
     """Maximum public semantic surface the Writer may express (Phase 4 §27).
 
@@ -188,12 +247,25 @@ class ValidatedClaimPlan(BaseModel):
     context_pack_sha256: str
     evidence_state_hash: str
     required_limitations: tuple[str, ...] = ()
-    citation_map: dict[str, tuple[str, ...]] = {}
+    citation_map: tuple[CitationMapEntry, ...]
     permitted_claim_ids: tuple[str, ...] = ()
     permitted_evidence_ids: tuple[str, ...] = ()
     source_role_independence_summary: SourceRoleIndependenceSummary
     ordering_policy_version: str
     plan_hash: str
+
+    @field_validator("citation_map", mode="before")
+    @classmethod
+    def _parse_citation_map(cls, value: object) -> object:
+        """Accept JSON-object input but store the canonical immutable entries."""
+        if isinstance(value, dict):
+            return tuple(
+                CitationMapEntry(
+                    claim_id=claim_id, citation_evidence_ids=tuple(evidence_ids)
+                )
+                for claim_id, evidence_ids in value.items()
+            )
+        return value
 
     @model_validator(mode="after")
     def _claim_invariants(self) -> "ValidatedClaimPlan":
@@ -205,32 +277,47 @@ class ValidatedClaimPlan(BaseModel):
             plan_hash=self.plan_hash,
         )
         plan_claims = {claim.claim_id: claim for claim in self.claims}
-        if set(self.citation_map) != set(plan_claims):
+        map_by_claim = {entry.claim_id: entry for entry in self.citation_map}
+        if len(map_by_claim) != len(self.citation_map) or set(map_by_claim) != set(plan_claims):
             raise ValueError(
                 "citation_map must contain exactly one entry per plan claim"
             )
         for claim_id, claim in plan_claims.items():
-            mapped = tuple(self.citation_map[claim_id])
+            mapped = map_by_claim[claim_id].citation_evidence_ids
             if mapped != claim.citation_evidence_ids:
                 raise ValueError(
                     f"citation_map for {claim_id!r} must exactly equal its "
                     "citation_evidence_ids"
                 )
-        if set(self.permitted_claim_ids) != set(plan_claims):
+        if self.permitted_claim_ids != tuple(claim.claim_id for claim in self.claims):
             raise ValueError(
-                "permitted_claim_ids must equal the validated plan claim IDs"
+                "permitted_claim_ids must canonically equal the validated plan claim IDs"
             )
         used_evidence = set()
         for claim in self.claims:
             used_evidence.update(claim.support_evidence_ids)
             used_evidence.update(claim.counter_evidence_ids)
             used_evidence.update(claim.citation_evidence_ids)
-        if set(self.permitted_evidence_ids) != used_evidence:
+        if len(self.permitted_evidence_ids) != len(set(self.permitted_evidence_ids)) or (
+            self.permitted_evidence_ids != tuple(sorted(used_evidence))
+        ):
             raise ValueError(
-                "permitted_evidence_ids must exactly equal the union of claim "
+                "permitted_evidence_ids must canonically equal the union of claim "
                 "evidence refs (no missing IDs and no arbitrary superset)"
             )
         return self
+
+
+class WriterFormatKind(str, Enum):
+    CAUSAL = "CAUSAL"
+    FIXED_ABSTENTION = "FIXED_ABSTENTION"
+
+
+class WriterSection(str, Enum):
+    SUMMARY = "SUMMARY"
+    CAUSAL_EXPLANATION = "CAUSAL_EXPLANATION"
+    OBSERVED_MOVE = "OBSERVED_MOVE"
+    LIMITATIONS = "LIMITATIONS"
 
 
 class WriterFormatStyleContract(BaseModel):
@@ -238,11 +325,19 @@ class WriterFormatStyleContract(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    required_sections: tuple[str, ...] = ()
+    format_kind: WriterFormatKind = WriterFormatKind.CAUSAL
+    required_sections: tuple[WriterSection, ...] = ()
     style_instructions: tuple[str, ...] = ()
 
     @model_validator(mode="after")
     def _bounded(self) -> "WriterFormatStyleContract":
+        if self.format_kind is WriterFormatKind.FIXED_ABSTENTION:
+            if self.required_sections != (
+                WriterSection.OBSERVED_MOVE,
+                WriterSection.LIMITATIONS,
+            ) or self.style_instructions:
+                raise ValueError("fixed abstention format uses only the typed observed-move and limitations sections")
+            return self
         for field in ("required_sections", "style_instructions"):
             items = getattr(self, field)
             if not items:
@@ -254,6 +349,8 @@ class WriterFormatStyleContract(BaseModel):
             if len(items) != len(set(items)):
                 raise ValueError(f"{field} items must be unique")
             for item in items:
+                if not item:
+                    raise ValueError(f"{field} items must not be empty")
                 if len(item) > _FORMAT_ITEM_MAX_LENGTH:
                     raise ValueError(f"{field} items must be length-bounded")
         return self
@@ -273,10 +370,15 @@ class WriterInput(BaseModel):
     attribution_type: AttributionType
     observed_move: str | None = None
     validated_claim_plan: ValidatedClaimPlan
-    narrowly_bound_supporting_snippets: dict[str, str]
-    citation_map: dict[str, tuple[str, ...]]
+    narrowly_bound_supporting_snippets: tuple[SupportingSnippet, ...]
+    citation_map: tuple[CitationMapEntry, ...]
     required_limitations: tuple[str, ...]
     format_style_contract: WriterFormatStyleContract
+
+    @field_validator("citation_map", mode="before")
+    @classmethod
+    def _parse_citation_map(cls, value: object) -> object:
+        return ValidatedClaimPlan._parse_citation_map(value)
 
     @model_validator(mode="after")
     def _plan_consistency(self) -> "WriterInput":
@@ -296,9 +398,10 @@ class WriterInput(BaseModel):
                 "required limitations"
             )
         allowed_snippet_keys = set(self.validated_claim_plan.permitted_evidence_ids)
-        unknown_snippet_keys = set(self.narrowly_bound_supporting_snippets) - (
-            allowed_snippet_keys
-        )
+        snippet_ids = tuple(snippet.evidence_id for snippet in self.narrowly_bound_supporting_snippets)
+        if len(snippet_ids) != len(set(snippet_ids)):
+            raise ValueError("supporting snippet evidence IDs must be unique")
+        unknown_snippet_keys = set(snippet_ids) - allowed_snippet_keys
         if unknown_snippet_keys:
             raise ValueError(
                 "supporting snippet keys must stay within the permitted evidence "
@@ -320,6 +423,14 @@ class WriterInput(BaseModel):
             raise ValueError(
                 "fixed abstention path forbids PRIMARY/SECONDARY causal claims"
             )
+        if self.observed_move is None or not self.observed_move:
+            raise ValueError("fixed abstention WriterInput requires observed_move")
+        if not self.required_limitations:
+            raise ValueError("fixed abstention WriterInput requires limitations")
+        if self.narrowly_bound_supporting_snippets:
+            raise ValueError("fixed abstention WriterInput cannot carry supporting snippets")
+        if self.format_style_contract.format_kind is not WriterFormatKind.FIXED_ABSTENTION:
+            raise ValueError("ABSTAIN WriterInput requires the typed fixed abstention format")
         return self
 
 
@@ -342,9 +453,13 @@ __all__ = [
     "Claim",
     "ClaimPlan",
     "ClaimRole",
+    "CitationMapEntry",
     "SourceRoleIndependenceSummary",
+    "SupportingSnippet",
     "ValidatedClaimPlan",
     "WriterFormatStyleContract",
+    "WriterFormatKind",
+    "WriterSection",
     "WriterInput",
     "is_fixed_abstention",
 ]

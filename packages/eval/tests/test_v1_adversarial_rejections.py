@@ -19,6 +19,7 @@ from catalyst_agents.attribution.analyst import (
 )
 from catalyst_agents.attribution.claims import (
     Claim,
+    SupportingSnippet,
     SourceRoleIndependenceSummary,
     ValidatedClaimPlan,
     WriterFormatStyleContract,
@@ -219,6 +220,7 @@ def _canonical_validated_plan() -> ValidatedClaimPlan:
                 citation_evidence_ids=("corpus:chunk:0001",),
                 source_hypothesis_id="hyp:1",
                 magnitude_fit="STRONG",
+                order_index=0,
             ),
         ),
         assessment_hash="a" * 64,
@@ -240,11 +242,16 @@ def _canonical_writer_input(**overrides) -> dict:
         attribution_type="EVIDENCE_BACKED_CAUSAL",
         observed_move="AAPL +3.2%",
         validated_claim_plan=_canonical_validated_plan(),
-        narrowly_bound_supporting_snippets={"corpus:chunk:0001": "guidance"},
+        narrowly_bound_supporting_snippets=(
+            SupportingSnippet(
+                evidence_id="corpus:chunk:0001", snippet_text="guidance",
+                content_sha256="a" * 64, source_start_offset=0, source_end_offset=8,
+            ),
+        ),
         citation_map={"claim-1": ("corpus:chunk:0001",)},
         required_limitations=("magnitude coverage is partial",),
         format_style_contract=WriterFormatStyleContract(
-            required_sections=("summary",),
+            required_sections=("SUMMARY",),
             style_instructions=("neutral tone",),
         ),
     )
@@ -270,6 +277,7 @@ def test_abstain_with_primary_causal_claim_is_rejected() -> None:
                         citation_evidence_ids=("corpus:chunk:0001",),
                         source_hypothesis_id="hyp:1",
                         magnitude_fit="STRONG",
+                        order_index=0,
                     ),
                 ),
                 assessment_hash="a" * 64,

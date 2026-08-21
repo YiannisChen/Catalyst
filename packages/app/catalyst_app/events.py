@@ -15,11 +15,16 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 MAX_PUBLIC_PAYLOAD_BYTES = 64 * 1024  # 64 KiB compact public payload limit
 MAX_ANSWER_DELTA_CHARACTERS = 2048
+_UNSAFE_PUBLIC_TEXT = re.compile(
+    r"(?:api[_ -]?key|provider[_ -]?key|authorization|bearer\s+\S+|"
+    r"raw[_ -]?(?:provider[_ -]?)?response|provider\s+response)\s*(?:=|:|\b)",
+    re.IGNORECASE,
+)
 
 
 class RunEventType(str, Enum):
@@ -187,13 +192,20 @@ class RunCompletedPayload(BaseModel):
 
 
 class RunFailedPayload(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     failure_code: str
     stage: str | None = None
     retryable: bool = False
     safe_message: str | None = None
     provisional_output_invalidated: bool = False
+
+    @field_validator("safe_message")
+    @classmethod
+    def _safe_public_message(cls, value: str | None) -> str | None:
+        if value is not None and _UNSAFE_PUBLIC_TEXT.search(value):
+            raise ValueError("safe_message contains a prohibited secret or raw-provider pattern")
+        return value
 
 
 class RunCancelledPayload(BaseModel):

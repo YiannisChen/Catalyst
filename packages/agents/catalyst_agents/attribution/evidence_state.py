@@ -158,6 +158,7 @@ class EvidenceStateItem(BaseModel):
     canonical_content_version_id: str
     corpus_document_id: str
     chunk_id: str | None = None
+    fact_id: str | None = None
     section_key: str | None = None
     chunk_ordinal: int | None = None
     asset_type: AssetType
@@ -193,18 +194,13 @@ class EvidenceStateItem(BaseModel):
             raise ValueError("chunk_ordinal must be non-negative")
         return self
 
-    @property
-    def fact_id(self) -> str | None:
-        """Structured evidence identity is encoded in chunk_id=None mode; kept
-        as a property for schema parity with text chunk identity."""
-        return None if self.chunk_id is not None else self.evidence_id
-
     def _immutable_metadata(self) -> tuple[object, ...]:
         return (
             self.canonical_asset_id,
             self.canonical_content_version_id,
             self.corpus_document_id,
             self.chunk_id,
+            self.fact_id,
             self.section_key,
             self.chunk_ordinal,
             self.asset_type,
@@ -244,6 +240,22 @@ class EvidenceState(BaseModel):
     capability_gaps: tuple[CapabilityGap, ...] = ()
     state_hash: str
 
+    @model_validator(mode="after")
+    def _partition_and_unique_items(self) -> "EvidenceState":
+        text_ids = tuple(item.evidence_id for item in self.evidence_items)
+        fact_ids = tuple(item.fact_id for item in self.structured_facts)
+        if any(item.chunk_id is None for item in self.evidence_items):
+            raise ValueError("evidence_items must contain only text chunk items")
+        if any(item.fact_id is None for item in self.structured_facts):
+            raise ValueError("structured_facts must contain only fact items")
+        if len(text_ids) != len(set(text_ids)):
+            raise ValueError("evidence_items must have unique evidence IDs")
+        if len(fact_ids) != len(set(fact_ids)):
+            raise ValueError("structured_facts must have unique fact IDs")
+        if set(text_ids) & set(fact_ids):
+            raise ValueError("text evidence and structured facts cannot share IDs")
+        return self
+
     @field_validator("state_hash")
     @classmethod
     def _sha256_hex(cls, value: str) -> str:
@@ -259,7 +271,9 @@ class EvidenceState(BaseModel):
         preserved. Conflicting immutable metadata raises an integrity failure.
         The returned state carries a recomputed canonical state_hash.
         """
-        for index, existing in enumerate(self.evidence_items):
+        is_fact = item.fact_id is not None
+        collection = self.structured_facts if is_fact else self.evidence_items
+        for index, existing in enumerate(collection):
             if existing.evidence_id != item.evidence_id:
                 continue
             if existing._immutable_metadata() != item._immutable_metadata():
@@ -289,15 +303,15 @@ class EvidenceState(BaseModel):
                     )
                 ),
             )
-            items = list(self.evidence_items)
+            items = list(collection)
             items[index] = merged
-            candidate = self.model_copy(update={"evidence_items": tuple(items)})
+            target = "structured_facts" if is_fact else "evidence_items"
+            candidate = self.model_copy(update={target: tuple(items)})
             return candidate.model_copy(
                 update={"state_hash": compute_state_hash(candidate)}
             )
-        candidate = self.model_copy(
-            update={"evidence_items": self.evidence_items + (item,)}
-        )
+        target = "structured_facts" if is_fact else "evidence_items"
+        candidate = self.model_copy(update={target: collection + (item,)})
         return candidate.model_copy(update={"state_hash": compute_state_hash(candidate)})
 
 

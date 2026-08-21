@@ -87,6 +87,7 @@ def _state_item(hit: RetrievalHit, **overrides: Any) -> dict[str, Any]:
         "canonical_content_version_id": hit.content_version_id,
         "corpus_document_id": hit.corpus_document_id,
         "chunk_id": hit.chunk_id,
+        "fact_id": hit.fact_id,
         "section_key": None,
         "chunk_ordinal": None,
         "asset_type": "NEWS" if hit.chunk_id is not None else "STRUCTURED_CONTEXT",

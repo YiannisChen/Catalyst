@@ -41,6 +41,18 @@ class EvaluationIdentity(BaseModel):
             raise ValueError("must be a lowercase SHA-256 hex digest")
         return value
 
+    @model_validator(mode="after")
+    def _ordered_cases_are_canonical(self) -> "EvaluationIdentity":
+        if not self.ordered_case_ids:
+            raise ValueError("ordered_case_ids must not be empty")
+        if len(self.ordered_case_ids) != len(set(self.ordered_case_ids)):
+            raise ValueError("ordered_case_ids must be unique")
+        # The frozen documents require the stored case-list digest but do not
+        # define its canonical byte serialization. M2 therefore validates its
+        # shape and preserves it as an external identity, without inventing a
+        # competing hash algorithm.
+        return self
+
 
 class PackageVersion(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -144,6 +156,12 @@ class RetrievalPolicyIdentity(BaseModel):
 
     @model_validator(mode="after")
     def _arm_names_match_order(self) -> "RetrievalPolicyIdentity":
+        if not self.arm_names or not self.arm_order:
+            raise ValueError("arm_names and arm_order must not be empty")
+        if len(self.arm_names) != len(set(self.arm_names)):
+            raise ValueError("arm_names must be unique")
+        if len(self.arm_order) != len(set(self.arm_order)):
+            raise ValueError("arm_order must be unique")
         if set(self.arm_names) != set(self.arm_order):
             raise ValueError("arm_order must contain exactly the arm_names")
         return self
@@ -286,11 +304,21 @@ class EvalManifest(BaseModel):
     eligible_experiments: tuple[EligibleExperiment, ...] = ()
     outcome: EvalOutcome | None = None
 
+    def model_copy(self, *, update: dict[str, object] | None = None, deep: bool = False) -> "EvalManifest":
+        """Identity is write-once; public update copies cannot replace it."""
+        if update:
+            raise TypeError("EvalManifest does not permit public model_copy updates")
+        return super().model_copy(deep=deep)
+
     def append_outcome(self, outcome: EvalOutcome) -> "EvalManifest":
         """Append the outcome exactly once; a second append fails."""
         if self.outcome is not None:
             raise ValueError("EvalManifest outcome can only be appended once")
-        return self.model_copy(update={"outcome": outcome})
+        if not isinstance(outcome, EvalOutcome):
+            raise TypeError("EvalManifest append_outcome requires an EvalOutcome")
+        return type(self).model_validate(
+            {**self.model_dump(mode="python"), "outcome": outcome.model_dump(mode="python")}
+        )
 
 
 __all__ = [

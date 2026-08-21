@@ -56,7 +56,7 @@ class RunDTO(BaseModel):
     attribution_status: AttributionStatus | None = None
     attribution_type: AttributionType | None = None
     created_at: datetime
-    duration_ms: int | None = None
+    duration_ms: int | None = Field(default=None, ge=0)
     failure: RunFailureDTO | None = None
     manifest_summary: dict[str, str] = {}
     terminal_artifact_refs: tuple[ArtifactRefDTO, ...] = ()
@@ -68,6 +68,12 @@ class RunDTO(BaseModel):
                 raise ValueError(
                     "non-COMPLETED runs cannot carry attribution status/type"
                 )
+        if self.lifecycle_status is RunLifecycleStatus.COMPLETED and self.failure is not None:
+            raise ValueError("COMPLETED runs cannot carry failure details")
+        if self.failure is not None and self.lifecycle_status is not RunLifecycleStatus.FAILED:
+            raise ValueError("failure details are permitted only for FAILED runs")
+        if any(ref.run_id != self.run_id for ref in self.terminal_artifact_refs):
+            raise ValueError("terminal artifact refs must belong to the same run")
         return self
 
 
@@ -89,15 +95,13 @@ class ArtifactRefDTO(BaseModel):
 
     artifact_id: str
     artifact_type: str
-    schema_version: str | None = None
-    content_sha256: str | None = None
+    schema_version: str
+    content_sha256: str
     run_id: str
 
     @model_validator(mode="after")
     def _hash_shape(self) -> "ArtifactRefDTO":
-        if self.content_sha256 is not None and _SHA256_RE.fullmatch(
-            self.content_sha256
-        ) is None:
+        if _SHA256_RE.fullmatch(self.content_sha256) is None:
             raise ValueError("content_sha256 must be a lowercase SHA-256 hex digest")
         return self
 
@@ -110,6 +114,12 @@ class ArtifactDTO(BaseModel):
     stage: str | None = None
     created_at: datetime | None = None
     ref: ArtifactRefDTO
+
+    @model_validator(mode="after")
+    def _matches_reference(self) -> "ArtifactDTO":
+        if self.artifact_id != self.ref.artifact_id or self.artifact_type != self.ref.artifact_type:
+            raise ValueError("ArtifactDTO identity/type must match its nested ref")
+        return self
 
 
 class EvidenceDetailDTO(BaseModel):

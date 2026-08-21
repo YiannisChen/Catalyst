@@ -24,9 +24,12 @@ from catalyst_agents.attribution.claims import (
     Claim,
     ClaimPlan,
     ClaimRole,
+    SupportingSnippet,
     SourceRoleIndependenceSummary,
     ValidatedClaimPlan,
     WriterFormatStyleContract,
+    WriterFormatKind,
+    WriterSection,
     WriterInput,
     is_fixed_abstention,
 )
@@ -137,13 +140,20 @@ def _writer_input(**overrides: Any) -> dict[str, Any]:
         "attribution_type": "EVIDENCE_BACKED_CAUSAL",
         "observed_move": "AAPL +3.2%",
         "validated_claim_plan": plan,
-        "narrowly_bound_supporting_snippets": {
-            "corpus:chunk:0001": "AAPL reported record quarterly revenue."
-        },
+        "narrowly_bound_supporting_snippets": (
+            SupportingSnippet(
+                evidence_id="corpus:chunk:0001",
+                snippet_text="AAPL reported record quarterly revenue.",
+                content_sha256=H64,
+                source_start_offset=0,
+                source_end_offset=38,
+            ),
+        ),
         "citation_map": {"claim-1": ("corpus:chunk:0001",)},
         "required_limitations": ("magnitude coverage is partial",),
         "format_style_contract": WriterFormatStyleContract(
-            required_sections=("summary",),
+            format_kind="CAUSAL",
+            required_sections=("SUMMARY",),
             style_instructions=("neutral tone",),
         ),
     }
@@ -225,6 +235,7 @@ def test_causal_claims_require_hypothesis_identity_and_magnitude_fit() -> None:
         claim_id="limit-1",
         role="LIMITATION",
         statement="No accepted cause.",
+        order_index=0,
     )
     assert limitation.source_hypothesis_id is None
     assert limitation.magnitude_fit is None
@@ -232,6 +243,7 @@ def test_causal_claims_require_hypothesis_identity_and_magnitude_fit() -> None:
         claim_id="ctx-1",
         role="CONTEXT",
         statement="Broad market context.",
+        order_index=0,
     )
     assert context.source_hypothesis_id is None
     assert context.magnitude_fit is None
@@ -358,6 +370,7 @@ def test_fixed_abstention_accepts_only_limitation_and_context_surface() -> None:
                             role="LIMITATION",
                             statement="No accepted cause under eligible evidence.",
                             limitations=(),
+                            order_index=0,
                         ),
                     ),
                     citation_map={"limit-1": ()},
@@ -369,8 +382,14 @@ def test_fixed_abstention_accepts_only_limitation_and_context_surface() -> None:
                 )
             ),
             citation_map={"limit-1": ()},
-            narrowly_bound_supporting_snippets={},
+            observed_move="AAPL +3.2%",
+            narrowly_bound_supporting_snippets=(),
             required_limitations=("No accepted cause under eligible evidence.",),
+            format_style_contract=WriterFormatStyleContract(
+                format_kind="FIXED_ABSTENTION",
+                required_sections=("OBSERVED_MOVE", "LIMITATIONS"),
+                style_instructions=(),
+            ),
         )
     )
     assert is_fixed_abstention(abstain) is True
@@ -554,12 +573,12 @@ def test_writer_input_uses_typed_format_style_contract() -> None:
     writer = WriterInput(
         **_writer_input(
             format_style_contract=WriterFormatStyleContract(
-                required_sections=("summary", "limitations"),
+                required_sections=("SUMMARY", "LIMITATIONS"),
                 style_instructions=("neutral tone",),
             )
         )
     )
-    assert writer.format_style_contract.required_sections == ("summary", "limitations")
+    assert writer.format_style_contract.required_sections == ("SUMMARY", "LIMITATIONS")
     with pytest.raises(ValidationError):
         WriterInput(**_writer_input(format_style_constraints={"tone": "neutral"}))
     with pytest.raises(ValidationError):
@@ -593,7 +612,7 @@ def test_writer_input_citation_map_matches_validated_plan() -> None:
             citation_map={"claim-1": ("corpus:chunk:0001",)},
         )
     )
-    assert ok.citation_map == {"claim-1": ("corpus:chunk:0001",)}
+    assert ok.citation_map[0].citation_evidence_ids == ("corpus:chunk:0001",)
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +658,7 @@ def test_citation_map_represents_explicitly_empty_citation_tuples() -> None:
             claims=(Claim(**_claim(citation_evidence_ids=())),),
         )
     )
-    assert plan.citation_map == {"claim-1": ()}
+    assert plan.citation_map[0].citation_evidence_ids == ()
 
 
 def test_permitted_evidence_ids_cannot_be_superset() -> None:
@@ -700,6 +719,50 @@ def test_writer_input_format_style_contract_is_required() -> None:
     partial = {k: v for k, v in _writer_input().items() if k != "format_style_contract"}
     with pytest.raises(ValidationError):
         WriterInput(**partial)
+
+
+def test_writer_surface_containers_cannot_be_mutated_after_validation() -> None:
+    """Frozen public contracts must not retain mutable dict internals."""
+    writer = WriterInput(**_writer_input())
+    plan = writer.validated_claim_plan
+    with pytest.raises((TypeError, AttributeError, ValidationError)):
+        plan.citation_map[0].citation_evidence_ids += ("other",)
+    with pytest.raises((TypeError, AttributeError, ValidationError)):
+        writer.narrowly_bound_supporting_snippets[0].snippet_text = "altered"
+
+
+def test_claim_order_is_required_contiguous_and_matches_tuple_order() -> None:
+    with pytest.raises(ValidationError):
+        Claim(**_claim(order_index=None))
+    second = Claim(**_claim(
+        claim_id="claim-2", role="SECONDARY", source_hypothesis_id="hyp:2",
+        order_index=2,
+    ))
+    with pytest.raises(ValidationError):
+        ClaimPlan(**_plan(claims=(Claim(**_claim(order_index=0)), second)))
+
+
+def test_fixed_abstention_rejects_causal_writer_format_and_missing_move_limitations() -> None:
+    abstention_plan = ValidatedClaimPlan(**_validated_plan(
+        status="ABSTAIN",
+        attribution_type="EVIDENCE_BACKED_CAUSAL",
+        claims=(Claim(
+            claim_id="limit-1", role="LIMITATION", statement="No accepted cause.",
+            limitations=("No accepted cause.",), order_index=0,
+        ),),
+        citation_map={"limit-1": ()}, permitted_claim_ids=("limit-1",),
+        permitted_evidence_ids=(), required_limitations=("No accepted cause.",),
+    ))
+    with pytest.raises(ValidationError):
+        WriterInput(**_writer_input(
+            final_status="ABSTAIN", attribution_type="EVIDENCE_BACKED_CAUSAL",
+            observed_move=None, validated_claim_plan=abstention_plan,
+            narrowly_bound_supporting_snippets=(), citation_map={"limit-1": ()},
+            required_limitations=("No accepted cause.",),
+            format_style_contract=WriterFormatStyleContract(
+                format_kind="CAUSAL", required_sections=("CAUSAL_EXPLANATION",), style_instructions=("explain cause",),
+            ),
+        ))
 
 
 def test_claim_plan_identity_and_hash_fields_are_required() -> None:

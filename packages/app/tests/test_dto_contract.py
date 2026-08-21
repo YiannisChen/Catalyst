@@ -175,6 +175,10 @@ def test_artifact_refs_retain_version_hash_and_same_run_metadata() -> None:
     assert ref.run_id == "run:1"
     with pytest.raises(ValidationError):
         ArtifactRefDTO(**_artifact_ref(content_sha256="not-hex"))
+    with pytest.raises(ValidationError):
+        ArtifactRefDTO(**{k: v for k, v in _artifact_ref().items() if k != "schema_version"})
+    with pytest.raises(ValidationError):
+        ArtifactRefDTO(**{k: v for k, v in _artifact_ref().items() if k != "content_sha256"})
     artifact = ArtifactDTO(
         artifact_id="artifact:1",
         artifact_type="evidence_state",
@@ -183,6 +187,11 @@ def test_artifact_refs_retain_version_hash_and_same_run_metadata() -> None:
         ref=ArtifactRefDTO(**_artifact_ref()),
     )
     assert artifact.ref.schema_version == "v1"
+    with pytest.raises(ValidationError):
+        ArtifactDTO(
+            artifact_id="artifact:other", artifact_type="evidence_state",
+            ref=ArtifactRefDTO(**_artifact_ref()),
+        )
 
 
 def test_claim_detail_retains_authoritative_relations() -> None:
@@ -239,6 +248,24 @@ def test_run_dto_non_completed_states_cannot_carry_attribution() -> None:
         created_at=datetime(2026, 1, 6, 14, 0, tzinfo=timezone.utc),
     )
     assert valid.attribution_status is AttributionStatus.ABSTAIN
+
+
+def test_run_dto_terminal_artifact_and_failure_contract() -> None:
+    with pytest.raises(ValidationError):
+        RunDTO(
+            run_id="run:1", lifecycle_status="COMPLETED", created_at=datetime.now(timezone.utc),
+            failure=RunFailureDTO(code="unexpected"),
+        )
+    with pytest.raises(ValidationError):
+        RunDTO(
+            run_id="run:1", lifecycle_status="FAILED", created_at=datetime.now(timezone.utc),
+            duration_ms=-1,
+        )
+    with pytest.raises(ValidationError):
+        RunDTO(
+            run_id="run:1", lifecycle_status="COMPLETED", created_at=datetime.now(timezone.utc),
+            terminal_artifact_refs=(ArtifactRefDTO(**_artifact_ref(run_id="run:other")),),
+        )
 
 
 def test_capability_model_uses_exact_phase_5_23_2_fields() -> None:

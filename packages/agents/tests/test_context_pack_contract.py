@@ -308,6 +308,7 @@ def test_structured_context_is_typed_fact_view() -> None:
         **_payload_item(
             evidence_id="fact:42",
             chunk_id=None,
+            fact_id="fact:42",
             source_class="structured_market_data",
             evidence_role="STRUCTURED_CONTEXT",
             excerpt_text="AAPL P/E 32.1",
@@ -521,6 +522,37 @@ def test_included_and_excluded_evidence_ids_cannot_overlap() -> None:
                 excluded_evidence_ids=("corpus:chunk:0001",),
             )
         )
+
+
+def test_structured_context_is_exclusive_structured_inventory_view() -> None:
+    text = EvidencePayloadItem(**_payload_item())
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(**_pack(
+            evidence_inventory=(text,), direct_primary_evidence=(text,),
+            structured_context=(text,),
+        ))
+
+
+def test_pack_references_are_unique() -> None:
+    item = EvidencePayloadItem(**_payload_item())
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(**_pack(
+            evidence_inventory=(item,), direct_primary_evidence=(item,),
+            included_evidence_ids=(item.evidence_id, item.evidence_id),
+        ))
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(**_pack(
+            evidence_inventory=(item,), direct_primary_evidence=(item,),
+            delta_evidence_ids=(item.evidence_id, item.evidence_id),
+        ))
+    with pytest.raises(ValidationError):
+        EvidenceAnalystContextPack(**_pack(
+            evidence_inventory=(item,), direct_primary_evidence=(item,),
+            truncation_metadata=(
+                TruncationRecord(evidence_id=item.evidence_id, action="INCLUDED_FULL", included_token_count=1, tokenizer_identity="t", reason_code="ok"),
+                TruncationRecord(evidence_id=item.evidence_id, action="METADATA_ONLY", included_token_count=0, tokenizer_identity="t", reason_code="budget"),
+            ),
+        ))
 
 
 def test_reference_lists_resolve_to_inventory_records() -> None:

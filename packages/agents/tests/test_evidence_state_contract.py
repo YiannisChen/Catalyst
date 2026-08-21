@@ -320,3 +320,38 @@ def test_merged_state_hash_is_recomputed_canonically() -> None:
     )
     assert merged.state_hash == compute_state_hash(merged)
     assert merged.state_hash != state.state_hash
+
+
+def test_structured_fact_is_serialized_and_upserted_in_its_own_union() -> None:
+    state = EvidenceState(**_state())
+    fact = EvidenceStateItem(**_item(
+        evidence_id="fact:pe:1", chunk_id=None, fact_id="fact:pe:1",
+        text_ref="structured:pe:1", source_class="structured_market_data",
+        evidence_role="STRUCTURED_CONTEXT",
+    ))
+    assert fact.model_dump()["fact_id"] == "fact:pe:1"
+    updated = state.upsert(fact)
+    assert updated.evidence_items == state.evidence_items
+    assert updated.structured_facts == (fact,)
+
+
+def test_structured_fact_merge_preserves_union_and_rejects_identity_conflict() -> None:
+    fact = EvidenceStateItem(**_item(
+        evidence_id="fact:pe:1", chunk_id=None, fact_id="fact:pe:1",
+        text_ref="structured:pe:1", source_class="structured_market_data",
+        evidence_role="STRUCTURED_CONTEXT", contributing_task_ids=("task-1",),
+    ))
+    state = EvidenceState(**_state(structured_facts=(fact,)))
+    merged = state.upsert(EvidenceStateItem(**_item(
+        evidence_id="fact:pe:1", chunk_id=None, fact_id="fact:pe:1",
+        text_ref="structured:pe:1", source_class="structured_market_data",
+        evidence_role="STRUCTURED_CONTEXT", contributing_task_ids=("task-2",),
+    )))
+    assert merged.evidence_items == state.evidence_items
+    assert merged.structured_facts[0].contributing_task_ids == ("task-1", "task-2")
+    with pytest.raises(ValueError):
+        state.upsert(EvidenceStateItem(**_item(
+            evidence_id="fact:pe:1", chunk_id=None, fact_id="fact:pe:1",
+            text_ref="structured:other", source_class="structured_market_data",
+            evidence_role="STRUCTURED_CONTEXT",
+        )))

@@ -20,6 +20,7 @@ from catalyst_app.events import (
     HEARTBEAT_COMMENT,
     PublicRunEvent,
     RunAcceptedPayload,
+    RunFailedPayload,
     RunEventType,
     serialize_public_event,
     sse_frame,
@@ -152,6 +153,17 @@ def test_payload_forbids_secrets_and_raw_provider_fields() -> None:
                 }
             )
         )
+
+
+def test_safe_failure_message_rejects_secret_and_raw_provider_patterns() -> None:
+    for unsafe in (
+        "api_key=sk-secret-value",
+        "provider_key: abcdef",
+        "raw provider response: {choices: []}",
+    ):
+        with pytest.raises(ValidationError) as exc_info:
+            RunFailedPayload(failure_code="provider_failure", safe_message=unsafe)
+        assert unsafe not in str(exc_info.value)
 
 
 def test_payload_cannot_carry_full_context_or_evidence_arrays() -> None:

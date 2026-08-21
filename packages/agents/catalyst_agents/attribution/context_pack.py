@@ -91,6 +91,7 @@ class EvidencePayloadItem(BaseModel):
     canonical_content_version_id: str
     corpus_document_id: str
     chunk_id: str | None = None
+    fact_id: str | None = None
     section_key: str | None = None
     chunk_ordinal: int | None = None
     source_class: SourceClass
@@ -108,6 +109,12 @@ class EvidencePayloadItem(BaseModel):
 
     @model_validator(mode="after")
     def _offsets(self) -> "EvidencePayloadItem":
+        if (self.chunk_id is None) == (self.fact_id is None):
+            raise ValueError("exactly one of chunk_id or fact_id must be set")
+        if self.chunk_id is not None and self.evidence_id != self.chunk_id:
+            raise ValueError("text evidence_id must equal chunk_id")
+        if self.fact_id is not None and self.evidence_id != self.fact_id:
+            raise ValueError("structured evidence_id must equal fact_id")
         if self.chunk_ordinal is not None and self.chunk_ordinal < 0:
             raise ValueError("chunk_ordinal must be non-negative")
         if self.source_start_offset is not None and self.source_start_offset < 0:
@@ -273,6 +280,13 @@ class EvidenceAnalystContextPack(BaseModel):
                     "structured_context items must be the exact inventory object; "
                     f"payload metadata differs for {item.evidence_id!r}"
                 )
+            if item.evidence_role != "STRUCTURED_CONTEXT" or item.fact_id is None:
+                raise ValueError(
+                    "structured_context must contain STRUCTURED_CONTEXT fact inventory views"
+                )
+            if item.evidence_id in seen:
+                raise ValueError("one evidence ID cannot appear in structured and role arrays")
+            seen.add(item.evidence_id)
 
         # included/excluded/delta/truncation reference lists resolve to the
         # inventory, and included/excluded are disjoint.
@@ -282,6 +296,8 @@ class EvidenceAnalystContextPack(BaseModel):
             ("delta_evidence_ids", self.delta_evidence_ids),
         )
         for name, refs in reference_lists:
+            if len(refs) != len(set(refs)):
+                raise ValueError(f"{name} references must be unique")
             unknown = set(refs) - set(inventory_by_id)
             if unknown:
                 raise ValueError(
@@ -303,6 +319,9 @@ class EvidenceAnalystContextPack(BaseModel):
                 "truncation_metadata reference unknown inventory records: "
                 f"{sorted(unknown_truncation)}"
             )
+        truncation_ids = tuple(record.evidence_id for record in self.truncation_metadata)
+        if len(truncation_ids) != len(set(truncation_ids)):
+            raise ValueError("truncation_metadata evidence references must be unique")
 
         # Phase 3 §14 token invariant: the rendered-input report must agree
         # with the context budget reservations and never exceed the limit.
