@@ -23,11 +23,12 @@ from pydantic import (
 )
 
 from catalyst_data.canonical.identity import DataRuntimeIdentity
+from catalyst_data.canonical._immutable import NoUncheckedCopyUpdates
 from catalyst_data.canonical.model import ContentState, SourceClass
 from catalyst_data.canonical.temporal import TemporalIdentity
 
 
-class StageScore(BaseModel):
+class StageScore(NoUncheckedCopyUpdates, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     stage: str
@@ -41,15 +42,8 @@ class StageScore(BaseModel):
             raise ValueError("stage score must be finite")
         return self
 
-    def model_copy(
-        self, *, update: dict[str, object] | None = None, deep: bool = False
-    ) -> "StageScore":
-        if update:
-            raise TypeError("StageScore does not permit model_copy updates")
-        return super().model_copy(deep=deep)
 
-
-class StageRank(BaseModel):
+class StageRank(NoUncheckedCopyUpdates, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     stage: str
@@ -63,15 +57,8 @@ class StageRank(BaseModel):
             raise ValueError("stage rank must be a positive integer")
         return self
 
-    def model_copy(
-        self, *, update: dict[str, object] | None = None, deep: bool = False
-    ) -> "StageRank":
-        if update:
-            raise TypeError("StageRank does not permit model_copy updates")
-        return super().model_copy(deep=deep)
 
-
-class RetrievalHit(BaseModel):
+class RetrievalHit(NoUncheckedCopyUpdates, BaseModel):
     """A single V1.1 retrieval hit with complete canonical evidence identity.
 
     Frozen §5.4: every hit carries per-stage nullable scores/ranks, evidence
@@ -161,15 +148,8 @@ class RetrievalHit(BaseModel):
             raise ValueError("structured hit evidence_id must equal fact_id")
         return self
 
-    def model_copy(
-        self, *, update: dict[str, object] | None = None, deep: bool = False
-    ) -> "RetrievalHit":
-        if update:
-            raise TypeError("RetrievalHit does not permit model_copy updates")
-        return super().model_copy(deep=deep)
 
-
-class RetrievalResultSet(BaseModel):
+class RetrievalResultSet(NoUncheckedCopyUpdates, BaseModel):
     """Ordered V1.1 retrieval hits for one run under one runtime identity.
 
     Per-stage ranks across hits are positive and contiguous within each

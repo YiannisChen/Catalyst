@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from catalyst_data.canonical._immutable import NoUncheckedCopyUpdates
 
-class DataRuntimeIdentity(BaseModel):
+
+class DataRuntimeIdentity(NoUncheckedCopyUpdates, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     data_snapshot_id: str

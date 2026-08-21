@@ -157,6 +157,90 @@ def test_canonical_asset_normalizes_entry_input_and_rejects_duplicate_keys() -> 
     assert asset.model_copy() == asset
 
 
+def test_prebuilt_recursive_json_wrappers_cannot_bypass_validation() -> None:
+    from catalyst_data.canonical.model import (
+        CanonicalAsset,
+        CanonicalJsonArray,
+        CanonicalJsonObject,
+        CanonicalMetadataEntry,
+    )
+
+    for invalid in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValidationError):
+            CanonicalJsonArray(items=(invalid,))
+    with pytest.raises(ValidationError):
+        CanonicalJsonObject(entries=(
+            CanonicalMetadataEntry.model_construct(
+                key="nested",
+                value=CanonicalJsonArray.model_construct(items=(float("inf"),)),
+            ),
+        ))
+
+    unsafe_array = CanonicalJsonArray.model_construct(items=(object(),))
+    unsafe_object = CanonicalJsonObject.model_construct(entries=(
+        CanonicalMetadataEntry.model_construct(key="nested", value=unsafe_array),
+    ))
+    with pytest.raises((TypeError, ValueError, ValidationError)):
+        CanonicalAsset(**_valid_asset(subtype_metadata=[
+            CanonicalMetadataEntry.model_construct(key="unsafe", value=unsafe_object),
+        ]))
+
+    safe = CanonicalAsset(**_valid_asset(subtype_metadata={
+        "nested": {"items": [1, 2.5, None, True, "text"]},
+    }))
+    encoded = safe.model_dump_json()
+    assert "NaN" not in encoded and "Infinity" not in encoded
+    assert CanonicalAsset.model_validate_json(encoded).model_dump() == safe.model_dump()
+
+
+def test_canonical_owner_models_reject_unvalidated_copy_updates() -> None:
+    from catalyst_data.canonical.identity import DataRuntimeIdentity
+    from catalyst_data.canonical.model import (
+        CanonicalContentVersion,
+        CanonicalEvidenceChain,
+        StructuredEvidenceIdentity,
+        TextEvidenceIdentity,
+    )
+    from catalyst_data.canonical.temporal import TemporalIdentity
+
+    content = CanonicalContentVersion(
+        canonical_content_version_id="content:1", asset_id="asset:1"
+    )
+    chain = CanonicalEvidenceChain(
+        asset_id="asset:1",
+        canonical_content_version_id="content:1",
+        corpus_document_id="document:1",
+        chunk_id="chunk:1",
+    )
+    text = TextEvidenceIdentity(evidence_id="chunk:1", chunk_id="chunk:1")
+    fact = StructuredEvidenceIdentity(evidence_id="fact:1", fact_id="fact:1")
+    temporal = TemporalIdentity(
+        session_date="2026-01-06",
+        market_timezone="America/New_York",
+        session_open_at=_utc("2026-01-06T14:30:00Z"),
+        session_close_at=_utc("2026-01-06T21:00:00Z"),
+        information_window_start_at=_utc("2026-01-05T21:00:00Z"),
+        cutoff_at=_utc("2026-01-06T21:00:00Z"),
+    )
+    runtime = DataRuntimeIdentity(
+        data_snapshot_id="snapshot:1",
+        corpus_manifest_id="c" * 64,
+        fts_index_version="fts:v1",
+        query_policy_version="qp:v1",
+    )
+    for model, update in (
+        (content, {"asset_id": None}),
+        (chain, {"chunk_id": None}),
+        (text, {"chunk_id": "other"}),
+        (fact, {"fact_id": "other"}),
+        (temporal, {"cutoff_at": None}),
+        (runtime, {"data_snapshot_id": None}),
+    ):
+        with pytest.raises(TypeError):
+            model.model_copy(update=update)
+        assert model.model_copy() == model
+
+
 def test_canonical_asset_rejects_unknown_content_state_and_asset_type() -> None:
     from catalyst_data.canonical.model import CanonicalAsset
 

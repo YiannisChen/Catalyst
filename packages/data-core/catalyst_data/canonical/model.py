@@ -19,6 +19,8 @@ from pydantic import (
     model_validator,
 )
 
+from catalyst_data.canonical._immutable import NoUncheckedCopyUpdates
+
 ContentState = Literal[
     "FULL_TEXT",
     "TITLE_ONLY",
@@ -76,22 +78,22 @@ def source_role_for(source_class: SourceClass) -> SourceRole:
 CanonicalMetadataScalar = str | int | float | bool | None
 
 
-class CanonicalJsonArray(BaseModel):
+class CanonicalJsonArray(NoUncheckedCopyUpdates, BaseModel):
     """Immutable internal representation of a JSON array."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     items: tuple["CanonicalJsonValue", ...]
 
-    def model_copy(
-        self, *, update: dict[str, object] | None = None, deep: bool = False
-    ) -> "CanonicalJsonArray":
-        if update:
-            raise TypeError("CanonicalJsonArray does not permit model_copy updates")
-        return super().model_copy(deep=deep)
+    @field_validator("items", mode="before")
+    @classmethod
+    def _validated_items(cls, items: object) -> object:
+        if not isinstance(items, (list, tuple)):
+            return items
+        return tuple(_freeze_json(item) for item in items)
 
 
-class CanonicalMetadataEntry(BaseModel):
+class CanonicalMetadataEntry(NoUncheckedCopyUpdates, BaseModel):
     """One immutable subtype-metadata field."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -99,26 +101,40 @@ class CanonicalMetadataEntry(BaseModel):
     key: str
     value: "CanonicalJsonValue"
 
+    @field_validator("value", mode="before")
+    @classmethod
+    def _validated_value(cls, value: object) -> CanonicalJsonValue:
+        return _freeze_json(value)
+
     @model_validator(mode="after")
     def _non_empty_key(self) -> "CanonicalMetadataEntry":
         if not self.key:
             raise ValueError("subtype metadata key must not be empty")
         return self
 
-    def model_copy(
-        self, *, update: dict[str, object] | None = None, deep: bool = False
-    ) -> "CanonicalMetadataEntry":
-        if update:
-            raise TypeError("CanonicalMetadataEntry does not permit model_copy updates")
-        return super().model_copy(deep=deep)
 
-
-class CanonicalJsonObject(BaseModel):
+class CanonicalJsonObject(NoUncheckedCopyUpdates, BaseModel):
     """Immutable, key-sorted internal representation of a JSON object."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     entries: tuple[CanonicalMetadataEntry, ...]
+
+    @field_validator("entries", mode="before")
+    @classmethod
+    def _validated_entries(cls, entries: object) -> object:
+        if not isinstance(entries, (list, tuple)):
+            return entries
+        rebuilt = tuple(
+            CanonicalMetadataEntry(
+                key=entry.key,
+                value=_freeze_json(entry.value),
+            )
+            if isinstance(entry, CanonicalMetadataEntry)
+            else CanonicalMetadataEntry.model_validate(entry)
+            for entry in entries
+        )
+        return tuple(sorted(rebuilt, key=lambda entry: entry.key))
 
     @model_validator(mode="after")
     def _canonical_entries(self) -> "CanonicalJsonObject":
@@ -127,22 +143,16 @@ class CanonicalJsonObject(BaseModel):
             raise ValueError("JSON object keys must be unique and canonically sorted")
         return self
 
-    def model_copy(
-        self, *, update: dict[str, object] | None = None, deep: bool = False
-    ) -> "CanonicalJsonObject":
-        if update:
-            raise TypeError("CanonicalJsonObject does not permit model_copy updates")
-        return super().model_copy(deep=deep)
-
-
 CanonicalJsonValue = (
     CanonicalMetadataScalar | CanonicalJsonArray | CanonicalJsonObject
 )
 
 
 def _freeze_json(value: object) -> CanonicalJsonValue:
-    if isinstance(value, (CanonicalJsonArray, CanonicalJsonObject)):
-        return value
+    if isinstance(value, CanonicalJsonArray):
+        return CanonicalJsonArray(items=value.items)
+    if isinstance(value, CanonicalJsonObject):
+        return CanonicalJsonObject(entries=value.entries)
     if isinstance(value, dict):
         if any(not isinstance(key, str) for key in value):
             raise ValueError("subtype metadata object keys must be strings")
@@ -173,7 +183,7 @@ CanonicalMetadataEntry.model_rebuild()
 CanonicalJsonObject.model_rebuild()
 
 
-class CanonicalAsset(BaseModel):
+class CanonicalAsset(NoUncheckedCopyUpdates, BaseModel):
     """Frozen V1.1 canonical asset record (Frozen §5.1)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -236,15 +246,8 @@ class CanonicalAsset(BaseModel):
     ) -> dict[str, object]:
         return {entry.key: _thaw_json(entry.value) for entry in entries}
 
-    def model_copy(
-        self, *, update: dict[str, object] | None = None, deep: bool = False
-    ) -> "CanonicalAsset":
-        if update:
-            raise TypeError("CanonicalAsset does not permit model_copy updates")
-        return super().model_copy(deep=deep)
 
-
-class CanonicalContentVersion(BaseModel):
+class CanonicalContentVersion(NoUncheckedCopyUpdates, BaseModel):
     """A content version belongs to exactly one canonical asset."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -253,7 +256,7 @@ class CanonicalContentVersion(BaseModel):
     asset_id: str
 
 
-class CanonicalEvidenceChain(BaseModel):
+class CanonicalEvidenceChain(NoUncheckedCopyUpdates, BaseModel):
     """The sole text-evidence chain (Final Migration TSD §5.2).
 
     asset_id -> canonical_content_version_id -> corpus_document_id -> chunk_id
@@ -267,7 +270,7 @@ class CanonicalEvidenceChain(BaseModel):
     chunk_id: str
 
 
-class TextEvidenceIdentity(BaseModel):
+class TextEvidenceIdentity(NoUncheckedCopyUpdates, BaseModel):
     """Text evidence identity: evidence_id equals the stable chunk_id."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -282,7 +285,7 @@ class TextEvidenceIdentity(BaseModel):
         return self
 
 
-class StructuredEvidenceIdentity(BaseModel):
+class StructuredEvidenceIdentity(NoUncheckedCopyUpdates, BaseModel):
     """Structured evidence identity: evidence_id equals the stable fact_id."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")

@@ -232,6 +232,13 @@ def test_v1_set_accepts_contiguous_ranks_and_is_frozen() -> None:
     assert len(result_set.hits) == 2
     with pytest.raises(ValidationError):
         result_set.hits = (first,)  # frozen
+    foreign_temporal = _temporal_identity().__class__.model_validate({
+        **_temporal_identity().model_dump(),
+        "session_date": "2026-01-07",
+    })
+    with pytest.raises(TypeError):
+        result_set.model_copy(update={"temporal_identity": foreign_temporal})
+    assert result_set.model_copy() == result_set
 
 
 def test_v1_hit_carries_structured_fact_identity_without_chunk() -> None:

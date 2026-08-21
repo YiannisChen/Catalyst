@@ -11,8 +11,10 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from catalyst_data.canonical._immutable import NoUncheckedCopyUpdates
 
-class TemporalIdentity(BaseModel):
+
+class TemporalIdentity(NoUncheckedCopyUpdates, BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     session_date: str
