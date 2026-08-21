@@ -273,6 +273,11 @@ class EvidenceState(BaseModel):
         """
         is_fact = item.fact_id is not None
         collection = self.structured_facts if is_fact else self.evidence_items
+        other_collection = self.evidence_items if is_fact else self.structured_facts
+        if any(existing.evidence_id == item.evidence_id for existing in other_collection):
+            raise ValueError(
+                "evidence state integrity failure: evidence ID cannot cross text/fact partitions"
+            )
         for index, existing in enumerate(collection):
             if existing.evidence_id != item.evidence_id:
                 continue
@@ -306,13 +311,24 @@ class EvidenceState(BaseModel):
             items = list(collection)
             items[index] = merged
             target = "structured_facts" if is_fact else "evidence_items"
-            candidate = self.model_copy(update={target: tuple(items)})
-            return candidate.model_copy(
-                update={"state_hash": compute_state_hash(candidate)}
-            )
+            candidate = self._validated_rebuild(**{target: tuple(items)})
+            return candidate._validated_rebuild(state_hash=compute_state_hash(candidate))
         target = "structured_facts" if is_fact else "evidence_items"
-        candidate = self.model_copy(update={target: collection + (item,)})
-        return candidate.model_copy(update={"state_hash": compute_state_hash(candidate)})
+        candidate = self._validated_rebuild(**{target: collection + (item,)})
+        return candidate._validated_rebuild(state_hash=compute_state_hash(candidate))
+
+    def _validated_rebuild(self, **updates: object) -> "EvidenceState":
+        payload = self.model_dump(mode="python")
+        payload.update(updates)
+        return type(self).model_validate(payload)
+
+    def model_copy(
+        self, *, update: dict[str, object] | None = None, deep: bool = False
+    ) -> "EvidenceState":
+        """Permit read copies, but forbid unvalidated authoritative updates."""
+        if update:
+            raise TypeError("EvidenceState does not permit public model_copy updates")
+        return super().model_copy(deep=deep)
 
 
 def compute_state_hash(state: EvidenceState) -> str:

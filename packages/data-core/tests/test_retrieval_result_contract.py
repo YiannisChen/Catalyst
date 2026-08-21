@@ -83,6 +83,16 @@ def test_v1_hit_is_frozen_and_forbids_extra() -> None:
         RetrievalHit(**_hit(), unknown_field=True)  # extra forbidden
 
 
+def test_v1_hit_stage_scores_and_ranks_are_deeply_immutable() -> None:
+    from catalyst_data.retrieval.v1_result import RetrievalHit
+
+    hit = RetrievalHit(**_hit())
+    with pytest.raises((TypeError, AttributeError, ValidationError)):
+        hit.scores[0].value = float("nan")
+    with pytest.raises((TypeError, AttributeError, ValidationError)):
+        hit.ranks[0].value = 0
+
+
 def test_v1_hit_rejects_nan_and_infinite_scores() -> None:
     from catalyst_data.retrieval.v1_result import RetrievalHit
 
@@ -108,10 +118,12 @@ def test_v1_hit_missing_modality_stays_none_never_fabricated() -> None:
 
     hit = RetrievalHit(**_hit())
     dumped = hit.model_dump()
-    assert dumped["scores"]["dense"] is None
-    assert dumped["ranks"]["dense"] is None
-    assert dumped["scores"]["reranked"] is None
-    assert dumped["ranks"]["reranked"] is None
+    scores = {entry["stage"]: entry["value"] for entry in dumped["scores"]}
+    ranks = {entry["stage"]: entry["value"] for entry in dumped["ranks"]}
+    assert scores["dense"] is None
+    assert ranks["dense"] is None
+    assert scores["reranked"] is None
+    assert ranks["reranked"] is None
 
 
 def test_v1_hit_evidence_id_must_equal_chunk_id_for_text_hits() -> None:

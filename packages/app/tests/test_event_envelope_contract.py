@@ -167,6 +167,21 @@ def test_safe_failure_message_rejects_secret_and_raw_provider_patterns() -> None
         assert unsafe not in str(exc_info.value)
 
 
+def test_event_envelope_rejection_never_echoes_nested_failure_secret() -> None:
+    secret = "sk-envelope-secret-abcdefghijklmnopqrstuvwxyz012345"
+    with pytest.raises(ValidationError) as exc_info:
+        PublicRunEvent(
+            **_event(
+                event_type="run.failed",
+                payload={
+                    "failure_code": "provider_failure",
+                    "safe_message": f"api_key={secret}",
+                },
+            )
+        )
+    assert secret not in str(exc_info.value)
+
+
 def test_payload_cannot_carry_full_context_or_evidence_arrays() -> None:
     with pytest.raises(ValidationError):
         PublicRunEvent(
@@ -245,6 +260,13 @@ def test_artifact_refs_are_typed_with_schema_and_hash_metadata() -> None:
     assert event.artifact_refs[0].content_sha256 == "c" * 64
     with pytest.raises(ValidationError):
         PublicRunEvent(**_event(artifact_refs=("artifact:1",)))  # untyped ref rejected
+    with pytest.raises(ValidationError):
+        ArtifactRef(artifact_id="artifact:2", artifact_type="claim_plan")
+    with pytest.raises(ValidationError):
+        ArtifactRef(
+            artifact_id="artifact:2", artifact_type="claim_plan",
+            schema_version="v1", content_sha256="not-a-hash",
+        )
 
 
 def test_sse_frame_uses_run_id_sequence_and_event_type() -> None:

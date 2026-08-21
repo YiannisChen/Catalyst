@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 ContentState = Literal[
     "FULL_TEXT",
@@ -66,6 +66,24 @@ def source_role_for(source_class: SourceClass) -> SourceRole:
     return _SOURCE_ROLE_MAPPING[source_class]
 
 
+CanonicalMetadataScalar = str | int | float | bool | None
+
+
+class CanonicalMetadataEntry(BaseModel):
+    """One immutable scalar subtype-metadata field."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: str
+    value: CanonicalMetadataScalar
+
+    @model_validator(mode="after")
+    def _non_empty_key(self) -> "CanonicalMetadataEntry":
+        if not self.key:
+            raise ValueError("subtype metadata key must not be empty")
+        return self
+
+
 class CanonicalAsset(BaseModel):
     """Frozen V1.1 canonical asset record (Frozen §5.1)."""
 
@@ -74,7 +92,7 @@ class CanonicalAsset(BaseModel):
     asset_id: str
     asset_type: AssetType
     issuer_id: str
-    tickers: list[str]
+    tickers: tuple[str, ...]
     provider: str
     publisher: str | None = None
     canonical_url: str | None = None
@@ -90,7 +108,17 @@ class CanonicalAsset(BaseModel):
     content_hash: str | None = None
     dedup_cluster_id: str | None = None
     parse_quality: str
-    subtype_metadata: dict[str, Any]
+    subtype_metadata: tuple[CanonicalMetadataEntry, ...]
+
+    @field_validator("subtype_metadata", mode="before")
+    @classmethod
+    def _canonical_metadata_entries(cls, value: object) -> object:
+        if isinstance(value, dict):
+            return tuple(
+                CanonicalMetadataEntry(key=key, value=item)
+                for key, item in sorted(value.items())
+            )
+        return value
 
 
 class CanonicalContentVersion(BaseModel):
@@ -149,6 +177,7 @@ class StructuredEvidenceIdentity(BaseModel):
 __all__ = [
     "AssetType",
     "CanonicalAsset",
+    "CanonicalMetadataEntry",
     "CanonicalContentVersion",
     "CanonicalEvidenceChain",
     "ContentState",

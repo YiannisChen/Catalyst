@@ -47,14 +47,12 @@ class ArtifactRef(BaseModel):
 
     artifact_id: str
     artifact_type: str
-    schema_version: str | None = None
-    content_sha256: str | None = None
+    schema_version: str
+    content_sha256: str
 
     @model_validator(mode="after")
     def _hash_shape(self) -> "ArtifactRef":
-        if self.content_sha256 is not None and _SHA256_RE.fullmatch(
-            self.content_sha256
-        ) is None:
+        if _SHA256_RE.fullmatch(self.content_sha256) is None:
             raise ValueError("content_sha256 must be a lowercase SHA-256 hex digest")
         return self
 
@@ -246,7 +244,9 @@ _EVENT_PAYLOAD_TYPES: dict[RunEventType, type[BaseModel]] = {
 
 
 class PublicRunEvent(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", hide_input_in_errors=True
+    )
 
     schema_version: str
     event_id: str | None = None

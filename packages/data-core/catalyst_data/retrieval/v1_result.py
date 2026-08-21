@@ -13,13 +13,42 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
-from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from catalyst_data.canonical.identity import DataRuntimeIdentity
 from catalyst_data.canonical.model import ContentState, SourceClass
 from catalyst_data.canonical.temporal import TemporalIdentity
+
+
+class StageScore(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    stage: str
+    value: float | None
+
+    @model_validator(mode="after")
+    def _finite(self) -> "StageScore":
+        if not self.stage:
+            raise ValueError("score stage must not be empty")
+        if self.value is not None and not math.isfinite(self.value):
+            raise ValueError("stage score must be finite")
+        return self
+
+
+class StageRank(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    stage: str
+    value: int | None
+
+    @model_validator(mode="after")
+    def _positive(self) -> "StageRank":
+        if not self.stage:
+            raise ValueError("rank stage must not be empty")
+        if self.value is not None and self.value < 1:
+            raise ValueError("stage rank must be a positive integer")
+        return self
 
 
 class RetrievalHit(BaseModel):
@@ -40,8 +69,8 @@ class RetrievalHit(BaseModel):
     chunk_id: str | None = None
     fact_id: str | None = None
     excerpt: str
-    scores: dict[str, float | None]
-    ranks: dict[str, int | None]
+    scores: tuple[StageScore, ...]
+    ranks: tuple[StageRank, ...]
     source_class: SourceClass
     content_state: ContentState
     eligible_at: datetime
@@ -54,20 +83,24 @@ class RetrievalHit(BaseModel):
     temporal_identity: TemporalIdentity
     data_runtime_identity: DataRuntimeIdentity
 
-    @field_validator("scores")
+    @field_validator("scores", mode="before")
     @classmethod
-    def _scores_finite(cls, scores: dict[str, float | None]) -> dict[str, float | None]:
-        for stage, value in scores.items():
-            if value is not None and not math.isfinite(value):
-                raise ValueError(f"score for stage {stage!r} must be finite")
+    def _scores_as_entries(cls, scores: object) -> object:
+        if isinstance(scores, dict):
+            return tuple(
+                StageScore(stage=stage, value=value)
+                for stage, value in sorted(scores.items())
+            )
         return scores
 
-    @field_validator("ranks")
+    @field_validator("ranks", mode="before")
     @classmethod
-    def _ranks_positive(cls, ranks: dict[str, int | None]) -> dict[str, int | None]:
-        for stage, value in ranks.items():
-            if value is not None and value < 1:
-                raise ValueError(f"rank for stage {stage!r} must be a positive integer")
+    def _ranks_as_entries(cls, ranks: object) -> object:
+        if isinstance(ranks, dict):
+            return tuple(
+                StageRank(stage=stage, value=value)
+                for stage, value in sorted(ranks.items())
+            )
         return ranks
 
     @model_validator(mode="after")
@@ -99,9 +132,9 @@ class RetrievalResultSet(BaseModel):
     def _ranks_contiguous_within_stage(self) -> "RetrievalResultSet":
         by_stage: dict[str, list[int]] = {}
         for hit in self.hits:
-            for stage, value in hit.ranks.items():
-                if value is not None:
-                    by_stage.setdefault(stage, []).append(value)
+            for entry in hit.ranks:
+                if entry.value is not None:
+                    by_stage.setdefault(entry.stage, []).append(entry.value)
         for stage, ranks in by_stage.items():
             expected = list(range(1, len(ranks) + 1))
             if sorted(ranks) != expected:
@@ -121,4 +154,4 @@ class RetrievalResultSet(BaseModel):
         return self
 
 
-__all__ = ["RetrievalHit", "RetrievalResultSet"]
+__all__ = ["RetrievalHit", "RetrievalResultSet", "StageRank", "StageScore"]

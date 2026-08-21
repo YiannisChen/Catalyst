@@ -54,6 +54,21 @@ class IndependenceGroupSummary(BaseModel):
         return self
 
 
+class ContentStateCount(BaseModel):
+    """One immutable canonical content-state count."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    content_state: ContentState
+    count: int
+
+    @model_validator(mode="after")
+    def _non_negative(self) -> "ContentStateCount":
+        if self.count < 0:
+            raise ValueError("content state count must be non-negative")
+        return self
+
+
 class CoverageSummary(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -70,7 +85,7 @@ class CoverageSummary(BaseModel):
     eligible_reported_news_group_count: int
     unknown_independence_asset_count: int
     known_duplicate_or_syndicated_asset_count: int
-    content_state_counts: dict[str, int]
+    content_state_counts: tuple[ContentStateCount, ...]
     parse_degraded_item_count: int
     retrieval_degradations: tuple[RetrievalDegradation, ...] = ()
     data_coverage_gaps: tuple[DataCoverageGap, ...] = ()
@@ -81,14 +96,14 @@ class CoverageSummary(BaseModel):
     peer_alignment: SessionAlignment | None = None
     scheduled_macro_present: bool | None = None
 
-    @field_validator("content_state_counts")
+    @field_validator("content_state_counts", mode="before")
     @classmethod
-    def _content_state_keys(cls, counts: dict[str, int]) -> dict[str, int]:
-        unknown = set(counts) - CANONICAL_CONTENT_STATES
-        if unknown:
-            raise ValueError(f"unknown content state keys: {sorted(unknown)}")
-        if any(value < 0 for value in counts.values()):
-            raise ValueError("content state counts must be non-negative")
+    def _content_state_entries(cls, counts: object) -> object:
+        if isinstance(counts, dict):
+            return tuple(
+                ContentStateCount(content_state=state, count=count)
+                for state, count in sorted(counts.items())
+            )
         return counts
 
     @model_validator(mode="after")
@@ -115,12 +130,16 @@ class CoverageSummary(BaseModel):
         group_ids = [group.independence_group_id for group in self.independence_groups]
         if group_ids != sorted(group_ids):
             raise ValueError("independence_groups must be sorted by group id")
+        content_states = tuple(entry.content_state for entry in self.content_state_counts)
+        if len(content_states) != len(set(content_states)):
+            raise ValueError("content_state_counts must contain unique states")
         return self
 
 
 __all__ = [
     "CANONICAL_CONTENT_STATES",
     "CapabilityGap",
+    "ContentStateCount",
     "CoverageSummary",
     "DataCoverageGap",
     "IndependenceGroupSummary",

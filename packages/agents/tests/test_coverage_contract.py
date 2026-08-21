@@ -156,8 +156,11 @@ def test_content_state_counts_accept_only_canonical_states() -> None:
             **_coverage(content_state_counts={"FULL": 1})
         )
     summary = CoverageSummary(**_coverage())
-    assert summary.content_state_counts["FULL_TEXT"] == 12
-    assert summary.content_state_counts["METADATA_ONLY"] == 20
+    counts = {entry.content_state: entry.count for entry in summary.content_state_counts}
+    assert counts["FULL_TEXT"] == 12
+    assert counts["METADATA_ONLY"] == 20
+    with pytest.raises((TypeError, AttributeError, ValidationError)):
+        summary.content_state_counts[0].count = -1
 
 
 def test_all_counts_are_non_negative() -> None:

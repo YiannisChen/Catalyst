@@ -355,3 +355,17 @@ def test_structured_fact_merge_preserves_union_and_rejects_identity_conflict() -
             text_ref="structured:other", source_class="structured_market_data",
             evidence_role="STRUCTURED_CONTEXT",
         )))
+
+
+def test_evidence_state_rejects_cross_partition_upsert_and_copy_update_bypass() -> None:
+    text = EvidenceStateItem(**_item(evidence_id="shared:1", chunk_id="shared:1"))
+    state = EvidenceState(**_state(evidence_items=(text,)))
+    fact = EvidenceStateItem(**_item(
+        evidence_id="shared:1", chunk_id=None, fact_id="shared:1",
+        text_ref="structured:shared", source_class="structured_market_data",
+        evidence_role="STRUCTURED_CONTEXT",
+    ))
+    with pytest.raises(ValueError):
+        state.upsert(fact)
+    with pytest.raises((TypeError, ValueError, ValidationError)):
+        state.model_copy(update={"state_hash": "f" * 64})

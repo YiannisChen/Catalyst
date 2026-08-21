@@ -107,6 +107,16 @@ def test_canonical_asset_is_frozen_forbids_extra_and_serializes_asset_id() -> No
     assert "canonical_asset_id" not in CanonicalAsset.model_fields
 
 
+def test_canonical_asset_nested_collections_are_deeply_immutable() -> None:
+    from catalyst_data.canonical.model import CanonicalAsset
+
+    asset = CanonicalAsset(**_valid_asset())
+    with pytest.raises((TypeError, AttributeError)):
+        asset.tickers.append("MSFT")
+    with pytest.raises((TypeError, AttributeError, ValidationError)):
+        asset.subtype_metadata[0].value = "altered"
+
+
 def test_canonical_asset_rejects_unknown_content_state_and_asset_type() -> None:
     from catalyst_data.canonical.model import CanonicalAsset
 
