@@ -6,11 +6,18 @@ identities (Final Migration TSD §4.2, §5.2).
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 ContentState = Literal[
     "FULL_TEXT",
@@ -69,19 +76,101 @@ def source_role_for(source_class: SourceClass) -> SourceRole:
 CanonicalMetadataScalar = str | int | float | bool | None
 
 
+class CanonicalJsonArray(BaseModel):
+    """Immutable internal representation of a JSON array."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    items: tuple["CanonicalJsonValue", ...]
+
+    def model_copy(
+        self, *, update: dict[str, object] | None = None, deep: bool = False
+    ) -> "CanonicalJsonArray":
+        if update:
+            raise TypeError("CanonicalJsonArray does not permit model_copy updates")
+        return super().model_copy(deep=deep)
+
+
 class CanonicalMetadataEntry(BaseModel):
-    """One immutable scalar subtype-metadata field."""
+    """One immutable subtype-metadata field."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     key: str
-    value: CanonicalMetadataScalar
+    value: "CanonicalJsonValue"
 
     @model_validator(mode="after")
     def _non_empty_key(self) -> "CanonicalMetadataEntry":
         if not self.key:
             raise ValueError("subtype metadata key must not be empty")
         return self
+
+    def model_copy(
+        self, *, update: dict[str, object] | None = None, deep: bool = False
+    ) -> "CanonicalMetadataEntry":
+        if update:
+            raise TypeError("CanonicalMetadataEntry does not permit model_copy updates")
+        return super().model_copy(deep=deep)
+
+
+class CanonicalJsonObject(BaseModel):
+    """Immutable, key-sorted internal representation of a JSON object."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    entries: tuple[CanonicalMetadataEntry, ...]
+
+    @model_validator(mode="after")
+    def _canonical_entries(self) -> "CanonicalJsonObject":
+        keys = tuple(entry.key for entry in self.entries)
+        if len(keys) != len(set(keys)) or keys != tuple(sorted(keys)):
+            raise ValueError("JSON object keys must be unique and canonically sorted")
+        return self
+
+    def model_copy(
+        self, *, update: dict[str, object] | None = None, deep: bool = False
+    ) -> "CanonicalJsonObject":
+        if update:
+            raise TypeError("CanonicalJsonObject does not permit model_copy updates")
+        return super().model_copy(deep=deep)
+
+
+CanonicalJsonValue = (
+    CanonicalMetadataScalar | CanonicalJsonArray | CanonicalJsonObject
+)
+
+
+def _freeze_json(value: object) -> CanonicalJsonValue:
+    if isinstance(value, (CanonicalJsonArray, CanonicalJsonObject)):
+        return value
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("subtype metadata object keys must be strings")
+        entries = tuple(
+            CanonicalMetadataEntry(key=key, value=_freeze_json(item))
+            for key, item in sorted(value.items())
+        )
+        return CanonicalJsonObject(entries=entries)
+    if isinstance(value, (list, tuple)):
+        return CanonicalJsonArray(items=tuple(_freeze_json(item) for item in value))
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("subtype metadata numbers must be finite")
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError("subtype metadata values must be JSON-compatible")
+
+
+def _thaw_json(value: CanonicalJsonValue) -> object:
+    if isinstance(value, CanonicalJsonObject):
+        return {entry.key: _thaw_json(entry.value) for entry in value.entries}
+    if isinstance(value, CanonicalJsonArray):
+        return [_thaw_json(item) for item in value.items]
+    return value
+
+
+CanonicalJsonArray.model_rebuild()
+CanonicalMetadataEntry.model_rebuild()
+CanonicalJsonObject.model_rebuild()
 
 
 class CanonicalAsset(BaseModel):
@@ -114,11 +203,45 @@ class CanonicalAsset(BaseModel):
     @classmethod
     def _canonical_metadata_entries(cls, value: object) -> object:
         if isinstance(value, dict):
-            return tuple(
-                CanonicalMetadataEntry(key=key, value=item)
-                for key, item in sorted(value.items())
+            if any(not isinstance(key, str) for key in value):
+                raise ValueError("subtype metadata keys must be strings")
+            value = tuple({"key": key, "value": item} for key, item in value.items())
+        if not isinstance(value, (list, tuple)):
+            return value
+        entries: list[CanonicalMetadataEntry] = []
+        for entry in value:
+            if isinstance(entry, CanonicalMetadataEntry):
+                entries.append(entry)
+                continue
+            if not isinstance(entry, dict) or set(entry) != {"key", "value"}:
+                raise ValueError("subtype metadata entries require key and value")
+            key = entry["key"]
+            if not isinstance(key, str):
+                raise ValueError("subtype metadata entry keys must be strings")
+            entries.append(
+                CanonicalMetadataEntry(key=key, value=_freeze_json(entry["value"]))
             )
-        return value
+        frozen_entries = tuple(entries)
+        keys = tuple(entry.key for entry in frozen_entries)
+        if len(keys) != len(set(keys)):
+            raise ValueError("subtype metadata keys must be unique")
+        return tuple(
+            CanonicalMetadataEntry(key=entry.key, value=_freeze_json(entry.value))
+            for entry in sorted(frozen_entries, key=lambda item: item.key)
+        )
+
+    @field_serializer("subtype_metadata")
+    def _serialize_subtype_metadata(
+        self, entries: tuple[CanonicalMetadataEntry, ...]
+    ) -> dict[str, object]:
+        return {entry.key: _thaw_json(entry.value) for entry in entries}
+
+    def model_copy(
+        self, *, update: dict[str, object] | None = None, deep: bool = False
+    ) -> "CanonicalAsset":
+        if update:
+            raise TypeError("CanonicalAsset does not permit model_copy updates")
+        return super().model_copy(deep=deep)
 
 
 class CanonicalContentVersion(BaseModel):
@@ -177,6 +300,8 @@ class StructuredEvidenceIdentity(BaseModel):
 __all__ = [
     "AssetType",
     "CanonicalAsset",
+    "CanonicalJsonArray",
+    "CanonicalJsonObject",
     "CanonicalMetadataEntry",
     "CanonicalContentVersion",
     "CanonicalEvidenceChain",

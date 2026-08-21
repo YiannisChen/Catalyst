@@ -14,7 +14,13 @@ from __future__ import annotations
 import math
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from catalyst_data.canonical.identity import DataRuntimeIdentity
 from catalyst_data.canonical.model import ContentState, SourceClass
@@ -35,6 +41,13 @@ class StageScore(BaseModel):
             raise ValueError("stage score must be finite")
         return self
 
+    def model_copy(
+        self, *, update: dict[str, object] | None = None, deep: bool = False
+    ) -> "StageScore":
+        if update:
+            raise TypeError("StageScore does not permit model_copy updates")
+        return super().model_copy(deep=deep)
+
 
 class StageRank(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -49,6 +62,13 @@ class StageRank(BaseModel):
         if self.value is not None and self.value < 1:
             raise ValueError("stage rank must be a positive integer")
         return self
+
+    def model_copy(
+        self, *, update: dict[str, object] | None = None, deep: bool = False
+    ) -> "StageRank":
+        if update:
+            raise TypeError("StageRank does not permit model_copy updates")
+        return super().model_copy(deep=deep)
 
 
 class RetrievalHit(BaseModel):
@@ -87,21 +107,49 @@ class RetrievalHit(BaseModel):
     @classmethod
     def _scores_as_entries(cls, scores: object) -> object:
         if isinstance(scores, dict):
-            return tuple(
-                StageScore(stage=stage, value=value)
-                for stage, value in sorted(scores.items())
+            scores = tuple(
+                {"stage": stage, "value": value}
+                for stage, value in scores.items()
             )
-        return scores
+        if not isinstance(scores, (list, tuple)):
+            return scores
+        entries = tuple(
+            entry if isinstance(entry, StageScore) else StageScore.model_validate(entry)
+            for entry in scores
+        )
+        stages = tuple(entry.stage for entry in entries)
+        if len(stages) != len(set(stages)):
+            raise ValueError("score stages must be unique")
+        return tuple(sorted(entries, key=lambda entry: entry.stage))
 
     @field_validator("ranks", mode="before")
     @classmethod
     def _ranks_as_entries(cls, ranks: object) -> object:
         if isinstance(ranks, dict):
-            return tuple(
-                StageRank(stage=stage, value=value)
-                for stage, value in sorted(ranks.items())
+            ranks = tuple(
+                {"stage": stage, "value": value}
+                for stage, value in ranks.items()
             )
-        return ranks
+        if not isinstance(ranks, (list, tuple)):
+            return ranks
+        entries = tuple(
+            entry if isinstance(entry, StageRank) else StageRank.model_validate(entry)
+            for entry in ranks
+        )
+        stages = tuple(entry.stage for entry in entries)
+        if len(stages) != len(set(stages)):
+            raise ValueError("rank stages must be unique")
+        return tuple(sorted(entries, key=lambda entry: entry.stage))
+
+    @field_serializer("scores")
+    def _serialize_scores(
+        self, scores: tuple[StageScore, ...]
+    ) -> dict[str, float | None]:
+        return {entry.stage: entry.value for entry in scores}
+
+    @field_serializer("ranks")
+    def _serialize_ranks(self, ranks: tuple[StageRank, ...]) -> dict[str, int | None]:
+        return {entry.stage: entry.value for entry in ranks}
 
     @model_validator(mode="after")
     def _evidence_identity(self) -> "RetrievalHit":
@@ -112,6 +160,13 @@ class RetrievalHit(BaseModel):
         if self.fact_id is not None and self.evidence_id != self.fact_id:
             raise ValueError("structured hit evidence_id must equal fact_id")
         return self
+
+    def model_copy(
+        self, *, update: dict[str, object] | None = None, deep: bool = False
+    ) -> "RetrievalHit":
+        if update:
+            raise TypeError("RetrievalHit does not permit model_copy updates")
+        return super().model_copy(deep=deep)
 
 
 class RetrievalResultSet(BaseModel):

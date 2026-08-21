@@ -6,6 +6,7 @@ chain, TemporalIdentity windows, and DataRuntimeIdentity.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any, get_args
 
@@ -110,11 +111,50 @@ def test_canonical_asset_is_frozen_forbids_extra_and_serializes_asset_id() -> No
 def test_canonical_asset_nested_collections_are_deeply_immutable() -> None:
     from catalyst_data.canonical.model import CanonicalAsset
 
-    asset = CanonicalAsset(**_valid_asset())
+    asset = CanonicalAsset(**_valid_asset(subtype_metadata={
+        "sections": ["item1", {"z": ["item7"], "a": None}],
+        "accession": "0000320193-26-000001",
+    }))
     with pytest.raises((TypeError, AttributeError)):
         asset.tickers.append("MSFT")
     with pytest.raises((TypeError, AttributeError, ValidationError)):
         asset.subtype_metadata[0].value = "altered"
+    dumped = asset.model_dump()
+    assert dumped["subtype_metadata"] == {
+        "accession": "0000320193-26-000001",
+        "sections": ["item1", {"a": None, "z": ["item7"]}],
+    }
+    assert list(dumped["subtype_metadata"]["sections"][1]) == ["a", "z"]
+    assert (
+        json.loads(asset.model_dump_json())["subtype_metadata"]
+        == dumped["subtype_metadata"]
+    )
+    assert CanonicalAsset.model_validate(dumped).model_dump() == dumped
+    sections = next(
+        entry.value for entry in asset.subtype_metadata if entry.key == "sections"
+    )
+    with pytest.raises((TypeError, AttributeError, ValidationError)):
+        sections.items += ("injected",)
+
+
+def test_canonical_asset_normalizes_entry_input_and_rejects_duplicate_keys() -> None:
+    from catalyst_data.canonical.model import CanonicalAsset
+
+    asset = CanonicalAsset(**_valid_asset(subtype_metadata=[
+        {"key": "z", "value": {"items": [1, None]}},
+        {"key": "a", "value": True},
+    ]))
+    assert tuple(entry.key for entry in asset.subtype_metadata) == ("a", "z")
+    assert list(asset.model_dump()["subtype_metadata"]) == ["a", "z"]
+    with pytest.raises(ValidationError):
+        CanonicalAsset(**_valid_asset(subtype_metadata=[
+            {"key": "a", "value": 1}, {"key": "a", "value": 2},
+        ]))
+    with pytest.raises(TypeError):
+        asset.model_copy(update={"subtype_metadata": {"mutable": []}})
+    with pytest.raises(TypeError):
+        asset.subtype_metadata[0].model_copy(update={"value": {"mutable": []}})
+    assert asset.model_copy() == asset
 
 
 def test_canonical_asset_rejects_unknown_content_state_and_asset_type() -> None:

@@ -7,6 +7,7 @@ its named migration gate (M3-11).
 """
 from __future__ import annotations
 
+import json
 import math
 from datetime import datetime
 from typing import Any
@@ -91,6 +92,39 @@ def test_v1_hit_stage_scores_and_ranks_are_deeply_immutable() -> None:
         hit.scores[0].value = float("nan")
     with pytest.raises((TypeError, AttributeError, ValidationError)):
         hit.ranks[0].value = 0
+    dumped = hit.model_dump()
+    assert dumped["scores"] == {
+        "dense": None, "fusion": 7.25, "lexical": 12.5, "reranked": None,
+    }
+    assert dumped["ranks"] == {
+        "dense": None, "fusion": 2, "lexical": 1, "reranked": None,
+    }
+    assert json.loads(hit.model_dump_json())["scores"] == dumped["scores"]
+    assert json.loads(hit.model_dump_json())["ranks"] == dumped["ranks"]
+    assert RetrievalHit.model_validate(dumped).model_dump() == dumped
+
+
+def test_v1_hit_normalizes_entry_input_and_rejects_duplicate_stages() -> None:
+    from catalyst_data.retrieval.v1_result import RetrievalHit
+
+    hit = RetrievalHit(**_hit(
+        scores=[{"stage": "z", "value": 2.0}, {"stage": "a", "value": 1.0}],
+        ranks=({"stage": "z", "value": 2}, {"stage": "a", "value": 1}),
+    ))
+    assert tuple(entry.stage for entry in hit.scores) == ("a", "z")
+    assert tuple(entry.stage for entry in hit.ranks) == ("a", "z")
+    with pytest.raises(ValidationError):
+        RetrievalHit(**_hit(scores=[
+            {"stage": "lexical", "value": 1.0},
+            {"stage": "lexical", "value": 2.0},
+        ]))
+    with pytest.raises(TypeError):
+        hit.model_copy(update={"scores": {"lexical": float("nan")}})
+    with pytest.raises(TypeError):
+        hit.model_copy(update={"ranks": {"lexical": 0}})
+    with pytest.raises(TypeError):
+        hit.scores[0].model_copy(update={"value": float("nan")})
+    assert hit.model_copy() == hit
 
 
 def test_v1_hit_rejects_nan_and_infinite_scores() -> None:
@@ -118,8 +152,8 @@ def test_v1_hit_missing_modality_stays_none_never_fabricated() -> None:
 
     hit = RetrievalHit(**_hit())
     dumped = hit.model_dump()
-    scores = {entry["stage"]: entry["value"] for entry in dumped["scores"]}
-    ranks = {entry["stage"]: entry["value"] for entry in dumped["ranks"]}
+    scores = dumped["scores"]
+    ranks = dumped["ranks"]
     assert scores["dense"] is None
     assert ranks["dense"] is None
     assert scores["reranked"] is None

@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from catalyst_agents.attribution.evidence_state import (
     CapabilityGap,
@@ -68,6 +74,13 @@ class ContentStateCount(BaseModel):
             raise ValueError("content state count must be non-negative")
         return self
 
+    def model_copy(
+        self, *, update: dict[str, object] | None = None, deep: bool = False
+    ) -> "ContentStateCount":
+        if update:
+            raise TypeError("ContentStateCount does not permit model_copy updates")
+        return super().model_copy(deep=deep)
+
 
 class CoverageSummary(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -100,11 +113,28 @@ class CoverageSummary(BaseModel):
     @classmethod
     def _content_state_entries(cls, counts: object) -> object:
         if isinstance(counts, dict):
-            return tuple(
-                ContentStateCount(content_state=state, count=count)
-                for state, count in sorted(counts.items())
+            counts = tuple(
+                {"content_state": state, "count": count}
+                for state, count in counts.items()
             )
-        return counts
+        if not isinstance(counts, (list, tuple)):
+            return counts
+        entries = tuple(
+            entry
+            if isinstance(entry, ContentStateCount)
+            else ContentStateCount.model_validate(entry)
+            for entry in counts
+        )
+        states = tuple(entry.content_state for entry in entries)
+        if len(states) != len(set(states)):
+            raise ValueError("content_state_counts must contain unique states")
+        return tuple(sorted(entries, key=lambda entry: entry.content_state))
+
+    @field_serializer("content_state_counts")
+    def _serialize_content_state_counts(
+        self, entries: tuple[ContentStateCount, ...]
+    ) -> dict[str, int]:
+        return {entry.content_state: entry.count for entry in entries}
 
     @model_validator(mode="after")
     def _counts_non_negative(self) -> "CoverageSummary":
@@ -134,6 +164,13 @@ class CoverageSummary(BaseModel):
         if len(content_states) != len(set(content_states)):
             raise ValueError("content_state_counts must contain unique states")
         return self
+
+    def model_copy(
+        self, *, update: dict[str, object] | None = None, deep: bool = False
+    ) -> "CoverageSummary":
+        if update:
+            raise TypeError("CoverageSummary does not permit model_copy updates")
+        return super().model_copy(deep=deep)
 
 
 __all__ = [

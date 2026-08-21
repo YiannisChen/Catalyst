@@ -6,6 +6,7 @@ semantics may appear in the pre-Analyst summary.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -161,6 +162,39 @@ def test_content_state_counts_accept_only_canonical_states() -> None:
     assert counts["METADATA_ONLY"] == 20
     with pytest.raises((TypeError, AttributeError, ValidationError)):
         summary.content_state_counts[0].count = -1
+    dumped = summary.model_dump()
+    assert dumped["content_state_counts"] == {
+        "EMPTY": 0,
+        "FAILED": 5,
+        "FULL_TEXT": 12,
+        "METADATA_ONLY": 20,
+        "TITLE_ONLY": 3,
+    }
+    assert (
+        json.loads(summary.model_dump_json())["content_state_counts"]
+        == dumped["content_state_counts"]
+    )
+    assert CoverageSummary.model_validate(dumped).model_dump() == dumped
+
+
+def test_content_state_counts_normalize_entries_and_reject_duplicates() -> None:
+    summary = CoverageSummary(**_coverage(content_state_counts=[
+        {"content_state": "TITLE_ONLY", "count": 3},
+        {"content_state": "FULL_TEXT", "count": 12},
+    ]))
+    assert tuple(entry.content_state for entry in summary.content_state_counts) == (
+        "FULL_TEXT", "TITLE_ONLY",
+    )
+    with pytest.raises(ValidationError):
+        CoverageSummary(**_coverage(content_state_counts=[
+            {"content_state": "FULL_TEXT", "count": 1},
+            {"content_state": "FULL_TEXT", "count": 2},
+        ]))
+    with pytest.raises(TypeError):
+        summary.model_copy(update={"content_state_counts": {"FULL_TEXT": -1}})
+    with pytest.raises(TypeError):
+        summary.content_state_counts[0].model_copy(update={"count": -1})
+    assert summary.model_copy() == summary
 
 
 def test_all_counts_are_non_negative() -> None:
