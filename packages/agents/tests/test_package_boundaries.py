@@ -30,10 +30,21 @@ def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
 builtins.__import__ = guarded_import
 import catalyst_agents.graph
 import catalyst_agents.attribution
+import catalyst_agents.attribution.analyst
+import catalyst_agents.attribution.assessment
+import catalyst_agents.attribution.claim_validation
+import catalyst_agents.attribution.claims
+import catalyst_agents.attribution.context_pack
+import catalyst_agents.attribution.coverage
+import catalyst_agents.attribution.evidence_state
+import catalyst_agents.attribution.move_profile
 import catalyst_agents.runtime.assurance
+import catalyst_agents.runtime.manifest
+import catalyst_agents.retrieval.corrective
+import catalyst_agents.retrieval.policy
+import catalyst_agents.retrieval.task
 import catalyst_agents.trace.schema
 import catalyst_agents.trace.version
-import catalyst_agents.retrieval.policy
 '''
     result = subprocess.run(
         [sys.executable, "-c", code],

@@ -1,0 +1,440 @@
+"""V1.1 canonical contract tests (M2-1).
+
+Covers the singular data-core canonical asset/content/evidence identity
+contracts: source taxonomy, canonical asset shape, the sole text-evidence
+chain, TemporalIdentity windows, and DataRuntimeIdentity.
+"""
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from typing import Any, get_args
+
+import pytest
+from pydantic import ValidationError
+
+from catalyst_data.trading_calendar import session_close_utc
+
+
+def _utc(iso: str) -> datetime:
+    return datetime.fromisoformat(iso.replace("Z", "+00:00"))
+
+
+def _valid_asset(**overrides: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "asset_id": "issuer:AAPL:filing:0000320193-26-000001",
+        "asset_type": "FILING",
+        "issuer_id": "issuer:AAPL",
+        "tickers": ["AAPL"],
+        "provider": "sec",
+        "publisher": None,
+        "canonical_url": None,
+        "source_class": "official_government",
+        "source_published_at": None,
+        "eligible_at": _utc("2026-01-05T21:05:00Z"),
+        "ingested_at": _utc("2026-01-05T21:06:00Z"),
+        "temporal_precision": "accepted_time",
+        "content_state": "FULL_TEXT",
+        "serving_status": "active",
+        "title": None,
+        "content_ref": "doc-1",
+        "content_hash": "a" * 64,
+        "dedup_cluster_id": None,
+        "parse_quality": "full",
+        "subtype_metadata": {"accession": "0000320193-26-000001"},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_content_state_is_exactly_the_five_frozen_values() -> None:
+    from catalyst_data.canonical.model import ContentState
+
+    assert get_args(ContentState) == (
+        "FULL_TEXT",
+        "TITLE_ONLY",
+        "METADATA_ONLY",
+        "EMPTY",
+        "FAILED",
+    )
+
+
+def test_source_class_enum_is_exactly_the_seven_frozen_values() -> None:
+    from catalyst_data.canonical.model import SourceClass
+
+    assert [member.value for member in SourceClass] == [
+        "structured_market_data",
+        "official_government",
+        "issuer_disclosure",
+        "corporate_press_release",
+        "reported_news",
+        "analysis_opinion",
+        "aggregated_unknown",
+    ]
+
+
+def test_source_role_mapping_is_frozen() -> None:
+    from catalyst_data.canonical.model import SourceClass, SourceRole, source_role_for
+
+    assert source_role_for(SourceClass.OFFICIAL_GOVERNMENT) is SourceRole.PRIMARY_AUTHORITY
+    assert source_role_for(SourceClass.ISSUER_DISCLOSURE) is SourceRole.DIRECT_PRIMARY
+    assert source_role_for(SourceClass.CORPORATE_PRESS_RELEASE) is SourceRole.DIRECT_PRIMARY
+    assert source_role_for(SourceClass.REPORTED_NEWS) is SourceRole.INDEPENDENT_REPORT
+    assert source_role_for(SourceClass.ANALYSIS_OPINION) is SourceRole.COMMENTARY_LEAD
+    assert source_role_for(SourceClass.AGGREGATED_UNKNOWN) is SourceRole.UNKNOWN
+    assert source_role_for(SourceClass.STRUCTURED_MARKET_DATA) is SourceRole.STRUCTURED_CONTEXT
+
+
+def test_missing_publisher_stays_none_and_is_never_inferred() -> None:
+    from catalyst_data.canonical.model import CanonicalAsset
+
+    asset = CanonicalAsset(**_valid_asset())
+    assert asset.publisher is None
+    assert asset.model_dump()["publisher"] is None
+
+
+def test_canonical_asset_is_frozen_forbids_extra_and_serializes_asset_id() -> None:
+    from catalyst_data.canonical.model import CanonicalAsset
+
+    asset = CanonicalAsset(**_valid_asset())
+    with pytest.raises(ValidationError):
+        asset.asset_id = "other"  # frozen
+    with pytest.raises(ValidationError):
+        CanonicalAsset(**_valid_asset(), unknown_field=True)  # extra forbidden
+    # Serialized field is exactly asset_id; no canonical_asset_id alias/field.
+    dumped = asset.model_dump()
+    assert dumped["asset_id"] == asset.asset_id
+    assert "canonical_asset_id" not in dumped
+    assert "canonical_asset_id" not in CanonicalAsset.model_fields
+
+
+def test_canonical_asset_nested_collections_are_deeply_immutable() -> None:
+    from catalyst_data.canonical.model import CanonicalAsset
+
+    asset = CanonicalAsset(**_valid_asset(subtype_metadata={
+        "sections": ["item1", {"z": ["item7"], "a": None}],
+        "accession": "0000320193-26-000001",
+    }))
+    with pytest.raises((TypeError, AttributeError)):
+        asset.tickers.append("MSFT")
+    with pytest.raises((TypeError, AttributeError, ValidationError)):
+        asset.subtype_metadata[0].value = "altered"
+    dumped = asset.model_dump()
+    assert dumped["subtype_metadata"] == {
+        "accession": "0000320193-26-000001",
+        "sections": ["item1", {"a": None, "z": ["item7"]}],
+    }
+    assert list(dumped["subtype_metadata"]["sections"][1]) == ["a", "z"]
+    assert (
+        json.loads(asset.model_dump_json())["subtype_metadata"]
+        == dumped["subtype_metadata"]
+    )
+    assert CanonicalAsset.model_validate(dumped).model_dump() == dumped
+    sections = next(
+        entry.value for entry in asset.subtype_metadata if entry.key == "sections"
+    )
+    with pytest.raises((TypeError, AttributeError, ValidationError)):
+        sections.items += ("injected",)
+
+
+def test_canonical_asset_normalizes_entry_input_and_rejects_duplicate_keys() -> None:
+    from catalyst_data.canonical.model import CanonicalAsset
+
+    asset = CanonicalAsset(**_valid_asset(subtype_metadata=[
+        {"key": "z", "value": {"items": [1, None]}},
+        {"key": "a", "value": True},
+    ]))
+    assert tuple(entry.key for entry in asset.subtype_metadata) == ("a", "z")
+    assert list(asset.model_dump()["subtype_metadata"]) == ["a", "z"]
+    with pytest.raises(ValidationError):
+        CanonicalAsset(**_valid_asset(subtype_metadata=[
+            {"key": "a", "value": 1}, {"key": "a", "value": 2},
+        ]))
+    with pytest.raises(TypeError):
+        asset.model_copy(update={"subtype_metadata": {"mutable": []}})
+    with pytest.raises(TypeError):
+        asset.subtype_metadata[0].model_copy(update={"value": {"mutable": []}})
+    assert asset.model_copy() == asset
+
+
+def test_prebuilt_recursive_json_wrappers_cannot_bypass_validation() -> None:
+    from catalyst_data.canonical.model import (
+        CanonicalAsset,
+        CanonicalJsonArray,
+        CanonicalJsonObject,
+        CanonicalMetadataEntry,
+    )
+
+    for invalid in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValidationError):
+            CanonicalJsonArray(items=(invalid,))
+    with pytest.raises(ValidationError):
+        CanonicalJsonObject(entries=(
+            CanonicalMetadataEntry.model_construct(
+                key="nested",
+                value=CanonicalJsonArray.model_construct(items=(float("inf"),)),
+            ),
+        ))
+
+    unsafe_array = CanonicalJsonArray.model_construct(items=(object(),))
+    unsafe_object = CanonicalJsonObject.model_construct(entries=(
+        CanonicalMetadataEntry.model_construct(key="nested", value=unsafe_array),
+    ))
+    with pytest.raises((TypeError, ValueError, ValidationError)):
+        CanonicalAsset(**_valid_asset(subtype_metadata=[
+            CanonicalMetadataEntry.model_construct(key="unsafe", value=unsafe_object),
+        ]))
+
+    safe = CanonicalAsset(**_valid_asset(subtype_metadata={
+        "nested": {"items": [1, 2.5, None, True, "text"]},
+    }))
+    encoded = safe.model_dump_json()
+    assert "NaN" not in encoded and "Infinity" not in encoded
+    assert CanonicalAsset.model_validate_json(encoded).model_dump() == safe.model_dump()
+
+
+def test_canonical_owner_models_reject_unvalidated_copy_updates() -> None:
+    from catalyst_data.canonical.identity import DataRuntimeIdentity
+    from catalyst_data.canonical.model import (
+        CanonicalContentVersion,
+        CanonicalEvidenceChain,
+        StructuredEvidenceIdentity,
+        TextEvidenceIdentity,
+    )
+    from catalyst_data.canonical.temporal import TemporalIdentity
+
+    content = CanonicalContentVersion(
+        canonical_content_version_id="content:1", asset_id="asset:1"
+    )
+    chain = CanonicalEvidenceChain(
+        asset_id="asset:1",
+        canonical_content_version_id="content:1",
+        corpus_document_id="document:1",
+        chunk_id="chunk:1",
+    )
+    text = TextEvidenceIdentity(evidence_id="chunk:1", chunk_id="chunk:1")
+    fact = StructuredEvidenceIdentity(evidence_id="fact:1", fact_id="fact:1")
+    temporal = TemporalIdentity(
+        session_date="2026-01-06",
+        market_timezone="America/New_York",
+        session_open_at=_utc("2026-01-06T14:30:00Z"),
+        session_close_at=_utc("2026-01-06T21:00:00Z"),
+        information_window_start_at=_utc("2026-01-05T21:00:00Z"),
+        cutoff_at=_utc("2026-01-06T21:00:00Z"),
+    )
+    runtime = DataRuntimeIdentity(
+        data_snapshot_id="snapshot:1",
+        corpus_manifest_id="c" * 64,
+        fts_index_version="fts:v1",
+        query_policy_version="qp:v1",
+    )
+    for model, update in (
+        (content, {"asset_id": None}),
+        (chain, {"chunk_id": None}),
+        (text, {"chunk_id": "other"}),
+        (fact, {"fact_id": "other"}),
+        (temporal, {"cutoff_at": None}),
+        (runtime, {"data_snapshot_id": None}),
+    ):
+        with pytest.raises(TypeError):
+            model.model_copy(update=update)
+        assert model.model_copy() == model
+
+
+def test_canonical_asset_rejects_unknown_content_state_and_asset_type() -> None:
+    from catalyst_data.canonical.model import CanonicalAsset
+
+    with pytest.raises(ValidationError):
+        CanonicalAsset(**_valid_asset(content_state="FULL"))
+    with pytest.raises(ValidationError):
+        CanonicalAsset(**_valid_asset(asset_type="TWEET"))
+
+
+def test_evidence_chain_enforces_sole_text_chain_shape() -> None:
+    from catalyst_data.canonical.model import (
+        CanonicalContentVersion,
+        CanonicalEvidenceChain,
+    )
+
+    version = CanonicalContentVersion(
+        canonical_content_version_id="content:v1:0001", asset_id="asset:1"
+    )
+    chain = CanonicalEvidenceChain(
+        asset_id=version.asset_id,
+        canonical_content_version_id=version.canonical_content_version_id,
+        corpus_document_id="corpus:doc:0001",
+        chunk_id="corpus:chunk:0001",
+    )
+    assert chain.asset_id == "asset:1"
+    assert chain.canonical_content_version_id == "content:v1:0001"
+    # A chain cannot carry a parallel fifth ID or the structured fact id.
+    with pytest.raises(ValidationError):
+        CanonicalEvidenceChain(
+            asset_id="asset:1",
+            canonical_content_version_id="content:v1:0001",
+            corpus_document_id="corpus:doc:0001",
+            chunk_id="corpus:chunk:0001",
+            fact_id="fact:1",
+        )
+
+
+def test_text_and_structured_evidence_identity_are_separately_typed() -> None:
+    from catalyst_data.canonical.model import (
+        StructuredEvidenceIdentity,
+        TextEvidenceIdentity,
+    )
+
+    text = TextEvidenceIdentity(
+        evidence_id="corpus:chunk:0001", chunk_id="corpus:chunk:0001"
+    )
+    assert text.evidence_id == text.chunk_id
+    with pytest.raises(ValidationError):
+        TextEvidenceIdentity(evidence_id="corpus:chunk:0001", chunk_id="other-chunk")
+
+    structured = StructuredEvidenceIdentity(
+        evidence_id="fact:1", fact_id="fact:1"
+    )
+    assert structured.evidence_id == structured.fact_id
+    with pytest.raises(ValidationError):
+        StructuredEvidenceIdentity(evidence_id="fact:1", fact_id="other-fact")
+
+
+def test_temporal_identity_contains_required_fields_and_rejects_post_cutoff() -> None:
+    from catalyst_data.canonical.temporal import TemporalIdentity
+
+    monday_close = _utc(session_close_utc("2026-01-05"))
+    tuesday_close = _utc(session_close_utc("2026-01-06"))
+    temporal = TemporalIdentity(
+        session_date="2026-01-06",
+        market_timezone="America/New_York",
+        session_open_at=_utc("2026-01-06T14:30:00Z"),
+        session_close_at=tuesday_close,
+        information_window_start_at=monday_close,
+        cutoff_at=tuesday_close,
+    )
+    assert temporal.session_date == "2026-01-06"
+    assert temporal.market_timezone == "America/New_York"
+    # Eligible at exactly the cutoff is inside the window; after cutoff is not.
+    assert temporal.contains(tuesday_close) is True
+    assert temporal.contains(_utc("2026-01-06T21:05:00Z")) is False
+    assert "information_window_start_at" in TemporalIdentity.model_fields
+    assert "cutoff_at" in TemporalIdentity.model_fields
+
+
+def test_monday_1605_earnings_eligible_for_tuesday_window_via_calendar() -> None:
+    from catalyst_data.canonical.temporal import TemporalIdentity
+
+    # Attribution session is Tuesday 2026-01-06; Monday 2026-01-05 is the
+    # previous regular session. 16:05 ET == 21:05 UTC on Monday.
+    monday_close = _utc(session_close_utc("2026-01-05"))
+    tuesday_close = _utc(session_close_utc("2026-01-06"))
+    temporal = TemporalIdentity(
+        session_date="2026-01-06",
+        market_timezone="America/New_York",
+        session_open_at=_utc("2026-01-06T14:30:00Z"),
+        session_close_at=tuesday_close,
+        information_window_start_at=monday_close,
+        cutoff_at=tuesday_close,
+    )
+    earnings_at = _utc("2026-01-05T21:05:00Z")  # Monday 16:05 ET
+    assert monday_close < earnings_at <= tuesday_close
+    assert temporal.contains(earnings_at) is True
+
+
+def test_temporal_identity_rejects_impossible_window_order() -> None:
+    from catalyst_data.canonical.temporal import TemporalIdentity
+
+    monday_close = _utc(session_close_utc("2026-01-05"))
+    tuesday_close = _utc(session_close_utc("2026-01-06"))
+    with pytest.raises(ValidationError):
+        TemporalIdentity(
+            session_date="2026-01-06",
+            market_timezone="America/New_York",
+            session_open_at=_utc("2026-01-06T14:30:00Z"),
+            session_close_at=tuesday_close,
+            information_window_start_at=tuesday_close,
+            cutoff_at=monday_close,
+        )
+
+
+def test_data_runtime_identity_fields_are_exact_and_strict() -> None:
+    from catalyst_data.canonical.identity import DataRuntimeIdentity
+
+    identity = DataRuntimeIdentity(
+        data_snapshot_id="snapshot:7a004",
+        corpus_manifest_id="c" * 64,
+        fts_index_version="fts:v3",
+        query_policy_version="qp:v1",
+    )
+    assert identity.dense_index_version is None
+    assert identity.embedding_model_revision is None
+    assert identity.reranker_revision is None
+    dumped = identity.model_dump()
+    assert set(dumped) == {
+        "data_snapshot_id",
+        "corpus_manifest_id",
+        "fts_index_version",
+        "dense_index_version",
+        "embedding_model_revision",
+        "reranker_revision",
+        "query_policy_version",
+    }
+    with pytest.raises(ValidationError):
+        DataRuntimeIdentity(
+            data_snapshot_id="snapshot:7a004",
+            corpus_manifest_id="c" * 64,
+            fts_index_version="fts:v3",
+            query_policy_version="qp:v1",
+            invented_field=True,
+        )
+
+
+def test_temporal_identity_rejects_naive_timestamps() -> None:
+    """Phase 2 corrective: naive datetimes are not PIT-safe and must be rejected."""
+    from catalyst_data.canonical.temporal import TemporalIdentity
+
+    monday_close = _utc(session_close_utc("2026-01-05"))
+    tuesday_close = _utc(session_close_utc("2026-01-06"))
+    naive = datetime(2026, 1, 6, 14, 30, 0)  # no tzinfo
+    with pytest.raises(ValidationError):
+        TemporalIdentity(
+            session_date="2026-01-06",
+            market_timezone="America/New_York",
+            session_open_at=naive,
+            session_close_at=tuesday_close,
+            information_window_start_at=monday_close,
+            cutoff_at=tuesday_close,
+        )
+    with pytest.raises(ValidationError):
+        TemporalIdentity(
+            session_date="2026-01-06",
+            market_timezone="America/New_York",
+            session_open_at=_utc("2026-01-06T14:30:00Z"),
+            session_close_at=tuesday_close,
+            information_window_start_at=monday_close,
+            cutoff_at=naive,
+        )
+
+
+def test_temporal_identity_rejects_mixed_timezones() -> None:
+    """Phase 2 corrective: all temporal datetimes must be normalized to UTC."""
+    from datetime import timezone as dt_timezone
+    from zoneinfo import ZoneInfo
+
+    from catalyst_data.canonical.temporal import TemporalIdentity
+
+    monday_close = _utc(session_close_utc("2026-01-05"))
+    tuesday_close = _utc(session_close_utc("2026-01-06"))
+    new_york_open = datetime(
+        2026, 1, 6, 9, 30, 0, tzinfo=ZoneInfo("America/New_York")
+    )
+    with pytest.raises(ValidationError):
+        TemporalIdentity(
+            session_date="2026-01-06",
+            market_timezone="America/New_York",
+            session_open_at=new_york_open,  # aware but not UTC
+            session_close_at=tuesday_close,
+            information_window_start_at=monday_close,
+            cutoff_at=tuesday_close,
+        )
+    assert tuesday_close.tzinfo is dt_timezone.utc
