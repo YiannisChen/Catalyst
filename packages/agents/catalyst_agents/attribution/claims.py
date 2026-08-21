@@ -38,6 +38,9 @@ _FORMAT_ITEM_MAX_LENGTH = 200
 _FORMAT_COLLECTION_MAX_ITEMS = 16
 _CLAIM_TEXT_MAX_LENGTH = 4_000
 _SNIPPET_TEXT_MAX_LENGTH = 4_000
+_CLAIM_COLLECTION_MAX_ITEMS = 16
+_CLAIM_REFERENCE_MAX_ITEMS = 16
+_CLAIM_REFERENCE_ID_MAX_LENGTH = 256
 
 
 class ClaimRole(str, Enum):
@@ -96,10 +99,22 @@ class Claim(BaseModel):
             not self.mechanism or len(self.mechanism) > _CLAIM_TEXT_MAX_LENGTH
         ):
             raise ValueError("claim mechanism must be non-empty and length-bounded")
-        for field in ("limitations", "conflict_refs", "citation_evidence_ids"):
+        for field in (
+            "support_evidence_ids",
+            "counter_evidence_ids",
+            "limitations",
+            "conflict_refs",
+            "citation_evidence_ids",
+        ):
             values = getattr(self, field)
             if len(values) != len(set(values)) or any(not value for value in values):
                 raise ValueError(f"{field} must contain unique non-empty values")
+            if len(values) > _CLAIM_REFERENCE_MAX_ITEMS:
+                raise ValueError(f"{field} must be collection-bounded")
+            if field != "limitations" and any(
+                len(value) > _CLAIM_REFERENCE_ID_MAX_LENGTH for value in values
+            ):
+                raise ValueError(f"{field} IDs must be length-bounded")
             if field == "limitations" and any(
                 len(value) > _CLAIM_TEXT_MAX_LENGTH for value in values
             ):
@@ -121,6 +136,8 @@ class Claim(BaseModel):
 
 
 def _validate_claim_ids_and_primary(claims: tuple[Claim, ...]) -> None:
+    if len(claims) > _CLAIM_COLLECTION_MAX_ITEMS:
+        raise ValueError("claim plans must be collection-bounded")
     claim_ids = [claim.claim_id for claim in claims]
     if len(claim_ids) != len(set(claim_ids)):
         raise ValueError("claim IDs must be unique")
@@ -136,6 +153,15 @@ def _validate_sha256_hashes(**hashes: str) -> None:
     for name, value in hashes.items():
         if _SHA256_RE.fullmatch(value) is None:
             raise ValueError(f"{name} must be a lowercase SHA-256 hex digest")
+
+
+def _validate_required_limitations(limitations: tuple[str, ...]) -> None:
+    if len(limitations) > _CLAIM_COLLECTION_MAX_ITEMS:
+        raise ValueError("required_limitations must be collection-bounded")
+    if len(limitations) != len(set(limitations)) or any(not value for value in limitations):
+        raise ValueError("required_limitations must contain unique non-empty values")
+    if any(len(value) > _CLAIM_TEXT_MAX_LENGTH for value in limitations):
+        raise ValueError("required_limitations items must be length-bounded")
 
 
 class SourceRoleIndependenceSummary(BaseModel):
@@ -180,6 +206,7 @@ class ClaimPlan(BaseModel):
     @model_validator(mode="after")
     def _claim_invariants(self) -> "ClaimPlan":
         _validate_claim_ids_and_primary(self.claims)
+        _validate_required_limitations(self.required_limitations)
         _validate_sha256_hashes(
             assessment_hash=self.assessment_hash,
             context_pack_sha256=self.context_pack_sha256,
@@ -270,6 +297,7 @@ class ValidatedClaimPlan(BaseModel):
     @model_validator(mode="after")
     def _claim_invariants(self) -> "ValidatedClaimPlan":
         _validate_claim_ids_and_primary(self.claims)
+        _validate_required_limitations(self.required_limitations)
         _validate_sha256_hashes(
             assessment_hash=self.assessment_hash,
             context_pack_sha256=self.context_pack_sha256,
@@ -368,7 +396,7 @@ class WriterInput(BaseModel):
 
     final_status: AttributionStatus
     attribution_type: AttributionType
-    observed_move: str | None = None
+    observed_move: str
     validated_claim_plan: ValidatedClaimPlan
     narrowly_bound_supporting_snippets: tuple[SupportingSnippet, ...]
     citation_map: tuple[CitationMapEntry, ...]
@@ -397,6 +425,10 @@ class WriterInput(BaseModel):
                 "WriterInput required_limitations must equal the ValidatedClaimPlan "
                 "required limitations"
             )
+        if not self.observed_move or len(self.observed_move) > _CLAIM_TEXT_MAX_LENGTH:
+            raise ValueError("observed_move must be non-empty and length-bounded")
+        if len(self.narrowly_bound_supporting_snippets) > _CLAIM_COLLECTION_MAX_ITEMS:
+            raise ValueError("supporting snippets must be collection-bounded")
         allowed_snippet_keys = set(self.validated_claim_plan.permitted_evidence_ids)
         snippet_ids = tuple(snippet.evidence_id for snippet in self.narrowly_bound_supporting_snippets)
         if len(snippet_ids) != len(set(snippet_ids)):
@@ -423,8 +455,6 @@ class WriterInput(BaseModel):
             raise ValueError(
                 "fixed abstention path forbids PRIMARY/SECONDARY causal claims"
             )
-        if self.observed_move is None or not self.observed_move:
-            raise ValueError("fixed abstention WriterInput requires observed_move")
         if not self.required_limitations:
             raise ValueError("fixed abstention WriterInput requires limitations")
         if self.narrowly_bound_supporting_snippets:

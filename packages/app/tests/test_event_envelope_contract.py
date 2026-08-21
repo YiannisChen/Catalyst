@@ -160,6 +160,7 @@ def test_safe_failure_message_rejects_secret_and_raw_provider_patterns() -> None
         "api_key=sk-secret-value",
         "provider_key: abcdef",
         "raw provider response: {choices: []}",
+        "request failed sk-abcdefghijklmnopqrstuvwxyz012345",
     ):
         with pytest.raises(ValidationError) as exc_info:
             RunFailedPayload(failure_code="provider_failure", safe_message=unsafe)

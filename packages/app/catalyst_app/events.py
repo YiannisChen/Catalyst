@@ -17,14 +17,11 @@ from typing import Any, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from catalyst_app.public_text import validate_safe_public_text
+
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 MAX_PUBLIC_PAYLOAD_BYTES = 64 * 1024  # 64 KiB compact public payload limit
 MAX_ANSWER_DELTA_CHARACTERS = 2048
-_UNSAFE_PUBLIC_TEXT = re.compile(
-    r"(?:api[_ -]?key|provider[_ -]?key|authorization|bearer\s+\S+|"
-    r"raw[_ -]?(?:provider[_ -]?)?response|provider\s+response)\s*(?:=|:|\b)",
-    re.IGNORECASE,
-)
 
 
 class RunEventType(str, Enum):
@@ -203,9 +200,7 @@ class RunFailedPayload(BaseModel):
     @field_validator("safe_message")
     @classmethod
     def _safe_public_message(cls, value: str | None) -> str | None:
-        if value is not None and _UNSAFE_PUBLIC_TEXT.search(value):
-            raise ValueError("safe_message contains a prohibited secret or raw-provider pattern")
-        return value
+        return validate_safe_public_text(value)
 
 
 class RunCancelledPayload(BaseModel):

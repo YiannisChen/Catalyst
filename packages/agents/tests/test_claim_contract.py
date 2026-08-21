@@ -765,6 +765,25 @@ def test_fixed_abstention_rejects_causal_writer_format_and_missing_move_limitati
         ))
 
 
+def test_claim_and_writer_collections_reject_unbounded_or_empty_public_values() -> None:
+    with pytest.raises(ValidationError):
+        Claim(**_claim(support_evidence_ids=("e1",) * 100_000))
+    with pytest.raises(ValidationError):
+        Claim(**_claim(counter_evidence_ids=("",)))
+    with pytest.raises(ValidationError):
+        ClaimPlan(**_plan(required_limitations=("x" * 1_000_000,)))
+    with pytest.raises(ValidationError):
+        WriterInput(**_writer_input(observed_move="x" * 1_000_000))
+    snippet = SupportingSnippet(
+        evidence_id="corpus:chunk:0001", snippet_text="bound",
+        content_sha256=H64, source_start_offset=0, source_end_offset=5,
+    )
+    with pytest.raises(ValidationError):
+        WriterInput(**_writer_input(
+            narrowly_bound_supporting_snippets=(snippet,) * 17,
+        ))
+
+
 def test_claim_plan_identity_and_hash_fields_are_required() -> None:
     for field in (
         "assessment_hash",

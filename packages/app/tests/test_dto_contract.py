@@ -256,6 +256,21 @@ def test_run_dto_terminal_artifact_and_failure_contract() -> None:
             run_id="run:1", lifecycle_status="COMPLETED", created_at=datetime.now(timezone.utc),
             failure=RunFailureDTO(code="unexpected"),
         )
+
+
+def test_run_failure_message_uses_safe_public_text_contract() -> None:
+    unsafe = "provider failure api_key=sk-abcdefghijklmnopqrstuvwxyz012345"
+    with pytest.raises(ValidationError) as exc_info:
+        RunFailureDTO(code="provider_failure", message=unsafe)
+    assert unsafe not in str(exc_info.value)
+
+
+def test_workbench_projection_artifact_refs_must_belong_to_run() -> None:
+    with pytest.raises(ValidationError):
+        WorkbenchProjectionDTO(
+            run_id="run:1", lifecycle_status="COMPLETED",
+            artifact_refs=(ArtifactRefDTO(**_artifact_ref(run_id="run:other")),),
+        )
     with pytest.raises(ValidationError):
         RunDTO(
             run_id="run:1", lifecycle_status="FAILED", created_at=datetime.now(timezone.utc),

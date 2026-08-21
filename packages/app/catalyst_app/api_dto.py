@@ -17,7 +17,7 @@ import re
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from catalyst_agents.attribution.analyst import (
     AttributionStatus,
@@ -27,6 +27,7 @@ from catalyst_agents.attribution.claims import ClaimRole
 from catalyst_data.canonical.model import ContentState, SourceClass
 from catalyst_app.events import PublicRunEvent
 from catalyst_app.lifecycle import RunLifecycleStatus
+from catalyst_app.public_text import validate_safe_public_text
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -42,10 +43,15 @@ class RunAcceptedResponse(BaseModel):
 
 
 class RunFailureDTO(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
     code: str
     message: str | None = None
+
+    @field_validator("message")
+    @classmethod
+    def _safe_public_message(cls, value: str | None) -> str | None:
+        return validate_safe_public_text(value)
 
 
 class RunDTO(BaseModel):
@@ -202,6 +208,8 @@ class WorkbenchProjectionDTO(BaseModel):
                 raise ValueError(
                     "non-COMPLETED runs cannot carry attribution status/type"
                 )
+        if any(ref.run_id != self.run_id for ref in self.artifact_refs):
+            raise ValueError("artifact refs must belong to the same run")
         return self
 
 
