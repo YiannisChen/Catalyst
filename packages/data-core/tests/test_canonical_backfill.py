@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
@@ -447,5 +448,237 @@ def test_backfill_rejects_duplicate_semantic_natural_key_spellings():
     )
     conn.commit()
     with pytest.raises(Exception):
+        backfill_from_subtypes(conn)
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# M3-5B: final canonical text projection after repair persistence
+# ---------------------------------------------------------------------------
+
+
+def _repair_fixture_conn() -> sqlite3.Connection:
+    """Fixture DB with M3-3/M3-4/M3-5 repair outputs persisted before backfill."""
+    from catalyst_data.articles.body_recovery import (
+        persist_article_content_repair,
+        recover_body,
+    )
+    from catalyst_data.articles.url_normalize import normalize_url
+    from catalyst_data.sec.eligible_at import (
+        derive_eligible_at,
+        persist_filing_temporal_repair,
+    )
+
+    conn = _fixture_conn()
+
+    # M3-3: accepted-time repair for the filing.
+    accepted = datetime(2026, 1, 5, 21, 5, 0, tzinfo=timezone.utc)
+    filing_row = {"filing_id": "filing-8k-0000320193-26-000001", "filed_at": "2026-01-05"}
+    result = derive_eligible_at(filing_row, accepted_time=accepted)
+    persist_filing_temporal_repair(
+        conn,
+        filing_id="filing-8k-0000320193-26-000001",
+        result=result,
+        accepted_time=accepted,
+    )
+
+    # M3-4: reparsed primary document content (stored text is the reparse output).
+    reparsed_text = (
+        "Item 1.01 Entry into a Material Definitive Agreement.\n"
+        "On January 5, 2026, the registrant entered into a material definitive "
+        "agreement. The agreement governs a multi-year service term with "
+        "customary representations and warranties. "
+        + ("Reparsed disclosure content follows. " * 10)
+    )
+    conn.execute(
+        """UPDATE filing_documents SET text=?, extraction_status='success'
+           WHERE filing_id=? AND document_type='primary_doc'""",
+        (reparsed_text, "filing-8k-0000320193-26-000001"),
+    )
+    conn.commit()
+
+    # M3-5: article body recovery with an explicit normalized URL.
+    full_body = (
+        "Apple Inc. announced new AI features during its product event. "
+        "The company said the updates will roll out to customers starting next "
+        "month. Analysts expect the changes to improve device performance and "
+        "battery life across the lineup. This paragraph is deliberately long "
+        "enough to clear the minimum material body threshold."
+    )
+    repair = recover_body(
+        {
+            "article_id": "finnhub:full-1",
+            "title": "Apple announces new AI features",
+            "description": full_body,
+            "article_url": "https://example.com/apple-ai",
+        },
+        raw_payload={},
+    )
+    persist_article_content_repair(
+        conn,
+        article_id="finnhub:full-1",
+        normalized_url=normalize_url(
+            "https://www.example.com/apple-ai?utm_source=finnhub"
+        ),
+        result=repair,
+    )
+    return conn
+
+
+def test_final_projection_reads_persisted_repair_outputs():
+    from catalyst_data.canonical.backfill import backfill_from_subtypes
+    from catalyst_data.sec.accepted_time import parse_edgar_acceptance_datetime
+
+    conn = _repair_fixture_conn()
+    backfill_from_subtypes(conn)
+
+    # M3-3 accepted-time eligibility is projected.
+    filing = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_type='FILING'"
+    ).fetchone()
+    assert filing["eligible_at"] == "2026-01-05T21:05:00Z"
+    assert filing["eligible_at_reason"] == "accepted_time_recovered"
+    assert filing["temporal_precision"] == "accepted_time"
+    assert filing["accepted_time_recovered"] == 1
+    assert filing["fail_closed"] == 0
+    assert filing["serving_status"] == "body_candidate"
+
+    # M3-4 reparsed content is projected with the versioned parser identity.
+    version = conn.execute(
+        "SELECT * FROM canonical_content_versions WHERE asset_id=?",
+        (filing["asset_id"],),
+    ).fetchone()
+    assert version["normalizer_version"] == "sec_extract_v1"
+    doc_text = conn.execute(
+        "SELECT text FROM filing_documents WHERE document_type='primary_doc'"
+    ).fetchone()["text"]
+    from catalyst_data.corpus.news_v2 import _normalize_text
+
+    expected_hash = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "content_state": "FULL_TEXT",
+                "normalized_body": _normalize_text(doc_text),
+            }
+        )
+    ).hexdigest()
+    assert version["content_hash"] == expected_hash
+    assert filing["parse_quality"] == "full"
+
+    # M3-5 recovered body + normalized URL are projected for the article.
+    article = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_id=?",
+        (
+            build_asset_id(
+                asset_type="NEWS", source_table="articles",
+                source_pk="finnhub:full-1",
+            ),
+        ),
+    ).fetchone()
+    assert article["content_state"] == "FULL_TEXT"
+    assert article["canonical_url"] == "https://www.example.com/apple-ai"
+    article_version = conn.execute(
+        "SELECT * FROM canonical_content_versions WHERE asset_id=?",
+        (article["asset_id"],),
+    ).fetchone()
+    repair = conn.execute(
+        "SELECT recovered_content_hash FROM articles WHERE article_id='finnhub:full-1'"
+    ).fetchone()
+    assert article_version["content_hash"] == repair["recovered_content_hash"]
+    assert article_version["normalizer_version"] == "news_body_v1"
+    # dedup/independence stay NULL until M3-6.
+    rows = conn.execute(
+        "SELECT dedup_cluster_id, independence_group_id FROM canonical_assets"
+    ).fetchall()
+    assert all(r["dedup_cluster_id"] is None for r in rows)
+    assert all(r["independence_group_id"] is None for r in rows)
+    conn.close()
+
+
+def test_stale_pre_repair_value_does_not_win():
+    """A deliberately stale pre-repair subtype value must not override the
+    versioned repair output."""
+    from catalyst_data.articles.body_recovery import (
+        BodyRecoveryResult,
+        persist_article_content_repair,
+    )
+
+    conn = _fixture_conn()
+    # Article description is long (would classify FULL_TEXT) but the repair
+    # output says METADATA_ONLY: repair wins.
+    persist_article_content_repair(
+        conn,
+        article_id="finnhub:full-1",
+        normalized_url=None,
+        result=BodyRecoveryResult(
+            content_state="METADATA_ONLY",
+            body_text=None,
+            content_hash="11" * 32,
+        ),
+    )
+    backfill_from_subtypes(conn)
+    article = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_id=?",
+        (
+            build_asset_id(
+                asset_type="NEWS", source_table="articles",
+                source_pk="finnhub:full-1",
+            ),
+        ),
+    ).fetchone()
+    assert article["content_state"] == "METADATA_ONLY"
+    assert article["serving_status"] == "lead_candidate"
+    conn.close()
+
+
+def test_final_projection_idempotent_and_dry_run_zero_write():
+    from catalyst_data.canonical.backfill import backfill_from_subtypes
+
+    conn = _repair_fixture_conn()
+    before = _canonical_counts(conn)
+    backfill_from_subtypes(conn)
+    counts = _canonical_counts(conn)
+    versions_before = conn.execute(
+        "SELECT canonical_content_version_id, version_ordinal "
+        "FROM canonical_content_versions ORDER BY version_ordinal"
+    ).fetchall()
+    backfill_from_subtypes(conn)
+    assert _canonical_counts(conn) == counts
+    versions_after = conn.execute(
+        "SELECT canonical_content_version_id, version_ordinal "
+        "FROM canonical_content_versions ORDER BY version_ordinal"
+    ).fetchall()
+    assert versions_after == versions_before
+    # dry-run is zero-write even with repairs present.
+    backfill_from_subtypes(conn, dry_run=True)
+    assert _canonical_counts(conn) == counts
+    assert before == {
+        "canonical_assets": 0,
+        "canonical_content_versions": 0,
+        "canonical_subtype_assoc": 0,
+        "canonical_asset_tickers": 0,
+        "canonical_structured_fact_refs": 0,
+    }
+    conn.close()
+
+
+def test_repair_output_inconsistent_fails_closed():
+    """A persisted content state without its state-bound hash must fail closed."""
+    from catalyst_data.articles.body_recovery import (
+        BodyRecoveryResult,
+        persist_article_content_repair,
+    )
+    from catalyst_data.canonical.backfill import CanonicalBackfillError
+
+    conn = _fixture_conn()
+    persist_article_content_repair(
+        conn,
+        article_id="finnhub:full-1",
+        normalized_url=None,
+        result=BodyRecoveryResult(
+            content_state="FULL_TEXT", body_text=None, content_hash=None
+        ),
+    )
+    with pytest.raises(CanonicalBackfillError):
         backfill_from_subtypes(conn)
     conn.close()

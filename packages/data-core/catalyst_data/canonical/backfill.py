@@ -193,26 +193,44 @@ def _project_news(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
             publisher=row["publisher_name"],
             provider=row["provider"],
         )
-        content_state = _news_content_state(
-            row["description"], row["title"]
-        )
-        if content_state == "FULL_TEXT":
-            content_hash = _content_hash_for_state(
-                "FULL_TEXT", normalized_body=_normalize_text(row["description"])
+        # M3-5B: the persisted repair output (recovered_content_state /
+        # recovered_content_hash / normalized_url) is authoritative and wins
+        # over any stale pre-repair subtype value.
+        repair_state = row["recovered_content_state"]
+        if repair_state is not None:
+            content_state = repair_state
+            if content_state in ("FULL_TEXT", "TITLE_ONLY", "METADATA_ONLY"):
+                if not row["recovered_content_hash"]:
+                    raise CanonicalBackfillError(
+                        f"news row {article_id} has repair content state "
+                        f"{content_state} without its state-bound content hash"
+                    )
+                content_hash = row["recovered_content_hash"]
+            else:  # EMPTY/FAILED: mint no content version
+                content_hash = None
+            canonical_url = row["normalized_url"] or row["article_url"]
+        else:
+            content_state = _news_content_state(
+                row["description"], row["title"]
             )
-        elif content_state == "TITLE_ONLY":
-            content_hash = _content_hash_for_state(
-                "TITLE_ONLY", normalized_title=_normalize_text(row["title"] or "")
-            )
-        elif content_state == "METADATA_ONLY":
-            content_hash = _content_hash_for_state(
-                "METADATA_ONLY",
-                normalized_title=_normalize_text(row["title"] or "") or None,
-                normalized_description=_normalize_text(row["description"] or "") or None,
-                canonical_url=row["article_url"] or None,
-            )
-        else:  # EMPTY/FAILED: mint no content version
-            content_hash = None
+            if content_state == "FULL_TEXT":
+                content_hash = _content_hash_for_state(
+                    "FULL_TEXT", normalized_body=_normalize_text(row["description"])
+                )
+            elif content_state == "TITLE_ONLY":
+                content_hash = _content_hash_for_state(
+                    "TITLE_ONLY", normalized_title=_normalize_text(row["title"] or "")
+                )
+            elif content_state == "METADATA_ONLY":
+                content_hash = _content_hash_for_state(
+                    "METADATA_ONLY",
+                    normalized_title=_normalize_text(row["title"] or "") or None,
+                    normalized_description=_normalize_text(row["description"] or "") or None,
+                    canonical_url=row["article_url"] or None,
+                )
+            else:  # EMPTY/FAILED: mint no content version
+                content_hash = None
+            canonical_url = row["article_url"]
 
         eligible_at = published
         if eligible_at is None:
@@ -232,10 +250,9 @@ def _project_news(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
         )
         subtype_metadata = {
             "publisher": row["publisher_name"],
-            "canonical_url": row["article_url"],
+            "canonical_url": canonical_url,
             "article_url": row["article_url"],
         }
-        canonical_url = row["article_url"]
 
         content_version_id_value = None
         if content_hash is not None:
