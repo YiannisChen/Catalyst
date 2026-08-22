@@ -22,6 +22,8 @@ def _fresh_db_path():
     # Use in-memory to build, then backup to disk
     mem = mod._fresh_db_at_version(0, foreign_keys=False)
     from catalyst_data.migrations import run_migrations
+    from catalyst_data.storage.sqlite import ensure_filings_tables
+    ensure_filings_tables(mem)
     run_migrations(mem)
     mem.commit()
 

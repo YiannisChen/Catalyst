@@ -20,6 +20,9 @@ FIXED_TIME = "2026-01-02T00:00:00Z"
 def fresh_v10_db() -> sqlite3.Connection:
     conn = _fresh_db_at_version(8)
     apply_migration_v9(conn)
+    from catalyst_data.storage.sqlite import ensure_filings_tables
+
+    ensure_filings_tables(conn)
     run_migrations(conn)
     publish_manifest(
         conn,

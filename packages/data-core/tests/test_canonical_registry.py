@@ -290,7 +290,11 @@ def test_v14_not_stamped_without_filing_documents():
     """A DB without filings/filing_documents never reports version 14."""
     from conftest import _fresh_db_at_version
 
-    conn = _fresh_db_at_version(13)
+    # Build a v13 DB without filing tables: _fresh_db_at_version(12) does not
+    # create them, then stamp 13 manually so run_migrations only has v14 left.
+    conn = _fresh_db_at_version(12)
+    conn.execute("PRAGMA user_version = 13")
+    conn.commit()
     with pytest.raises(RuntimeError, match="refusing to stamp"):
         run_migrations(conn)
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 13

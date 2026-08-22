@@ -344,7 +344,9 @@ class TestMigrationV7:
         conn.executescript("CREATE TABLE IF NOT EXISTS ingestion_runs (run_id TEXT PRIMARY KEY, status TEXT); CREATE TABLE IF NOT EXISTS raw_assets (asset_id TEXT PRIMARY KEY, ticker TEXT NOT NULL, source_type TEXT NOT NULL, reference_date TEXT NOT NULL, fetched_at TEXT NOT NULL, data_version TEXT NOT NULL DEFAULT 'v1', content_raw BLOB NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}'); CREATE TABLE IF NOT EXISTS articles (article_id TEXT PRIMARY KEY, published_utc TEXT); CREATE TABLE IF NOT EXISTS article_tickers (article_id TEXT, ticker TEXT, reference_date TEXT, PRIMARY KEY (article_id, ticker)); CREATE TABLE IF NOT EXISTS clean_assets (asset_id TEXT PRIMARY KEY, reference_date TEXT); CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending'); CREATE TABLE ohlcv (symbol TEXT, date TEXT, open REAL, high REAL, low REAL, close REAL, volume REAL, source TEXT)")
         conn.commit(); conn.close()
         from catalyst_data.migrations import run_migrations
+        from catalyst_data.storage.sqlite import ensure_filings_tables
         conn = sqlite3.connect(db_path)
+        ensure_filings_tables(conn)
         run_migrations(conn)
         cols = [r[1] for r in conn.execute("PRAGMA table_info(source_checkpoints)")]
         assert "empty_reason" in cols

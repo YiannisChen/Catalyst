@@ -15,8 +15,10 @@ class FaultInjectingConnection(sqlite3.Connection):
 
 def _fault_injecting_v9_db():
     from conftest import _fresh_db_at_version
+    from catalyst_data.storage.sqlite import ensure_filings_tables
 
     source = _fresh_db_at_version(9)
+    ensure_filings_tables(source)
     source.commit()
     target = sqlite3.connect(":memory:", factory=FaultInjectingConnection)
     target.row_factory = sqlite3.Row
@@ -63,7 +65,10 @@ def test_run_migrations_v10_suppresses_fts5_unavailable():
     from conftest import _fresh_db_at_version, _table_names
     from catalyst_data.migrations import run_migrations, CURRENT_SCHEMA_VERSION
 
+    from catalyst_data.storage.sqlite import ensure_filings_tables
+
     db = _fresh_db_at_version(9)
+    ensure_filings_tables(db)
     # On FTS5-available systems, this just works normally
     # The test validates the FTS5-unavailable code path by checking
     # that the suppression logic exists in run_migrations

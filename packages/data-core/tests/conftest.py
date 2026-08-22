@@ -141,6 +141,15 @@ def _fresh_db_at_version(target_version: int, *, foreign_keys: bool = True) -> s
     """)
     conn.commit()
 
+    # Fixture DBs that reach the canonical registry (v13+) need the filing
+    # tables: the v14 B9 guard refuses to stamp user_version=14 when the
+    # filing_documents reparse-persist columns cannot exist. Lower-version
+    # fixtures keep their historical minimal shape.
+    if target_version >= 13:
+        from catalyst_data.storage.sqlite import ensure_filings_tables
+
+        ensure_filings_tables(conn)
+
     if target_version > 0:
         # Set user_version = target_version - 1 so run_migrations applies
         # migrations with version > user_version, i.e., migration v=target_version
