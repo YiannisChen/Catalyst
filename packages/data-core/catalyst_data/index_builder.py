@@ -27,6 +27,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from catalyst_data.canonical.ids import canonical_projection_row
 from catalyst_data.corpus.persisted_id import is_valid_persisted_document_id
 from catalyst_data.timeutil import TimestampNormalizationError, normalize_utc_second_z
 
@@ -141,6 +142,83 @@ def compute_content_hash(title: str, description: str | None) -> str:
     else:
         text = unicodedata.normalize("NFC", title)
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def build_canonical_corpus_records(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Read canonical projection tables only (M3-9 entrypoint).
+
+    Returns closed 26-key projection rows plus ``asset_type`` for profile
+    routing. Existing ``build_article_records`` / ``build_filing_records`` stay
+    baseline subtype builders and are not used here.
+    """
+    if not _table_exists(conn, "canonical_assets"):
+        return []
+    tickers_by_asset: dict[str, list[str]] = {}
+    if _table_exists(conn, "canonical_asset_tickers"):
+        for asset_id, ticker in conn.execute(
+            "SELECT asset_id, ticker FROM canonical_asset_tickers ORDER BY asset_id, ticker"
+        ):
+            tickers_by_asset.setdefault(str(asset_id), []).append(str(ticker))
+
+    rows = conn.execute(
+        """
+        SELECT
+            a.asset_id, a.asset_type, a.issuer_id, a.provider, a.publisher,
+            a.canonical_url, a.source_class, a.source_published_at, a.eligible_at,
+            a.temporal_precision, a.content_state, a.serving_status, a.title,
+            a.content_ref, a.dedup_cluster_id, a.independence_group_id,
+            a.parse_quality, a.subtype_metadata,
+            v.canonical_content_version_id, v.content_hash, v.normalizer_version,
+            v.materiality_version, v.payload_ref,
+            s.subtype_table, s.subtype_pk, s.subtype_pk_value
+        FROM canonical_subtype_assoc s
+        JOIN canonical_assets a ON a.asset_id = s.asset_id
+        JOIN canonical_content_versions v
+          ON v.canonical_content_version_id = s.canonical_content_version_id
+        ORDER BY a.asset_id, v.canonical_content_version_id,
+                 s.subtype_table, s.subtype_pk_value
+        """
+    )
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        metadata = row[17]
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except json.JSONDecodeError:
+                metadata = {}
+        if metadata is None:
+            metadata = {}
+        payload = {
+            "asset_id": row[0],
+            "canonical_content_version_id": row[18],
+            "content_hash": row[19],
+            "normalizer_version": row[20],
+            "materiality_version": row[21],
+            "payload_ref": row[22],
+            "subtype_table": row[23],
+            "subtype_pk": row[24],
+            "subtype_pk_value": row[25],
+            "issuer_id": row[2],
+            "tickers": list(tickers_by_asset.get(str(row[0]), [])),
+            "provider": row[3],
+            "publisher": row[4],
+            "canonical_url": row[5],
+            "source_class": row[6],
+            "source_published_at": row[7],
+            "eligible_at": row[8],
+            "temporal_precision": row[9],
+            "content_state": row[10],
+            "serving_status": row[11],
+            "title": row[12],
+            "content_ref": row[13],
+            "dedup_cluster_id": row[14],
+            "independence_group_id": row[15],
+            "parse_quality": row[16],
+            "subtype_metadata": metadata,
+        }
+        records.append(canonical_projection_row(payload))
+    return records
 
 
 def build_article_records(

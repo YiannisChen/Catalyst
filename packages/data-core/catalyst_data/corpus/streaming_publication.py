@@ -11,9 +11,21 @@ import tempfile
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
+from catalyst_data.canonical.backfill import (
+    MATERIALITY_VERSION,
+    NEWS_NORMALIZER_VERSION,
+    SEC_NORMALIZER_VERSION,
+)
+from catalyst_data.canonical.ids import (
+    canonical_json_bytes,
+    compute_canonical_projection_digest,
+    corpus_document_id,
+)
+from catalyst_data.config import BGE_M3_REVISION
 from catalyst_data.corpus.filing_v3 import FilingV3Profile
 from catalyst_data.corpus.manifest import INVENTORY_FIELDS
 from catalyst_data.corpus.news_v2 import NewsV2Profile
@@ -95,6 +107,18 @@ class StreamingPublicationResult:
     lexical: StreamingLexicalResult
     reconciliation: ReconciliationSummary
     buffer_stats: BufferStats
+
+
+@dataclass(frozen=True)
+class InactiveCorpusCandidate:
+    build_id: str
+    manifest_id: str
+    document_count: int
+    chunk_count: int
+    projection_digest: str
+    inventory_digest: str
+    source_bundle_id: str
+    source_bundle_path: Path
 
 
 @dataclass(frozen=True)
@@ -215,6 +239,12 @@ CREATE TABLE IF NOT EXISTS corpus_build_chunks (
     source_kind TEXT NOT NULL,
     provider TEXT,
     source_type TEXT,
+    canonical_asset_id TEXT,
+    content_version_id TEXT,
+    corpus_document_id TEXT,
+    content_state TEXT,
+    independence_group_id TEXT,
+    parse_quality TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (build_id, chunk_id),
@@ -331,6 +361,17 @@ def ensure_streaming_publication_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE corpus_publication_builds "
             "ADD COLUMN lexical_repair_cursor TEXT"
         )
+    chunk_columns = _table_columns(conn, "corpus_build_chunks")
+    for name in (
+        "canonical_asset_id",
+        "content_version_id",
+        "corpus_document_id",
+        "content_state",
+        "independence_group_id",
+        "parse_quality",
+    ):
+        if name not in chunk_columns:
+            conn.execute(f"ALTER TABLE corpus_build_chunks ADD COLUMN {name} TEXT")
     conn.execute("DROP VIEW IF EXISTS corpus_served_chunks")
     conn.execute(
         f"""CREATE VIEW corpus_served_chunks AS
@@ -511,10 +552,35 @@ def _header(certified_snapshot_identity: str, normalization_version: str) -> dic
     }
 
 
+def _a6_build_header(header: Mapping[str, object]) -> dict[str, object]:
+    """Closed A.6 v2 header (extra live-header keys are ignored)."""
+    if "embedding_revision_or_null" in header:
+        embedding = header.get("embedding_revision_or_null")
+    else:
+        embedding = header.get("embedding_revision")
+    digest = header.get("canonical_projection_digest")
+    if not isinstance(digest, str) or not digest:
+        digest = compute_canonical_projection_digest([])
+    return {
+        "certified_snapshot_identity": header["certified_snapshot_identity"],
+        "canonical_projection_digest": digest,
+        "normalization_version": header["normalization_version"],
+        "materiality_version": header.get("materiality_version", MATERIALITY_VERSION),
+        "sec_parser_version": header.get("sec_parser_version", SEC_NORMALIZER_VERSION),
+        "news_body_normalizer_version": header.get(
+            "news_body_normalizer_version", NEWS_NORMALIZER_VERSION
+        ),
+        "chunk_profile_versions": header["chunk_profile_versions"],
+        "source_classifier_version": header["source_classifier_version"],
+        "tokenizer_model_id": header.get("tokenizer_model_id", TOKENIZER_MODEL_ID),
+        "tokenizer_revision": header["tokenizer_revision"],
+        "embedding_revision_or_null": embedding,
+    }
+
+
 def _build_id(header: Mapping[str, object]) -> str:
-    return hashlib.sha256(
-        _canonical_bytes({"schema_version": "corpus_streaming_build_v1", **dict(header)})
-    ).hexdigest()
+    payload = {"schema_version": "corpus_streaming_build_v2", **_a6_build_header(header)}
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def _current_rss_bytes() -> int:
@@ -1685,6 +1751,237 @@ def _result(conn: sqlite3.Connection, build_id: str, stats: BufferStats) -> Stre
         ),
         reconciliation=_reconciliation_summary(conn, build_id),
         buffer_stats=stats,
+    )
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _canonical_body(record: Mapping[str, object]) -> str:
+    metadata = record.get("subtype_metadata") or {}
+    if not isinstance(metadata, Mapping):
+        return str(record.get("title") or "")
+    for key in ("raw_text", "body", "description", "normalized_body"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return str(record.get("title") or "")
+
+
+def _source_from_canonical_record(
+    record: Mapping[str, object],
+    *,
+    profile_versions: Mapping[str, str],
+) -> _SourceDocument | None:
+    subtype = str(record.get("subtype_table") or "")
+    version_id = str(record.get("canonical_content_version_id") or "")
+    if subtype in {"articles"}:
+        profile = profile_versions.get("news", "news_v2")
+        source_kind = "article"
+    elif subtype in {"filings", "filing_documents"}:
+        profile = profile_versions.get("filing", "filing_v3")
+        source_kind = "filing"
+    else:
+        return None
+    document_id = corpus_document_id(
+        canonical_content_version_id=version_id,
+        chunk_profile_version=profile,
+    )
+    serving = str(record.get("serving_status") or "")
+    content_state = str(record.get("content_state") or "")
+    eligible_at = str(record.get("eligible_at") or "")
+    eligibility = (
+        "eligible"
+        if serving in {"body_candidate", "lead_candidate"}
+        and content_state not in {"EMPTY", "FAILED"}
+        and eligible_at
+        else "ineligible"
+    )
+    tickers = record.get("tickers") or []
+    if not isinstance(tickers, (list, tuple)):
+        tickers = []
+    ticker_json = json.dumps(list(tickers), separators=(",", ":"))
+    metadata = record.get("subtype_metadata") if isinstance(record.get("subtype_metadata"), Mapping) else {}
+    body = _canonical_body(record)
+    document: dict[str, Any] = {
+        "document_id": document_id,
+        "eligibility": eligibility,
+    }
+    if eligibility == "eligible":
+        document.update(
+            {
+                "title": record.get("title") or "",
+                "description": body if source_kind == "article" else "",
+                "raw_text": body if source_kind == "filing" else "",
+                "filing_type": (metadata or {}).get("form_type") or "8-K",
+                "document_role": (metadata or {}).get("document_role") or "primary_doc",
+                "available_at": eligible_at,
+                "ticker_associations": ticker_json,
+                "source_class": record.get("source_class") or "reported_news",
+                "dedup_cluster_id": record.get("dedup_cluster_id"),
+                "cluster_first_available_at": eligible_at,
+                "representative_document_id": document_id,
+            }
+        )
+    return _SourceDocument(
+        source_kind=source_kind,
+        source_key=str(record.get("subtype_pk_value") or document_id),
+        document_id=document_id,
+        source_utf8_bytes=len(body.encode("utf-8")) if eligibility == "eligible" else 0,
+        document=document,
+        provider=str(record.get("provider") or ""),
+        source_type="sec_filing" if source_kind == "filing" else str(record.get("provider") or "news"),
+        eligibility=eligibility,
+    )
+
+
+def _annotate_canonical_chunks(
+    conn: sqlite3.Connection,
+    *,
+    build_id: str,
+    document_id: str,
+    record: Mapping[str, object],
+) -> None:
+    with conn:
+        conn.execute(
+            """UPDATE corpus_build_chunks
+               SET canonical_asset_id=?, content_version_id=?, corpus_document_id=?,
+                   content_state=?, independence_group_id=?, parse_quality=?
+               WHERE build_id=? AND document_id=?""",
+            (
+                record.get("asset_id"),
+                record.get("canonical_content_version_id"),
+                document_id,
+                record.get("content_state"),
+                record.get("independence_group_id"),
+                record.get("parse_quality"),
+                build_id,
+                document_id,
+            ),
+        )
+
+
+def stage_corpus_candidate(
+    conn: sqlite3.Connection,
+    *,
+    certified_snapshot_identity: str,
+    profile_versions: Mapping[str, str],
+    source_bundle_output_root: Path,
+    snapshot_id: str,
+    probe_report_id: str,
+    postbuild_readiness_id: str,
+) -> InactiveCorpusCandidate:
+    """Stage an inactive corpus candidate from canonical projection.
+
+    Stops after unpublished manifest + reconciliation; no lexical or pointer flip.
+    """
+    from catalyst_data.index_builder import build_canonical_corpus_records
+    from catalyst_data.retrieval.source_bundle import export_candidate_source_bundle
+
+    records = build_canonical_corpus_records(conn)
+    projection_rows = [
+        {key: value for key, value in record.items() if key != "asset_type"}
+        for record in records
+    ]
+    projection_digest = compute_canonical_projection_digest(projection_rows)
+    header = {
+        "certified_snapshot_identity": certified_snapshot_identity,
+        "canonical_projection_digest": projection_digest,
+        "normalization_version": "1.0.0",
+        "materiality_version": MATERIALITY_VERSION,
+        "sec_parser_version": SEC_NORMALIZER_VERSION,
+        "news_body_normalizer_version": NEWS_NORMALIZER_VERSION,
+        "chunk_profile_versions": dict(profile_versions),
+        "source_classifier_version": CLASSIFIER_VERSION,
+        "tokenizer_model_id": TOKENIZER_MODEL_ID,
+        "tokenizer_revision": TOKENIZER_REVISION,
+        "embedding_revision_or_null": BGE_M3_REVISION,
+    }
+    build_id = _build_id(header)
+    now = _utc_now()
+    ensure_streaming_publication_schema(conn)
+    with conn:
+        conn.execute(
+            """INSERT INTO corpus_publication_builds
+               (build_id, certified_snapshot_identity, header_json, status,
+                created_at, updated_at)
+               VALUES (?, ?, ?, 'staging', ?, ?)
+               ON CONFLICT(build_id) DO NOTHING""",
+            (build_id, certified_snapshot_identity, _canonical_bytes(header), now, now),
+        )
+    status = conn.execute(
+        "SELECT status FROM corpus_publication_builds WHERE build_id=?",
+        (build_id,),
+    ).fetchone()[0]
+    limits = PublicationLimits(max_documents=100, max_chunks=500)
+    stats = _MutableBufferStats()
+    if status not in {"reconciliation_ready", "lexical_ready", "published", "manifest_ready", "staging_ready"}:
+        documents = 0
+        chunks = 0
+        source_bytes = 0
+        for record in records:
+            source = _source_from_canonical_record(record, profile_versions=profile_versions)
+            if source is None:
+                continue
+            _stage_source_presence(conn, build_id=build_id, source=source, now=now)
+            if source.eligibility != "eligible":
+                continue
+            document_chunks, document_chunk_bytes = _stage_document(
+                conn,
+                build_id=build_id,
+                source=source,
+                limits=limits,
+                stats=stats,
+                now=now,
+                failure_injector=None,
+            )
+            _annotate_canonical_chunks(
+                conn,
+                build_id=build_id,
+                document_id=source.document_id,
+                record=record,
+            )
+            documents += 1
+            chunks += document_chunks
+            source_bytes += source.source_utf8_bytes
+        with conn:
+            conn.execute(
+                """UPDATE corpus_publication_builds
+                   SET status='staging_ready', document_count=?, chunk_count=?,
+                       source_utf8_bytes=?, updated_at=? WHERE build_id=?""",
+                (documents, chunks, source_bytes, now, build_id),
+            )
+        status = "staging_ready"
+    if status in {"staging", "staging_ready"}:
+        _manifest_phase(conn, build_id=build_id, header=header, now=now)
+        status = "manifest_ready"
+    if status == "manifest_ready":
+        _reconciliation_phase(conn, build_id=build_id, now=now)
+    row = conn.execute(
+        """SELECT manifest_id, document_count, chunk_count, inventory_digest
+           FROM corpus_publication_builds WHERE build_id=?""",
+        (build_id,),
+    ).fetchone()
+    manifest_id = str(row[0])
+    bundle_id, bundle_path = export_candidate_source_bundle(
+        conn,
+        build_id=build_id,
+        manifest_id=manifest_id,
+        snapshot_id=snapshot_id,
+        probe_report_id=probe_report_id,
+        postbuild_readiness_id=postbuild_readiness_id,
+        output_root=Path(source_bundle_output_root),
+    )
+    return InactiveCorpusCandidate(
+        build_id=build_id,
+        manifest_id=manifest_id,
+        document_count=int(row[1] or 0),
+        chunk_count=int(row[2] or 0),
+        projection_digest=projection_digest,
+        inventory_digest=str(row[3] or ""),
+        source_bundle_id=bundle_id,
+        source_bundle_path=Path(bundle_path),
     )
 
 
