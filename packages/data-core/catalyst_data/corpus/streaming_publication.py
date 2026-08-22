@@ -1505,6 +1505,43 @@ def _discard_invalid_fts_suffix(
         )
 
 
+def build_candidate_fts(
+    conn: sqlite3.Connection,
+    *,
+    build_id: str,
+) -> StreamingLexicalResult:
+    """Build inactive FTS over corpus_build_chunks_fts for one build_id.
+
+    Does not write lexical_index_state and does not delete corpus_chunks_fts.
+    """
+    ensure_streaming_publication_schema(conn)
+    row = conn.execute(
+        """SELECT manifest_id, status, lexical_ready, lexical_digest,
+                  lexical_row_count
+           FROM corpus_publication_builds WHERE build_id=?""",
+        (build_id,),
+    ).fetchone()
+    if row is None or not row[0]:
+        raise ValueError("candidate FTS requires a staged unpublished build")
+    manifest_id = str(row[0])
+    if int(row[2] or 0) == 1 and row[3] and int(row[4] or 0) >= 0:
+        return StreamingLexicalResult(
+            manifest_id=manifest_id,
+            mode_served="fts5",
+            row_count=int(row[4] or 0),
+            digest=str(row[3]),
+        )
+    return _fts_phase(
+        conn,
+        build_id=build_id,
+        manifest_id=manifest_id,
+        limits=PublicationLimits(),
+        now=_utc_now(),
+        failure_injector=None,
+        stats=_MutableBufferStats(),
+    )
+
+
 def _fts_phase(
     conn: sqlite3.Connection,
     *,
