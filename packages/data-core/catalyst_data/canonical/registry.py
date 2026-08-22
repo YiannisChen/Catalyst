@@ -122,6 +122,13 @@ CANONICAL_REGISTRY_DDL: list[str] = [
     "ALTER TABLE articles ADD COLUMN recovered_content_state TEXT CHECK (recovered_content_state IS NULL OR recovered_content_state IN ('FULL_TEXT','TITLE_ONLY','METADATA_ONLY','EMPTY','FAILED'))",
     "ALTER TABLE articles ADD COLUMN recovered_content_hash TEXT",
     "ALTER TABLE articles ADD COLUMN body_normalizer_version TEXT",
+    # Batch B: filing_documents reparse-persist columns (nullable; historical
+    # rows remain readable). section_parse_degraded is a quality flag and never
+    # folds into DATA-01.
+    "ALTER TABLE filing_documents ADD COLUMN parser_version TEXT",
+    "ALTER TABLE filing_documents ADD COLUMN document_hash TEXT",
+    "ALTER TABLE filing_documents ADD COLUMN parse_quality TEXT CHECK (parse_quality IS NULL OR parse_quality IN ('full','degraded','not_applicable','failed'))",
+    "ALTER TABLE filing_documents ADD COLUMN section_parse_degraded INTEGER CHECK (section_parse_degraded IS NULL OR section_parse_degraded IN (0,1))",
     "CREATE INDEX IF NOT EXISTS idx_normalized_provenance_canonical_asset ON normalized_provenance(canonical_asset_id) WHERE canonical_asset_id IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_normalized_provenance_canonical_content_version ON normalized_provenance(canonical_content_version_id) WHERE canonical_content_version_id IS NOT NULL",
 ]

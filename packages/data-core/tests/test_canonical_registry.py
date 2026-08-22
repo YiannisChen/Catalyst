@@ -266,3 +266,53 @@ def test_normalized_provenance_v14_columns_resolve():
     ).fetchone()[0]
     assert ownership_violation == 0
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Batch B B9: v14 stamp guard — reparse-persist columns must exist before 14.
+# ---------------------------------------------------------------------------
+
+
+def test_filing_documents_reparse_columns_added():
+    conn = _db_at_v13()
+    run_migrations(conn)
+    docs_cols = _columns(conn, "filing_documents")
+    assert {
+        "parser_version",
+        "document_hash",
+        "parse_quality",
+        "section_parse_degraded",
+    } <= docs_cols
+    conn.close()
+
+
+def test_v14_not_stamped_without_filing_documents():
+    """A DB without filings/filing_documents never reports version 14."""
+    from conftest import _fresh_db_at_version
+
+    conn = _fresh_db_at_version(13)
+    with pytest.raises(RuntimeError, match="refusing to stamp"):
+        run_migrations(conn)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
+    conn.close()
+
+
+def test_v14_not_stamped_without_reparse_columns():
+    """A DB whose filing_documents reparse columns cannot exist fails closed.
+
+    The reparse-persist ALTERs are skipped when the table is missing; the B9
+    guard must then refuse the version-14 stamp.
+    """
+    from conftest import _fresh_db_at_version
+    from catalyst_data.storage.sqlite import ensure_filings_tables
+
+    conn = _fresh_db_at_version(13)
+    ensure_filings_tables(conn)
+    # Simulate a DB where filing_documents is absent (reparse columns cannot
+    # be added): drop the table so the v14 ALTERs are skipped.
+    conn.execute("DROP TABLE filing_documents")
+    conn.commit()
+    with pytest.raises(RuntimeError, match="filing_documents"):
+        run_migrations(conn)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
+    conn.close()

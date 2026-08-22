@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sqlite3
 from dataclasses import dataclass
 
 from catalyst_data.corpus.filing_v3 import _section_key
@@ -126,4 +127,102 @@ def reparse_filing(
     )
 
 
-__all__ = ["FilingParseResult", "ReparsedSection", "reparse_filing"]
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _validate_document_hash(document_hash: str | None) -> str | None:
+    """Return the hash when present and 64 lowercase hex, else fail closed."""
+    if document_hash is None:
+        return None
+    if not isinstance(document_hash, str) or not _HEX64_RE.fullmatch(document_hash):
+        raise ValueError(
+            f"document_hash must be 64 lowercase hex: {document_hash!r}"
+        )
+    return document_hash
+
+
+def persist_filing_document_reparse(
+    conn: sqlite3.Connection,
+    *,
+    filing_id: str,
+    document_id: str,
+    result: FilingParseResult,
+    extracted_text: str | None,
+) -> None:
+    """Repository-owned M3-4 reparse persistence (Batch B B1-B3).
+
+    Writes the v14 ``filing_documents`` repair columns plus the extracted
+    primary text (when the reparse succeeded). ``reparse_filing`` stays the
+    pure parser; this writer owns persistence. Fails closed (raises
+    ``ValueError`` and writes nothing) on unknown/mismatched filing/document,
+    accession mismatch, a malformed ``document_hash``, or a success result
+    without non-empty ``extracted_text``.
+    """
+    filing = conn.execute(
+        "SELECT accession_number FROM filings WHERE filing_id=?", (filing_id,)
+    ).fetchone()
+    if filing is None:
+        raise ValueError(f"unknown filing_id: {filing_id}")
+    doc = conn.execute(
+        "SELECT * FROM filing_documents WHERE filing_id=? AND document_id=?",
+        (filing_id, document_id),
+    ).fetchone()
+    if doc is None:
+        raise ValueError(
+            f"unknown document_id {document_id!r} for filing {filing_id}"
+        )
+    if doc["filing_id"] != filing_id:
+        raise ValueError(
+            f"document row filing_id mismatch: {doc['filing_id']!r} != {filing_id!r}"
+        )
+    if filing["accession_number"] != result.accession:
+        raise ValueError(
+            f"accession mismatch: filing={filing['accession_number']!r} "
+            f"result={result.accession!r}"
+        )
+    document_hash = _validate_document_hash(result.document_hash)
+
+    if result.primary_document_extracted:
+        if not extracted_text or not extracted_text.strip():
+            raise ValueError(
+                "primary_document_extracted requires non-empty extracted_text"
+            )
+        text = _normalize_text(extracted_text)
+        extraction_status = "success"
+        section_parse_degraded = (
+            1 if any(s.section_parse_degraded for s in result.sections) else 0
+        )
+    else:
+        text = None
+        extraction_status = None
+        section_parse_degraded = None
+
+    conn.execute(
+        """UPDATE filing_documents SET
+               parser_version = ?,
+               document_hash = ?,
+               parse_quality = ?,
+               section_parse_degraded = ?,
+               text = COALESCE(?, text),
+               extraction_status = COALESCE(?, extraction_status)
+           WHERE filing_id = ? AND document_id = ?""",
+        (
+            result.parser_version,
+            document_hash,
+            result.parse_quality,
+            section_parse_degraded,
+            text,
+            extraction_status,
+            filing_id,
+            document_id,
+        ),
+    )
+    conn.commit()
+
+
+__all__ = [
+    "FilingParseResult",
+    "ReparsedSection",
+    "persist_filing_document_reparse",
+    "reparse_filing",
+]

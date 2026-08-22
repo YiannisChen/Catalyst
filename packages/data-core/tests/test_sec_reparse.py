@@ -159,3 +159,227 @@ def _serialize(result: FilingParseResult) -> tuple:
         result.parse_quality,
         tuple((s.section_key, s.ordinal, s.section_parse_degraded) for s in result.sections),
     )
+
+
+# ---------------------------------------------------------------------------
+# Batch B: repository-owned reparse persistence (B1-B3)
+# ---------------------------------------------------------------------------
+
+
+def _reparse_db(*, with_primary: bool = True) -> tuple[sqlite3.Connection, str, str]:
+    """In-memory DB with one filing + one primary document row."""
+    import sqlite3
+
+    from catalyst_data.storage.sqlite import init_db, upsert_filing
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+    upsert_filing(
+        conn,
+        filing_id="filing-8k-0000320193-26-000001",
+        cik="0000320193",
+        ticker="AAPL",
+        form_type="8-K",
+        filed_at="2026-01-05",
+        accession_number="0000320193-26-000001",
+        primary_document="a.htm",
+        url="https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/a.htm",
+    )
+    document_id = "a" * 64
+    if with_primary:
+        conn.execute(
+            """INSERT INTO filing_documents (
+                   filing_id, document_url, document_type, text, char_len,
+                   content_type, byte_size, extraction_status, extracted_at,
+                   document_id
+               ) VALUES (?, ?, 'primary_doc', NULL, NULL, 'text/html', NULL,
+                         'fetch_failed', '2026-01-05T20:00:00Z', ?)""",
+            ("filing-8k-0000320193-26-000001",
+             "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/a.htm",
+             document_id),
+        )
+        conn.commit()
+    return conn, "filing-8k-0000320193-26-000001", document_id
+
+
+def _success_result() -> FilingParseResult:
+    return reparse_filing(_html_8k(), accession="0000320193-26-000001")
+
+
+def test_persist_filing_document_reparse_writes_columns_and_text():
+    from catalyst_data.sec.reparse import persist_filing_document_reparse
+
+    conn, filing_id, document_id = _reparse_db()
+    result = _success_result()
+    persist_filing_document_reparse(
+        conn,
+        filing_id=filing_id,
+        document_id=document_id,
+        result=result,
+        extracted_text=_normalize_reparse_text(_html_8k()),
+    )
+    row = conn.execute(
+        "SELECT * FROM filing_documents WHERE filing_id=? AND document_id=?",
+        (filing_id, document_id),
+    ).fetchone()
+    assert row["parser_version"] == SEC_EXTRACT_PARSER_VERSION
+    assert row["document_hash"] == result.document_hash
+    assert len(row["document_hash"]) == 64
+    assert row["document_hash"].islower()
+    assert row["parse_quality"] == result.parse_quality
+    assert row["section_parse_degraded"] in (0, 1)
+    assert row["extraction_status"] == "success"
+    assert row["text"] is not None
+    import hashlib as _hl
+
+    from catalyst_data.corpus.news_v2 import _normalize_text
+
+    assert _hl.sha256(_normalize_text(row["text"]).encode("utf-8")).hexdigest() == row["document_hash"]
+    conn.close()
+
+
+def _normalize_reparse_text(raw: bytes) -> str:
+    from catalyst_data.sec.extract import extract_document_text
+    from catalyst_data.corpus.news_v2 import _normalize_text
+
+    outcome = extract_document_text(
+        raw, content_type="text/html", is_primary=True,
+        parser_version=SEC_EXTRACT_PARSER_VERSION,
+    )
+    return _normalize_text(outcome.text)
+
+
+def test_persist_filing_document_reparse_idempotent():
+    from catalyst_data.sec.reparse import persist_filing_document_reparse
+
+    conn, filing_id, document_id = _reparse_db()
+    result = _success_result()
+    text = _normalize_reparse_text(_html_8k())
+    persist_filing_document_reparse(
+        conn, filing_id=filing_id, document_id=document_id,
+        result=result, extracted_text=text,
+    )
+    first = conn.execute(
+        "SELECT parser_version, document_hash, parse_quality, text FROM filing_documents"
+    ).fetchone()
+    persist_filing_document_reparse(
+        conn, filing_id=filing_id, document_id=document_id,
+        result=result, extracted_text=text,
+    )
+    second = conn.execute(
+        "SELECT parser_version, document_hash, parse_quality, text FROM filing_documents"
+    ).fetchone()
+    assert tuple(first) == tuple(second)
+    conn.close()
+
+
+def test_persist_filing_document_reparse_unknown_ids_fail_closed():
+    import pytest
+
+    from catalyst_data.sec.reparse import persist_filing_document_reparse
+
+    conn, filing_id, document_id = _reparse_db()
+    result = _success_result()
+    text = _normalize_reparse_text(_html_8k())
+    with pytest.raises(ValueError, match="filing"):
+        persist_filing_document_reparse(
+            conn, filing_id="filing-missing", document_id=document_id,
+            result=result, extracted_text=text,
+        )
+    with pytest.raises(ValueError, match="document"):
+        persist_filing_document_reparse(
+            conn, filing_id=filing_id, document_id="f" * 64,
+            result=result, extracted_text=text,
+        )
+    assert conn.execute("SELECT COUNT(*) FROM filing_documents WHERE parser_version IS NOT NULL").fetchone()[0] == 0
+    conn.close()
+
+
+def test_persist_filing_document_reparse_accession_mismatch_fails_closed():
+    import pytest
+
+    from catalyst_data.sec.reparse import persist_filing_document_reparse
+
+    conn, filing_id, document_id = _reparse_db()
+    result = _success_result()
+    # result.accession does not match parent filings.accession_number.
+    wrong = FilingParseResult(
+        accession="0000320193-26-999999",
+        parser_version=result.parser_version,
+        primary_document_extracted=result.primary_document_extracted,
+        document_hash=result.document_hash,
+        parse_quality=result.parse_quality,
+        sections=result.sections,
+    )
+    with pytest.raises(ValueError, match="accession"):
+        persist_filing_document_reparse(
+            conn, filing_id=filing_id, document_id=document_id,
+            result=wrong, extracted_text=_normalize_reparse_text(_html_8k()),
+        )
+    assert conn.execute("SELECT COUNT(*) FROM filing_documents WHERE parser_version IS NOT NULL").fetchone()[0] == 0
+    conn.close()
+
+
+def test_persist_filing_document_reparse_bad_document_hash_fails_closed():
+    import pytest
+
+    from catalyst_data.sec.reparse import persist_filing_document_reparse
+
+    conn, filing_id, document_id = _reparse_db()
+    result = _success_result()
+    bad_hash = FilingParseResult(
+        accession=result.accession,
+        parser_version=result.parser_version,
+        primary_document_extracted=True,
+        document_hash="NOTHEX",
+        parse_quality="full",
+        sections=result.sections,
+    )
+    with pytest.raises(ValueError, match="document_hash"):
+        persist_filing_document_reparse(
+            conn, filing_id=filing_id, document_id=document_id,
+            result=bad_hash, extracted_text=_normalize_reparse_text(_html_8k()),
+        )
+    assert conn.execute("SELECT COUNT(*) FROM filing_documents WHERE parser_version IS NOT NULL").fetchone()[0] == 0
+    conn.close()
+
+
+def test_persist_filing_document_reparse_extracted_requires_text_fails_closed():
+    import pytest
+
+    from catalyst_data.sec.reparse import persist_filing_document_reparse
+
+    conn, filing_id, document_id = _reparse_db()
+    result = _success_result()
+    with pytest.raises(ValueError, match="extracted_text"):
+        persist_filing_document_reparse(
+            conn, filing_id=filing_id, document_id=document_id,
+            result=result, extracted_text="   \n\t  ",
+        )
+    assert conn.execute("SELECT COUNT(*) FROM filing_documents WHERE parser_version IS NOT NULL").fetchone()[0] == 0
+    conn.close()
+
+
+def test_persist_filing_document_reparse_failed_result_metadata_only():
+    from catalyst_data.sec.reparse import persist_filing_document_reparse
+
+    conn, filing_id, document_id = _reparse_db()
+    result = reparse_filing(b"   \n\t  ", accession="0000320193-26-000001")
+    assert result.primary_document_extracted is False
+    persist_filing_document_reparse(
+        conn, filing_id=filing_id, document_id=document_id,
+        result=result, extracted_text=None,
+    )
+    row = conn.execute(
+        "SELECT * FROM filing_documents WHERE filing_id=? AND document_id=?",
+        (filing_id, document_id),
+    ).fetchone()
+    assert row["parser_version"] == SEC_EXTRACT_PARSER_VERSION
+    assert row["document_hash"] is None
+    assert row["parse_quality"] == result.parse_quality
+    assert row["section_parse_degraded"] is None
+    # Text is not overwritten for a failed reparse.
+    assert row["text"] is None
+    assert row["extraction_status"] == "fetch_failed"
+    conn.close()
