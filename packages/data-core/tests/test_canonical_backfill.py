@@ -796,3 +796,105 @@ def test_backfill_persisted_fail_closed_no_time_of_day_survives():
     assert filing["fail_closed"] == 1
     assert filing["accepted_time_recovered"] == 0
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Batch A residual: unrepaired backfill must match recover_body for
+# empty/whitespace description (EMPTY, excluded) and missing description
+# (TITLE_ONLY, lead_candidate).
+# ---------------------------------------------------------------------------
+
+
+def _add_unrepaired_article(
+    conn: sqlite3.Connection,
+    *,
+    article_id: str,
+    title: str,
+    description: str | None,
+    article_url: str,
+) -> None:
+    _seed_raw(conn, asset_id=f"raw:{article_id}", source_type="finnhub_company_news")
+    from catalyst_data.articles import upsert_article, upsert_article_ticker
+
+    upsert_article(conn, article={
+        "article_id": article_id,
+        "raw_asset_id": f"raw:{article_id}",
+        "provider": "finnhub",
+        "source_type": "finnhub_company_news",
+        "ticker": "AAPL",
+        "reference_date": "2026-01-05",
+        "published_utc": "2026-01-05T15:30:00Z",
+        "title": title,
+        "description": description,
+        "article_url": article_url,
+        "publisher_name": "Example News",
+    })
+    upsert_article_ticker(
+        conn, article_id=article_id, ticker="AAPL",
+        raw_asset_id=f"raw:{article_id}", reference_date="2026-01-05",
+    )
+    conn.commit()
+
+
+def test_backfill_unrepaired_no_description_title_only():
+    """description=None + title -> canonical TITLE_ONLY, lead_candidate."""
+    conn = _fixture_conn()
+    _add_unrepaired_article(
+        conn,
+        article_id="finnhub:title-only-1",
+        title="Apple title only",
+        description=None,
+        article_url="https://example.com/apple-title-only",
+    )
+    backfill_from_subtypes(conn)
+    asset = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_id=?",
+        (
+            build_asset_id(
+                asset_type="NEWS", source_table="articles",
+                source_pk="finnhub:title-only-1",
+            ),
+        ),
+    ).fetchone()
+    assert asset is not None
+    assert asset["content_state"] == "TITLE_ONLY"
+    assert asset["serving_status"] == "lead_candidate"
+    version = conn.execute(
+        "SELECT COUNT(*) FROM canonical_content_versions WHERE asset_id=?",
+        (asset["asset_id"],),
+    ).fetchone()[0]
+    assert version == 1
+    conn.close()
+
+
+@pytest.mark.parametrize("description", ["", "   \n\t  ", "  "])
+def test_backfill_unrepaired_empty_or_whitespace_description_excluded(description):
+    """Empty/whitespace description + title -> canonical EMPTY, excluded,
+    and no content version (matches recover_body, never TITLE_ONLY)."""
+    conn = _fixture_conn()
+    _add_unrepaired_article(
+        conn,
+        article_id="finnhub:ws-1",
+        title="Apple whitespace only",
+        description=description,
+        article_url="https://example.com/apple-ws",
+    )
+    backfill_from_subtypes(conn)
+    asset = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_id=?",
+        (
+            build_asset_id(
+                asset_type="NEWS", source_table="articles",
+                source_pk="finnhub:ws-1",
+            ),
+        ),
+    ).fetchone()
+    assert asset is not None
+    assert asset["content_state"] == "EMPTY"
+    assert asset["serving_status"] == "excluded"
+    version = conn.execute(
+        "SELECT COUNT(*) FROM canonical_content_versions WHERE asset_id=?",
+        (asset["asset_id"],),
+    ).fetchone()[0]
+    assert version == 0
+    conn.close()

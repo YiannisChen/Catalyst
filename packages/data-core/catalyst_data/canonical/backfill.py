@@ -18,6 +18,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from catalyst_data.articles.body_recovery import recover_body
 from catalyst_data.canonical.ids import (
     asset_id,
     canonical_content_version_id,
@@ -127,19 +128,6 @@ def _state_serving_status(
     return "excluded"
 
 
-def _news_content_state(description: str | None, title: str | None) -> str:
-    """Classify an unrepaired (legacy) article without an authentic body.
-
-    Batch A A6: description/title are never FULL_TEXT. An unrepaired long
-    legacy description is METADATA_ONLY; FULL_TEXT exists only through a
-    persisted authentic-body repair (``recovered_content_state='FULL_TEXT'``).
-    """
-    body = _normalize_text(description or "")
-    if body:
-        return "METADATA_ONLY"
-    return "TITLE_ONLY" if (title or "").strip() else "EMPTY"
-
-
 @dataclass(frozen=True)
 class BackfillResult:
     assets: int
@@ -247,22 +235,19 @@ def _project_news(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
                 content_hash = None
             canonical_url = row["normalized_url"] or row["article_url"]
         else:
-            content_state = _news_content_state(
-                row["description"], row["title"]
+            # Unrepaired: classify exactly like recover_body with no authentic
+            # body (raw_payload={}). One classifier, no drift: empty or
+            # whitespace description is EMPTY even when a title exists.
+            recovery = recover_body(
+                {
+                    "title": row["title"],
+                    "description": row["description"],
+                    "article_url": row["article_url"],
+                },
+                raw_payload={},
             )
-            if content_state == "TITLE_ONLY":
-                content_hash = _content_hash_for_state(
-                    "TITLE_ONLY", normalized_title=_normalize_text(row["title"] or "")
-                )
-            elif content_state == "METADATA_ONLY":
-                content_hash = _content_hash_for_state(
-                    "METADATA_ONLY",
-                    normalized_title=_normalize_text(row["title"] or "") or None,
-                    normalized_description=_normalize_text(row["description"] or "") or None,
-                    canonical_url=row["article_url"] or None,
-                )
-            else:  # EMPTY/FAILED: mint no content version
-                content_hash = None
+            content_state = recovery.content_state
+            content_hash = recovery.content_hash
             canonical_url = row["article_url"]
 
         eligible_at = published
