@@ -183,7 +183,9 @@ def _record_provenance(
 # ---------------------------------------------------------------------------
 
 
-def _project_news(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
+def _project_news(
+    conn: sqlite3.Connection, *, require_repairs: bool = False
+) -> tuple[int, int, int, int]:
     rows = conn.execute(
         """SELECT a.* FROM articles a ORDER BY a.article_id"""
     ).fetchall()
@@ -197,6 +199,11 @@ def _project_news(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
     assets = versions = assocs = tickers = 0
     for row in rows:
         article_id = row["article_id"]
+        if require_repairs and row["recovered_content_state"] is None:
+            raise CanonicalBackfillError(
+                f"news row {article_id} lacks recovered_content_state; "
+                f"require_repairs=True"
+            )
         asset_id_value = asset_id(
             asset_type="NEWS",
             source_table="articles",
@@ -339,13 +346,20 @@ def _project_news(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
 # ---------------------------------------------------------------------------
 
 
-def _project_filings(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
+def _project_filings(
+    conn: sqlite3.Connection, *, require_repairs: bool = False
+) -> tuple[int, int, int, int]:
     filings = conn.execute(
         "SELECT * FROM filings ORDER BY filing_id"
     ).fetchall()
     assets = versions = assocs = tickers = 0
     for filing in filings:
         filing_id = filing["filing_id"]
+        if require_repairs and filing["eligible_at_reason"] is None:
+            raise CanonicalBackfillError(
+                f"filing {filing_id} lacks persisted temporal repair "
+                f"(eligible_at_reason IS NULL); require_repairs=True"
+            )
         asset_id_value = asset_id(
             asset_type="FILING",
             source_table="filings",
@@ -377,7 +391,12 @@ def _project_filings(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
                 content_hash = _content_hash_for_state(
                     "FULL_TEXT", normalized_body=content_text
                 )
-                parse_quality = "full"
+                if require_repairs:
+                    # Copy the persisted M3-4 parse quality instead of forcing
+                    # 'full' on every successful non-empty extract (B8).
+                    parse_quality = primary["parse_quality"] or "full"
+                else:
+                    parse_quality = "full"
             elif status in ("success", "empty", "pdf_skipped"):
                 content_state = "EMPTY"
                 parse_quality = "not_applicable"
@@ -498,7 +517,21 @@ def _project_filings(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
         # documents bind no content version (nullable). The binding writer
         # updates stale values instead of ignoring them (B7).
         for doc in docs:
+            if require_repairs and doc["parser_version"] is None:
+                raise CanonicalBackfillError(
+                    f"filing_documents row {doc['document_id']} lacks persisted "
+                    f"M3-4 repair (parser_version IS NULL); require_repairs=True"
+                )
             doc_text = doc["text"] or ""
+            if require_repairs and doc["document_hash"] and doc_text.strip():
+                stored_hash = hashlib.sha256(
+                    _normalize_text(doc_text).encode("utf-8")
+                ).hexdigest()
+                if stored_hash != doc["document_hash"]:
+                    raise CanonicalBackfillError(
+                        f"filing_documents row {doc['document_id']} persisted "
+                        f"document_hash does not match normalized stored text"
+                    )
             successfully_parsed = (
                 doc["extraction_status"] == "success" and doc_text.strip()
             )
@@ -935,7 +968,10 @@ def certify_structured_facts(conn: sqlite3.Connection) -> int:
 
 
 def backfill_from_subtypes(
-    conn: sqlite3.Connection, *, dry_run: bool = False
+    conn: sqlite3.Connection,
+    *,
+    dry_run: bool = False,
+    require_repairs: bool = False,
 ) -> BackfillResult:
     """Idempotently project subtype rows into the canonical registry.
 
@@ -948,8 +984,12 @@ def backfill_from_subtypes(
         # so we can run them inside a savepoint and roll back.
         conn.execute("SAVEPOINT m3_backfill_dry_run")
         try:
-            assets, versions, assocs, tickers = _project_news(conn)
-            f_assets, f_versions, f_assocs, f_tickers = _project_filings(conn)
+            assets, versions, assocs, tickers = _project_news(
+                conn, require_repairs=require_repairs
+            )
+            f_assets, f_versions, f_assocs, f_tickers = _project_filings(
+                conn, require_repairs=require_repairs
+            )
             facts = certify_structured_facts(conn)
             result = BackfillResult(
                 assets=assets + f_assets,
@@ -966,8 +1006,12 @@ def backfill_from_subtypes(
 
     conn.execute("BEGIN IMMEDIATE")
     try:
-        assets, versions, assocs, tickers = _project_news(conn)
-        f_assets, f_versions, f_assocs, f_tickers = _project_filings(conn)
+        assets, versions, assocs, tickers = _project_news(
+            conn, require_repairs=require_repairs
+        )
+        f_assets, f_versions, f_assocs, f_tickers = _project_filings(
+            conn, require_repairs=require_repairs
+        )
         facts = certify_structured_facts(conn)
         conn.commit()
     except Exception:

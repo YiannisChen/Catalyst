@@ -20,7 +20,7 @@ from catalyst_data.canonical.ids import (
     fact_id as build_fact_id,
     source_pk_json,
 )
-from catalyst_data.canonical.backfill import backfill_from_subtypes
+from catalyst_data.canonical.backfill import CanonicalBackfillError, backfill_from_subtypes
 
 
 def _h(value: str) -> str:
@@ -482,7 +482,8 @@ def _repair_fixture_conn() -> sqlite3.Connection:
         accepted_time=accepted,
     )
 
-    # M3-4: reparsed primary document content (stored text is the reparse output).
+    # M3-4: reparsed primary document content persisted through the
+    # repository-owned writer (Batch B B1-B3).
     reparsed_text = (
         "Item 1.01 Entry into a Material Definitive Agreement.\n"
         "On January 5, 2026, the registrant entered into a material definitive "
@@ -490,12 +491,7 @@ def _repair_fixture_conn() -> sqlite3.Connection:
         "customary representations and warranties. "
         + ("Reparsed disclosure content follows. " * 10)
     )
-    conn.execute(
-        """UPDATE filing_documents SET text=?, extraction_status='success'
-           WHERE filing_id=? AND document_type='primary_doc'""",
-        (reparsed_text, "filing-8k-0000320193-26-000001"),
-    )
-    conn.commit()
+    _persist_m34_repair(conn, text=reparsed_text)
 
     # M3-5: article body recovery with an explicit normalized URL.
     full_body = (
@@ -521,6 +517,23 @@ def _repair_fixture_conn() -> sqlite3.Connection:
             "https://www.example.com/apple-ai?utm_source=finnhub"
         ),
         result=repair,
+    )
+    # Batch B B8: the repair fixture is fully repaired so require_repairs=True
+    # passes. meta-1 gets the honest no-authentic-body classification.
+    meta_repair = recover_body(
+        {
+            "article_id": "finnhub:meta-1",
+            "title": "Apple stock watch",
+            "description": "Short snippet only.",
+            "article_url": "https://example.com/apple-watch",
+        },
+        raw_payload={},
+    )
+    persist_article_content_repair(
+        conn,
+        article_id="finnhub:meta-1",
+        normalized_url=None,
+        result=meta_repair,
     )
     return conn
 
@@ -1092,8 +1105,6 @@ def test_backfill_empty_non_primary_doc_binds_null():
 
 def test_backfill_fails_closed_on_different_asset_association():
     """An association bound to a different asset fails closed, no write (B7)."""
-    from catalyst_data.canonical.backfill import CanonicalBackfillError
-
     conn = _fixture_conn()
     backfill_from_subtypes(conn)
     other_asset = conn.execute(
@@ -1107,4 +1118,153 @@ def test_backfill_fails_closed_on_different_asset_association():
     conn.commit()
     with pytest.raises(CanonicalBackfillError, match="asset"):
         backfill_from_subtypes(conn)
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Batch B B8: require_repairs final mode.
+# ---------------------------------------------------------------------------
+
+
+def _persist_m34_repair(
+    conn: sqlite3.Connection,
+    *,
+    parser_version: str = "sec_extract_v1",
+    parse_quality: str = "full",
+    text: str | None = None,
+) -> None:
+    """Persist an M3-4 reparse repair for the fixture primary document."""
+    from catalyst_data.corpus.news_v2 import _normalize_text
+    from catalyst_data.sec.reparse import (
+        FilingParseResult,
+        persist_filing_document_reparse,
+    )
+
+    if text is None:
+        text = (
+            "Item 1.01 Entry into a Material Definitive Agreement.\n"
+            "On January 5, 2026, the registrant entered into a material definitive "
+            "agreement. The agreement governs a multi-year service term with "
+            "customary representations and warranties. "
+            + ("Reparsed disclosure content follows. " * 10)
+        )
+    normalized = _normalize_text(text)
+    result = FilingParseResult(
+        accession="0000320193-26-000001",
+        parser_version=parser_version,
+        primary_document_extracted=True,
+        document_hash=hashlib.sha256(normalized.encode("utf-8")).hexdigest(),
+        parse_quality=parse_quality,
+        sections=(),
+    )
+    persist_filing_document_reparse(
+        conn,
+        filing_id="filing-8k-0000320193-26-000001",
+        document_id="a" * 64,
+        result=result,
+        extracted_text=text,
+    )
+
+
+def _news_only_repairs(conn: sqlite3.Connection) -> None:
+    from catalyst_data.articles.body_recovery import (
+        BodyRecoveryResult,
+        persist_article_content_repair,
+    )
+
+    persist_article_content_repair(
+        conn, article_id="finnhub:full-1", normalized_url=None,
+        result=BodyRecoveryResult("METADATA_ONLY", None, "11" * 32),
+    )
+    persist_article_content_repair(
+        conn, article_id="finnhub:meta-1", normalized_url=None,
+        result=BodyRecoveryResult("METADATA_ONLY", None, "22" * 32),
+    )
+
+
+def _temporal_repair(conn: sqlite3.Connection) -> None:
+    from catalyst_data.sec.eligible_at import (
+        derive_eligible_at,
+        persist_filing_temporal_repair,
+    )
+
+    accepted = datetime(2026, 1, 5, 21, 5, 0, tzinfo=timezone.utc)
+    result = derive_eligible_at({"filed_at": "2026-01-05"}, accepted_time=accepted)
+    persist_filing_temporal_repair(
+        conn,
+        filing_id="filing-8k-0000320193-26-000001",
+        result=result,
+        accepted_time=accepted,
+    )
+
+
+def test_backfill_require_repairs_fails_without_news_repair():
+    conn = _fixture_conn()
+    with pytest.raises(CanonicalBackfillError, match="recovered_content_state"):
+        backfill_from_subtypes(conn, require_repairs=True)
+    conn.close()
+
+
+def test_backfill_require_repairs_fails_without_filing_temporal_repair():
+    conn = _fixture_conn()
+    _news_only_repairs(conn)
+    with pytest.raises(CanonicalBackfillError, match="temporal"):
+        backfill_from_subtypes(conn, require_repairs=True)
+    conn.close()
+
+
+def test_backfill_require_repairs_fails_without_m34_persist():
+    """require_repairs=True without M3-4 persist fails closed (B8)."""
+    conn = _fixture_conn()
+    _news_only_repairs(conn)
+    _temporal_repair(conn)
+    with pytest.raises(CanonicalBackfillError, match="parser_version"):
+        backfill_from_subtypes(conn, require_repairs=True)
+    conn.close()
+
+
+def test_backfill_require_repairs_fails_on_document_hash_mismatch():
+    """A stale/corrupt persisted text vs document_hash fails closed (B8)."""
+    conn = _repair_fixture_conn()
+    conn.execute(
+        "UPDATE filing_documents SET text=? WHERE document_id=?",
+        ("Corrupted text that does not match the persisted document hash. " * 8,
+         "a" * 64),
+    )
+    conn.commit()
+    with pytest.raises(CanonicalBackfillError, match="document_hash"):
+        backfill_from_subtypes(conn, require_repairs=True)
+    conn.close()
+
+
+def test_backfill_require_repairs_passes_with_complete_repairs():
+    conn = _repair_fixture_conn()
+    result = backfill_from_subtypes(conn, require_repairs=True)
+    assert result.assets == 3
+    filing = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_type='FILING'"
+    ).fetchone()
+    assert filing["content_state"] == "FULL_TEXT"
+    assert filing["parse_quality"] == "full"
+    assert filing["eligible_at_reason"] == "accepted_time_recovered"
+    conn.close()
+
+
+def test_backfill_require_repairs_copies_degraded_parse_quality():
+    """require_repairs copies persisted parse_quality; degraded is not 'full'."""
+    conn = _repair_fixture_conn()
+    _persist_m34_repair(conn, parser_version="sec_extract_v1", parse_quality="degraded")
+    backfill_from_subtypes(conn, require_repairs=True)
+    filing = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_type='FILING'"
+    ).fetchone()
+    assert filing["parse_quality"] == "degraded"
+    conn.close()
+
+
+def test_backfill_require_repairs_dry_run_validates():
+    """dry_run + require_repairs still fails closed on missing repairs."""
+    conn = _fixture_conn()
+    with pytest.raises(CanonicalBackfillError, match="recovered_content_state"):
+        backfill_from_subtypes(conn, dry_run=True, require_repairs=True)
     conn.close()
