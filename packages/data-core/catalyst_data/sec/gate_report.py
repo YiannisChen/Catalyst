@@ -31,14 +31,10 @@ from catalyst_data.canonical.backfill import MATERIALITY_VERSION
 from catalyst_data.canonical.ids import asset_id, sha256_identity
 from catalyst_data.corpus.news_v2 import _normalize_text
 from catalyst_data.sec.extract import SEC_EXTRACT_PARSER_VERSION
+from catalyst_data.sec.m3_8b_validator import validate_m3_8b_operator_inputs
 
 _EDGAR_ACCESSION_RE = re.compile(r"^[0-9]{10}-[0-9]{2}-[0-9]{6}$")
 _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
-
-_BENCHMARK_SCHEMA_VERSION = "benchmark_accessions_v1"
-_Q005_SCHEMA_VERSION = "q005_sec_time_approval_v1"
-_Q005_DECISIONS = ("fail_closed_only", "approve_latest_plausible_instant")
-
 
 @dataclass(frozen=True)
 class SecParseReport:
@@ -243,51 +239,24 @@ def benchmark_sec_parse_report_from_operator_inputs(
 ) -> SecParseReport:
     """Production Q-005-gated DATA-01 report over operator records.
 
-    Reads the operator benchmark manifest and Q-005 decision record instead of
-    accepting an unauthenticated free boolean. ``fail_closed_only`` never lets
-    a fail-closed row into the numerator; only
+    Invokes ``catalyst_data.sec.m3_8b_validator.validate_m3_8b_operator_inputs``
+    at this boundary before constructing any report, then reads the now-
+    authenticated records to map the Q-005 decision onto
+    ``approved_latest_plausible`` and pass ``A`` / exclusions into
+    ``benchmark_sec_parse_report``. ``fail_closed_only`` never lets a
+    fail-closed row into the numerator; only
     ``approve_latest_plausible_instant`` enables the approved conservative
-    rule. Full operator-input validation lives in
-    ``catalyst_data.sec.m3_8b_validator.validate_m3_8b_operator_inputs``; this
-    boundary enforces the decision semantics and record agreement before the
-    report builder runs.
+    rule.
     """
+    validate_m3_8b_operator_inputs(
+        benchmark_path,
+        q005_path,
+        expected_git_revision=expected_git_revision,
+    )
     benchmark = _read_json(benchmark_path)
     q005 = _read_json(q005_path)
-    if benchmark.get("schema_version") != _BENCHMARK_SCHEMA_VERSION:
-        raise ValueError(
-            "benchmark record must use schema_version benchmark_accessions_v1"
-        )
-    if q005.get("schema_version") != _Q005_SCHEMA_VERSION:
-        raise ValueError(
-            "Q-005 record must use schema_version q005_sec_time_approval_v1"
-        )
-    if (
-        benchmark.get("git_revision") != expected_git_revision
-        or q005.get("git_revision") != expected_git_revision
-    ):
-        raise ValueError(
-            "operator records must match the expected git_revision"
-        )
-    decision = q005.get("decision")
-    if decision not in _Q005_DECISIONS:
-        raise ValueError(
-            "Q-005 decision must be exactly fail_closed_only or "
-            "approve_latest_plausible_instant"
-        )
-    if (
-        q005.get("benchmark_case_list_sha256")
-        != benchmark.get("case_list_sha256")
-    ):
-        raise ValueError(
-            "Q-005 benchmark_case_list_sha256 must match the benchmark "
-            "case_list_sha256"
-        )
-    accessions = benchmark.get("ordered_unique_accession_ids")
-    if not isinstance(accessions, list):
-        raise ValueError(
-            "benchmark record must carry ordered_unique_accession_ids"
-        )
+    decision = q005["decision"]
+    accessions = benchmark["ordered_unique_accession_ids"]
 
     excluded: list[str] = []
     raw_excluded = benchmark.get("excluded_accessions")

@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import json as _json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 from catalyst_data.canonical.backfill import backfill_from_subtypes
 from catalyst_data.canonical.ids import sha256_identity
+import catalyst_data.sec.gate_report as gate_report_module
 from catalyst_data.sec.gate_report import (
     SecParseReport,
     benchmark_sec_parse_report,
@@ -267,15 +269,15 @@ def _bound_version(conn, accession: str):
     ).fetchone()
 
 
-def _write_operator_records(
-    tmp_path,
+def _operator_record_dicts(
     *,
     decision: str,
     accessions: list[str],
     expected_git_revision: str,
     selection_authority: str = "Frozen §10 + Final TSD §5.3",
+    raw_payload_inventory=None,
 ):
-    """Write operator Q-005/benchmark records under tmp_path (never baseline)."""
+    """Return (benchmark, q005) operator record dicts (never baseline files)."""
     case_hash = sha256_identity(
         {
             "schema_version": "benchmark_accessions_v1",
@@ -299,15 +301,46 @@ def _write_operator_records(
         "benchmark_case_list_sha256": case_hash,
         "selection_authority": selection_authority,
         "decision": decision,
-        "raw_payload_inventory": [
-            {"accession": a, "acceptance_datetime_retained": True}
-            for a in accessions
-        ],
+        "raw_payload_inventory": (
+            raw_payload_inventory
+            if raw_payload_inventory is not None
+            else [
+                {"accession": a, "acceptance_datetime_retained": True}
+                for a in accessions
+            ]
+        ),
         "frozen_at": "2026-08-22T00:00:00Z",
         "git_revision": expected_git_revision,
     }
+    return bench, q005
+
+
+def _write_operator_records(
+    tmp_path,
+    *,
+    decision: str,
+    accessions: list[str],
+    expected_git_revision: str,
+    selection_authority: str = "Frozen §10 + Final TSD §5.3",
+):
+    """Write operator Q-005/benchmark records under tmp_path (never baseline)."""
+    bench, q005 = _operator_record_dicts(
+        decision=decision,
+        accessions=accessions,
+        expected_git_revision=expected_git_revision,
+        selection_authority=selection_authority,
+    )
     bench_path = tmp_path / "benchmark_accessions_v1.json"
     q005_path = tmp_path / "q005_sec_time_approval_v1.json"
+    bench_path.write_text(_json.dumps(bench, sort_keys=True))
+    q005_path.write_text(_json.dumps(q005, sort_keys=True))
+    return bench_path, q005_path
+
+
+def _write_operator_dicts(tmp_path, bench, q005, *, prefix="hostile"):
+    """Write mutated operator records under tmp_path (never baseline)."""
+    bench_path = tmp_path / f"{prefix}-benchmark.json"
+    q005_path = tmp_path / f"{prefix}-q005.json"
     bench_path.write_text(_json.dumps(bench, sort_keys=True))
     q005_path.write_text(_json.dumps(q005, sort_keys=True))
     return bench_path, q005_path
@@ -526,4 +559,270 @@ def test_production_path_rejects_git_revision_mismatch(tmp_path):
         benchmark_sec_parse_report_from_operator_inputs(
             conn, bench_path, q005_path, expected_git_revision="def456"
         )
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Corrective Batch C C8 — production boundary must authenticate via validator
+# ---------------------------------------------------------------------------
+
+def _spy_report_builder(monkeypatch):
+    """Replace the report builder with a spy that fails loudly if invoked."""
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError(
+            "benchmark_sec_parse_report must not be invoked on hostile input"
+        )
+
+    monkeypatch.setattr(gate_report_module, "benchmark_sec_parse_report", spy)
+    return calls
+
+
+def test_production_path_forged_case_hash_fails_before_report_builder(
+    tmp_path, monkeypatch
+):
+    conn = _gate_conn()
+    bench, q005 = _operator_record_dicts(
+        decision="fail_closed_only",
+        accessions=[ACC],
+        expected_git_revision="abc123",
+    )
+    bench["case_list_sha256"] = "f" * 64
+    q005["benchmark_case_list_sha256"] = "f" * 64
+    bench_path, q005_path = _write_operator_dicts(
+        tmp_path, bench, q005, prefix="forged-hash"
+    )
+    calls = _spy_report_builder(monkeypatch)
+    with pytest.raises(ValueError, match="case_list_sha256"):
+        benchmark_sec_parse_report_from_operator_inputs(
+            conn, bench_path, q005_path, expected_git_revision="abc123"
+        )
+    assert not calls
+    conn.close()
+
+
+def test_production_path_denominator_mismatch_fails_before_report_builder(
+    tmp_path, monkeypatch
+):
+    conn = _gate_conn()
+    bench, q005 = _operator_record_dicts(
+        decision="fail_closed_only",
+        accessions=[ACC, ACC2],
+        expected_git_revision="abc123",
+    )
+    bench["denominator"] = 99
+    bench_path, q005_path = _write_operator_dicts(
+        tmp_path, bench, q005, prefix="denom"
+    )
+    calls = _spy_report_builder(monkeypatch)
+    with pytest.raises(ValueError, match="denominator"):
+        benchmark_sec_parse_report_from_operator_inputs(
+            conn, bench_path, q005_path, expected_git_revision="abc123"
+        )
+    assert not calls
+    conn.close()
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_production_path_empty_selection_authority_fails_before_report_builder(
+    tmp_path, monkeypatch, blank
+):
+    conn = _gate_conn()
+    bench, q005 = _operator_record_dicts(
+        decision="fail_closed_only",
+        accessions=[ACC],
+        expected_git_revision="abc123",
+        selection_authority=blank,
+    )
+    bench_path, q005_path = _write_operator_dicts(
+        tmp_path, bench, q005, prefix="authority"
+    )
+    calls = _spy_report_builder(monkeypatch)
+    with pytest.raises(ValueError, match="selection_authority"):
+        benchmark_sec_parse_report_from_operator_inputs(
+            conn, bench_path, q005_path, expected_git_revision="abc123"
+        )
+    assert not calls
+    conn.close()
+
+
+def test_production_path_incomplete_inventory_fails_before_report_builder(
+    tmp_path, monkeypatch
+):
+    conn = _gate_conn()
+    bench, q005 = _operator_record_dicts(
+        decision="fail_closed_only",
+        accessions=[ACC, ACC2],
+        expected_git_revision="abc123",
+        raw_payload_inventory=[
+            {"accession": ACC, "acceptance_datetime_retained": True},
+        ],
+    )
+    bench_path, q005_path = _write_operator_dicts(
+        tmp_path, bench, q005, prefix="incomplete-inventory"
+    )
+    calls = _spy_report_builder(monkeypatch)
+    with pytest.raises(ValueError, match="raw_payload_inventory"):
+        benchmark_sec_parse_report_from_operator_inputs(
+            conn, bench_path, q005_path, expected_git_revision="abc123"
+        )
+    assert not calls
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "inventory",
+    [
+        # acceptance_datetime_retained key missing
+        [
+            {"accession": ACC},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+        # explicit null
+        [
+            {"accession": ACC, "acceptance_datetime_retained": None},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+        # string literal
+        [
+            {"accession": ACC, "acceptance_datetime_retained": "true"},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+        # Python int 1 (type(1) is bool is False)
+        [
+            {"accession": ACC, "acceptance_datetime_retained": 1},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+        # Python int 0 (type(0) is bool is False)
+        [
+            {"accession": ACC, "acceptance_datetime_retained": 0},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+        # "false" string
+        [
+            {"accession": ACC, "acceptance_datetime_retained": "false"},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+    ],
+)
+def test_production_path_invalid_inventory_boolean_fails_before_report_builder(
+    tmp_path, monkeypatch, inventory
+):
+    conn = _gate_conn()
+    bench, q005 = _operator_record_dicts(
+        decision="fail_closed_only",
+        accessions=[ACC, ACC2],
+        expected_git_revision="abc123",
+        raw_payload_inventory=inventory,
+    )
+    bench_path, q005_path = _write_operator_dicts(
+        tmp_path, bench, q005, prefix="inventory-bool"
+    )
+    calls = _spy_report_builder(monkeypatch)
+    with pytest.raises(ValueError, match="acceptance_datetime_retained"):
+        benchmark_sec_parse_report_from_operator_inputs(
+            conn, bench_path, q005_path, expected_git_revision="abc123"
+        )
+    assert not calls
+    conn.close()
+
+
+def test_production_path_wrong_schema_version_fails_before_report_builder(
+    tmp_path, monkeypatch
+):
+    conn = _gate_conn()
+    bench, q005 = _operator_record_dicts(
+        decision="fail_closed_only",
+        accessions=[ACC],
+        expected_git_revision="abc123",
+    )
+    bench["schema_version"] = "benchmark_accessions_v2"
+    bench_path, q005_path = _write_operator_dicts(
+        tmp_path, bench, q005, prefix="schema"
+    )
+    calls = _spy_report_builder(monkeypatch)
+    with pytest.raises(ValueError, match="schema_version"):
+        benchmark_sec_parse_report_from_operator_inputs(
+            conn, bench_path, q005_path, expected_git_revision="abc123"
+        )
+    assert not calls
+    conn.close()
+
+
+def test_production_path_git_revision_mismatch_fails_before_report_builder(
+    tmp_path, monkeypatch
+):
+    conn = _gate_conn()
+    bench, q005 = _operator_record_dicts(
+        decision="fail_closed_only",
+        accessions=[ACC],
+        expected_git_revision="abc123",
+    )
+    bench_path, q005_path = _write_operator_dicts(
+        tmp_path, bench, q005, prefix="gitrev"
+    )
+    calls = _spy_report_builder(monkeypatch)
+    with pytest.raises(ValueError, match="git_revision"):
+        benchmark_sec_parse_report_from_operator_inputs(
+            conn, bench_path, q005_path, expected_git_revision="def456"
+        )
+    assert not calls
+    conn.close()
+
+
+def test_production_path_invokes_repository_validator(tmp_path, monkeypatch):
+    """The production boundary must call the repository-owned validator."""
+    conn = _gate_conn()
+    bench_path, q005_path = _write_operator_records(
+        tmp_path,
+        decision="fail_closed_only",
+        accessions=[ACC, ACC2],
+        expected_git_revision="abc123",
+    )
+    calls = []
+
+    def validator_spy(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    # raising=False keeps this RED under the old boundary and GREEN once the
+    # production function imports/calls the repository validator.
+    monkeypatch.setattr(
+        gate_report_module,
+        "validate_m3_8b_operator_inputs",
+        validator_spy,
+        raising=False,
+    )
+    report = benchmark_sec_parse_report_from_operator_inputs(
+        conn, bench_path, q005_path, expected_git_revision="abc123"
+    )
+    assert calls, (
+        "benchmark_sec_parse_report_from_operator_inputs must call "
+        "validate_m3_8b_operator_inputs"
+    )
+    assert report.numerator == 1  # A1 accepted; A2 fail-closed never counts
+    conn.close()
+
+
+def test_production_path_errors_are_path_safe(tmp_path, monkeypatch):
+    conn = _gate_conn()
+    bench, q005 = _operator_record_dicts(
+        decision="fail_closed_only",
+        accessions=[ACC],
+        expected_git_revision="abc123",
+    )
+    bench["denominator"] = 99
+    bench_path, q005_path = _write_operator_dicts(
+        tmp_path, bench, q005, prefix="safe-err"
+    )
+    calls = _spy_report_builder(monkeypatch)
+    with pytest.raises(ValueError) as exc:
+        benchmark_sec_parse_report_from_operator_inputs(
+            conn, bench_path, q005_path, expected_git_revision="abc123"
+        )
+    assert not calls
+    msg = str(exc.value)
+    assert str(tmp_path) not in msg
+    assert str(Path.home()) not in msg
     conn.close()

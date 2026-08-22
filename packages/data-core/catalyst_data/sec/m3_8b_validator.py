@@ -170,13 +170,27 @@ def validate_m3_8b_operator_inputs(
         raise ValueError("Q-005 raw_payload_inventory must be a list")
     inventory_accessions: list[str] = []
     for entry in inventory:
-        if not isinstance(entry, dict) or not isinstance(
-            entry.get("accession"), str
+        if not isinstance(entry, dict):
+            raise ValueError(
+                "Q-005 raw_payload_inventory entries must be objects"
+            )
+        accession = entry.get("accession")
+        if not isinstance(accession, str) or not _EDGAR_ACCESSION_RE.fullmatch(
+            accession
         ):
             raise ValueError(
-                "Q-005 raw_payload_inventory entries must carry an accession"
+                "Q-005 raw_payload_inventory accession must be a string "
+                "matching ^[0-9]{10}-[0-9]{2}-[0-9]{6}$"
             )
-        inventory_accessions.append(entry["accession"])
+        if (
+            "acceptance_datetime_retained" not in entry
+            or type(entry["acceptance_datetime_retained"]) is not bool
+        ):
+            raise ValueError(
+                "Q-005 raw_payload_inventory entries must carry "
+                "acceptance_datetime_retained as a strict JSON boolean"
+            )
+        inventory_accessions.append(accession)
     if len(inventory_accessions) != len(set(inventory_accessions)):
         raise ValueError(
             "Q-005 raw_payload_inventory must not duplicate accessions"

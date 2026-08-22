@@ -412,3 +412,92 @@ def test_error_strings_are_secret_and_path_safe(tmp_path):
     msg = str(exc.value)
     assert str(tmp_path) not in msg
     assert home not in msg
+
+
+# ---------------------------------------------------------------------------
+# Corrective Batch C C8 — inventory boolean authentication gap
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "inventory",
+    [
+        # acceptance_datetime_retained key missing
+        [
+            {"accession": ACC},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+        # explicit null
+        [
+            {"accession": ACC, "acceptance_datetime_retained": None},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+        # string literal (must never count as a JSON boolean)
+        [
+            {"accession": ACC, "acceptance_datetime_retained": "true"},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+        # Python int 1: type(1) is bool is False
+        [
+            {"accession": ACC, "acceptance_datetime_retained": 1},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+        # Python int 0: type(0) is bool is False
+        [
+            {"accession": ACC, "acceptance_datetime_retained": 0},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+        # "false" string
+        [
+            {"accession": ACC, "acceptance_datetime_retained": "false"},
+            {"accession": ACC2, "acceptance_datetime_retained": True},
+        ],
+    ],
+)
+def test_q005_inventory_boolean_strict(tmp_path, inventory):
+    """Fail closed unless acceptance_datetime_retained is a strict boolean."""
+    b, q = _write(
+        tmp_path,
+        benchmark=_benchmark([ACC, ACC2]),
+        q005=_q005([ACC, ACC2], raw_payload_inventory=inventory),
+        prefix="inventory-bool",
+    )
+    with pytest.raises(ValueError, match="acceptance_datetime_retained"):
+        validate_m3_8b_operator_inputs(b, q, expected_git_revision=GIT_REV)
+
+
+@pytest.mark.parametrize("retained", [True, False])
+def test_q005_inventory_valid_boolean_passes(tmp_path, retained):
+    """True/False strict booleans remain acceptable on exact coverage."""
+    inventory = [
+        {"accession": ACC, "acceptance_datetime_retained": retained},
+        {"accession": ACC2, "acceptance_datetime_retained": True},
+    ]
+    b, q = _write(
+        tmp_path,
+        benchmark=_benchmark([ACC, ACC2]),
+        q005=_q005([ACC, ACC2], raw_payload_inventory=inventory),
+        prefix="inventory-bool-ok",
+    )
+    validate_m3_8b_operator_inputs(b, q, expected_git_revision=GIT_REV)
+
+
+def test_q005_inventory_malformed_accession_fails_closed(tmp_path):
+    """Inventory accessions must individually match the EDGAR grammar."""
+    b, q = _write(
+        tmp_path,
+        benchmark=_benchmark([ACC, ACC2]),
+        q005=_q005(
+            [ACC, ACC2],
+            raw_payload_inventory=[
+                {"accession": ACC, "acceptance_datetime_retained": True},
+                {
+                    "accession": "0000320193-26-00000X",
+                    "acceptance_datetime_retained": True,
+                },
+            ],
+        ),
+        prefix="inventory-grammar",
+    )
+    with pytest.raises(ValueError, match="accession must be a string matching"):
+        validate_m3_8b_operator_inputs(b, q, expected_git_revision=GIT_REV)
