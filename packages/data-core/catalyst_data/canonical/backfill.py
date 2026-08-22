@@ -29,6 +29,7 @@ from catalyst_data.canonical.ids import (
 from catalyst_data.config import RAG_MIN_CHAR_COUNT
 from catalyst_data.corpus.news_v2 import _normalize_text
 from catalyst_data.corpus.source_classifier import classify
+from catalyst_data.sec.eligible_at import derive_eligible_at
 from catalyst_data.trading_calendar import session_close_utc
 
 NEWS_NORMALIZER_VERSION = "news_body_v1"
@@ -70,6 +71,39 @@ def _normalize_utc_z(value: object) -> str | None:
             "%Y-%m-%dT%H:%M:%SZ"
         )
     return None
+
+
+def _z(value: datetime | None) -> str | None:
+    """Format an aware datetime as UTC second-resolution Z, else None."""
+    if value is None:
+        return None
+    return value.astimezone(timezone.utc).replace(microsecond=0).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+
+
+def _parse_accepted_time_utc(value: object) -> datetime | None:
+    """Parse a persisted ``accepted_time_utc`` Z string, failing closed.
+
+    None/empty/malformed values parse to None (never an accepted time), so an
+    unusable stored accepted time flows through ``derive_eligible_at`` to the
+    fail-closed vocabulary instead of being treated as UTC.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    text = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        return None
+    return dt
 
 
 def _content_hash_for_state(content_state: str, **fields: object) -> str:
@@ -362,15 +396,40 @@ def _project_filings(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
                 content_state = "FAILED"
                 parse_quality = "failed"
 
-        eligible_at = _normalize_utc_z(filing["eligible_at"])
-        if eligible_at is None:
-            temporal_precision = "unknown"
-            eligible_at_reason = "fail_closed_no_accepted_time"
-            fail_closed = 1
+        repair_persisted = any(
+            filing[col] is not None
+            for col in (
+                "accepted_time_utc",
+                "eligible_at",
+                "eligible_at_reason",
+                "temporal_precision",
+                "accepted_time_recovered",
+                "eligibility_fail_closed",
+            )
+        )
+        if repair_persisted:
+            # Copy the persisted M3-3 repair vocabulary; never clobber a
+            # persisted fail_closed_no_time_of_day with no_accepted_time, and
+            # keep the persisted flags even when eligible_at is NULL.
+            eligible_at = _normalize_utc_z(filing["eligible_at"])
+            temporal_precision = filing["temporal_precision"]
+            eligible_at_reason = filing["eligible_at_reason"]
+            fail_closed = int(filing["eligibility_fail_closed"] or 0)
+            accepted_time_recovered = int(filing["accepted_time_recovered"] or 0)
         else:
-            temporal_precision = filing["temporal_precision"] or "accepted_time"
-            eligible_at_reason = filing["eligible_at_reason"] or "accepted_time_recovered"
-            fail_closed = 0
+            # No repair persisted: derive fail-closed. A valid date-only
+            # filed_at projects fail_closed_no_time_of_day / unknown_time_of_day,
+            # never fail_closed_no_accepted_time / unknown.
+            derived = derive_eligible_at(
+                {"filed_at": filing["filed_at"]},
+                _parse_accepted_time_utc(filing["accepted_time_utc"]),
+                approve_latest_plausible=False,
+            )
+            eligible_at = _z(derived.eligible_at)
+            temporal_precision = derived.temporal_precision
+            eligible_at_reason = derived.eligible_at_reason
+            fail_closed = int(derived.fail_closed)
+            accepted_time_recovered = int(derived.accepted_time_recovered)
 
         serving_status = _state_serving_status(
             content_state=content_state,
@@ -408,7 +467,7 @@ def _project_filings(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
             eligible_at=eligible_at,
             eligible_at_reason=eligible_at_reason,
             temporal_precision=temporal_precision,
-            accepted_time_recovered=1 if filing["accepted_time_recovered"] else 0,
+            accepted_time_recovered=accepted_time_recovered,
             fail_closed=fail_closed,
             ingested_at=_normalize_utc_z(filing["created_at"]) or _now_utc(),
             content_state=content_state,

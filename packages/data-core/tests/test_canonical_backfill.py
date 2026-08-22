@@ -219,7 +219,10 @@ def test_backfill_content_states_and_serving_status():
     assert filing["content_state"] == "FULL_TEXT"
     assert filing["parse_quality"] == "full"
     assert filing["eligible_at"] is None
-    assert filing["eligible_at_reason"] == "fail_closed_no_accepted_time"
+    # Batch A A3: valid date-only filed_at with no accepted time and no repair
+    # persists the no-time-of-day vocabulary, not fail_closed_no_accepted_time.
+    assert filing["eligible_at_reason"] == "fail_closed_no_time_of_day"
+    assert filing["temporal_precision"] == "unknown_time_of_day"
     assert filing["fail_closed"] == 1
     assert filing["serving_status"] == "excluded"
     conn.close()
@@ -741,4 +744,55 @@ def test_repaired_authentic_body_still_projects_full_text():
         "SELECT recovered_content_hash FROM articles WHERE article_id='finnhub:full-1'"
     ).fetchone()
     assert version["content_hash"] == repair["recovered_content_hash"]
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Batch A A3: filing temporal projection must not clobber persisted repair
+# vocabulary and must derive no-time-of-day for unrepaired date-only filings.
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_unrepaired_date_only_filing_projects_no_time_of_day():
+    conn = _fixture_conn()
+    backfill_from_subtypes(conn)
+    filing = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_type='FILING'"
+    ).fetchone()
+    assert filing["eligible_at"] is None
+    assert filing["eligible_at_reason"] == "fail_closed_no_time_of_day"
+    assert filing["temporal_precision"] == "unknown_time_of_day"
+    assert filing["fail_closed"] == 1
+    assert filing["accepted_time_recovered"] == 0
+    assert filing["serving_status"] == "excluded"
+    conn.close()
+
+
+def test_backfill_persisted_fail_closed_no_time_of_day_survives():
+    """A persisted fail-closed_no_time_of_day repair is not clobbered."""
+    from catalyst_data.sec.eligible_at import (
+        derive_eligible_at,
+        persist_filing_temporal_repair,
+    )
+
+    conn = _fixture_conn()
+    result = derive_eligible_at(
+        {"filing_id": "filing-8k-0000320193-26-000001", "filed_at": "2026-01-05"},
+        accepted_time=None,
+    )
+    persist_filing_temporal_repair(
+        conn,
+        filing_id="filing-8k-0000320193-26-000001",
+        result=result,
+        accepted_time=None,
+    )
+    backfill_from_subtypes(conn)
+    filing = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_type='FILING'"
+    ).fetchone()
+    assert filing["eligible_at"] is None
+    assert filing["eligible_at_reason"] == "fail_closed_no_time_of_day"
+    assert filing["temporal_precision"] == "unknown_time_of_day"
+    assert filing["fail_closed"] == 1
+    assert filing["accepted_time_recovered"] == 0
     conn.close()
