@@ -363,6 +363,11 @@ def _project_filings(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
         content_hash: str | None = None
         parse_quality = "not_applicable"
         content_text = ""
+        # Batch B B5: normalizer_version is the persisted parser identity when
+        # an M3-4 reparse was persisted; otherwise the versioned default.
+        primary_normalizer = SEC_NORMALIZER_VERSION
+        if primary is not None and primary["parser_version"]:
+            primary_normalizer = primary["parser_version"]
         if primary is not None:
             status = primary["extraction_status"]
             text = primary["text"] or ""
@@ -433,7 +438,7 @@ def _project_filings(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
             content_version_id_value = canonical_content_version_id(
                 asset_id=asset_id_value,
                 content_hash=content_hash,
-                normalizer_version=SEC_NORMALIZER_VERSION,
+                normalizer_version=primary_normalizer,
                 materiality_version=MATERIALITY_VERSION,
             )
 
@@ -462,7 +467,7 @@ def _project_filings(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
             subtype_metadata=subtype_metadata,
             content_version_id=content_version_id_value,
             content_hash=content_hash,
-            normalizer_version=SEC_NORMALIZER_VERSION,
+            normalizer_version=primary_normalizer,
             payload_ref=filing["raw_asset_id"],
             subtype_assoc=(("filings", "filing_id", filing_id),),
             provenance=(
@@ -471,7 +476,7 @@ def _project_filings(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
                     filing_id,
                     content_hash or _provenance_version(asset_id_value, content_state),
                     filing["raw_asset_id"],
-                    SEC_NORMALIZER_VERSION,
+                    primary_normalizer,
                 ),
             ),
         )
@@ -488,22 +493,28 @@ def _project_filings(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
             tickers += 1
 
         # Filing documents are content-version provenance rows of the parent
-        # asset; EMPTY/FAILED documents bind no content version (nullable).
+        # asset. A successfully parsed document (success + non-empty text)
+        # binds the parent primary content version (Batch B B4); EMPTY/FAILED
+        # documents bind no content version (nullable). The binding writer
+        # updates stale values instead of ignoring them (B7).
         for doc in docs:
-            doc_version_id = content_version_id_value if (
-                primary is not None and doc["document_id"] == primary["document_id"]
-            ) else None
+            doc_text = doc["text"] or ""
+            successfully_parsed = (
+                doc["extraction_status"] == "success" and doc_text.strip()
+            )
+            doc_version_id = content_version_id_value if successfully_parsed else None
             doc_entity_version = (
                 content_hash
                 if doc_version_id is not None
                 else _provenance_version(asset_id_value, content_state)
             )
-            conn.execute(
-                """INSERT OR IGNORE INTO canonical_subtype_assoc (
-                       asset_id, subtype_table, subtype_pk, subtype_pk_value,
-                       canonical_content_version_id, created_at
-                   ) VALUES (?, 'filing_documents', 'document_id', ?, ?, ?)""",
-                (asset_id_value, doc["document_id"], doc_version_id, _now_utc()),
+            _upsert_subtype_assoc(
+                conn,
+                asset_id=asset_id_value,
+                subtype_table="filing_documents",
+                subtype_pk="document_id",
+                subtype_pk_value=doc["document_id"],
+                canonical_content_version_id=doc_version_id,
             )
             _record_provenance(
                 conn,
@@ -511,12 +522,59 @@ def _project_filings(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
                 entity_id=doc["document_id"],
                 entity_version=doc_entity_version,
                 raw_asset_id=filing["raw_asset_id"],
-                normalizer_version=SEC_NORMALIZER_VERSION,
+                normalizer_version=primary_normalizer,
                 canonical_asset_id_value=asset_id_value,
                 canonical_content_version_id_value=doc_version_id,
             )
             assocs += 1
     return assets, versions, assocs, tickers
+
+
+def _upsert_subtype_assoc(
+    conn: sqlite3.Connection,
+    *,
+    asset_id: str,
+    subtype_table: str,
+    subtype_pk: str,
+    subtype_pk_value: str,
+    canonical_content_version_id: str | None,
+) -> None:
+    """Write one canonical_subtype_assoc binding (Batch B B7).
+
+    INSERT on a new row; no-op on an equal binding; UPDATE the binding when
+    the same asset's content version changed (including NULL -> non-NULL after
+    a new primary parse); fail closed on an existing row owned by a different
+    asset. Never leaves a stale ``canonical_content_version_id``.
+    """
+    existing = conn.execute(
+        "SELECT asset_id, canonical_content_version_id FROM canonical_subtype_assoc "
+        "WHERE subtype_table=? AND subtype_pk=? AND subtype_pk_value=?",
+        (subtype_table, subtype_pk, subtype_pk_value),
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            """INSERT INTO canonical_subtype_assoc (
+                   asset_id, subtype_table, subtype_pk, subtype_pk_value,
+                   canonical_content_version_id, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                asset_id, subtype_table, subtype_pk, subtype_pk_value,
+                canonical_content_version_id, _now_utc(),
+            ),
+        )
+        return
+    if existing["asset_id"] != asset_id:
+        raise CanonicalBackfillError(
+            f"subtype association {subtype_table}/{subtype_pk}/{subtype_pk_value} "
+            f"belongs to asset {existing['asset_id']}; cannot rebind to {asset_id}"
+        )
+    if existing["canonical_content_version_id"] == canonical_content_version_id:
+        return  # idempotent no-op
+    conn.execute(
+        """UPDATE canonical_subtype_assoc SET canonical_content_version_id=?
+           WHERE subtype_table=? AND subtype_pk=? AND subtype_pk_value=?""",
+        (canonical_content_version_id, subtype_table, subtype_pk, subtype_pk_value),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -625,15 +683,13 @@ def _upsert_asset(
             )
 
     for subtype_table, subtype_pk, subtype_pk_value in subtype_assoc:
-        conn.execute(
-            """INSERT OR IGNORE INTO canonical_subtype_assoc (
-                   asset_id, subtype_table, subtype_pk, subtype_pk_value,
-                   canonical_content_version_id, created_at
-               ) VALUES (?, ?, ?, ?, ?, ?)""",
-            (
-                asset_id, subtype_table, subtype_pk, subtype_pk_value,
-                content_version_id, _now_utc(),
-            ),
+        _upsert_subtype_assoc(
+            conn,
+            asset_id=asset_id,
+            subtype_table=subtype_table,
+            subtype_pk=subtype_pk,
+            subtype_pk_value=subtype_pk_value,
+            canonical_content_version_id=content_version_id,
         )
     for (
         entity_type, entity_id, entity_version, raw_asset_id, normalizer_version

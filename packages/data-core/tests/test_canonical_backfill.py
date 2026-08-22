@@ -898,3 +898,213 @@ def test_backfill_unrepaired_empty_or_whitespace_description_excluded(descriptio
     ).fetchone()[0]
     assert version == 0
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Batch B B4-B7: document association update-vs-IGNORE, primary binding,
+# parser-version normalizer, ordinal+1 on same asset.
+# ---------------------------------------------------------------------------
+
+
+def _reparse_raw_8k() -> bytes:
+    body = (
+        "Item 1.01 Entry into a Material Definitive Agreement.\n"
+        "On January 5, 2026, the registrant entered into a material definitive "
+        "agreement. The agreement governs a multi-year service term with "
+        "customary representations, warranties, and covenants. "
+        + ("Reparsed disclosure content follows. " * 12)
+    )
+    return ("<html><body>" + body + "</body></html>").encode("utf-8")
+
+
+def _reparse_text(raw: bytes) -> str:
+    from catalyst_data.corpus.news_v2 import _normalize_text
+    from catalyst_data.sec.extract import SEC_EXTRACT_PARSER_VERSION, extract_document_text
+
+    outcome = extract_document_text(
+        raw, content_type="text/html", is_primary=True,
+        parser_version=SEC_EXTRACT_PARSER_VERSION,
+    )
+    return _normalize_text(outcome.text)
+
+
+def _filing_asset_id() -> str:
+    return build_asset_id(
+        asset_type="FILING", source_table="filings",
+        source_pk="filing-8k-0000320193-26-000001",
+    )
+
+
+def _persist_primary_reparse(
+    conn: sqlite3.Connection, *, parser_version: str
+) -> None:
+    from catalyst_data.sec.reparse import (
+        persist_filing_document_reparse,
+        reparse_filing,
+    )
+
+    raw = _reparse_raw_8k()
+    result = reparse_filing(raw, accession="0000320193-26-000001", parser_version=parser_version)
+    persist_filing_document_reparse(
+        conn,
+        filing_id="filing-8k-0000320193-26-000001",
+        document_id="a" * 64,
+        result=result,
+        extracted_text=_reparse_text(raw),
+    )
+
+
+def test_backfill_updates_null_document_association_after_primary_parse():
+    """A stale NULL doc binding is updated to the new primary version (B7)."""
+    conn = _fixture_conn()
+    backfill_from_subtypes(conn)
+    assoc = conn.execute(
+        "SELECT * FROM canonical_subtype_assoc WHERE subtype_table='filing_documents'"
+    ).fetchone()
+    assert assoc["canonical_content_version_id"] is not None
+    # Simulate a stale NULL binding left by an INSERT OR IGNORE writer.
+    conn.execute(
+        "UPDATE canonical_subtype_assoc SET canonical_content_version_id=NULL "
+        "WHERE subtype_table='filing_documents'"
+    )
+    conn.commit()
+    backfill_from_subtypes(conn)
+    updated = conn.execute(
+        "SELECT * FROM canonical_subtype_assoc WHERE subtype_table='filing_documents'"
+    ).fetchone()
+    assert updated["canonical_content_version_id"] == assoc["canonical_content_version_id"]
+    conn.close()
+
+
+def test_backfill_updates_document_association_to_new_primary_version():
+    """New parser version -> ordinal+1 on the SAME asset; doc binding follows."""
+    conn = _fixture_conn()
+    _persist_primary_reparse(conn, parser_version="sec_extract_v1")
+    backfill_from_subtypes(conn)
+
+    asset_id = _filing_asset_id()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM canonical_assets WHERE asset_id=?", (asset_id,)
+    ).fetchone()[0] == 1
+    version1 = conn.execute(
+        "SELECT * FROM canonical_content_versions WHERE asset_id=? ORDER BY version_ordinal",
+        (asset_id,),
+    ).fetchall()
+    assert [v["version_ordinal"] for v in version1] == [1]
+    assert version1[0]["normalizer_version"] == "sec_extract_v1"
+    assoc1 = conn.execute(
+        "SELECT * FROM canonical_subtype_assoc WHERE subtype_table='filing_documents'"
+    ).fetchone()
+    assert assoc1["canonical_content_version_id"] == version1[0]["canonical_content_version_id"]
+
+    # New parser identity -> new content version id, ordinal+1, same asset.
+    _persist_primary_reparse(conn, parser_version="sec_extract_v2")
+    backfill_from_subtypes(conn)
+    versions = conn.execute(
+        "SELECT * FROM canonical_content_versions WHERE asset_id=? ORDER BY version_ordinal",
+        (asset_id,),
+    ).fetchall()
+    assert [v["version_ordinal"] for v in versions] == [1, 2]
+    assert versions[1]["normalizer_version"] == "sec_extract_v2"
+    assert versions[1]["canonical_content_version_id"] != versions[0]["canonical_content_version_id"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM canonical_assets WHERE asset_id=?", (asset_id,)
+    ).fetchone()[0] == 1
+    assoc2 = conn.execute(
+        "SELECT * FROM canonical_subtype_assoc WHERE subtype_table='filing_documents'"
+    ).fetchone()
+    assert assoc2["canonical_content_version_id"] == versions[1]["canonical_content_version_id"]
+
+    # Equal rerun is idempotent: no ordinal bump, same binding.
+    backfill_from_subtypes(conn)
+    versions3 = conn.execute(
+        "SELECT COUNT(*) FROM canonical_content_versions WHERE asset_id=?", (asset_id,)
+    ).fetchone()[0]
+    assert versions3 == 2
+    assoc3 = conn.execute(
+        "SELECT * FROM canonical_subtype_assoc WHERE subtype_table='filing_documents'"
+    ).fetchone()
+    assert assoc3["canonical_content_version_id"] == versions[1]["canonical_content_version_id"]
+    conn.close()
+
+
+def test_backfill_non_primary_success_doc_binds_parent_version():
+    """Successfully parsed non-primary docs bind the parent primary version (B4)."""
+    conn = _fixture_conn()
+    conn.execute(
+        """INSERT INTO filing_documents (
+               filing_id, document_url, document_type, text, char_len,
+               content_type, byte_size, extraction_status, extracted_at, document_id
+           ) VALUES (?, ?, 'exhibit', ?, ?, 'text/html', ?, 'success', ?, ?)""",
+        (
+            "filing-8k-0000320193-26-000001",
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/ex.htm",
+            "Exhibit body text follows. " * 20,
+            400,
+            400,
+            "2026-01-05T20:00:00Z",
+            "c" * 64,
+        ),
+    )
+    conn.commit()
+    backfill_from_subtypes(conn)
+    parent_version = conn.execute(
+        "SELECT canonical_content_version_id FROM canonical_content_versions "
+        "WHERE asset_id=? ORDER BY version_ordinal DESC LIMIT 1",
+        (_filing_asset_id(),),
+    ).fetchone()[0]
+    assocs = conn.execute(
+        "SELECT subtype_pk_value, canonical_content_version_id "
+        "FROM canonical_subtype_assoc WHERE subtype_table='filing_documents'"
+    ).fetchall()
+    by_doc = {a["subtype_pk_value"]: a["canonical_content_version_id"] for a in assocs}
+    assert by_doc["a" * 64] == parent_version  # primary binds the parse
+    assert by_doc["c" * 64] == parent_version  # non-primary success binds parent
+    conn.close()
+
+
+def test_backfill_empty_non_primary_doc_binds_null():
+    """EMPTY/FAILED documents bind NULL (B4)."""
+    conn = _fixture_conn()
+    conn.execute(
+        """INSERT INTO filing_documents (
+               filing_id, document_url, document_type, text, char_len,
+               content_type, byte_size, extraction_status, extracted_at, document_id
+           ) VALUES (?, ?, 'exhibit', NULL, NULL, 'text/html', NULL, 'fetch_failed', ?, ?)""",
+        (
+            "filing-8k-0000320193-26-000001",
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/ex2.htm",
+            "2026-01-05T20:00:00Z",
+            "d" * 64,
+        ),
+    )
+    conn.commit()
+    backfill_from_subtypes(conn)
+    row = conn.execute(
+        "SELECT canonical_content_version_id FROM canonical_subtype_assoc "
+        "WHERE subtype_table='filing_documents' AND subtype_pk_value=?",
+        ("d" * 64,),
+    ).fetchone()
+    assert row is not None
+    assert row["canonical_content_version_id"] is None
+    conn.close()
+
+
+def test_backfill_fails_closed_on_different_asset_association():
+    """An association bound to a different asset fails closed, no write (B7)."""
+    from catalyst_data.canonical.backfill import CanonicalBackfillError
+
+    conn = _fixture_conn()
+    backfill_from_subtypes(conn)
+    other_asset = conn.execute(
+        "SELECT asset_id FROM canonical_assets WHERE asset_type='NEWS' LIMIT 1"
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE canonical_subtype_assoc SET asset_id=?, canonical_content_version_id=NULL "
+        "WHERE subtype_table='filing_documents'",
+        (other_asset,),
+    )
+    conn.commit()
+    with pytest.raises(CanonicalBackfillError, match="asset"):
+        backfill_from_subtypes(conn)
+    conn.close()
