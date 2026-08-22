@@ -200,7 +200,7 @@ def _integrated_conn() -> sqlite3.Connection:
             "published_utc": "2026-01-05T15:40:00Z",
             "title": "Apple dup",
             "description": FULL_BODY,
-            "article_url": "https://example.com/news/dup",
+            "article_url": "https://www.example.com/news/dup?utm_source=polygon",
             "publisher_name": "Example News",
         },
         {

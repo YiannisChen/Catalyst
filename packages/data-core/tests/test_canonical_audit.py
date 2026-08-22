@@ -84,6 +84,29 @@ def _audited_conn() -> sqlite3.Connection:
     upsert_article_ticker(conn, article_id="finnhub:meta-1", ticker="AAPL",
                           raw_asset_id="raw:a2", reference_date="2026-01-05")
 
+    # Batch A: FULL_TEXT news requires an authentic-body repair; the long
+    # description alone is METADATA_ONLY and cannot mint FULL_TEXT.
+    from catalyst_data.articles.body_recovery import (
+        persist_article_content_repair,
+        recover_body,
+    )
+
+    repair = recover_body(
+        {
+            "article_id": "finnhub:full-1",
+            "title": "Apple announces new AI features",
+            "description": FULL_BODY,
+            "article_url": "https://example.com/apple-ai",
+        },
+        raw_payload={"body": FULL_BODY},
+    )
+    persist_article_content_repair(
+        conn,
+        article_id="finnhub:full-1",
+        normalized_url=None,
+        result=repair,
+    )
+
     from catalyst_data.storage.sqlite import upsert_filing
 
     upsert_filing(

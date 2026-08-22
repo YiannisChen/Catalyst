@@ -210,14 +210,11 @@ def test_backfill_content_states_and_serving_status():
         "SELECT * FROM canonical_assets WHERE asset_type='NEWS' ORDER BY asset_id"
     ).fetchall()]
     assert len(news_rows) == 2
+    # Batch A: unrepaired long descriptions are METADATA_ONLY, never FULL_TEXT.
     states = {row["content_state"] for row in news_rows}
-    assert states == {"FULL_TEXT", "METADATA_ONLY"}
-    full = next(row for row in news_rows if row["content_state"] == "FULL_TEXT")
-    meta = next(row for row in news_rows if row["content_state"] == "METADATA_ONLY")
-    assert full["serving_status"] == "body_candidate"
-    assert full["parse_quality"] == "not_applicable"
-    assert meta["serving_status"] == "lead_candidate"
-    assert meta["parse_quality"] == "not_applicable"
+    assert states == {"METADATA_ONLY"}
+    assert all(row["serving_status"] == "lead_candidate" for row in news_rows)
+    assert all(row["parse_quality"] == "not_applicable" for row in news_rows)
     filing = by_type["FILING"]
     assert filing["content_state"] == "FULL_TEXT"
     assert filing["parse_quality"] == "full"
@@ -512,7 +509,7 @@ def _repair_fixture_conn() -> sqlite3.Connection:
             "description": full_body,
             "article_url": "https://example.com/apple-ai",
         },
-        raw_payload={},
+        raw_payload={"body": full_body},
     )
     persist_article_content_repair(
         conn,
@@ -681,4 +678,67 @@ def test_repair_output_inconsistent_fails_closed():
     )
     with pytest.raises(CanonicalBackfillError):
         backfill_from_subtypes(conn)
+    conn.close()
+
+
+def test_backfill_unrepaired_long_description_never_full_text():
+    """Unrepaired backfill of a long legacy description is METADATA_ONLY."""
+    conn = _fixture_conn()
+    backfill_from_subtypes(conn)
+    article = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_id=?",
+        (
+            build_asset_id(
+                asset_type="NEWS", source_table="articles",
+                source_pk="finnhub:full-1",
+            ),
+        ),
+    ).fetchone()
+    assert article is not None
+    assert article["content_state"] == "METADATA_ONLY"
+    assert article["serving_status"] == "lead_candidate"
+    version = conn.execute(
+        "SELECT * FROM canonical_content_versions WHERE asset_id=?",
+        (article["asset_id"],),
+    ).fetchone()
+    assert version is not None
+    expected_hash = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "content_state": "METADATA_ONLY",
+                "normalized_title": "Apple announces new AI features",
+                "normalized_description": FULL_BODY,
+                "canonical_url": "https://example.com/apple-ai",
+            }
+        )
+    ).hexdigest()
+    assert version["content_hash"] == expected_hash
+    conn.close()
+
+
+def test_repaired_authentic_body_still_projects_full_text():
+    """A persisted authentic-body repair still projects FULL_TEXT + its hash."""
+    from catalyst_data.canonical.backfill import backfill_from_subtypes
+
+    conn = _repair_fixture_conn()
+    backfill_from_subtypes(conn)
+    article = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_id=?",
+        (
+            build_asset_id(
+                asset_type="NEWS", source_table="articles",
+                source_pk="finnhub:full-1",
+            ),
+        ),
+    ).fetchone()
+    assert article["content_state"] == "FULL_TEXT"
+    assert article["serving_status"] == "body_candidate"
+    version = conn.execute(
+        "SELECT * FROM canonical_content_versions WHERE asset_id=?",
+        (article["asset_id"],),
+    ).fetchone()
+    repair = conn.execute(
+        "SELECT recovered_content_hash FROM articles WHERE article_id='finnhub:full-1'"
+    ).fetchone()
+    assert version["content_hash"] == repair["recovered_content_hash"]
     conn.close()

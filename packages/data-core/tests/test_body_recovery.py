@@ -1,8 +1,13 @@
-"""M3-5: news full-body recovery + state-bound content hash tests (§F/§A.2)."""
+"""M3-5: news full-body recovery + state-bound content hash tests (§F/§A.2).
+
+Batch A lock: only ``raw_payload["body"]`` (a str) may mint FULL_TEXT.
+Provider description/summary/headline/lede/snippet/title are never FULL_TEXT.
+"""
 from __future__ import annotations
 
 import hashlib
 import sqlite3
+import typing
 
 import pytest
 
@@ -12,6 +17,7 @@ from catalyst_data.articles.body_recovery import (
     persist_article_content_repair,
     recover_body,
 )
+from catalyst_data.articles.url_normalize import NormalizedUrl
 from catalyst_data.canonical.ids import canonical_json_bytes
 
 FULL_BODY = (
@@ -40,9 +46,57 @@ def _expected_state_hash(content_state: str, **fields) -> str:
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
-def test_full_text_material_body():
+def _full_body_result() -> BodyRecoveryResult:
+    return recover_body(_article_row(), raw_payload={"body": FULL_BODY})
+
+
+# ---------------------------------------------------------------------------
+# A1: description/summary/snippets never mint FULL_TEXT
+# ---------------------------------------------------------------------------
+
+
+def test_long_description_no_authentic_body_is_metadata_only():
     result = recover_body(_article_row(), raw_payload={})
     assert isinstance(result, BodyRecoveryResult)
+    assert result.content_state == "METADATA_ONLY"
+    assert result.body_text is None
+    assert result.content_hash is not None
+    assert result.content_hash == _expected_state_hash(
+        "METADATA_ONLY",
+        normalized_title="Apple announces new AI features",
+        normalized_description=FULL_BODY,
+        canonical_url="https://example.com/apple-ai",
+    )
+
+
+def test_long_raw_payload_summary_is_metadata_only():
+    result = recover_body(_article_row(), raw_payload={"summary": FULL_BODY})
+    assert result.content_state == "METADATA_ONLY"
+    assert result.body_text is None
+
+
+def test_long_raw_payload_description_is_metadata_only():
+    result = recover_body(
+        _article_row(description="Short snippet only."),
+        raw_payload={"description": FULL_BODY},
+    )
+    assert result.content_state == "METADATA_ONLY"
+    assert result.body_text is None
+
+
+def test_long_raw_payload_headline_is_metadata_only():
+    result = recover_body(_article_row(), raw_payload={"headline": FULL_BODY})
+    assert result.content_state == "METADATA_ONLY"
+    assert result.body_text is None
+
+
+# ---------------------------------------------------------------------------
+# A1: raw_payload["body"] is the only authentic body key
+# ---------------------------------------------------------------------------
+
+
+def test_raw_payload_body_material_full_text():
+    result = _full_body_result()
     assert result.content_state == "FULL_TEXT"
     assert result.body_text is not None
     assert len(result.body_text.strip()) >= 200
@@ -50,6 +104,41 @@ def test_full_text_material_body():
     assert result.content_hash == _expected_state_hash(
         "FULL_TEXT", normalized_body=result.body_text
     )
+
+
+def test_raw_payload_body_full_text_description_does_not_override():
+    # A short description must not downgrade an authentic material body.
+    result = recover_body(
+        _article_row(description="Short snippet only."),
+        raw_payload={"body": FULL_BODY},
+    )
+    assert result.content_state == "FULL_TEXT"
+    assert result.body_text == FULL_BODY
+
+
+def test_raw_payload_body_whitespace_only_empty():
+    result = recover_body(_article_row(), raw_payload={"body": "   \n\t  "})
+    assert result.content_state == "EMPTY"
+    assert result.body_text is None
+    assert result.content_hash is None
+
+
+def test_raw_payload_body_below_threshold_metadata_only():
+    result = recover_body(_article_row(), raw_payload={"body": "Short body."})
+    assert result.content_state == "METADATA_ONLY"
+    assert result.body_text is None
+    assert result.content_hash is not None
+    assert result.content_hash == _expected_state_hash(
+        "METADATA_ONLY",
+        normalized_title="Apple announces new AI features",
+        normalized_description=FULL_BODY,
+        canonical_url="https://example.com/apple-ai",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Existing classification branches remain valid
+# ---------------------------------------------------------------------------
 
 
 def test_snippet_below_threshold_metadata_only():
@@ -90,13 +179,23 @@ def test_terminal_failure_failed():
 
 
 def test_content_hash_state_bound():
-    full = recover_body(_article_row(), raw_payload={})
+    full = recover_body(_article_row(), raw_payload={"body": FULL_BODY})
     meta = recover_body(
-        _article_row(description=FULL_BODY[:50]), raw_payload={}
+        _article_row(), raw_payload={"body": FULL_BODY[:50]}
     )
     assert full.content_state == "FULL_TEXT"
     assert meta.content_state == "METADATA_ONLY"
     assert full.content_hash != meta.content_hash
+
+
+# ---------------------------------------------------------------------------
+# A2: NormalizedUrl type-hint resolution
+# ---------------------------------------------------------------------------
+
+
+def test_get_type_hints_resolves_normalized_url():
+    hints = typing.get_type_hints(persist_article_content_repair)
+    assert hints["normalized_url"] == NormalizedUrl | None
 
 
 def _db_with_articles() -> sqlite3.Connection:
@@ -148,7 +247,7 @@ def _db_with_articles() -> sqlite3.Connection:
 
 def test_persist_article_content_repair_writes_repair_columns():
     conn = _db_with_articles()
-    result = recover_body(_article_row(), raw_payload={})
+    result = _full_body_result()
     persist_article_content_repair(
         conn,
         article_id="finnhub:full-1",
@@ -173,7 +272,7 @@ def test_persist_article_content_repair_writes_repair_columns():
 
 def test_persist_article_content_repair_idempotent():
     conn = _db_with_articles()
-    result = recover_body(_article_row(), raw_payload={})
+    result = _full_body_result()
     persist_article_content_repair(
         conn, article_id="finnhub:full-1", normalized_url=None, result=result
     )
@@ -189,7 +288,7 @@ def test_persist_article_content_repair_idempotent():
 
 def test_persist_article_content_repair_targets_only_requested_article():
     conn = _db_with_articles()
-    result = recover_body(_article_row(), raw_payload={})
+    result = _full_body_result()
     persist_article_content_repair(
         conn, article_id="finnhub:full-1", normalized_url=None, result=result
     )
@@ -202,7 +301,7 @@ def test_persist_article_content_repair_targets_only_requested_article():
 
 def test_persist_unknown_article_fails_closed():
     conn = _db_with_articles()
-    result = recover_body(_article_row(), raw_payload={})
+    result = _full_body_result()
     with pytest.raises(ValueError, match="article"):
         persist_article_content_repair(
             conn, article_id="finnhub:missing", normalized_url=None, result=result

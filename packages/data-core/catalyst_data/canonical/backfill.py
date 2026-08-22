@@ -95,9 +95,13 @@ def _state_serving_status(
 
 
 def _news_content_state(description: str | None, title: str | None) -> str:
+    """Classify an unrepaired (legacy) article without an authentic body.
+
+    Batch A A6: description/title are never FULL_TEXT. An unrepaired long
+    legacy description is METADATA_ONLY; FULL_TEXT exists only through a
+    persisted authentic-body repair (``recovered_content_state='FULL_TEXT'``).
+    """
     body = _normalize_text(description or "")
-    if len(body) >= RAG_MIN_CHAR_COUNT:
-        return "FULL_TEXT"
     if body:
         return "METADATA_ONLY"
     return "TITLE_ONLY" if (title or "").strip() else "EMPTY"
@@ -213,11 +217,7 @@ def _project_news(conn: sqlite3.Connection) -> tuple[int, int, int, int]:
             content_state = _news_content_state(
                 row["description"], row["title"]
             )
-            if content_state == "FULL_TEXT":
-                content_hash = _content_hash_for_state(
-                    "FULL_TEXT", normalized_body=_normalize_text(row["description"])
-                )
-            elif content_state == "TITLE_ONLY":
+            if content_state == "TITLE_ONLY":
                 content_hash = _content_hash_for_state(
                     "TITLE_ONLY", normalized_title=_normalize_text(row["title"] or "")
                 )
