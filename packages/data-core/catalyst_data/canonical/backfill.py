@@ -26,7 +26,6 @@ from catalyst_data.canonical.ids import (
     sha256_identity,
     source_pk_json,
 )
-from catalyst_data.config import RAG_MIN_CHAR_COUNT
 from catalyst_data.corpus.news_v2 import _normalize_text
 from catalyst_data.corpus.source_classifier import classify
 from catalyst_data.sec.eligible_at import derive_eligible_at
