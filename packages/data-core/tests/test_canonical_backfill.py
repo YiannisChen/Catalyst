@@ -1268,3 +1268,63 @@ def test_backfill_require_repairs_dry_run_validates():
     with pytest.raises(CanonicalBackfillError, match="recovered_content_state"):
         backfill_from_subtypes(conn, dry_run=True, require_repairs=True)
     conn.close()
+
+
+def test_backfill_require_repairs_fails_on_null_document_id():
+    """require_repairs=True fails closed on a NULL document_id row (B8).
+
+    A second filing_documents row with document_id=NULL and parser_version=NULL
+    must not be skipped: any filing_documents row lacking M3-4 repair fails
+    closed in final mode.
+    """
+    conn = _repair_fixture_conn()
+    conn.execute(
+        """INSERT INTO filing_documents (
+               filing_id, document_url, document_type, text, char_len,
+               content_type, byte_size, extraction_status, extracted_at,
+               document_id
+           ) VALUES (?, ?, 'exhibit', '', 0, 'text/plain', 0, 'empty',
+                     '2026-01-05T20:00:00Z', NULL)""",
+        (
+            "filing-8k-0000320193-26-000001",
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/ex.htm",
+        ),
+    )
+    conn.commit()
+    with pytest.raises(CanonicalBackfillError):
+        backfill_from_subtypes(conn, require_repairs=True)
+    conn.close()
+
+
+def test_backfill_require_repairs_skips_null_document_id_when_not_required():
+    """require_repairs=False still skips unbindable NULL document_id rows."""
+    conn = _repair_fixture_conn()
+    conn.execute(
+        """INSERT INTO filing_documents (
+               filing_id, document_url, document_type, text, char_len,
+               content_type, byte_size, extraction_status, extracted_at,
+               document_id
+           ) VALUES (?, ?, 'exhibit', '', 0, 'text/plain', 0, 'empty',
+                     '2026-01-05T20:00:00Z', NULL)""",
+        (
+            "filing-8k-0000320193-26-000001",
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/ex.htm",
+        ),
+    )
+    conn.commit()
+    result = backfill_from_subtypes(conn, require_repairs=False)
+    assert result.assets == 3
+    conn.close()
+
+
+def test_backfill_require_repairs_fails_on_null_parse_quality():
+    """require_repairs=True never coerces NULL parse_quality to 'full' (B8)."""
+    conn = _repair_fixture_conn()
+    conn.execute(
+        "UPDATE filing_documents SET parse_quality=NULL WHERE document_id=?",
+        ("a" * 64,),
+    )
+    conn.commit()
+    with pytest.raises(CanonicalBackfillError, match="parse_quality"):
+        backfill_from_subtypes(conn, require_repairs=True)
+    conn.close()

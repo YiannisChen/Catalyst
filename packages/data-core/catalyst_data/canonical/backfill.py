@@ -392,9 +392,26 @@ def _project_filings(
                     "FULL_TEXT", normalized_body=content_text
                 )
                 if require_repairs:
+                    # Lock B8: a successful primary without persisted M3-4
+                    # repair identity fails closed first.
+                    if primary["parser_version"] is None:
+                        raise CanonicalBackfillError(
+                            f"filing_documents row {primary['document_id']} "
+                            f"lacks persisted M3-4 repair "
+                            f"(parser_version IS NULL); require_repairs=True"
+                        )
                     # Copy the persisted M3-4 parse quality instead of forcing
-                    # 'full' on every successful non-empty extract (B8).
-                    parse_quality = primary["parse_quality"] or "full"
+                    # 'full' on every successful non-empty extract (B8). NULL
+                    # or unknown persisted quality fails closed; never coerce.
+                    if primary["parse_quality"] not in (
+                        "full", "degraded", "not_applicable", "failed",
+                    ):
+                        raise CanonicalBackfillError(
+                            f"filing_documents row {primary['document_id']} "
+                            f"persisted parse_quality is NULL or unknown "
+                            f"({primary['parse_quality']!r}); require_repairs=True"
+                        )
+                    parse_quality = primary["parse_quality"]
                 else:
                     parse_quality = "full"
             elif status in ("success", "empty", "pdf_skipped"):
@@ -517,16 +534,23 @@ def _project_filings(
         # documents bind no content version (nullable). The binding writer
         # updates stale values instead of ignoring them (B7).
         for doc in docs:
-            if not doc["document_id"]:
-                # Legacy document row without a stable 64-hex document identity
-                # cannot form a canonical_subtype_assoc binding or provenance
-                # row (PK/entity_id require a non-null value); skip it.
-                continue
             if require_repairs and doc["parser_version"] is None:
                 raise CanonicalBackfillError(
                     f"filing_documents row {doc['document_id']} lacks persisted "
                     f"M3-4 repair (parser_version IS NULL); require_repairs=True"
                 )
+            if not doc["document_id"]:
+                if require_repairs:
+                    # Lock B8: a NULL document_id row cannot be bound, but in
+                    # final mode it is still a repair failure; fail closed.
+                    raise CanonicalBackfillError(
+                        f"filing_documents row for filing {filing_id} lacks a "
+                        f"bindable document_id (NULL); require_repairs=True"
+                    )
+                # Legacy document row without a stable 64-hex document identity
+                # cannot form a canonical_subtype_assoc binding or provenance
+                # row (PK/entity_id require a non-null value); skip it.
+                continue
             doc_text = doc["text"] or ""
             if require_repairs and doc["document_hash"] and doc_text.strip():
                 stored_hash = hashlib.sha256(
