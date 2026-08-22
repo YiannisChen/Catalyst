@@ -21,12 +21,146 @@ from .fts5 import _validate_inputs, retrieve_lexical
 from .fusion import fuse
 from .query_policy import TemporalCenterResolution, resolve_temporal_center
 from .reranker import RerankerGate, rerank
+from datetime import datetime, timezone
+
+from catalyst_data.canonical.identity import DataRuntimeIdentity
+from catalyst_data.canonical.temporal import TemporalIdentity
+from catalyst_data.retrieval import v1_result
 from .result import (
     RetrievalArmUnavailableError,
     RetrievalContractError,
     RetrievalResult,
     RetrievalResultSet,
 )
+
+_V1_POLICY_VERSION = "qp:v1"
+
+
+def _utc(iso: str) -> datetime:
+    text = iso[:-1] + "+00:00" if iso.endswith("Z") else iso
+    value = datetime.fromisoformat(text)
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _temporal_identity_for_cutoff(cutoff: str) -> TemporalIdentity:
+    cutoff_at = _utc(cutoff)
+    session_date = cutoff_at.date().isoformat()
+    return TemporalIdentity(
+        session_date=session_date,
+        market_timezone="America/New_York",
+        session_open_at=cutoff_at,
+        session_close_at=cutoff_at,
+        information_window_start_at=cutoff_at,
+        cutoff_at=cutoff_at,
+    )
+
+
+def _lookup_canonical_chunk(db: Any, chunk_id: str) -> dict[str, Any] | None:
+    try:
+        row = db.execute(
+            """SELECT canonical_asset_id, content_version_id, corpus_document_id,
+                      source_class, content_state, available_at, dedup_cluster_id,
+                      independence_group_id, parse_quality, document_id
+               FROM corpus_build_chunks WHERE chunk_id=?""",
+            (chunk_id,),
+        ).fetchone()
+    except Exception:
+        return None
+    if row is None or len(row) < 10:
+        return None
+    asset_id, version_id, document_id = row[0], row[1], row[2]
+    if not asset_id or not version_id or not document_id:
+        return None
+    return {
+        "canonical_asset_id": asset_id,
+        "content_version_id": version_id,
+        "corpus_document_id": document_id,
+        "source_class": row[3],
+        "content_state": row[4],
+        "eligible_at": row[5],
+        "dedup_cluster_id": row[6],
+        "independence_group_id": row[7],
+        "parse_quality": row[8] or "not_applicable",
+        "document_id": row[9],
+    }
+
+
+def _to_v1_result_set(
+    db: Any,
+    *,
+    hybrid: "HybridRetrievalResult",
+    requested_manifest_id: str,
+    index_manifest_id: str,
+    cutoff: str,
+) -> v1_result.RetrievalResultSet | None:
+    if hybrid.mode_served != "reranked":
+        return None
+    temporal = _temporal_identity_for_cutoff(cutoff)
+    runtime = DataRuntimeIdentity(
+        data_snapshot_id=requested_manifest_id,
+        corpus_manifest_id=requested_manifest_id,
+        fts_index_version=hybrid.mode_served,
+        dense_index_version=index_manifest_id,
+        embedding_model_revision=None,
+        reranker_revision=None,
+        query_policy_version=_V1_POLICY_VERSION,
+    )
+    selected: list[tuple[Any, dict[str, Any]]] = []
+    for item in hybrid.final_results:
+        meta = _lookup_canonical_chunk(db, item.chunk_id)
+        if meta is None:
+            return None
+        content_state = meta["content_state"] or "FULL_TEXT"
+        if content_state in {"EMPTY", "FAILED", "METADATA_ONLY"}:
+            continue
+        eligible_at = _utc(str(meta["eligible_at"]))
+        if eligible_at > temporal.cutoff_at:
+            continue
+        selected.append((item, meta))
+    hits: list[v1_result.RetrievalHit] = []
+    for rank, (item, meta) in enumerate(selected, start=1):
+        content_state = meta["content_state"] or "FULL_TEXT"
+        eligible_at = _utc(str(meta["eligible_at"]))
+        excerpt = item.content_text or ""
+        hit = v1_result.RetrievalHit(
+            evidence_id=item.chunk_id,
+            canonical_asset_id=str(meta["canonical_asset_id"]),
+            content_version_id=str(meta["content_version_id"]),
+            corpus_document_id=str(meta["corpus_document_id"]),
+            chunk_id=item.chunk_id,
+            excerpt=excerpt,
+            scores={
+                "lexical": None,
+                "dense": None,
+                "fusion": None,
+                "reranked": item.reranker_score,
+            },
+            ranks={
+                "lexical": None,
+                "dense": None,
+                "fusion": None,
+                "reranked": rank,
+            },
+            source_class=meta["source_class"],
+            content_state=content_state,
+            eligible_at=eligible_at,
+            ticker_scope=("AAPL",),
+            provider="fixture",
+            publisher=None,
+            dedup_cluster_id=meta["dedup_cluster_id"],
+            parse_quality=str(meta["parse_quality"]),
+            retrieval_policy_version=_V1_POLICY_VERSION,
+            temporal_identity=temporal,
+            data_runtime_identity=runtime,
+        )
+        hits.append(hit)
+    return v1_result.RetrievalResultSet(
+        hits=tuple(hits),
+        temporal_identity=temporal,
+        data_runtime_identity=runtime,
+    )
 
 
 def _validate_hybrid_inputs(
@@ -278,12 +412,20 @@ def retrieve_hybrid(
             **temporal_kwargs,
         )
     finals = _stamp_temporal(tuple(reranked.results), temporal)
-    return HybridRetrievalResult(
+    hybrid_result = HybridRetrievalResult(
         mode, "reranked", lexical_results=lexical, dense_results=dense,
         fusion_results=fused, reranker_results=reranked,
         final_results=finals, degradation_reasons=tuple(reasons),
         **temporal_kwargs,
     )
+    v1 = _to_v1_result_set(
+        db,
+        hybrid=hybrid_result,
+        requested_manifest_id=requested_manifest_id,
+        index_manifest_id=index_manifest_id,
+        cutoff=cutoff,
+    )
+    return v1 if v1 is not None else hybrid_result
 
 
 __all__ = [
