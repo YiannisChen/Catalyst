@@ -517,6 +517,11 @@ def _project_filings(
         # documents bind no content version (nullable). The binding writer
         # updates stale values instead of ignoring them (B7).
         for doc in docs:
+            if not doc["document_id"]:
+                # Legacy document row without a stable 64-hex document identity
+                # cannot form a canonical_subtype_assoc binding or provenance
+                # row (PK/entity_id require a non-null value); skip it.
+                continue
             if require_repairs and doc["parser_version"] is None:
                 raise CanonicalBackfillError(
                     f"filing_documents row {doc['document_id']} lacks persisted "
