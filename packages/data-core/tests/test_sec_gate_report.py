@@ -8,12 +8,18 @@ separately reported and never folds into the gate.
 """
 from __future__ import annotations
 
+import json as _json
 import sqlite3
 
 import pytest
 
 from catalyst_data.canonical.backfill import backfill_from_subtypes
-from catalyst_data.sec.gate_report import SecParseReport, benchmark_sec_parse_report
+from catalyst_data.canonical.ids import sha256_identity
+from catalyst_data.sec.gate_report import (
+    SecParseReport,
+    benchmark_sec_parse_report,
+    benchmark_sec_parse_report_from_operator_inputs,
+)
 
 ACC = "0000320193-26-000001"
 ACC2 = "0000320193-26-000002"
@@ -21,6 +27,12 @@ ACC3 = "0000320193-26-000003"
 ACC4 = "0000320193-26-000004"
 ACC5 = "0000320193-26-000005"
 ACC6 = "0000320193-26-000006"
+
+_BODY = (
+    "Item 1.01 Entry into a Material Definitive Agreement.\n"
+    "On January 5, 2026, the registrant entered into a material definitive "
+    "agreement. " + ("Substantive disclosure follows. " * 12)
+)
 
 
 def _seed_raw(conn, asset_id: str) -> None:
@@ -99,11 +111,7 @@ def _gate_conn() -> sqlite3.Connection:
     conn.execute("PRAGMA foreign_keys = ON")
     _seed_raw(conn, "raw:sec")
 
-    body = (
-        "Item 1.01 Entry into a Material Definitive Agreement.\n"
-        "On January 5, 2026, the registrant entered into a material definitive "
-        "agreement. " + ("Substantive disclosure follows. " * 12)
-    )
+    body = _BODY
     # A1: accepted-time recovered + successful extraction -> numerator.
     _add_filing(
         conn, accession=ACC, eligible_at="2026-01-05T21:05:00Z",
@@ -231,4 +239,291 @@ def test_gate_passed_exact_integer_form():
     # 10 * 2 >= 9 * 6 is False.
     assert report.gate_passed is False
     assert (10 * report.numerator >= 9 * report.denominator) == report.gate_passed
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Corrective Batch C — DATA-01 fail-closed boundary (C1–C7)
+# ---------------------------------------------------------------------------
+
+
+def _bound_version(conn, accession: str):
+    """Return the canonical content version bound to the primary document."""
+    filing_id = f"filing-{accession}"
+    doc = conn.execute(
+        "SELECT document_id FROM filing_documents "
+        "WHERE filing_id=? AND document_type='primary_doc'",
+        (filing_id,),
+    ).fetchone()
+    if doc is None:
+        return None
+    return conn.execute(
+        "SELECT s.subtype_pk_value, v.* FROM canonical_subtype_assoc s "
+        "JOIN canonical_content_versions v "
+        "ON v.canonical_content_version_id = s.canonical_content_version_id "
+        "WHERE s.subtype_table='filing_documents' AND s.subtype_pk='document_id' "
+        "AND s.subtype_pk_value=?",
+        (doc["document_id"],),
+    ).fetchone()
+
+
+def _write_operator_records(
+    tmp_path,
+    *,
+    decision: str,
+    accessions: list[str],
+    expected_git_revision: str,
+    selection_authority: str = "Frozen §10 + Final TSD §5.3",
+):
+    """Write operator Q-005/benchmark records under tmp_path (never baseline)."""
+    case_hash = sha256_identity(
+        {
+            "schema_version": "benchmark_accessions_v1",
+            "selection_authority": selection_authority,
+            "ordered_unique_accession_ids": list(accessions),
+        }
+    )
+    bench = {
+        "schema_version": "benchmark_accessions_v1",
+        "selection_authority": selection_authority,
+        "frozen_at": "2026-08-22T00:00:00Z",
+        "git_revision": expected_git_revision,
+        "ordered_unique_accession_ids": list(accessions),
+        "excluded_accessions": [],
+        "selection_exclusions": [],
+        "case_list_sha256": case_hash,
+        "denominator": len(accessions),
+    }
+    q005 = {
+        "schema_version": "q005_sec_time_approval_v1",
+        "benchmark_case_list_sha256": case_hash,
+        "selection_authority": selection_authority,
+        "decision": decision,
+        "raw_payload_inventory": [
+            {"accession": a, "acceptance_datetime_retained": True}
+            for a in accessions
+        ],
+        "frozen_at": "2026-08-22T00:00:00Z",
+        "git_revision": expected_git_revision,
+    }
+    bench_path = tmp_path / "benchmark_accessions_v1.json"
+    q005_path = tmp_path / "q005_sec_time_approval_v1.json"
+    bench_path.write_text(_json.dumps(bench, sort_keys=True))
+    q005_path.write_text(_json.dumps(q005, sort_keys=True))
+    return bench_path, q005_path
+
+
+def test_empty_accession_set_fails_closed():
+    conn = _gate_conn()
+    with pytest.raises(ValueError, match="empty"):
+        benchmark_sec_parse_report(conn, [])
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "   ",
+        "0000320193-26-000001 ",
+        " 0000320193-26-000001",
+        "000032019326000001",
+        "0000320193-26-00000X",
+        "0000320193-26-000001-extra",
+        "not-an-accession",
+        None,
+        123,
+    ],
+)
+def test_malformed_or_non_str_accession_fails_closed(bad):
+    conn = _gate_conn()
+    with pytest.raises(ValueError, match="accession"):
+        benchmark_sec_parse_report(conn, [ACC, bad])
+    conn.close()
+
+
+def test_duplicate_accessions_fail_closed():
+    conn = _gate_conn()
+    with pytest.raises(ValueError, match="unique"):
+        benchmark_sec_parse_report(conn, [ACC, ACC])
+    conn.close()
+
+
+def test_duplicate_filing_rows_for_one_accession_fail_closed():
+    conn = _gate_conn()
+    conn.execute(
+        """INSERT INTO filings (
+               filing_id, cik, ticker, form_type, filed_at, accession_number,
+               primary_document, url, raw_asset_id, created_at,
+               eligible_at, eligible_at_reason, temporal_precision,
+               accepted_time_recovered, eligibility_fail_closed
+           ) VALUES (?, '0000320193', 'AAPL', '8-K', '2026-01-05', ?,
+                     'b.htm', 'https://example.com/b.htm', 'raw:sec',
+                     '2026-01-05T20:00:00Z',
+                     '2026-01-05T21:05:00Z', 'accepted_time_recovered',
+                     'accepted_time', 1, 0)""",
+        ("filing-dup-1", ACC),
+    )
+    conn.commit()
+    with pytest.raises(ValueError, match="more than one filing"):
+        benchmark_sec_parse_report(conn, [ACC])
+    conn.close()
+
+
+def test_arbitrary_64_hex_content_hash_not_numerator():
+    conn = _gate_conn()
+    version = _bound_version(conn, ACC)
+    assert version is not None
+    conn.execute(
+        "UPDATE canonical_content_versions SET content_hash=? "
+        "WHERE canonical_content_version_id=?",
+        ("f" * 64, version["canonical_content_version_id"]),
+    )
+    conn.commit()
+    report = benchmark_sec_parse_report(conn, [ACC])
+    assert report.numerator == 0
+    conn.close()
+
+
+def test_foreign_asset_content_version_binding_not_numerator():
+    conn = _gate_conn()
+    acc_version = _bound_version(conn, ACC)
+    acc2_version = _bound_version(conn, ACC2)
+    assert acc_version is not None and acc2_version is not None
+    assert acc_version["asset_id"] != acc2_version["asset_id"]
+    conn.execute(
+        "UPDATE canonical_subtype_assoc SET asset_id=?, canonical_content_version_id=? "
+        "WHERE subtype_table='filing_documents' AND subtype_pk='document_id' "
+        "AND subtype_pk_value=?",
+        (
+            acc2_version["asset_id"],
+            acc2_version["canonical_content_version_id"],
+            acc_version["subtype_pk_value"],
+        ),
+    )
+    conn.commit()
+    report = benchmark_sec_parse_report(conn, [ACC])
+    assert report.numerator == 0
+    conn.close()
+
+
+def test_unbound_primary_document_id_not_numerator():
+    conn = _gate_conn()
+    doc = conn.execute(
+        "SELECT document_id FROM filing_documents "
+        "WHERE filing_id=? AND document_type='primary_doc'",
+        (f"filing-{ACC}",),
+    ).fetchone()
+    conn.execute(
+        "DELETE FROM canonical_subtype_assoc "
+        "WHERE subtype_table='filing_documents' AND subtype_pk='document_id' "
+        "AND subtype_pk_value=?",
+        (doc["document_id"],),
+    )
+    conn.commit()
+    report = benchmark_sec_parse_report(conn, [ACC])
+    assert report.numerator == 0
+    conn.close()
+
+
+def test_normalizer_version_mismatch_not_numerator():
+    conn = _gate_conn()
+    version = _bound_version(conn, ACC)
+    assert version is not None
+    conn.execute(
+        "UPDATE canonical_content_versions SET normalizer_version=? "
+        "WHERE canonical_content_version_id=?",
+        ("some_other_v2", version["canonical_content_version_id"]),
+    )
+    conn.commit()
+    report = benchmark_sec_parse_report(conn, [ACC])
+    assert report.numerator == 0
+    conn.close()
+
+
+def test_materiality_version_mismatch_not_numerator():
+    conn = _gate_conn()
+    version = _bound_version(conn, ACC)
+    assert version is not None
+    conn.execute(
+        "UPDATE canonical_content_versions SET materiality_version=? "
+        "WHERE canonical_content_version_id=?",
+        ("materiality_v9", version["canonical_content_version_id"]),
+    )
+    conn.commit()
+    report = benchmark_sec_parse_report(conn, [ACC])
+    assert report.numerator == 0
+    conn.close()
+
+
+def test_stored_text_hash_mismatch_not_numerator():
+    conn = _gate_conn()
+    conn.execute(
+        "UPDATE filing_documents SET text=? "
+        "WHERE filing_id=? AND document_type='primary_doc'",
+        (_BODY + " changed after binding", f"filing-{ACC}"),
+    )
+    conn.commit()
+    report = benchmark_sec_parse_report(conn, [ACC])
+    assert report.numerator == 0
+    conn.close()
+
+
+def test_production_path_fail_closed_only_never_counts_fail_closed_rows(tmp_path):
+    conn = _gate_conn()
+    bench_path, q005_path = _write_operator_records(
+        tmp_path,
+        decision="fail_closed_only",
+        accessions=[ACC, ACC2, ACC3],
+        expected_git_revision="abc123",
+    )
+    report = benchmark_sec_parse_report_from_operator_inputs(
+        conn, bench_path, q005_path, expected_git_revision="abc123"
+    )
+    assert report.numerator == 1  # A1 accepted; A2/A3 fail-closed never count
+    conn.close()
+
+
+def test_production_path_approve_latest_plausible_instant_counts_approved_row(tmp_path):
+    conn = _gate_conn()
+    bench_path, q005_path = _write_operator_records(
+        tmp_path,
+        decision="approve_latest_plausible_instant",
+        accessions=[ACC, ACC2, ACC3],
+        expected_git_revision="abc123",
+    )
+    report = benchmark_sec_parse_report_from_operator_inputs(
+        conn, bench_path, q005_path, expected_git_revision="abc123"
+    )
+    assert report.numerator == 2  # A1 + A3
+    conn.close()
+
+
+def test_production_path_rejects_bad_decision(tmp_path):
+    conn = _gate_conn()
+    bench_path, q005_path = _write_operator_records(
+        tmp_path,
+        decision="approve_everything",
+        accessions=[ACC],
+        expected_git_revision="abc123",
+    )
+    with pytest.raises(ValueError, match="decision"):
+        benchmark_sec_parse_report_from_operator_inputs(
+            conn, bench_path, q005_path, expected_git_revision="abc123"
+        )
+    conn.close()
+
+
+def test_production_path_rejects_git_revision_mismatch(tmp_path):
+    conn = _gate_conn()
+    bench_path, q005_path = _write_operator_records(
+        tmp_path,
+        decision="fail_closed_only",
+        accessions=[ACC],
+        expected_git_revision="abc123",
+    )
+    with pytest.raises(ValueError, match="git_revision"):
+        benchmark_sec_parse_report_from_operator_inputs(
+            conn, bench_path, q005_path, expected_git_revision="def456"
+        )
     conn.close()
