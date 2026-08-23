@@ -59,6 +59,7 @@ def _add_filing(
     extraction_status: str = "success",
     text: str = "",
     degraded: bool = False,
+    document_type: str = "primary_doc",
 ) -> str:
     filing_id = f"filing-{accession}"
     conn.execute(
@@ -89,10 +90,11 @@ def _add_filing(
             """INSERT INTO filing_documents (
                    filing_id, document_url, document_type, text, char_len,
                    content_type, byte_size, extraction_status, extracted_at, document_id
-               ) VALUES (?, ?, 'primary_doc', ?, ?, 'text/html', ?, ?, ?, ?)""",
+               ) VALUES (?, ?, ?, ?, ?, 'text/html', ?, ?, ?, ?)""",
             (
                 filing_id,
                 f"https://example.com/{accession}.htm",
+                document_type,
                 text,
                 len(text),
                 len(text),
@@ -825,4 +827,43 @@ def test_production_path_errors_are_path_safe(tmp_path, monkeypatch):
     msg = str(exc.value)
     assert str(tmp_path) not in msg
     assert str(Path.home()) not in msg
+    conn.close()
+
+
+def _primary_type_conn() -> sqlite3.Connection:
+    """Two accepted-time filings: one stored 'primary_doc', one stored 'primary'."""
+    from catalyst_data.storage.sqlite import init_db
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+    conn.execute("PRAGMA foreign_keys = ON")
+    _seed_raw(conn, "raw:sec")
+    _add_filing(
+        conn, accession=ACC, eligible_at="2026-01-05T21:05:00Z",
+        temporal_precision="accepted_time", accepted_time_recovered=1,
+        eligibility_fail_closed=0, text=_BODY,
+    )
+    _add_filing(
+        conn, accession="0000320193-26-000007", eligible_at="2026-01-05T21:05:00Z",
+        temporal_precision="accepted_time", accepted_time_recovered=1,
+        eligibility_fail_closed=0, text=_BODY, document_type="primary",
+    )
+    conn.commit()
+    backfill_from_subtypes(conn)
+    return conn
+
+
+def test_primary_document_type_counts_in_numerator():
+    """Frozen stored type 'primary' is the primary document (IN-set, 0A).
+
+    A filing whose only document is ``document_type='primary'`` with otherwise
+    valid hash-bound evidence must count in the DATA-01 numerator just like
+    ``document_type='primary_doc'``.
+    """
+    conn = _primary_type_conn()
+    report = benchmark_sec_parse_report(conn, [ACC, "0000320193-26-000007"])
+    assert report.numerator == 2
+    assert report.denominator == 2
+    assert report.accepted_time_recovered_count == 2
     conn.close()

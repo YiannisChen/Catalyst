@@ -325,3 +325,41 @@ def test_audit_provenance_coverage_gate():
     assert audit.missing_provenance_coverage >= 1
     assert "no_orphan_gate" in audit.failures
     conn.close()
+
+
+def test_audit_all_excluded_populated_table_is_not_reconciliation_failure():
+    """Complete all-excluded coverage is not a reconciliation failure (0B).
+
+    When certification ran (one ref per source row, certified+excluded ==
+    source-row total) but every row was excluded, the table is all-excluded:
+    the gate stays True and the table is recorded for M4 exclusion.
+    """
+    conn = _audited_conn()
+    conn.execute(
+        "UPDATE canonical_structured_fact_refs SET certification_status='excluded_invalid' "
+        "WHERE source_table='macro_observations'"
+    )
+    conn.commit()
+    audit = audit_canonical(conn)
+    assert audit.structured_fact_ref_per_source_row_shortfall == 0
+    assert audit.structured_fact_certified_plus_excluded_shortfall == 0
+    assert audit.structured_fact_populated_tables_without_certified == (
+        "macro_observations",
+    )
+    assert audit.structured_reconciliation_gate is True
+    conn.close()
+
+
+def test_audit_populated_table_with_zero_refs_fails_closed():
+    """A populated table with zero refs means the certifier never ran (0B)."""
+    conn = _audited_conn()
+    conn.execute(
+        "DELETE FROM canonical_structured_fact_refs WHERE source_table='macro_observations'"
+    )
+    conn.commit()
+    audit = audit_canonical(conn)
+    assert audit.structured_fact_ref_per_source_row_shortfall == 1
+    assert audit.structured_fact_certified_plus_excluded_shortfall == 1
+    assert audit.structured_reconciliation_gate is False
+    assert "structured_reconciliation_gate" in audit.failures
+    conn.close()

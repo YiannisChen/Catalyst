@@ -271,6 +271,7 @@ def audit_canonical(
     ref_per_source_row_shortfall = 0
     certified_plus_excluded_shortfall = 0
     tables_without_certified: list[str] = []
+    unrun_populated_tables: list[str] = []
     for source_table, pk_sql in (
         ("ohlcv", "symbol=? AND date=?"),
         ("macro_observations", "series_id=? AND observation_date=?"),
@@ -297,11 +298,17 @@ def audit_canonical(
             )
         if source_rows and certified == 0:
             tables_without_certified.append(source_table)
+        if source_rows and ref_count == 0:
+            unrun_populated_tables.append(source_table)
     populated_without_certified = tuple(tables_without_certified)
+    # Certifier-ran liveness: a populated table with zero refs means the
+    # certifier never ran and fails closed. Complete all-excluded coverage
+    # (one ref per source row, certified+excluded == source_rows, certified==0)
+    # is NOT a reconciliation failure; it is recorded for M4 exclusion only.
     structured_reconciliation_gate = (
         ref_per_source_row_shortfall == 0
         and certified_plus_excluded_shortfall == 0
-        and not populated_without_certified
+        and not unrun_populated_tables
     )
     if not structured_reconciliation_gate:
         failures.append("structured_reconciliation_gate")

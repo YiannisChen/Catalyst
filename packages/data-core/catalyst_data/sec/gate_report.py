@@ -73,7 +73,7 @@ def _primary_document_hash_bound(
     doc = conn.execute(
         "SELECT document_id, extraction_status, text, parser_version "
         "FROM filing_documents "
-        "WHERE filing_id=? AND document_type='primary_doc' "
+        "WHERE filing_id=? AND document_type IN ('primary','primary_doc') "
         "ORDER BY document_url LIMIT 1",
         (filing_id,),
     ).fetchone()

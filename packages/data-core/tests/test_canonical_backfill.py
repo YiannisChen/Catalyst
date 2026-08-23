@@ -1328,3 +1328,66 @@ def test_backfill_require_repairs_fails_on_null_parse_quality():
     with pytest.raises(CanonicalBackfillError, match="parse_quality"):
         backfill_from_subtypes(conn, require_repairs=True)
     conn.close()
+
+
+def test_backfill_frozen_primary_type_is_primary_document():
+    """Frozen stored type 'primary' is the primary document (IN-set, 0A).
+
+    A non-primary exhibit whose URL sorts before the 'primary' document must
+    not win the primary selector: the projection hashes the 'primary' doc.
+    """
+    conn = _fixture_conn()
+    conn.execute(
+        "UPDATE filing_documents SET document_type='primary' "
+        "WHERE filing_id=? AND document_id=?",
+        ("filing-8k-0000320193-26-000001", "a" * 64),
+    )
+    conn.execute(
+        """INSERT INTO filing_documents (
+               filing_id, document_url, document_type, text, char_len,
+               content_type, byte_size, extraction_status, extracted_at,
+               document_id
+           ) VALUES (?, ?, 'exhibit', ?, ?, 'text/html', ?, 'success',
+                     '2026-01-05T20:00:00Z', ?)""",
+        (
+            "filing-8k-0000320193-26-000001",
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/0-exhibit.htm",
+            "Exhibit body text follows. " * 20,
+            400,
+            400,
+            "e" * 64,
+        ),
+    )
+    conn.commit()
+    from catalyst_data.corpus.news_v2 import _normalize_text
+
+    backfill_from_subtypes(conn)
+    asset = conn.execute(
+        "SELECT * FROM canonical_assets WHERE asset_type='FILING'"
+    ).fetchone()
+    version = conn.execute(
+        "SELECT * FROM canonical_content_versions WHERE asset_id=?",
+        (asset["asset_id"],),
+    ).fetchone()
+    primary_text = conn.execute(
+        "SELECT text FROM filing_documents WHERE document_id=?", ("a" * 64,)
+    ).fetchone()["text"]
+    expected = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "content_state": "FULL_TEXT",
+                "normalized_body": _normalize_text(primary_text),
+            }
+        )
+    ).hexdigest()
+    exhibit_expected = hashlib.sha256(
+        canonical_json_bytes(
+            {
+                "content_state": "FULL_TEXT",
+                "normalized_body": _normalize_text("Exhibit body text follows. " * 20),
+            }
+        )
+    ).hexdigest()
+    assert version["content_hash"] == expected
+    assert version["content_hash"] != exhibit_expected
+    conn.close()

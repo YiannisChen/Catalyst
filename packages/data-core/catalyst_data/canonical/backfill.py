@@ -370,7 +370,12 @@ def _project_filings(
             (filing_id,),
         ).fetchall()
         primary = next(
-            (d for d in docs if d["document_type"] == "primary_doc"), None
+            (
+                d
+                for d in docs
+                if d["document_type"] in ("primary", "primary_doc")
+            ),
+            None,
         ) or (docs[0] if docs else None)
 
         content_state = "EMPTY"
