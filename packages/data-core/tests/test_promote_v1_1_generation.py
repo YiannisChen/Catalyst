@@ -268,6 +268,13 @@ def test_prepare_runs_ten_steps_in_order_and_never_touches_pointers(
     def make_step(name):
         def step(*args, **kwargs):
             order.append(name)
+            if name == "_step_data01":
+                return {
+                    "name": name,
+                    "denominator": 5229,
+                    "numerator": 5229,
+                    "gate_passed": True,
+                }
             return {"name": name}
 
         return step
@@ -712,3 +719,187 @@ def test_prepare_requires_certified_identity_flags(tmp_path):
     ]
     with pytest.raises(SystemExit):
         module._parse_args(argv)
+
+
+# ===================== STEP 0 resume regression tests =====================
+
+def _promotable_derivative(tmp_path: Path, name: str = "derivative.db") -> Path:
+    """Derivative with a prepared lexical_ready candidate build row."""
+    from catalyst_data.corpus.streaming_publication import (
+        ensure_streaming_publication_schema,
+    )
+    from catalyst_data.storage.sqlite import init_db
+
+    db = tmp_path / name
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+    ensure_streaming_publication_schema(conn)
+    conn.execute(
+        """INSERT INTO corpus_publication_builds
+           (build_id, certified_snapshot_identity, header_json, status,
+            manifest_id, chunk_count, lexical_digest, lexical_row_count,
+            lexical_ready, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "b" * 64,
+            "7" * 64,
+            "{}",
+            "lexical_ready",
+            "1" * 64,
+            2,
+            "d" * 64,
+            2,
+            1,
+            "2026-08-23T00:00:00Z",
+            "2026-08-23T00:00:00Z",
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def _fake_promote_inputs(module, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    fake_verified = SimpleNamespace(
+        source_bundle_id="2" * 64,
+        corpus_manifest_id="1" * 64,
+        snapshot_id="3" * 64,
+        probe_report_id="4" * 64,
+        postbuild_readiness_id="5" * 64,
+        chunk_count=2,
+    )
+    fake_manifest = SimpleNamespace(
+        vector_count=2,
+        corpus_manifest_id="1" * 64,
+        source_bundle_id="2" * 64,
+        snapshot_id="3" * 64,
+        probe_report_id="4" * 64,
+        postbuild_readiness_id="5" * 64,
+        index_manifest_id="6" * 64,
+        model_name="BAAI/bge-m3",
+        model_revision="5617a9f61b028005a4858fdac845db406aefb181",
+        dimension=1024,
+    )
+    fake_dense = SimpleNamespace(
+        corpus_manifest_id="1" * 64,
+        chunk_count=2,
+        source_bundle_id="2" * 64,
+        index_manifest_id="6" * 64,
+    )
+    monkeypatch.setattr(module, "_git_head", lambda *a, **k: HEAD)
+    monkeypatch.setattr(module, "verify_source_bundle", lambda bundle, **kw: fake_verified)
+    monkeypatch.setattr(module, "_read_artifact_manifest", lambda artifact_dir: fake_manifest)
+    monkeypatch.setattr(module, "stage_dense", lambda *a, **k: fake_dense)
+    return fake_verified, fake_manifest, fake_dense
+
+
+def test_prepare_fails_closed_when_data01_gate_false(tmp_path, monkeypatch, capsys):
+    """STEP 0: DATA-01 gate_passed=false aborts prepare before corpus/FTS/bundle export."""
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda *a, **k: HEAD)
+    argv = _prepare_argv(tmp_path)
+    derivative = Path(argv[2])
+
+    for name in (
+        "_step_derivative_migration",
+        "_step_accepted_time",
+        "_step_sec_reparse",
+        "_step_news_persistence",
+        "_step_m35b_backfill",
+        "_step_m36_dedup",
+        "_step_audit",
+    ):
+        monkeypatch.setattr(module, name, lambda *a, **k: {})
+
+    monkeypatch.setattr(
+        module,
+        "_step_data01",
+        lambda *a, **k: {
+            "denominator": 5229,
+            "numerator": 0,
+            "gate_passed": False,
+            "accepted_time_recovered_count": 0,
+            "fail_closed_eligibility_count": 5229,
+        },
+    )
+    calls: list[str] = []
+
+    def explode(*a, **k):
+        calls.append("export")
+        raise AssertionError("corpus/FTS/bundle export must not run on failed DATA-01")
+
+    monkeypatch.setattr(module, "_step_corpus_candidate", explode)
+    monkeypatch.setattr(module, "_step_bundle_export", explode)
+
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert calls == []
+    assert not (tmp_path / "preparation_evidence.json").exists()
+    assert json.loads(out)["ok"] is False
+    assert derivative.exists()
+
+
+def test_promote_fails_closed_unless_committed_and_admitted(tmp_path, monkeypatch, capsys):
+    """STEP 0: promote returns non-zero unless PromotionResult is COMMITTED+admitted."""
+    module = _load_script()
+    argv = _promote_argv(tmp_path)
+    # point --derivative at a prepared candidate build
+    argv[argv.index("--derivative") + 1] = str(_promotable_derivative(tmp_path))
+    _fake_promote_inputs(module, tmp_path, monkeypatch)
+
+    calls: list[str] = []
+
+    def fake_promote(conn, *, journal_path, **kwargs):
+        calls.append(str(journal_path))
+        return module.PromotionResult(
+            state="ROLLED_BACK",
+            promotion_id="x" * 32,
+            build_id="b" * 64,
+            corpus_manifest_id="1" * 64,
+            lexical_generation_id="b" * 64,
+            dense_index_manifest_id="6" * 64,
+            journal_path=journal_path,
+            admitted=False,
+        )
+
+    monkeypatch.setattr(module, "promote_v1_generation", fake_promote)
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert len(calls) == 1
+    assert not (tmp_path / "promotion_evidence.json").exists()
+    assert json.loads(out)["ok"] is False
+
+
+def test_promote_succeeds_only_when_committed_and_admitted(tmp_path, monkeypatch, capsys):
+    """STEP 0: committed+admitted promote writes evidence and returns 0."""
+    module = _load_script()
+    argv = _promote_argv(tmp_path)
+    argv[argv.index("--derivative") + 1] = str(_promotable_derivative(tmp_path))
+    _fake_promote_inputs(module, tmp_path, monkeypatch)
+
+    def fake_promote(conn, *, journal_path, **kwargs):
+        return module.PromotionResult(
+            state="COMMITTED",
+            promotion_id="x" * 32,
+            build_id="b" * 64,
+            corpus_manifest_id="1" * 64,
+            lexical_generation_id="b" * 64,
+            dense_index_manifest_id="6" * 64,
+            journal_path=journal_path,
+            admitted=True,
+        )
+
+    monkeypatch.setattr(module, "promote_v1_generation", fake_promote)
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 0
+    evidence = json.loads(
+        (tmp_path / "promotion_evidence.json").read_text(encoding="utf-8")
+    )
+    assert evidence["state"] == "COMMITTED"
+    assert json.loads(out)["ok"] is True

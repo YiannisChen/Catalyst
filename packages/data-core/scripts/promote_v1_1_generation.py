@@ -565,6 +565,10 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         evidence["dedup_independence"] = _step_m36_dedup(conn)
         evidence["audit"] = _step_audit(conn)
         evidence["data01"] = _step_data01(conn, benchmark, q005, git_revision)
+        if not evidence["data01"].get("gate_passed"):
+            raise ValueError(
+                "DATA-01 gate failed; refusing to build/export a candidate"
+            )
         candidate = _step_corpus_candidate(
             conn,
             certified_snapshot_identity=snapshot_id,
@@ -687,6 +691,10 @@ def _promote(args: argparse.Namespace) -> dict[str, Any]:
             dense_candidate=dense_candidate,
             active_generation_path=active_path,
         )
+        if result.state != "COMMITTED" or not result.admitted:
+            raise ValueError(
+                "promotion did not commit; refusing to write promotion evidence"
+            )
     finally:
         conn.close()
 
