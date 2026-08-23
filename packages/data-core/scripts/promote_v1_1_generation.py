@@ -510,6 +510,9 @@ def _step_bundle_export(
 
 def _redact_error(text: str) -> str:
     redacted = str(text)
+    ua = os.environ.get("SEC_USER_AGENT")
+    if ua:
+        redacted = redacted.replace(ua, "[REDACTED]")
     for pattern in _SECRET_PATTERNS:
         redacted = pattern.sub("[REDACTED]", redacted)
     # Replace absolute path-like sequences before home replacement so trailing
@@ -531,6 +534,14 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     os.replace(temporary, path)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _prepare(args: argparse.Namespace) -> dict[str, Any]:
@@ -767,6 +778,170 @@ def _rollback(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _recover_sec_primary(args: argparse.Namespace) -> dict[str, Any]:
+    """Recover missing SEC primary documents on a fresh derivative.
+
+    Live EDGAR recovery stage (supervisor 2026-08-24). Requires a separately
+    verified derivative; the frozen snapshot is opened read-only (SHA-verified
+    before and after). The offline prepare step later runs on the same
+    derivative and never performs network work.
+    """
+    _require_head(args.expected_implementation_head)
+    derivative = _resolve_required(args.derivative, label="--derivative")
+    _reject_aliased_db(derivative)
+    benchmark = _resolve_required(args.benchmark_manifest, label="--benchmark-manifest")
+    q005 = _resolve_required(args.q005_approval, label="--q005-approval")
+    frozen = _resolve_required(args.frozen_snapshot, label="--frozen-snapshot")
+    checkpoint = _resolve_required(args.checkpoint, label="--checkpoint")
+    report_path = _resolve_required(args.recovery_report, label="--recovery-report")
+    rate = args.rate_per_second
+    if not (0.1 <= rate <= 5.0):
+        raise ValueError("--rate-per-second must be within [0.1, 5.0]")
+    if args.limit is not None and not args.dry_run:
+        raise ValueError(
+            "--limit is test-only and may not author a production recovery report"
+        )
+    if not Path(frozen).is_file():
+        raise ValueError("--frozen-snapshot must be an existing file")
+
+    git_revision = _seal_git_revision(benchmark, q005)
+    benchmark_json = json.loads(Path(benchmark).read_text(encoding="utf-8"))
+    accession_list_sha256 = str(benchmark_json["case_list_sha256"])
+    accessions = list(benchmark_json["ordered_unique_accession_ids"])
+    frozen_before = _sha256_file(frozen)
+
+    from catalyst_data.sec.recover_primary import compute_missing_work
+
+    if args.dry_run:
+        conn = _open_derivative(derivative)
+        try:
+            missing, already_present = compute_missing_work(conn, accessions)
+        finally:
+            conn.close()
+        return {
+            "schema_version": "sec_primary_recovery_report_v1",
+            "git_revision": git_revision,
+            "dry_run": True,
+            "work_set_total": len(accessions),
+            "requested": len(missing),
+            "already_present": already_present,
+            "accession_list_sha256": accession_list_sha256,
+            "frozen_sha256_before": frozen_before,
+            "derivative": str(derivative),
+        }
+
+    user_agent = os.environ.get("SEC_USER_AGENT")
+    if not user_agent or not user_agent.strip():
+        raise ValueError(
+            "SEC_USER_AGENT environment variable is required and must not be empty"
+        )
+
+    import asyncio
+    import signal
+
+    from catalyst_data.config import RatePolicy
+    from catalyst_data.manifests.universe import sha256_identity
+    from catalyst_data.rate_limiter import TokenBucketLimiter
+    from catalyst_data.sec import recover_primary as _recover_primary_mod
+
+    conn = _open_derivative(derivative)
+    try:
+        _step_derivative_migration(conn, derivative)
+        limiter = TokenBucketLimiter(
+            RatePolicy(
+                min_interval_sec=1.0 / rate,
+                max_concurrent=2,
+                daily_budget=None,
+            )
+        )
+        run_id = sha256_identity(
+            {
+                "purpose": "recover-sec-primary",
+                "derivative": str(derivative),
+                "git_revision": git_revision,
+            }
+        )
+
+        async def live_fetch(url: str):
+            return await _recover_primary_mod.http_fetch_document(
+                url, user_agent=user_agent
+            )
+
+        # Graceful SIGINT/SIGTERM: set a stop flag checked after each persist so
+        # the checkpoint is current and the run exits resumable, never mid-write.
+        interrupted = [False]
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                loop.add_signal_handler(sig, lambda: interrupted.__setitem__(0, True))
+            except (NotImplementedError, RuntimeError):
+                pass
+        try:
+            counters = loop.run_until_complete(
+                _recover_primary_mod.recover_primary_documents(
+                    conn,
+                    accessions=accessions,
+                    fetch_document=live_fetch,
+                    run_id=run_id,
+                    checkpoint_path=checkpoint,
+                    limiter=limiter,
+                    limit=args.limit,
+                    stop_check=lambda: interrupted[0],
+                )
+            )
+        finally:
+            loop.close()
+        filings_count = int(
+            conn.execute("SELECT COUNT(*) FROM filings").fetchone()[0]
+        )
+    finally:
+        conn.close()
+
+    if filings_count != len(accessions):
+        raise ValueError(
+            f"filings count {filings_count} != sealed work set {len(accessions)}"
+        )
+    frozen_after = _sha256_file(frozen)
+    if frozen_before != frozen_after:
+        raise ValueError(
+            "frozen snapshot changed during recovery; refusing recovery report"
+        )
+    derivative_sha = _sha256_file(derivative)
+
+    report: dict[str, Any] = {
+        "schema_version": "sec_primary_recovery_report_v1",
+        "git_revision": git_revision,
+        "generated_at": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+        "accession_list_sha256": accession_list_sha256,
+        "frozen_sha256_before": frozen_before,
+        "frozen_sha256_after": frozen_after,
+        "derivative_sha256": derivative_sha,
+        "work_set_total": len(accessions),
+        "filings_count": filings_count,
+        "requested": counters["requested"],
+        "already_present": counters["already_present"],
+        "succeeded": counters["succeeded"],
+        "pdf_skipped": counters["pdf_skipped"],
+        "empty": counters["empty"],
+        "permanent_404": counters["permanent_404"],
+        "retry_exhausted": counters["retry_exhausted"],
+        "transient_failed": counters["transient_failed"],
+        "http_403": counters["http_403"],
+        "rejected_content": counters["rejected_content"],
+        "bytes_written": counters["bytes_written"],
+        "remaining": counters["remaining"],
+        "requests_made": counters["requests_made"],
+        "interrupted": counters["interrupted"],
+        "derivative": str(derivative),
+        "checkpoint": str(checkpoint),
+    }
+    _write_json_atomic(report_path, report)
+    return report
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="subcommand", required=True)
@@ -802,6 +977,26 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     rollback.add_argument("--journal", required=True, type=Path)
     rollback.add_argument("--expected-implementation-head", required=True)
 
+    recover = subparsers.add_parser(
+        "recover-sec-primary",
+        help="recover missing SEC primary documents on a fresh derivative (live EDGAR; prepare stays offline)",
+    )
+    recover.add_argument("--derivative", required=True, type=Path)
+    recover.add_argument("--benchmark-manifest", required=True, type=Path)
+    recover.add_argument("--q005-approval", required=True, type=Path)
+    recover.add_argument("--frozen-snapshot", required=True, type=Path)
+    recover.add_argument("--checkpoint", required=True, type=Path)
+    recover.add_argument("--recovery-report", required=True, type=Path)
+    recover.add_argument("--expected-implementation-head", required=True)
+    recover.add_argument(
+        "--rate-per-second", type=float, default=4.0,
+        help="global SEC request rate cap for this job (default 4.0, max 5.0)",
+    )
+    recover.add_argument("--dry-run", action="store_true")
+    # Test-only bound; suppressed from --help and fails closed when set on a
+    # production (non-dry-run) report path.
+    recover.add_argument("--limit", type=int, default=None, help=argparse.SUPPRESS)
+
     return parser.parse_args(argv)
 
 
@@ -814,6 +1009,8 @@ def main(argv: list[str] | None = None) -> int:
             result = _promote(args)
         elif args.subcommand == "rollback":
             result = _rollback(args)
+        elif args.subcommand == "recover-sec-primary":
+            result = _recover_sec_primary(args)
         else:  # pragma: no cover - argparse requires a subcommand
             raise ValueError("unknown subcommand")
         print(json.dumps({"ok": True, "subcommand": args.subcommand, **result}, sort_keys=True))

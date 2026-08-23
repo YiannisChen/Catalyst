@@ -1002,3 +1002,307 @@ def test_step_sec_reparse_persists_repair_for_empty_text(tmp_path):
     assert row["parse_quality"] == "not_applicable"
     assert row["document_hash"] is None
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# recover-sec-primary CLI contract (offline; no live EDGAR, no frozen DB)
+# ---------------------------------------------------------------------------
+
+RECOVER_ACCESSION = "0000320193-26-000001"
+RECOVER_URL = (
+    "https://www.sec.gov/Archives/edgar/data/320193/"
+    "000032019326000001/aapl-20260328.htm"
+)
+SEALED_A_SHA256 = "dd3f02eadf54b4fa80844ecaef877b0b7de2678b2fc8d642666e4a6d941112ac"
+
+
+RECOVER_ACCESSIONS = [
+    RECOVER_ACCESSION,
+    "0000320193-26-000002",
+]
+RECOVER_ACCESSIONS_HASH = None  # set by _synthetic_seal_files
+
+
+def _synthetic_seal_files(tmp_path: Path, accessions) -> tuple[Path, Path]:
+    """Valid sealed benchmark/Q-005 pair over a tiny synthetic accession set."""
+    from catalyst_data.canonical.ids import sha256_identity
+
+    global RECOVER_ACCESSIONS_HASH
+    authority = "synthetic recover-sec-primary CLI test authority"
+    case_hash = sha256_identity(
+        {
+            "schema_version": "benchmark_accessions_v1",
+            "selection_authority": authority,
+            "ordered_unique_accession_ids": accessions,
+        }
+    )
+    RECOVER_ACCESSIONS_HASH = case_hash
+    bench = {
+        "schema_version": "benchmark_accessions_v1",
+        "selection_authority": authority,
+        "frozen_at": "2026-08-24T00:00:00Z",
+        "git_revision": HEAD,
+        "ordered_unique_accession_ids": accessions,
+        "excluded_accessions": [],
+        "selection_exclusions": [],
+        "case_list_sha256": case_hash,
+        "denominator": len(accessions),
+    }
+    q005 = {
+        "schema_version": "q005_sec_time_approval_v1",
+        "benchmark_case_list_sha256": case_hash,
+        "selection_authority": authority,
+        "frozen_at": "2026-08-24T00:00:00Z",
+        "git_revision": HEAD,
+        "decision": "approve_latest_plausible_instant",
+        "raw_payload_inventory": [
+            {"accession": a, "acceptance_datetime_retained": True}
+            for a in accessions
+        ],
+    }
+    bench_p = tmp_path / "benchmark_accessions_v1.json"
+    q005_p = tmp_path / "q005_sec_time_approval_v1.json"
+    bench_p.write_text(json.dumps(bench), encoding="utf-8")
+    q005_p.write_text(json.dumps(q005), encoding="utf-8")
+    return bench_p, q005_p
+
+
+def _recover_derivative(tmp_path: Path) -> Path:
+    """Tiny derivative: 1 valid primary + 1 missing filing (never the frozen DB)."""
+    from catalyst_data.storage.sqlite import init_db
+
+    db = tmp_path / "recover_derivative.db"
+    if db.exists():
+        db.unlink()
+    conn = sqlite3.connect(db)
+    init_db(conn)
+    conn.execute(
+        """INSERT INTO filings (
+               filing_id, cik, ticker, form_type, filed_at,
+               accession_number, primary_document, url
+           ) VALUES (?, '0000320193', 'AAPL', '8-K', '2026-03-28', ?, 'aapl-20260328.htm', ?)""",
+        (
+            f"sec:0000320193:{RECOVER_ACCESSION}",
+            RECOVER_ACCESSION,
+            RECOVER_URL,
+        ),
+    )
+    conn.execute(
+        """INSERT INTO filings (
+               filing_id, cik, ticker, form_type, filed_at,
+               accession_number, primary_document, url
+           ) VALUES (?, '0000320193', 'AAPL', '8-K', '2026-03-28', ?, 'aapl-20260430.htm', ?)""",
+        (
+            "sec:0000320193:0000320193-26-000002",
+            "0000320193-26-000002",
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000002/aapl-20260430.htm",
+        ),
+    )
+    from catalyst_data.sec.document_cells import compute_document_id
+
+    document_id = compute_document_id(
+        filing_id=f"sec:0000320193:{RECOVER_ACCESSION}",
+        accession_number=RECOVER_ACCESSION,
+        document_role="primary",
+        document_file="aapl-20260328.htm",
+        document_url=RECOVER_URL,
+    )
+    conn.execute(
+        """INSERT INTO filing_documents (
+               filing_id, document_url, document_type, text, char_len,
+               content_type, byte_size, extraction_status, extracted_at,
+               document_id
+           ) VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            f"sec:0000320193:{RECOVER_ACCESSION}",
+            RECOVER_URL,
+            "primary",
+            "valid primary text for the already-present filing in the CLI fixture",
+            80,
+            "text/html",
+            128,
+            "success",
+            "2026-03-28T00:00:00Z",
+            document_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def _recover_argv(tmp_path: Path, *, dry_run: bool = False, rate=None, limit=None) -> list[str]:
+    bench, q005 = _synthetic_seal_files(tmp_path, RECOVER_ACCESSIONS)
+    frozen = tmp_path / "frozen_snapshot.db"
+    frozen.write_bytes(b"tiny-frozen-bytes")
+    argv = [
+        "recover-sec-primary",
+        "--derivative", str(_recover_derivative(tmp_path)),
+        "--benchmark-manifest", str(bench),
+        "--q005-approval", str(q005),
+        "--frozen-snapshot", str(frozen),
+        "--checkpoint", str(tmp_path / "recover_checkpoint.json"),
+        "--recovery-report", str(tmp_path / "recovery_report.json"),
+        "--expected-implementation-head", HEAD,
+    ]
+    if dry_run:
+        argv.append("--dry-run")
+    if rate is not None:
+        argv += ["--rate-per-second", str(rate)]
+    if limit is not None:
+        argv += ["--limit", str(limit)]
+    return argv
+
+
+def test_recover_sec_primary_dry_run_reports_missing(tmp_path, monkeypatch, capsys):
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda repo: HEAD)
+    monkeypatch.setenv("SEC_USER_AGENT", "M3 Test/1.0 (test@example.com)")
+    argv = _recover_argv(tmp_path, dry_run=True)
+    derivative = Path(argv[2])
+    before = derivative.read_bytes()
+
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert derivative.read_bytes() == before
+    assert not (tmp_path / "recover_checkpoint.json").exists()
+    assert not (tmp_path / "recovery_report.json").exists()
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert payload["work_set_total"] == 2
+    assert payload["already_present"] == 1
+    assert payload["requested"] == 1
+    assert payload["accession_list_sha256"] == RECOVER_ACCESSIONS_HASH
+    assert payload["git_revision"] == HEAD
+
+
+def test_recover_sec_primary_rejects_frozen_alias(tmp_path, monkeypatch, capsys):
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda repo: HEAD)
+    argv = _recover_argv(tmp_path, dry_run=True)
+    # --derivative pointing at the hard-coded frozen snapshot path must be
+    # rejected by path comparison alone; the 5.5GB file is never opened/read.
+    argv[2] = str(module.FROZEN_SNAPSHOT_PATH)
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 2
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert "forbidden" in payload["error"]
+
+
+def test_recover_sec_primary_requires_user_agent(tmp_path, monkeypatch, capsys):
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda repo: HEAD)
+    monkeypatch.delenv("SEC_USER_AGENT", raising=False)
+    argv = _recover_argv(tmp_path)
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 2
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert "SEC_USER_AGENT" in payload["error"]
+
+
+def test_recover_sec_primary_rate_limit_validation(tmp_path, monkeypatch, capsys):
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda repo: HEAD)
+    for bad in (0.05, 5.01, 6.0):
+        argv = _recover_argv(tmp_path, dry_run=True, rate=bad)
+        rc = module.main(argv)
+        out = capsys.readouterr().out
+        assert rc == 2, bad
+        payload = json.loads(out)
+        assert "rate-per-second" in payload["error"]
+
+
+def test_recover_sec_primary_limit_fails_closed(tmp_path, monkeypatch, capsys):
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda repo: HEAD)
+    monkeypatch.setenv("SEC_USER_AGENT", "M3 Test/1.0 (test@example.com)")
+    argv = _recover_argv(tmp_path, limit=1)
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 2
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert "test-only" in payload["error"]
+
+
+def test_recover_sec_primary_writes_report_with_secret_safe_output(
+    tmp_path, monkeypatch, capsys
+):
+    import catalyst_data.sec.recover_primary as recover_module
+
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda repo: HEAD)
+    monkeypatch.setenv("SEC_USER_AGENT", "M3 SecretUA/1.0 (secret@example.com)")
+    calls: list[list[str]] = []
+    fake_counters = {
+        "requested": 1,
+        "already_present": 1,
+        "succeeded": 1,
+        "pdf_skipped": 0,
+        "empty": 0,
+        "permanent_404": 0,
+        "retry_exhausted": 0,
+        "transient_failed": 0,
+        "http_403": 0,
+        "rejected_content": 0,
+        "bytes_written": 825,
+        "remaining": 0,
+        "requests_made": 1,
+        "interrupted": False,
+    }
+
+    async def fake_recover(conn, **kwargs):
+        calls.append(list(kwargs["accessions"]))
+        return dict(fake_counters)
+
+    monkeypatch.setattr(recover_module, "recover_primary_documents", fake_recover)
+    argv = _recover_argv(tmp_path)
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert len(calls) == 1
+    assert "SecretUA" not in out
+    report_path = tmp_path / "recovery_report.json"
+    assert report_path.exists()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["schema_version"] == "sec_primary_recovery_report_v1"
+    assert report["git_revision"] == HEAD
+    assert report["accession_list_sha256"] == RECOVER_ACCESSIONS_HASH
+    assert report["succeeded"] == 1
+    assert report["already_present"] == 1
+    assert report["requested"] == 1
+    assert report["frozen_sha256_before"] == report["frozen_sha256_after"]
+    assert len(report["derivative_sha256"]) == 64
+    assert "SecretUA" not in report_path.read_text(encoding="utf-8")
+    assert "secret@example.com" not in report_path.read_text(encoding="utf-8")
+
+
+def test_recover_sec_primary_secret_safe_errors(tmp_path, monkeypatch, capsys):
+    import catalyst_data.sec.recover_primary as recover_module
+
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda repo: HEAD)
+    monkeypatch.setenv("SEC_USER_AGENT", "M3 SecretUA/1.0 (secret@example.com)")
+
+    async def boom(conn, **kwargs):
+        raise ValueError(
+            "fetch exploded with sk-abcdef1234567890 and M3 SecretUA/1.0 (secret@example.com)"
+        )
+
+    monkeypatch.setattr(recover_module, "recover_primary_documents", boom)
+    argv = _recover_argv(tmp_path)
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 2
+    payload = json.loads(out)
+    assert payload["ok"] is False
+    assert "sk-abcdef1234567890" not in out
+    assert "SecretUA" not in out
+    assert "[REDACTED]" in payload["error"]
+    assert not (tmp_path / "recovery_report.json").exists()
