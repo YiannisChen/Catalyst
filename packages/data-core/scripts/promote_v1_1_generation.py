@@ -304,6 +304,7 @@ def _retained_primary_bytes(
 def _step_sec_reparse(conn: sqlite3.Connection) -> dict[str, Any]:
     from catalyst_data.sec.extract import SEC_EXTRACT_PARSER_VERSION
     from catalyst_data.sec.reparse import (
+        FilingParseResult,
         reparse_filing,
         persist_filing_document_reparse,
     )
@@ -314,17 +315,32 @@ def _step_sec_reparse(conn: sqlite3.Connection) -> dict[str, Any]:
         """SELECT fd.filing_id, fd.document_id, fd.text AS stored_text,
                   f.accession_number, f.raw_asset_id
            FROM filing_documents fd
-           JOIN filings f ON f.filing_id = fd.filing_id
-           WHERE fd.document_type='primary_doc'"""
+           JOIN filings f ON f.filing_id = fd.filing_id"""
     ).fetchall()
     for row in rows:
         # Retained primary payload takes precedence; otherwise reparse the
-        # stored extracted text (UTF-8). Unbindable empty documents are skipped
-        # (Batch B rules) and never fabricated into HTML.
+        # stored extracted text (UTF-8). Every filing_documents row receives a
+        # persisted M3-4 repair so require_repairs=True backfill passes;
+        # unbindable empty documents get a not_applicable repair (Batch B skip,
+        # never fabricated into HTML).
         primary_bytes = _retained_primary_bytes(conn, row)
         if primary_bytes is None and row["stored_text"]:
             primary_bytes = str(row["stored_text"]).encode("utf-8")
         if primary_bytes is None:
+            persist_filing_document_reparse(
+                conn,
+                filing_id=row["filing_id"],
+                document_id=row["document_id"],
+                result=FilingParseResult(
+                    accession=row["accession_number"],
+                    parser_version=SEC_EXTRACT_PARSER_VERSION,
+                    primary_document_extracted=False,
+                    document_hash=None,
+                    parse_quality="not_applicable",
+                    sections=(),
+                ),
+                extracted_text=None,
+            )
             skipped += 1
             continue
         result = reparse_filing(
@@ -332,14 +348,18 @@ def _step_sec_reparse(conn: sqlite3.Connection) -> dict[str, Any]:
             row["accession_number"],
             parser_version=SEC_EXTRACT_PARSER_VERSION,
         )
+        persist_filing_document_reparse(
+            conn,
+            filing_id=row["filing_id"],
+            document_id=row["document_id"],
+            result=result,
+            extracted_text=(
+                primary_bytes.decode("utf-8", "replace")
+                if result.primary_document_extracted
+                else None
+            ),
+        )
         if result.primary_document_extracted:
-            persist_filing_document_reparse(
-                conn,
-                filing_id=row["filing_id"],
-                document_id=row["document_id"],
-                result=result,
-                extracted_text=primary_bytes.decode("utf-8", "replace"),
-            )
             reparsed += 1
         else:
             skipped += 1

@@ -903,3 +903,102 @@ def test_promote_succeeds_only_when_committed_and_admitted(tmp_path, monkeypatch
     )
     assert evidence["state"] == "COMMITTED"
     assert json.loads(out)["ok"] is True
+
+
+def test_step_sec_reparse_handles_real_primary_document_type(tmp_path):
+    """Real filing_documents use document_type='primary'; reparse must not skip them."""
+    module = _load_script()
+    conn = _news_db(tmp_path, "reparse-primary")
+    conn.execute(
+        """INSERT INTO filings
+           (filing_id, cik, ticker, form_type, filed_at, accession_number, url)
+           VALUES (?,?,?,?,?,?,?)""",
+        (
+            "filing:1",
+            "0000320193",
+            "AAPL",
+            "8-K",
+            "2026-01-05",
+            "0000320193-26-000001",
+            "https://example.test/8k",
+        ),
+    )
+    conn.execute(
+        """INSERT INTO filing_documents
+           (filing_id, document_url, document_type, text, char_len, content_type,
+            byte_size, extraction_status, extracted_at, document_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "filing:1",
+            "https://example.test/8k",
+            "primary",
+            _FILING_BODY,
+            len(_FILING_BODY),
+            "text/html",
+            len(_FILING_BODY.encode("utf-8")),
+            "success",
+            "2026-01-05T00:00:00Z",
+            "e" * 64,
+        ),
+    )
+    conn.commit()
+    result = module._step_sec_reparse(conn)
+    assert result["reparsed"] == 1
+    row = conn.execute(
+        "SELECT parser_version, parse_quality, document_hash FROM filing_documents "
+        "WHERE filing_id='filing:1' AND document_id='" + "e" * 64 + "'"
+    ).fetchone()
+    assert row["parser_version"]
+    assert row["parse_quality"] in ("full", "degraded")
+    assert row["document_hash"]
+    conn.close()
+
+
+def test_step_sec_reparse_persists_repair_for_empty_text(tmp_path):
+    """Empty stored text still gets a persisted not_applicable repair (no fabricated HTML)."""
+    module = _load_script()
+    conn = _news_db(tmp_path, "reparse-empty")
+    conn.execute(
+        """INSERT INTO filings
+           (filing_id, cik, ticker, form_type, filed_at, accession_number, url)
+           VALUES (?,?,?,?,?,?,?)""",
+        (
+            "filing:1",
+            "0000320193",
+            "AAPL",
+            "8-K",
+            "2026-01-05",
+            "0000320193-26-000001",
+            "https://example.test/8k",
+        ),
+    )
+    conn.execute(
+        """INSERT INTO filing_documents
+           (filing_id, document_url, document_type, text, char_len, content_type,
+            byte_size, extraction_status, extracted_at, document_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "filing:1",
+            "https://example.test/8k",
+            "primary",
+            "",
+            0,
+            "text/html",
+            0,
+            "success",
+            "2026-01-05T00:00:00Z",
+            "e" * 64,
+        ),
+    )
+    conn.commit()
+    result = module._step_sec_reparse(conn)
+    assert result["reparsed"] == 0
+    assert result["skipped"] == 1
+    row = conn.execute(
+        "SELECT parser_version, parse_quality, document_hash FROM filing_documents "
+        "WHERE filing_id='filing:1' AND document_id='" + "e" * 64 + "'"
+    ).fetchone()
+    assert row["parser_version"]
+    assert row["parse_quality"] == "not_applicable"
+    assert row["document_hash"] is None
+    conn.close()
