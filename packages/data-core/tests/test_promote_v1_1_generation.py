@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import zlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -60,6 +61,9 @@ def _prepare_argv(tmp_path: Path, *, dry_run: bool = False) -> list[str]:
         "--q005-approval", str(q005),
         "--source-bundle-output-root", str(tmp_path / "bundles"),
         "--preparation-evidence", str(tmp_path / "preparation_evidence.json"),
+        "--snapshot-id", "7" * 64,
+        "--probe-report-id", "8" * 64,
+        "--postbuild-readiness-id", "9" * 64,
         "--expected-implementation-head", HEAD,
     ]
     if dry_run:
@@ -285,18 +289,11 @@ def test_prepare_runs_ten_steps_in_order_and_never_touches_pointers(
     ):
         monkeypatch.setattr(module, name, make_step(name))
 
-    monkeypatch.setattr(
-        module,
-        "_frozen_identity",
-        lambda conn: {
-            "certified_snapshot_identity": "b" * 64,
-            "snapshot_id": "b" * 64,
-            "probe_report_id": "c" * 64,
-            "postbuild_readiness_id": "d" * 64,
-        },
-    )
+    captured: dict = {}
+
     def candidate_step(*a, **k):
         order.append("_step_corpus_candidate")
+        captured.update(k)
         return {
             "build_id": "b" * 64,
             "corpus_manifest_id": "1" * 64,
@@ -309,6 +306,10 @@ def test_prepare_runs_ten_steps_in_order_and_never_touches_pointers(
     monkeypatch.setattr(module, "_step_corpus_candidate", candidate_step)
 
     rc = module.main(argv)
+    assert captured["certified_snapshot_identity"] == "7" * 64
+    assert captured["snapshot_id"] == "7" * 64
+    assert captured["probe_report_id"] == "8" * 64
+    assert captured["postbuild_readiness_id"] == "9" * 64
     out = capsys.readouterr().out
     assert rc == 0
     assert order == [
@@ -469,3 +470,245 @@ def test_aliased_derivative_to_frozen_or_live_is_rejected(tmp_path, monkeypatch,
     argv[2] = str(sym)
     rc = module.main(argv)
     assert rc == 2
+
+
+# ===================== GATE A regression tests =====================
+
+_LONG_BODY = (
+    "Apple Inc. announced new AI features during its product event. "
+    "The company said the updates will roll out to customers starting next "
+    "month. Analysts expect the changes to improve device performance and "
+    "battery life across the lineup. This paragraph is deliberately long "
+    "enough to clear the minimum material body threshold so the projection "
+    "classifies the article as full text evidence rather than metadata."
+)
+_FILING_BODY = (
+    "Item 1.01 Entry into a Material Definitive Agreement\n"
+    "The registrant entered into a material agreement with counterparties. "
+    "The terms include customary covenants and closing conditions that apply "
+    "to the parties under the agreement as of the date of this report.\n"
+    "Item 2.02 Results of Operations and Financial Condition\n"
+    "The registrant announced financial results for the fiscal period. "
+    "Revenue and operating income are discussed in the accompanying exhibit. "
+    "This paragraph is deliberately long enough to clear the minimum primary "
+    "document extraction threshold for the versioned SEC parser."
+)
+
+
+def _news_db(tmp_path: Path, name: str):
+    from catalyst_data.storage.sqlite import init_db
+
+    db = tmp_path / f"{name}.db"
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+    return conn
+
+
+def test_step_news_persistence_handles_sqlite_rows(tmp_path):
+    """A1: sqlite3.Row has no .get; the news persistence step must still run."""
+    module = _load_script()
+    conn = _news_db(tmp_path, "news")
+    conn.execute(
+        """INSERT INTO raw_assets
+           (asset_id, ticker, source_type, reference_date, fetched_at, content_raw)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            "raw:news:1",
+            "AAPL",
+            "polygon_news",
+            "2026-07-31",
+            "2026-07-31T00:00:00Z",
+            json.dumps({"body": _LONG_BODY}).encode("utf-8"),
+        ),
+    )
+    conn.execute(
+        """INSERT INTO articles
+           (article_id, raw_asset_id, provider, source_type, ticker,
+            reference_date, published_utc, title, description, article_url)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "poly:1",
+            "raw:news:1",
+            "polygon",
+            "polygon_news",
+            "AAPL",
+            "2026-07-31",
+            "2026-07-31T00:00:00Z",
+            "Unicode café title",
+            "description",
+            "https://example.test/news/1",
+        ),
+    )
+    conn.commit()
+    module._step_news_persistence(conn)
+    row = conn.execute(
+        "SELECT recovered_content_state, recovered_content_hash FROM articles "
+        "WHERE article_id='poly:1'"
+    ).fetchone()
+    assert row["recovered_content_state"] == "FULL_TEXT"
+    assert row["recovered_content_hash"]
+    conn.close()
+
+
+def test_step_accepted_time_persists_every_filing(tmp_path):
+    """A2: every filings row gets a persisted temporal repair (never NULL reason)."""
+    module = _load_script()
+    bench, q005 = _seal_files(tmp_path)
+    conn = _news_db(tmp_path, "accepted")
+    payload = {
+        "cik": "0000320193",
+        "filings": {
+            "recent": {
+                "accessionNumber": ["0000320193-26-000001"],
+                "acceptanceDateTime": ["2026-01-05T16:00:00Z"],
+            }
+        },
+    }
+    conn.execute(
+        """INSERT INTO raw_assets
+           (asset_id, ticker, source_type, reference_date, fetched_at, content_raw)
+           VALUES (?,?,?,?,?,?)""",
+        (
+            "raw:sec:1",
+            "AAPL",
+            "sec_filings",
+            "2026-01-05",
+            "2026-01-05T00:00:00Z",
+            zlib.compress(json.dumps(payload).encode("utf-8")),
+        ),
+    )
+    for filing_id, accession, filed_at in (
+        ("filing:1", "0000320193-26-000001", "2026-01-05"),
+        ("filing:2", "0000320193-26-000002", "2026-01-06"),
+        ("filing:3", "0000320193-26-000003", "not-a-date"),
+    ):
+        conn.execute(
+            """INSERT INTO filings
+               (filing_id, cik, ticker, form_type, filed_at, accession_number, url)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                filing_id,
+                "0000320193",
+                "AAPL",
+                "8-K",
+                filed_at,
+                accession,
+                f"https://example.test/{filing_id}",
+            ),
+        )
+    conn.commit()
+
+    module._step_accepted_time(conn, q005_path=q005)
+    rows = conn.execute(
+        "SELECT filing_id, eligible_at, eligible_at_reason, temporal_precision, "
+        "accepted_time_recovered FROM filings ORDER BY filing_id"
+    ).fetchall()
+    assert len(rows) == 3
+    null_reason = [
+        row["filing_id"] for row in rows if row["eligible_at_reason"] is None
+    ]
+    assert null_reason == []
+    by_id = {row["filing_id"]: row for row in rows}
+    assert by_id["filing:1"]["accepted_time_recovered"] == 1
+    assert by_id["filing:1"]["eligible_at"] == "2026-01-05T16:00:00Z"
+    assert by_id["filing:2"]["accepted_time_recovered"] == 0
+    assert by_id["filing:2"]["temporal_precision"] == "date_only_latest_plausible"
+    assert by_id["filing:2"]["eligible_at"] == "2026-01-07T05:00:00Z"
+    assert by_id["filing:3"]["accepted_time_recovered"] == 0
+    assert by_id["filing:3"]["eligible_at"] is None
+    assert by_id["filing:3"]["eligible_at_reason"] == "fail_closed_no_accepted_time"
+    conn.close()
+
+
+def test_m35b_backfill_requires_repairs(tmp_path, monkeypatch):
+    """A3: production backfill must pass require_repairs=True."""
+    module = _load_script()
+    calls: dict = {}
+
+    def fake_backfill(inner_conn, *, dry_run=False, require_repairs=False):
+        calls["require_repairs"] = require_repairs
+        return SimpleNamespace(assets=0, content_versions=0, associations=0)
+
+    import catalyst_data.canonical.backfill as backfill_mod
+
+    monkeypatch.setattr(backfill_mod, "backfill_from_subtypes", fake_backfill)
+    conn = _news_db(tmp_path, "backfill")
+    module._step_m35b_backfill(conn)
+    assert calls.get("require_repairs") is True
+    conn.close()
+
+
+def test_step_sec_reparse_persists_from_stored_text(tmp_path):
+    """A4: archived submissions envelopes have no primary bytes; stored text is reparsed."""
+    module = _load_script()
+    conn = _news_db(tmp_path, "reparse")
+    conn.execute(
+        """INSERT INTO filings
+           (filing_id, cik, ticker, form_type, filed_at, accession_number, url)
+           VALUES (?,?,?,?,?,?,?)""",
+        (
+            "filing:1",
+            "0000320193",
+            "AAPL",
+            "8-K",
+            "2026-01-05",
+            "0000320193-26-000001",
+            "https://example.test/8k",
+        ),
+    )
+    conn.execute(
+        """INSERT INTO filing_documents
+           (filing_id, document_url, document_type, text, char_len, content_type,
+            byte_size, extraction_status, extracted_at, document_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "filing:1",
+            "https://example.test/8k",
+            "primary_doc",
+            _FILING_BODY,
+            len(_FILING_BODY),
+            "text/html",
+            len(_FILING_BODY.encode("utf-8")),
+            "success",
+            "2026-01-05T00:00:00Z",
+            "e" * 64,
+        ),
+    )
+    conn.commit()
+    result = module._step_sec_reparse(conn)
+    assert result["reparsed"] == 1
+    row = conn.execute(
+        "SELECT parser_version, parse_quality, document_hash FROM filing_documents "
+        "WHERE filing_id='filing:1' AND document_id='" + "e" * 64 + "'"
+    ).fetchone()
+    assert row["parser_version"]
+    assert row["parse_quality"] in ("full", "degraded")
+    assert row["document_hash"]
+    conn.close()
+
+
+def test_frozen_snapshot_path_in_alias_rejection_default(tmp_path):
+    """A5: the exact frozen snapshot path is always in the alias-rejection set."""
+    module = _load_script()
+    paths = module._frozen_live_db_paths(tmp_path)
+    assert module.FROZEN_SNAPSHOT_PATH in paths
+    with pytest.raises(ValueError):
+        module._reject_aliased_db(module.FROZEN_SNAPSHOT_PATH, repo_root=tmp_path)
+
+
+def test_prepare_requires_certified_identity_flags(tmp_path):
+    """A6: prepare must require certified snapshot/probe/postbuild identity flags."""
+    module = _load_script()
+    bench, q005 = _seal_files(tmp_path)
+    argv = [
+        "prepare",
+        "--derivative", str(_derivative(tmp_path)),
+        "--benchmark-manifest", str(bench),
+        "--q005-approval", str(q005),
+        "--source-bundle-output-root", str(tmp_path / "bundles"),
+        "--preparation-evidence", str(tmp_path / "preparation_evidence.json"),
+        "--expected-implementation-head", HEAD,
+    ]
+    with pytest.raises(SystemExit):
+        module._parse_args(argv)

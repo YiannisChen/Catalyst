@@ -30,6 +30,14 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 JOURNAL_DEFAULT = REPO_ROOT / "data" / "manifests" / "m3_promotion_journal.json"
 _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 
+# Exact frozen source snapshot (supervisor-locked). Always in the alias-rejection
+# set so a derivative can never be a symlink/hardlink/samefile of the frozen DB,
+# even when the worktree has no data/manifests/active_data_snapshot.json.
+FROZEN_SNAPSHOT_PATH = Path(
+    "/Users/yiannischen/Projects/Catalyst/data/snapshots/"
+    "catalyst_b2o_7a004accb187a17dd5661821913f5b84785af7fe448d6a92331f0bd8aea92f49.db"
+)
+
 from catalyst_data.index.v1_promote import (  # noqa: E402
     PromotionResult,
     promote_v1_generation,
@@ -76,8 +84,8 @@ def _require_head(expected_head: str, repo: Path = REPO_ROOT) -> None:
 
 
 def _frozen_live_db_paths(repo_root: Path = REPO_ROOT) -> list[Path]:
-    """Authoritative frozen/live DB paths from repo manifests when present."""
-    paths: list[Path] = []
+    """Authoritative frozen/live DB paths; always includes the frozen snapshot."""
+    paths: list[Path] = [FROZEN_SNAPSHOT_PATH]
     snapshot_manifest = repo_root / "data" / "manifests" / "active_data_snapshot.json"
     if snapshot_manifest.is_file():
         try:
@@ -117,47 +125,12 @@ def _reject_aliased_db(path: Path, repo_root: Path = REPO_ROOT) -> None:
 
 
 
-def _frozen_identity(conn: sqlite3.Connection, repo_root: Path = REPO_ROOT) -> dict[str, Any]:
-    """Resolve frozen identity for candidate staging without hardcoded constants.
-
-    Preference order: an existing derivative build row (idempotent rerun), then
-    the authoritative ``data/manifests/active_data_snapshot.json`` manifest.
-    Missing probe/postbuild readiness ids fail closed with an operator message
-    rather than guessing.
-    """
-    row = conn.execute(
-        "SELECT certified_snapshot_identity FROM corpus_publication_builds "
-        "WHERE certified_snapshot_identity IS NOT NULL "
-        "AND certified_snapshot_identity != '' LIMIT 1"
-    ).fetchone() if _table_exists(conn, "corpus_publication_builds") else None
-    snapshot_id = str(row[0]) if row is not None else ""
-    manifest: dict[str, Any] = {}
-    manifest_path = repo_root / "data" / "manifests" / "active_data_snapshot.json"
-    if manifest_path.is_file():
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            manifest = {}
-    if not snapshot_id and isinstance(manifest.get("snapshot_id"), str):
-        snapshot_id = manifest["snapshot_id"]
-    if not snapshot_id:
-        raise ValueError(
-            "certified snapshot identity unavailable: seed the derivative build "
-            "or provide data/manifests/active_data_snapshot.json"
-        )
-    return {
-        "certified_snapshot_identity": snapshot_id,
-        "snapshot_id": snapshot_id,
-        "probe_report_id": manifest.get("probe_report_id", ""),
-        "postbuild_readiness_id": manifest.get("postbuild_readiness_id", ""),
-    }
-
-
-def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
-    row = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
-    ).fetchone()
-    return row is not None
+def _validate_hex64(value: str, *, label: str) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(
+        ch not in "0123456789abcdef" for ch in value
+    ):
+        raise ValueError(f"{label} must be lowercase SHA-256")
+    return value
 
 
 def _resolve_required(path: Path, *, label: str) -> Path:
@@ -247,7 +220,7 @@ def _step_accepted_time(conn: sqlite3.Connection, q005_path: Path) -> dict[str, 
 
     q005 = json.loads(Path(q005_path).read_text(encoding="utf-8"))
     approve = q005.get("decision") == "approve_latest_plausible_instant"
-    recovered = 0
+    recovered_by_accession: dict[str, Any] = {}
     rows = conn.execute(
         "SELECT content_raw FROM raw_assets WHERE source_type='sec_filings'"
     ).fetchall()
@@ -268,27 +241,64 @@ def _step_accepted_time(conn: sqlite3.Connection, q005_path: Path) -> dict[str, 
             if not isinstance(accessions, list):
                 continue
             for accession in accessions:
-                filing = conn.execute(
-                    "SELECT * FROM filings WHERE accession_number=?", (accession,)
-                ).fetchone()
-                if filing is None:
+                if accession in recovered_by_accession:
                     continue
                 accepted = recover_accepted_time_candidate(
                     candidate, accession=accession
                 )
-                if accepted is None:
-                    continue
-                result = derive_eligible_at(
-                    filing, accepted, approve_latest_plausible=approve
-                )
-                persist_filing_temporal_repair(
-                    conn,
-                    filing_id=filing["filing_id"],
-                    result=result,
-                    accepted_time=accepted,
-                )
-                recovered += 1
-    return {"accepted_time_recovered": recovered}
+                if accepted is not None:
+                    recovered_by_accession[accession] = accepted
+
+    persisted = 0
+    recovered_count = 0
+    for filing in conn.execute("SELECT * FROM filings").fetchall():
+        accepted = recovered_by_accession.get(filing["accession_number"])
+        if accepted is not None:
+            recovered_count += 1
+        result = derive_eligible_at(
+            filing, accepted, approve_latest_plausible=approve
+        )
+        persist_filing_temporal_repair(
+            conn,
+            filing_id=filing["filing_id"],
+            result=result,
+            accepted_time=accepted,
+        )
+        persisted += 1
+    null_reason = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM filings WHERE eligible_at_reason IS NULL"
+        ).fetchone()[0]
+    )
+    if null_reason:
+        raise ValueError(
+            f"{null_reason} filings missing eligible_at_reason after accepted-time persistence"
+        )
+    return {
+        "accepted_time_recovered": recovered_count,
+        "persisted": persisted,
+    }
+
+
+def _retained_primary_bytes(
+    conn: sqlite3.Connection, row: Any
+) -> bytes | None:
+    """Return retained primary-document bytes for a filing when present."""
+    if not row["raw_asset_id"]:
+        return None
+    raw = conn.execute(
+        "SELECT content_raw FROM raw_assets WHERE asset_id=?",
+        (row["raw_asset_id"],),
+    ).fetchone()
+    if raw is None or not raw["content_raw"]:
+        return None
+    payload = _decode_payload(raw["content_raw"])
+    if not isinstance(payload, dict):
+        return None
+    text = payload.get("document_text")
+    if isinstance(text, str) and text.strip():
+        return text.encode("utf-8")
+    return None
 
 
 def _step_sec_reparse(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -299,39 +309,26 @@ def _step_sec_reparse(conn: sqlite3.Connection) -> dict[str, Any]:
     )
 
     reparsed = 0
-    missing = 0
+    skipped = 0
     rows = conn.execute(
-        """SELECT fd.filing_id, fd.document_id, f.accession_number,
-                  f.raw_asset_id
+        """SELECT fd.filing_id, fd.document_id, fd.text AS stored_text,
+                  f.accession_number, f.raw_asset_id
            FROM filing_documents fd
            JOIN filings f ON f.filing_id = fd.filing_id
-           WHERE f.raw_asset_id IS NOT NULL"""
+           WHERE fd.document_type='primary_doc'"""
     ).fetchall()
     for row in rows:
-        raw = conn.execute(
-            "SELECT content_raw FROM raw_assets WHERE asset_id=?",
-            (row["raw_asset_id"],),
-        ).fetchone()
-        if raw is None or not raw["content_raw"]:
-            missing += 1
-            continue
-        # Retained submissions envelopes are not the primary document; only
-        # payloads that actually decode to the primary document are reparsed.
-        payload = _decode_payload(raw["content_raw"])
-        if not isinstance(payload, dict):
-            missing += 1
-            continue
-        text = payload.get("document_text")
-        raw_bytes = (
-            text.encode("utf-8")
-            if isinstance(text, str) and text.strip()
-            else None
-        )
-        if raw_bytes is None:
-            missing += 1
+        # Retained primary payload takes precedence; otherwise reparse the
+        # stored extracted text (UTF-8). Unbindable empty documents are skipped
+        # (Batch B rules) and never fabricated into HTML.
+        primary_bytes = _retained_primary_bytes(conn, row)
+        if primary_bytes is None and row["stored_text"]:
+            primary_bytes = str(row["stored_text"]).encode("utf-8")
+        if primary_bytes is None:
+            skipped += 1
             continue
         result = reparse_filing(
-            raw_bytes,
+            primary_bytes,
             row["accession_number"],
             parser_version=SEC_EXTRACT_PARSER_VERSION,
         )
@@ -341,10 +338,12 @@ def _step_sec_reparse(conn: sqlite3.Connection) -> dict[str, Any]:
                 filing_id=row["filing_id"],
                 document_id=row["document_id"],
                 result=result,
-                extracted_text=text,
+                extracted_text=primary_bytes.decode("utf-8", "replace"),
             )
             reparsed += 1
-    return {"reparsed": reparsed, "missing_primary_payload": missing}
+        else:
+            skipped += 1
+    return {"reparsed": reparsed, "skipped": skipped}
 
 
 def _step_news_persistence(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -361,15 +360,17 @@ def _step_news_persistence(conn: sqlite3.Connection) -> dict[str, Any]:
            FROM articles a JOIN raw_assets r ON r.asset_id = a.raw_asset_id"""
     ).fetchall()
     for row in rows:
+        # sqlite3.Row is not a Mapping with .get; pass a dict to recover_body.
+        row_dict = dict(row)
         payload = _decode_payload(row["content_raw"])
         if payload is None:
             skipped += 1
             continue
-        result = recover_body(row, payload)
+        result = recover_body(row_dict, payload)
         persist_article_content_repair(
             conn,
-            article_id=row["article_id"],
-            normalized_url=normalize_url(row.get("url")),
+            article_id=row_dict["article_id"],
+            normalized_url=normalize_url(row_dict.get("article_url")),
             result=result,
         )
         repaired += 1
@@ -379,7 +380,7 @@ def _step_news_persistence(conn: sqlite3.Connection) -> dict[str, Any]:
 def _step_m35b_backfill(conn: sqlite3.Connection) -> dict[str, Any]:
     from catalyst_data.canonical.backfill import backfill_from_subtypes
 
-    result = backfill_from_subtypes(conn)
+    result = backfill_from_subtypes(conn, require_repairs=True)
     return {
         "assets": result.assets,
         "content_versions": result.content_versions,
@@ -524,6 +525,13 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     evidence_path = _resolve_required(
         args.preparation_evidence, label="--preparation-evidence"
     )
+    snapshot_id = _validate_hex64(args.snapshot_id, label="--snapshot-id")
+    probe_report_id = _validate_hex64(
+        args.probe_report_id, label="--probe-report-id"
+    )
+    postbuild_readiness_id = _validate_hex64(
+        args.postbuild_readiness_id, label="--postbuild-readiness-id"
+    )
     git_revision = _seal_git_revision(benchmark, q005)
 
     if args.dry_run:
@@ -532,6 +540,9 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
             "git_revision": git_revision,
             "dry_run": True,
             "derivative": str(derivative),
+            "snapshot_id": snapshot_id,
+            "probe_report_id": probe_report_id,
+            "postbuild_readiness_id": postbuild_readiness_id,
         }
 
     conn = _open_derivative(derivative)
@@ -542,6 +553,9 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
             "generated_at": datetime.now(timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
             ),
+            "snapshot_id": snapshot_id,
+            "probe_report_id": probe_report_id,
+            "postbuild_readiness_id": postbuild_readiness_id,
         }
         evidence["derivative"] = _step_derivative_migration(conn, derivative)
         evidence["accepted_time"] = _step_accepted_time(conn, q005)
@@ -551,23 +565,18 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         evidence["dedup_independence"] = _step_m36_dedup(conn)
         evidence["audit"] = _step_audit(conn)
         evidence["data01"] = _step_data01(conn, benchmark, q005, git_revision)
-        frozen = _frozen_identity(conn)
-        if not frozen["probe_report_id"] or not frozen["postbuild_readiness_id"]:
-            raise ValueError(
-                "probe/postbuild readiness identities unavailable; refuse to guess"
-            )
         candidate = _step_corpus_candidate(
             conn,
-            certified_snapshot_identity=frozen["certified_snapshot_identity"],
+            certified_snapshot_identity=snapshot_id,
             source_bundle_output_root=bundle_root,
-            snapshot_id=frozen["snapshot_id"],
-            probe_report_id=frozen["probe_report_id"],
-            postbuild_readiness_id=frozen["postbuild_readiness_id"],
+            snapshot_id=snapshot_id,
+            probe_report_id=probe_report_id,
+            postbuild_readiness_id=postbuild_readiness_id,
         )
         evidence["candidate"] = candidate
         evidence["bundle"] = _step_bundle_export(conn, candidate)
-        evidence["probe_report_id"] = frozen["probe_report_id"]
-        evidence["postbuild_readiness_id"] = frozen["postbuild_readiness_id"]
+        evidence["probe_report_id"] = probe_report_id
+        evidence["postbuild_readiness_id"] = postbuild_readiness_id
         evidence["build_id"] = candidate["build_id"]
         evidence["corpus_manifest_id"] = candidate["corpus_manifest_id"]
         evidence["chunk_count"] = candidate["chunk_count"]
@@ -740,6 +749,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     prepare.add_argument("--q005-approval", required=True, type=Path)
     prepare.add_argument("--source-bundle-output-root", required=True, type=Path)
     prepare.add_argument("--preparation-evidence", required=True, type=Path)
+    prepare.add_argument("--snapshot-id", required=True)
+    prepare.add_argument("--probe-report-id", required=True)
+    prepare.add_argument("--postbuild-readiness-id", required=True)
     prepare.add_argument("--expected-implementation-head", required=True)
     prepare.add_argument("--dry-run", action="store_true")
 
