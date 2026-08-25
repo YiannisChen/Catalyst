@@ -1192,9 +1192,11 @@ WHERE n.build_id=? AND n.eligibility='eligible'
   AND p.dedup_cluster_id IS n.dedup_cluster_id
 """
 
-# Removed tombstones: ordinary LEFT JOINs only; replacement_chunk_id comes from
-# the 1:1 temp_profile_replacements lookup and is filled regardless of reason.
-# No GROUP BY, no correlated EXISTS/MIN over the previous-served rows.
+# Removed tombstones: read the bounded temp_tombstone_survivors (previous
+# chunks absent from the new build) instead of anti-joining the full
+# previous-served snapshot. Ordinary 1:1 LEFT JOINs only; replacement_chunk_id
+# comes from the temp_profile_replacements lookup and is filled regardless of
+# reason. No GROUP BY, no correlated EXISTS/MIN over the previous-served rows.
 _RECON_REMOVED_TOMBSTONE_SQL = """
 INSERT INTO corpus_build_deltas
     (build_id, delta_kind, chunk_id, document_id, reason,
@@ -1209,9 +1211,7 @@ SELECT ?, 'tombstone', p.chunk_id, p.document_id,
        END,
        p.content_hash, p.metadata_hash,
        profile_replacement.replacement_chunk_id
-FROM temp_previous_served p
-LEFT JOIN corpus_build_chunks n
-  ON n.build_id=? AND n.chunk_id=p.chunk_id
+FROM temp_tombstone_survivors p
 LEFT JOIN (
     SELECT DISTINCT document_id FROM corpus_build_source_documents
     WHERE build_id=? AND eligibility='ineligible'
@@ -1222,7 +1222,6 @@ LEFT JOIN temp_profile_replacements profile_replacement
 LEFT JOIN (
     SELECT DISTINCT document_id FROM corpus_build_chunks WHERE build_id=?
 ) survivor ON survivor.document_id=p.document_id
-WHERE n.chunk_id IS NULL
 """
 
 _RECON_STATUSES_PENDING_SQL = """
@@ -1285,21 +1284,17 @@ _RECON_FINALIZE_VALIDATIONS = (
 )
 
 # 1:1 lookup: GROUP BY MIN only over DISTINCT survivor profiles x
-# temp_new_doc_profiles, never over the 295k-row previous-served table.
+# temp_new_doc_profiles, never over the 295k-row previous-served table and
+# never by re-joining the target chunks.
 _RECON_PROFILE_REPLACEMENTS_SQL = """
 CREATE TEMP TABLE temp_profile_replacements AS
 SELECT p.document_id, p.chunk_profile_version,
-       MIN(survivor.chunk_id COLLATE BINARY) AS replacement_chunk_id
+       MIN(n.min_chunk_id COLLATE BINARY) AS replacement_chunk_id
 FROM (SELECT DISTINCT document_id, chunk_profile_version
-      FROM temp_previous_served) p
-JOIN (SELECT DISTINCT document_id, chunk_profile_version
-      FROM temp_new_doc_profiles) n
+      FROM temp_tombstone_survivors) p
+JOIN temp_new_doc_profiles n
   ON n.document_id = p.document_id
  AND n.chunk_profile_version != p.chunk_profile_version
-JOIN corpus_build_chunks survivor
-  ON survivor.build_id=?
- AND survivor.document_id=n.document_id
- AND survivor.chunk_profile_version=n.chunk_profile_version
 GROUP BY p.document_id, p.chunk_profile_version
 """
 
@@ -1473,6 +1468,7 @@ def _materialize_reconciliation_temp(
 
     def statements() -> None:
         conn.execute("DROP TABLE IF EXISTS temp_previous_served")
+        conn.execute("DROP TABLE IF EXISTS temp_tombstone_survivors")
         conn.execute("DROP TABLE IF EXISTS temp_profile_replacements")
         conn.execute("DROP TABLE IF EXISTS temp_new_doc_profiles")
         conn.execute(
@@ -1508,16 +1504,41 @@ def _materialize_reconciliation_temp(
             "CREATE INDEX idx_temp_previous_served_document ON temp_previous_served(document_id)"
         )
         conn.execute(
+            """CREATE TEMP TABLE temp_tombstone_survivors (
+                chunk_id TEXT COLLATE BINARY PRIMARY KEY,
+                document_id TEXT NOT NULL,
+                chunk_profile_version TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                metadata_hash TEXT NOT NULL
+            ) WITHOUT ROWID"""
+        )
+        conn.execute(
+            """INSERT INTO temp_tombstone_survivors
+               SELECT p.chunk_id, p.document_id, p.chunk_profile_version,
+                      p.content_hash, p.metadata_hash
+               FROM temp_previous_served p
+               LEFT JOIN corpus_build_chunks n
+                 ON n.build_id=? AND n.chunk_id=p.chunk_id
+               WHERE n.chunk_id IS NULL""",
+            (build_id,),
+        )
+        conn.execute(
+            """CREATE INDEX idx_temp_tombstone_survivors_document
+               ON temp_tombstone_survivors(document_id, chunk_profile_version)"""
+        )
+        conn.execute(
             """CREATE TEMP TABLE temp_new_doc_profiles AS
-               SELECT DISTINCT document_id, chunk_profile_version
-               FROM corpus_build_chunks WHERE build_id=?""",
+               SELECT document_id, chunk_profile_version,
+                      MIN(chunk_id COLLATE BINARY) AS min_chunk_id
+               FROM corpus_build_chunks WHERE build_id=?
+               GROUP BY document_id, chunk_profile_version""",
             (build_id,),
         )
         conn.execute(
             """CREATE INDEX idx_temp_new_doc_profiles_lookup
                ON temp_new_doc_profiles(document_id, chunk_profile_version)"""
         )
-        conn.execute(_RECON_PROFILE_REPLACEMENTS_SQL, (build_id,))
+        conn.execute(_RECON_PROFILE_REPLACEMENTS_SQL)
         conn.execute(
             """CREATE INDEX idx_temp_profile_replacements_lookup
                ON temp_profile_replacements(document_id, chunk_profile_version)"""
@@ -1732,7 +1753,7 @@ def _recon_phase_removed_tombstones(
                                 'disappeared_child','document_removed')""",
             (build_id,),
         )
-        conn.execute(_RECON_REMOVED_TOMBSTONE_SQL, (build_id, build_id, build_id, build_id))
+        conn.execute(_RECON_REMOVED_TOMBSTONE_SQL, (build_id, build_id, build_id))
 
     _run_recon_transaction(
         conn,
@@ -1914,6 +1935,7 @@ def explain_reconciliation_dml(
     drops the TEMP tables.
     """
     conn.execute("DROP TABLE IF EXISTS temp_previous_served")
+    conn.execute("DROP TABLE IF EXISTS temp_tombstone_survivors")
     conn.execute("DROP TABLE IF EXISTS temp_profile_replacements")
     conn.execute("DROP TABLE IF EXISTS temp_new_doc_profiles")
     conn.execute(
@@ -1933,9 +1955,23 @@ def explain_reconciliation_dml(
         "CREATE INDEX idx_temp_previous_served_document ON temp_previous_served(document_id)"
     )
     conn.execute(
+        """CREATE TEMP TABLE temp_tombstone_survivors (
+            chunk_id TEXT COLLATE BINARY PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            chunk_profile_version TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            metadata_hash TEXT NOT NULL
+        ) WITHOUT ROWID"""
+    )
+    conn.execute(
+        """CREATE INDEX idx_temp_tombstone_survivors_document
+           ON temp_tombstone_survivors(document_id, chunk_profile_version)"""
+    )
+    conn.execute(
         """CREATE TEMP TABLE temp_new_doc_profiles (
             document_id TEXT NOT NULL,
-            chunk_profile_version TEXT NOT NULL
+            chunk_profile_version TEXT NOT NULL,
+            min_chunk_id TEXT
         )"""
     )
     conn.execute(
@@ -1960,7 +1996,7 @@ def explain_reconciliation_dml(
         (
             "removed_tombstones",
             _RECON_REMOVED_TOMBSTONE_SQL,
-            (build_id, build_id, build_id, build_id),
+            (build_id, build_id, build_id),
         ),
     )
     plans: dict[str, tuple[tuple[object, ...], ...]] = {}

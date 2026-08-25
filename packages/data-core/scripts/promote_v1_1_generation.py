@@ -134,6 +134,13 @@ def _validate_hex64(value: str, *, label: str) -> str:
     return value
 
 
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be > 0")
+    return parsed
+
+
 def _resolve_required(path: Path, *, label: str) -> Path:
     candidate = Path(path)
     if not candidate.is_absolute():
@@ -648,7 +655,10 @@ def _prepare_resume(args: argparse.Namespace) -> dict[str, Any]:
                 "DATA-01 gate failed; refusing to resume a candidate"
             )
         summary = resume_candidate_reconciliation(
-            conn, build_id=build_id, operator_interrupt=flags
+            conn,
+            build_id=build_id,
+            deadline=args.reconciliation_deadline_seconds,
+            operator_interrupt=flags,
         )
         manifest_row = conn.execute(
             "SELECT manifest_id FROM corpus_publication_builds WHERE build_id=?",
@@ -1115,6 +1125,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     prepare.add_argument("--expected-implementation-head", required=True)
     prepare.add_argument("--resume-build-id", default=None,
                         help="resume reconciliation/FTS for an existing build id")
+    prepare.add_argument("--reconciliation-deadline-seconds", type=_positive_float,
+                         default=900.0,
+                         help="per-phase reconciliation deadline in seconds (default 900.0)")
     prepare.add_argument("--dry-run", action="store_true")
 
     promote = subparsers.add_parser("promote", help="promote a prepared generation")

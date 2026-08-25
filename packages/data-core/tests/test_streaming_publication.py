@@ -1746,11 +1746,12 @@ def test_reconciliation_delta_sql_uses_temp_indexes_no_served_view(tmp_path):
         sp._RECON_TO_EMBED_SQL,
         sp._RECON_CLUSTER_TOMBSTONE_SQL,
         sp._RECON_METADATA_UPDATE_SQL,
-        sp._RECON_REMOVED_TOMBSTONE_SQL,
     ):
         assert "temp_previous_served" in sql
         assert "corpus_served_chunks" not in sql
     removed = sp._RECON_REMOVED_TOMBSTONE_SQL
+    assert "temp_tombstone_survivors" in removed
+    assert "temp_previous_served" not in removed
     assert "temp_profile_replacements" in removed
     assert "GROUP BY" not in removed
     assert "EXISTS (" not in removed
@@ -1758,7 +1759,7 @@ def test_reconciliation_delta_sql_uses_temp_indexes_no_served_view(tmp_path):
     replacements = sp._RECON_PROFILE_REPLACEMENTS_SQL
     assert "GROUP BY" in replacements
     assert "temp_new_doc_profiles" in replacements
-    assert "temp_previous_served" in replacements
+    assert "temp_tombstone_survivors" in replacements
 
     conn = _make_db(tmp_path / "explain.db")
     ensure_streaming_publication_schema(conn)
@@ -1766,7 +1767,7 @@ def test_reconciliation_delta_sql_uses_temp_indexes_no_served_view(tmp_path):
     plans = sp.explain_reconciliation_dml(conn, build_id=build_id)
     removed_plan = " ".join(str(row) for row in plans["removed_tombstones"])
     assert "idx_temp_profile_replacements_lookup" in removed_plan
-    assert "SCAN p" in removed_plan  # temp_previous_served is the previous-served scan
+    assert "SCAN p" in removed_plan  # survivor TEMP is the bounded scan source
     assert "corpus_served_chunks" not in removed_plan
     assert "SCALAR SUBQUERY" not in removed_plan
     for phase in ("to_embed", "cluster_tombstones", "metadata_updates"):
@@ -2655,3 +2656,139 @@ def test_reconciliation_resume_rejects_base_rows_appearing_after_initialize(tmp_
     conn.commit()
     with pytest.raises(ValueError, match="base chunk count changed"):
         resume_candidate_reconciliation(conn, build_id=build_id)
+
+
+def test_reconciliation_removed_sql_reads_survivors_not_full_previous():
+    from catalyst_data.corpus import streaming_publication as sp
+
+    removed = sp._RECON_REMOVED_TOMBSTONE_SQL
+    # Removed tombstones read the bounded survivor TEMP, not the full
+    # previous-served snapshot, and the INSERT no longer anti-joins the target.
+    assert "temp_tombstone_survivors" in removed
+    assert "temp_previous_served" not in removed
+    assert "n.chunk_id IS NULL" not in removed
+    assert "corpus_build_chunks n" not in removed
+    # The 1:1 lookups and CASE precedence are preserved.
+    assert "ineligible" in removed
+    assert "temp_profile_replacements" in removed
+    assert "survivor" in removed
+    assert removed.index("eligibility_lost") < removed.index(
+        "profile_version_replaced"
+    )
+    assert removed.index("profile_version_replaced") < removed.index(
+        "disappeared_child"
+    )
+    assert removed.index("disappeared_child") < removed.index("document_removed")
+    assert "replacement_chunk_id" in removed
+
+
+def test_reconciliation_profile_replacements_built_from_survivors(tmp_path):
+    from catalyst_data.corpus import streaming_publication as sp
+
+    replacements = sp._RECON_PROFILE_REPLACEMENTS_SQL
+    # Replacements are built from the bounded survivor profiles x new-doc
+    # profiles, never from the full previous-served snapshot, and never by
+    # re-joining the target chunks.
+    assert "temp_tombstone_survivors" in replacements
+    assert "temp_previous_served" not in replacements
+    assert "temp_new_doc_profiles" in replacements
+    assert "min_chunk_id" in replacements
+    assert "GROUP BY" in replacements
+    assert "corpus_build_chunks" not in replacements
+
+    conn = _make_db(tmp_path / "survivors.db", article_count=1)
+    _seed_legacy_matrix(conn)
+    build_id = "a" * 64
+    _seed_matrix_build(conn, build_id)
+    flags = sp._recon_flags(None)
+    sp._materialize_reconciliation_temp(
+        conn, build_id=build_id, deadline=900.0, flags=flags
+    )
+    assert (
+        conn.execute("SELECT COUNT(*) FROM temp_previous_served").fetchone()[0]
+        == 7
+    )
+    survivors = conn.execute(
+        """SELECT chunk_id, document_id, chunk_profile_version,
+                  content_hash, metadata_hash
+           FROM temp_tombstone_survivors"""
+    ).fetchall()
+    # Only the previous chunk missing from the new build survives.
+    assert survivors == [
+        ("r:news_v2:body:0001", "doc-r", "news_v2", _h64("c1"), _h64("m1"))
+    ]
+    # doc-r has no replacement profile in the new build, so no replacement row.
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM temp_profile_replacements"
+        ).fetchone()[0]
+        == 0
+    )
+
+
+def test_reconciliation_resume_from_metadata_updates_done_keeps_to_embed_unchanged(
+    tmp_path,
+):
+    from catalyst_data.corpus.streaming_publication import (
+        resume_candidate_reconciliation,
+    )
+
+    conn = _make_db(tmp_path / "resume-metadata.db", article_count=2)
+    with pytest.raises(RuntimeError, match="injected:after_recon_metadata_updates_done"):
+        build_streaming_corpus_and_lexical_index(
+            conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=lambda point: (
+                (_ for _ in ()).throw(
+                    RuntimeError("injected:after_recon_metadata_updates_done")
+                )
+                if point == "after_recon_metadata_updates_done"
+                else None
+            ),
+        )
+    build_id = conn.execute(
+        "SELECT build_id FROM corpus_publication_builds"
+    ).fetchone()[0]
+    assert (
+        conn.execute(
+            "SELECT reconciliation_checkpoint FROM corpus_publication_builds "
+            "WHERE build_id=?",
+            (build_id,),
+        ).fetchone()[0]
+        == "metadata_updates_done"
+    )
+    to_embed_before = conn.execute(
+        "SELECT COUNT(*) FROM corpus_build_deltas "
+        "WHERE build_id=? AND delta_kind='to_embed'",
+        (build_id,),
+    ).fetchone()[0]
+    assert to_embed_before > 0
+
+    summary = resume_candidate_reconciliation(conn, build_id=build_id)
+    to_embed_after = conn.execute(
+        "SELECT COUNT(*) FROM corpus_build_deltas "
+        "WHERE build_id=? AND delta_kind='to_embed'",
+        (build_id,),
+    ).fetchone()[0]
+    assert to_embed_after == to_embed_before
+    # No duplicated to_embed rows from the remaining phases.
+    assert (
+        conn.execute(
+            """SELECT COUNT(*) FROM (
+                 SELECT chunk_id FROM corpus_build_deltas
+                 WHERE build_id=? AND delta_kind='to_embed'
+                 GROUP BY chunk_id HAVING COUNT(*) > 1
+               )""",
+            (build_id,),
+        ).fetchone()[0]
+        == 0
+    )
+    assert (
+        conn.execute(
+            "SELECT status, reconciliation_checkpoint, reconciliation_ready "
+            "FROM corpus_publication_builds WHERE build_id=?",
+            (build_id,),
+        ).fetchone()
+        == ("reconciliation_ready", "reconciliation_ready", 1)
+    )

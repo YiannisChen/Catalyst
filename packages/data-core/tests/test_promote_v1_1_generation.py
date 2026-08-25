@@ -1789,3 +1789,22 @@ def test_prepare_resume_signal_sets_operator_interrupt_flag_and_restores(
     # getSignal reports the previous handler after restore.
     assert module.signal.getsignal(signal.SIGINT) == "previous-handler"
     assert module.signal.getsignal(signal.SIGTERM) == "previous-handler"
+
+
+def test_prepare_parser_accepts_reconciliation_deadline_seconds(tmp_path):
+    """A2: prepare accepts --reconciliation-deadline-seconds with default 900.0 and rejects <=0."""
+    module = _load_script()
+    argv = _prepare_argv(tmp_path) + [
+        "--reconciliation-deadline-seconds",
+        "3600",
+    ]
+    args = module._parse_args(argv)
+    assert args.reconciliation_deadline_seconds == 3600.0
+    plain = module._parse_args(_prepare_argv(tmp_path))
+    assert plain.reconciliation_deadline_seconds == 900.0
+    for bad in ("0", "-5", "0.0"):
+        with pytest.raises(SystemExit):
+            module._parse_args(
+                _prepare_argv(tmp_path)
+                + ["--reconciliation-deadline-seconds", bad]
+            )
