@@ -459,3 +459,261 @@ def test_stage_dense_rejects_chunks_jsonl_missing_required_fields(tmp_path):
             new_index_manifest=manifest,
             expected_chunk_count=2,
         )
+
+
+# ---------------------------------------------------------------------------
+# M3 corrective regression (supervisor Finding 1): stage_dense must complete a
+# bounded validation pass BEFORE any LanceDB table mutation. A malformed late
+# row (past the first 512-row staging batch), a short source, a trailing
+# source row, or a late order/hash failure must leave no candidate table and
+# no candidate_generation.json.
+# ---------------------------------------------------------------------------
+
+_DB_DDL = """
+CREATE TABLE corpus_build_chunks (
+    build_id TEXT NOT NULL,
+    chunk_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    chunk_profile_version TEXT NOT NULL,
+    section_key TEXT NOT NULL,
+    ordinal TEXT NOT NULL,
+    content_text TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    metadata_hash TEXT NOT NULL,
+    source_class TEXT NOT NULL,
+    dedup_cluster_id TEXT,
+    cluster_first_available_at TEXT,
+    representative_document_id TEXT,
+    available_at TEXT NOT NULL,
+    ticker_associations TEXT NOT NULL,
+    eligibility TEXT NOT NULL,
+    status TEXT NOT NULL,
+    boundary_kind TEXT NOT NULL,
+    body_token_start INTEGER NOT NULL,
+    body_token_end INTEGER NOT NULL,
+    body_overlap_tokens INTEGER NOT NULL,
+    prefix_token_count INTEGER NOT NULL,
+    prefix_truncated INTEGER NOT NULL,
+    section_parse_degraded INTEGER NOT NULL,
+    source_kind TEXT NOT NULL,
+    provider TEXT,
+    source_type TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    canonical_asset_id TEXT,
+    content_version_id TEXT,
+    corpus_document_id TEXT,
+    content_state TEXT,
+    independence_group_id TEXT,
+    parse_quality TEXT
+)
+"""
+
+
+def _db_with_many_build_rows(
+    tmp_path: Path,
+    *,
+    count: int,
+    build_id: str = "1" * 64,
+    malformed_ticker_index: int | None = None,
+    bad_hash_index: int | None = None,
+    bad_order_index: int | None = None,
+    extra_rows: int = 0,
+) -> tuple[Path, str]:
+    """Fixture derivative with `count` corpus_build_chunks rows matching
+    _artifact_dir chunk_ids (chunk:0000..). Optional per-row mutations inject
+    late failures after the first 512-row staging batch."""
+    import sqlite3
+
+    db = tmp_path / "derivative.db"
+    conn = sqlite3.connect(db)
+    conn.execute(_DB_DDL)
+    rows = []
+    for index in range(count):
+        text = f"fixture {index}"
+        chunk_id = f"chunk:{index:04d}"
+        content_hash = hashlib.sha256(text.encode()).hexdigest()
+        ticker = '["AAPL"]'
+        if malformed_ticker_index == index:
+            ticker = "not-json"
+        if bad_hash_index == index:
+            content_hash = "0" * 64
+        if bad_order_index == index and index > 0:
+            chunk_id = f"chunk:{index - 1:04d}"
+        rows.append(
+            (
+                build_id, chunk_id, f"doc:{index}", "news_v2", "body", "0001",
+                text, content_hash, f"m{index:064x}", "reported_news",
+                f"v1:dedup:cluster{index}", "2026-08-01T00:00:00Z", f"doc:{index}",
+                "2026-08-01T00:00:00Z", ticker, "eligible", "pending_embedding",
+                "served", 0, 10, 0, 0, 0, 0, "news", "provider", "type",
+                "2026-08-01T00:00:00Z", "2026-08-01T00:00:00Z", None, None, None,
+                "METADATA_ONLY", None, "not_applicable",
+            )
+        )
+    for index in range(extra_rows):
+        text = f"fixture extra {index}"
+        chunk_id = f"chunk:extra{index:04d}"
+        rows.append(
+            (
+                build_id, chunk_id, f"doc-extra:{index}", "news_v2", "body", "0001",
+                text, hashlib.sha256(text.encode()).hexdigest(),
+                f"e{index:064x}", "reported_news", None, "2026-08-01T00:00:00Z",
+                f"doc-extra:{index}", "2026-08-01T00:00:00Z", '["AAPL"]',
+                "eligible", "pending_embedding", "served", 0, 10, 0, 0, 0, 0,
+                "news", "provider", "type", "2026-08-01T00:00:00Z",
+                "2026-08-01T00:00:00Z", None, None, None, "METADATA_ONLY", None,
+                "not_applicable",
+            )
+        )
+    conn.executemany(
+        "INSERT INTO corpus_build_chunks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+    return db, build_id
+
+
+def _preserved_active_root(tmp_path: Path, source_bundle_id: str = "1" * 64) -> tuple[Path, Path, Path]:
+    """Create a gold root with an active pointer plus a real prior table."""
+    import lancedb
+
+    gold = tmp_path / "lancedb_gold" / source_bundle_id
+    gold.mkdir(parents=True)
+    active = gold / "active_generation.json"
+    active.write_text(
+        json.dumps({"schema_version": "active_generation_v1", "table_name": "live_table"}),
+        encoding="utf-8",
+    )
+    db = lancedb.connect(str(gold))
+    db.create_table(
+        "live_table",
+        data=[{"chunk_id": "prior:0000", "vector": [0.0] * BGE_M3_DIMENSION}],
+    )
+    return gold, active, db.open_table("live_table")
+
+
+def _assert_no_partial_candidate(manifest_dir: Path, active: Path, before: bytes, prior_table: Any) -> None:
+    assert not (manifest_dir / "candidate_generation.json").exists()
+    assert not list(Path(manifest_dir).glob("*.lance"))
+    assert active.read_bytes() == before
+    assert prior_table.count_rows() == 1
+
+
+def test_stage_dense_late_malformed_row_fails_before_table_mutation(tmp_path):
+    """A malformed metadata row after the first 512-row staging batch must
+    raise before any LanceDB table is created."""
+    from catalyst_data.index.v1_staging import stage_dense
+    import sqlite3
+
+    count = 1024
+    artifact, chunk_ids, _vectors = _artifact_dir(tmp_path, count=count)
+    (artifact / "chunks.jsonl").unlink()  # real GPU artifact has no chunks.jsonl
+    db, build_id = _db_with_many_build_rows(
+        tmp_path, count=count, malformed_ticker_index=600
+    )
+    manifest = _manifest(artifact, vector_count=count, source_bundle_id="1" * 64)
+    gold, active, prior_table = _preserved_active_root(tmp_path)
+    before = active.read_bytes()
+    manifest_dir = gold / "candidates" / manifest.index_manifest_id
+    conn = sqlite3.connect(db)
+    try:
+        with pytest.raises(ValueError):
+            stage_dense(
+                manifest_dir,
+                embedding_artifact_dir=artifact,
+                new_index_manifest=manifest,
+                expected_chunk_count=count,
+                source_conn=conn,
+                source_build_id=build_id,
+            )
+    finally:
+        conn.close()
+    _assert_no_partial_candidate(manifest_dir, active, before, prior_table)
+
+
+def test_stage_dense_fewer_rows_fails_before_table_mutation(tmp_path):
+    from catalyst_data.index.v1_staging import stage_dense
+    import sqlite3
+
+    count = 1024
+    artifact, chunk_ids, _vectors = _artifact_dir(tmp_path, count=count)
+    (artifact / "chunks.jsonl").unlink()
+    db, build_id = _db_with_many_build_rows(tmp_path, count=count - 512)  # short source
+    manifest = _manifest(artifact, vector_count=count, source_bundle_id="1" * 64)
+    gold, active, prior_table = _preserved_active_root(tmp_path)
+    before = active.read_bytes()
+    manifest_dir = gold / "candidates" / manifest.index_manifest_id
+    conn = sqlite3.connect(db)
+    try:
+        with pytest.raises(ValueError):
+            stage_dense(
+                manifest_dir,
+                embedding_artifact_dir=artifact,
+                new_index_manifest=manifest,
+                expected_chunk_count=count,
+                source_conn=conn,
+                source_build_id=build_id,
+            )
+    finally:
+        conn.close()
+    _assert_no_partial_candidate(manifest_dir, active, before, prior_table)
+
+
+def test_stage_dense_trailing_row_fails_before_table_mutation(tmp_path):
+    from catalyst_data.index.v1_staging import stage_dense
+    import sqlite3
+
+    count = 1024
+    artifact, chunk_ids, _vectors = _artifact_dir(tmp_path, count=count)
+    (artifact / "chunks.jsonl").unlink()
+    db, build_id = _db_with_many_build_rows(tmp_path, count=count, extra_rows=1)
+    manifest = _manifest(artifact, vector_count=count, source_bundle_id="1" * 64)
+    gold, active, prior_table = _preserved_active_root(tmp_path)
+    before = active.read_bytes()
+    manifest_dir = gold / "candidates" / manifest.index_manifest_id
+    conn = sqlite3.connect(db)
+    try:
+        with pytest.raises(ValueError):
+            stage_dense(
+                manifest_dir,
+                embedding_artifact_dir=artifact,
+                new_index_manifest=manifest,
+                expected_chunk_count=count,
+                source_conn=conn,
+                source_build_id=build_id,
+            )
+    finally:
+        conn.close()
+    _assert_no_partial_candidate(manifest_dir, active, before, prior_table)
+
+
+def test_stage_dense_late_hash_and_order_failures_fail_before_table_mutation(tmp_path):
+    from catalyst_data.index.v1_staging import stage_dense
+    import sqlite3
+
+    for iteration, mutation in enumerate((dict(bad_hash_index=900), dict(bad_order_index=700))):
+        root = tmp_path / f"iter_{iteration}"
+        root.mkdir()
+        artifact, chunk_ids, _vectors = _artifact_dir(root, count=1024)
+        (artifact / "chunks.jsonl").unlink()
+        db, build_id = _db_with_many_build_rows(root, count=1024, **mutation)
+        manifest = _manifest(artifact, vector_count=1024, source_bundle_id="1" * 64)
+        gold, active, prior_table = _preserved_active_root(root)
+        before = active.read_bytes()
+        manifest_dir = gold / "candidates" / manifest.index_manifest_id
+        conn = sqlite3.connect(db)
+        try:
+            with pytest.raises(ValueError):
+                stage_dense(
+                    manifest_dir,
+                    embedding_artifact_dir=artifact,
+                    new_index_manifest=manifest,
+                    expected_chunk_count=1024,
+                    source_conn=conn,
+                    source_build_id=build_id,
+                )
+        finally:
+            conn.close()
+        _assert_no_partial_candidate(manifest_dir, active, before, prior_table)

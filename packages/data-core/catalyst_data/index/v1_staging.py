@@ -318,20 +318,27 @@ def stage_dense(
         validate_dense_candidate(candidate, expected_chunk_count=expected_chunk_count)
         return candidate
 
-    if has_db:
-        metadata_iter = _iter_candidate_metadata(source_conn, build_id=source_build_id)
-    else:
-        metadata_iter = _artifact_metadata_rows(artifact_records, chunk_ids)
+    def metadata_factory() -> Iterator[dict[str, Any]]:
+        """Return a fresh authoritative metadata iterator for each pass.
 
-    import lancedb
+        Both the derivative path and the artifact path build independent,
+        repeatable iterators, so the validation pass and the staging pass can
+        each consume the full source without materializing it in memory.
+        """
+        if has_db:
+            return _iter_candidate_metadata(source_conn, build_id=source_build_id)
+        return _artifact_metadata_rows(artifact_records, chunk_ids)
 
-    db = lancedb.connect(str(manifest_dir))
-    table = db.create_table(table_name, data=[], schema=production_lancedb_schema())
-    batch: list[dict[str, Any]] = []
+    # Pass 1 — complete bounded validation BEFORE any LanceDB mutation.
+    # Validates count, order, duplicates, required fields, field types,
+    # content_hash, ticker JSON and artifact/source alignment for every row.
+    # No table is connected/created, no row is added and no
+    # candidate_generation.json is written during this pass.
+    validation_iter = metadata_factory()
     previous_chunk_id = ""
     for index, chunk_id in enumerate(chunk_ids):
         try:
-            row = next(metadata_iter)
+            row = next(validation_iter)
         except StopIteration as exc:
             raise ValueError(
                 "chunk metadata source has fewer rows than artifact chunk_ids"
@@ -347,44 +354,70 @@ def stage_dense(
             artifact_row = artifact_records[chunk_id]
             if artifact_row.get("content_hash") != row["content_hash"]:
                 raise ValueError(f"artifact/content_hash mismatch for {chunk_id}")
-        ticker_associations = _validate_ticker_associations(
-            row["ticker_associations"], chunk_id=chunk_id
-        )
-        batch.append(
-            {
-                "chunk_id": chunk_id,
-                "document_id": row["document_id"],
-                "content_text": row["content_text"],
-                "content_hash": row["content_hash"],
-                "metadata_hash": row["metadata_hash"],
-                "available_at": row["available_at"],
-                "ticker_associations": ticker_associations,
-                "source_class": row["source_class"],
-                "chunk_profile_version": row["chunk_profile_version"],
-                "status": row["status"],
-                "eligibility": row["eligibility"],
-                "dedup_cluster_id": row["dedup_cluster_id"],
-                "cluster_first_available_at": row["cluster_first_available_at"],
-                "representative_document_id": row["representative_document_id"],
-                "corpus_manifest_id": new_index_manifest.corpus_manifest_id,
-                "source_bundle_id": new_index_manifest.source_bundle_id,
-                "snapshot_id": new_index_manifest.snapshot_id,
-                "probe_report_id": new_index_manifest.probe_report_id,
-                "postbuild_readiness_id": new_index_manifest.postbuild_readiness_id,
-                "index_manifest_id": new_index_manifest.index_manifest_id,
-                "vector": vectors[index].tolist(),
-            }
-        )
-        if len(batch) >= _STAGING_ADD_BATCH:
-            table.add(batch)
-            batch = []
-    try:
-        extra = next(metadata_iter, None)
-    except StopIteration:
-        extra = None
-    if extra is not None:
+        # Per-row required-field/type/content-hash/ticker validation was
+        # already performed by the metadata iterator (_validate_metadata_record).
+    if next(validation_iter, None) is not None:
         raise ValueError("chunk metadata source has more rows than artifact chunk_ids")
-    if batch:
-        table.add(batch)
+
+    # Pass 2 — only after the complete validation pass succeeds may the
+    # candidate table be created; rows are streamed in bounded batches.
+    import lancedb
+
+    db = lancedb.connect(str(manifest_dir))
+    table = None
+    try:
+        table = db.create_table(table_name, data=[], schema=production_lancedb_schema())
+        staging_iter = metadata_factory()
+        batch: list[dict[str, Any]] = []
+        for index, chunk_id in enumerate(chunk_ids):
+            row = next(staging_iter)  # pass 1 already proved row availability
+            if row["chunk_id"] != chunk_id:
+                raise ValueError(
+                    "chunk_id mismatch between artifact and chunk metadata source"
+                )
+            ticker_associations = _validate_ticker_associations(
+                row["ticker_associations"], chunk_id=chunk_id
+            )
+            batch.append(
+                {
+                    "chunk_id": chunk_id,
+                    "document_id": row["document_id"],
+                    "content_text": row["content_text"],
+                    "content_hash": row["content_hash"],
+                    "metadata_hash": row["metadata_hash"],
+                    "available_at": row["available_at"],
+                    "ticker_associations": ticker_associations,
+                    "source_class": row["source_class"],
+                    "chunk_profile_version": row["chunk_profile_version"],
+                    "status": row["status"],
+                    "eligibility": row["eligibility"],
+                    "dedup_cluster_id": row["dedup_cluster_id"],
+                    "cluster_first_available_at": row["cluster_first_available_at"],
+                    "representative_document_id": row["representative_document_id"],
+                    "corpus_manifest_id": new_index_manifest.corpus_manifest_id,
+                    "source_bundle_id": new_index_manifest.source_bundle_id,
+                    "snapshot_id": new_index_manifest.snapshot_id,
+                    "probe_report_id": new_index_manifest.probe_report_id,
+                    "postbuild_readiness_id": new_index_manifest.postbuild_readiness_id,
+                    "index_manifest_id": new_index_manifest.index_manifest_id,
+                    "vector": vectors[index].tolist(),
+                }
+            )
+            if len(batch) >= _STAGING_ADD_BATCH:
+                table.add(batch)
+                batch = []
+        if next(staging_iter, None) is not None:
+            raise ValueError("chunk metadata source has more rows than artifact chunk_ids")
+        if batch:
+            table.add(batch)
+    except BaseException:
+        # A failure after table creation must never leave a partial candidate
+        # capable of being reused: drop the table we created.
+        if table is not None:
+            try:
+                db.drop_table(table_name)
+            except Exception:
+                pass
+        raise
     _atomic_json(candidate.candidate_generation_path, _candidate_payload(candidate))
     return candidate
