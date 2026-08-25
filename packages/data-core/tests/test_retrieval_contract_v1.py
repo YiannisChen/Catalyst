@@ -7,6 +7,7 @@ import pytest
 from catalyst_data.retrieval.v1_result import RetrievalResultSet as V1RetrievalResultSet
 from retrieval_model_fixtures import RecordingReranker, make_result
 from test_corpus_rebuild_v1 import (
+    NOW,
     POSTBUILD,
     PROBE,
     SNAPSHOT,
@@ -21,6 +22,13 @@ def _stage(tmp_path):
     from catalyst_data.corpus.streaming_publication import stage_corpus_candidate
 
     conn = _fixture_conn(tmp_path / "m3-11.db")
+    conn.execute(
+        """INSERT INTO corpus_manifest
+           (manifest_id, manifest_json, is_current, created_at)
+           VALUES (?, '{}', 1, ?)""",
+        ("a" * 64, NOW),
+    )
+    conn.commit()
     candidate = stage_corpus_candidate(
         conn,
         certified_snapshot_identity=SNAPSHOT,

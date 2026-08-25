@@ -1389,28 +1389,51 @@ def _run_recon_transaction(
 
 
 def _reconciliation_base(conn: sqlite3.Connection) -> tuple[str, str | None, str | None, int | None]:
-    """Resolve the previous-served base for reconciliation.
+    """Fail-closed resolver for the previous-served reconciliation base.
 
-    Returns (kind, build_id, manifest_id, published_chunk_count). A published
-    build that owns the current manifest wins; otherwise the current manifest's
-    legacy corpus_chunks rows (checked only on the CURRENT manifest) are the
-    base.
+    Returns (kind, build_id, manifest_id, published_chunk_count). Exactly one
+    current manifest is required. If exactly one published build owns that
+    manifest it is the base, but only when no legacy corpus_chunks rows exist
+    for the SAME current manifest (a published build AND legacy rows is
+    ambiguous and fails closed). Otherwise the current manifest's legacy rows
+    are the base. Never silently picks a winner with ORDER BY/LIMIT.
     """
-    published = conn.execute(
-        """SELECT b.build_id, b.manifest_id, b.chunk_count
-           FROM corpus_publication_builds b
-           JOIN corpus_manifest m ON m.manifest_id=b.manifest_id AND m.is_current=1
-           WHERE b.status='published'
-           ORDER BY b.updated_at DESC LIMIT 1"""
-    ).fetchone()
-    if published is not None:
-        return "published_build", published[0], published[1], int(published[2] or 0)
-    current = conn.execute(
+    current_rows = conn.execute(
         "SELECT manifest_id FROM corpus_manifest WHERE is_current=1"
-    ).fetchone()
-    if current is not None:
-        return "legacy", None, current[0], None
-    return "legacy", None, None, None
+    ).fetchmany(2)
+    if len(current_rows) != 1:
+        raise ValueError(
+            "reconciliation requires exactly one current corpus manifest"
+        )
+    current_manifest_id = str(current_rows[0][0])
+    published_rows = conn.execute(
+        """SELECT build_id, manifest_id, chunk_count
+           FROM corpus_publication_builds
+           WHERE status='published' AND manifest_id=?""",
+        (current_manifest_id,),
+    ).fetchmany(2)
+    if len(published_rows) > 1:
+        raise ValueError(
+            "reconciliation base is ambiguous: multiple published builds "
+            "own the current manifest"
+        )
+    if len(published_rows) == 1:
+        legacy = conn.execute(
+            "SELECT 1 FROM corpus_chunks WHERE manifest_id=? LIMIT 1",
+            (current_manifest_id,),
+        ).fetchone()
+        if legacy is not None:
+            raise ValueError(
+                "ambiguous served source: published build AND legacy rows "
+                "for the same current manifest"
+            )
+        return (
+            "published_build",
+            published_rows[0][0],
+            published_rows[0][1],
+            int(published_rows[0][2] or 0),
+        )
+    return "legacy", None, current_manifest_id, None
 
 
 def _reconciliation_temp_digest(conn: sqlite3.Connection) -> str:

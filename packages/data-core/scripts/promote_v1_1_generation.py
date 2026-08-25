@@ -18,6 +18,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -585,6 +586,15 @@ def _prepare_resume(args: argparse.Namespace) -> dict[str, Any]:
     build_id = _validate_hex64(args.resume_build_id, label="--resume-build-id")
     git_revision = _seal_git_revision(benchmark, q005)
 
+    flags = {"deadline": False, "operator_interrupt": False}
+    previous_handlers: dict[int, Any] = {}
+
+    def operator_interrupt_handler(signum: int, frame: Any) -> None:
+        flags["operator_interrupt"] = True
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous_handlers[signum] = signal.signal(signum, operator_interrupt_handler)
+
     conn = _open_derivative(derivative)
     try:
         original_status, _ = reconciliation_resume_state(
@@ -637,7 +647,9 @@ def _prepare_resume(args: argparse.Namespace) -> dict[str, Any]:
             raise ValueError(
                 "DATA-01 gate failed; refusing to resume a candidate"
             )
-        summary = resume_candidate_reconciliation(conn, build_id=build_id)
+        summary = resume_candidate_reconciliation(
+            conn, build_id=build_id, operator_interrupt=flags
+        )
         manifest_row = conn.execute(
             "SELECT manifest_id FROM corpus_publication_builds WHERE build_id=?",
             (build_id,),
@@ -680,6 +692,8 @@ def _prepare_resume(args: argparse.Namespace) -> dict[str, Any]:
         evidence["source_bundle_path"] = str(verified.path)
     finally:
         conn.close()
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
     _write_json_atomic(evidence_path, evidence)
     return evidence
 

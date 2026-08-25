@@ -2528,14 +2528,83 @@ def test_reconciliation_pathological_fixture_bounded(tmp_path):
     )
 
 
-def test_reconciliation_resume_rejects_base_appearing_after_initialize(tmp_path):
+def test_reconciliation_base_rejects_zero_or_multiple_current_manifests(tmp_path):
+    from catalyst_data.corpus.streaming_publication import _reconciliation_base
+
+    conn = _make_db(tmp_path / "zero-current.db")
+    # Zero current manifests must fail closed.
+    conn.execute("UPDATE corpus_manifest SET is_current=0 WHERE is_current=1")
+    conn.commit()
+    with pytest.raises(ValueError, match="exactly one current"):
+        _reconciliation_base(conn)
+
+    # Multiple current manifests must fail closed even without the partial
+    # unique index and guard triggers (defense in depth).
+    conn.execute("DROP INDEX idx_corpus_manifest_current")
+    conn.execute("DROP TRIGGER IF EXISTS trg_corpus_manifest_current_guard")
+    conn.execute("DROP TRIGGER IF EXISTS trg_corpus_manifest_current_guard_update")
+    conn.execute(
+        "UPDATE corpus_manifest SET is_current=1 WHERE manifest_id=?",
+        (OLD_MANIFEST_ID,),
+    )
+    conn.execute(
+        """INSERT INTO corpus_manifest (manifest_id, manifest_json, is_current, created_at)
+           VALUES (?, '{}', 1, ?)""",
+        ("b" * 64, NOW),
+    )
+    conn.commit()
+    with pytest.raises(ValueError, match="exactly one current"):
+        _reconciliation_base(conn)
+
+
+def test_reconciliation_base_rejects_multiple_published_for_current(tmp_path):
+    from catalyst_data.corpus.streaming_publication import _reconciliation_base
+
+    conn = _make_db(tmp_path / "multi-published.db")
+    ensure_streaming_publication_schema(conn)
+    for suffix in ("a", "b"):
+        conn.execute(
+            """INSERT INTO corpus_publication_builds
+               (build_id, certified_snapshot_identity, header_json, status,
+                manifest_id, created_at, updated_at)
+               VALUES (?, ?, '{}', 'published', ?, ?, ?)""",
+            (
+                f"build-{suffix}" + "0" * 56,
+                "1" * 64,
+                OLD_MANIFEST_ID,
+                NOW,
+                NOW,
+            ),
+        )
+    conn.commit()
+    with pytest.raises(ValueError, match="multiple published builds"):
+        _reconciliation_base(conn)
+
+
+def test_reconciliation_base_rejects_published_and_legacy_same_manifest(tmp_path):
+    from catalyst_data.corpus.streaming_publication import _reconciliation_base
+
+    conn = _make_db(tmp_path / "ambiguous-base.db")
+    ensure_streaming_publication_schema(conn)
+    conn.execute(
+        """INSERT INTO corpus_publication_builds
+           (build_id, certified_snapshot_identity, header_json, status,
+            manifest_id, created_at, updated_at)
+           VALUES (?, ?, '{}', 'published', ?, ?, ?)""",
+        ("build-a" + "0" * 56, "1" * 64, OLD_MANIFEST_ID, NOW, NOW),
+    )
+    conn.commit()
+    # _make_db seeds legacy corpus_chunks rows for the SAME current manifest.
+    with pytest.raises(ValueError, match="ambiguous served source"):
+        _reconciliation_base(conn)
+
+
+def test_reconciliation_resume_rejects_base_rows_appearing_after_initialize(tmp_path):
     from catalyst_data.corpus.streaming_publication import resume_candidate_reconciliation
 
-    conn = _make_db(tmp_path / "base-appears.db", article_count=2)
-    # No previous served at initialize time: make the current manifest non-current.
-    conn.execute(
-        "UPDATE corpus_manifest SET is_current=0 WHERE manifest_id=?", (OLD_MANIFEST_ID,)
-    )
+    conn = _make_db(tmp_path / "base-rows-appear.db", article_count=2)
+    # The current manifest exists but has no legacy rows at initialize time.
+    conn.execute("DELETE FROM corpus_chunks WHERE manifest_id=?", (OLD_MANIFEST_ID,))
     conn.commit()
 
     def fail(point: str) -> None:
@@ -2556,12 +2625,33 @@ def test_reconciliation_resume_rejects_base_appearing_after_initialize(tmp_path)
            FROM corpus_publication_builds WHERE build_id=?""",
         (build_id,),
     ).fetchone()
-    assert bound[0] is None
+    assert bound[0] == OLD_MANIFEST_ID
     assert int(bound[1]) == 0
 
-    # A served base appears after initialize; resume must fail closed even
-    # though the bound manifest id was NULL.
-    conn.execute("UPDATE corpus_manifest SET is_current=1 WHERE manifest_id=?", (OLD_MANIFEST_ID,))
+    # Legacy rows appear for the same current manifest before resume; the
+    # recomputed count no longer matches the bound base and must fail closed.
+    content_hash = hashlib.sha256(b"late base row").hexdigest()
+    conn.execute(
+        """INSERT INTO corpus_chunks
+           (chunk_id, document_id, chunk_profile_version, section_key, ordinal,
+            content_text, content_hash, metadata_hash, source_class,
+            dedup_cluster_id, available_at, ticker_associations, eligibility,
+            manifest_id, status, boundary_kind, body_token_start,
+            body_token_end, body_overlap_tokens, prefix_token_count,
+            prefix_truncated, section_parse_degraded, created_at, updated_at)
+           VALUES (?, 'doc-late', 'news_v2', 'body', '0001', 'late text', ?, ?,
+                   'reported_news', NULL, ?, '[]', 'eligible', ?,
+                   'active', 'document_end', 0, 1, 0, 0, 0, 0, ?, ?)""",
+        (
+            "late:news_v2:body:0001",
+            content_hash,
+            hashlib.sha256(b"late meta").hexdigest(),
+            NOW,
+            OLD_MANIFEST_ID,
+            NOW,
+            NOW,
+        ),
+    )
     conn.commit()
-    with pytest.raises(ValueError, match="base manifest changed"):
+    with pytest.raises(ValueError, match="base chunk count changed"):
         resume_candidate_reconciliation(conn, build_id=build_id)

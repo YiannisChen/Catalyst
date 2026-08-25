@@ -1338,6 +1338,12 @@ def _resumable_derivative(
     conn.execute(
         """INSERT INTO corpus_manifest
            (manifest_id, manifest_json, is_current, created_at)
+           VALUES (?, '{}', 1, ?)""",
+        ("f" * 64, "2026-08-23T00:00:00Z"),
+    )
+    conn.execute(
+        """INSERT INTO corpus_manifest
+           (manifest_id, manifest_json, is_current, created_at)
            VALUES (?, '{}', 0, ?)""",
         ("1" * 64, "2026-08-23T00:00:00Z"),
     )
@@ -1701,3 +1707,85 @@ def test_prepare_resume_end_to_end_real_bundle_fts_and_verify(
     assert evidence["resume"]["original_manifest_ready_at"] == "2026-08-23T00:00:00Z"
     assert evidence["resume"]["original_git_revision"] == evidence["git_revision"]
     assert not (bundle_root / "other").exists()
+
+
+def test_prepare_resume_signal_sets_operator_interrupt_flag_and_restores(
+    tmp_path, monkeypatch, capsys
+):
+    """SIGINT/SIGTERM during _prepare_resume set the operator flag only."""
+    import signal
+
+    from catalyst_data.corpus.streaming_publication import ResumableResourceStop
+
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda *a, **k: HEAD)
+    monkeypatch.setattr(module, "_step_audit", lambda conn: {"failures": 0})
+    monkeypatch.setattr(
+        module,
+        "_step_data01",
+        lambda *a, **k: {
+            "denominator": 5229,
+            "numerator": 5229,
+            "gate_passed": True,
+            "accepted_time_recovered_count": 0,
+            "fail_closed_eligibility_count": 0,
+        },
+    )
+    for name in (
+        "_step_derivative_migration",
+        "_step_accepted_time",
+        "_step_sec_reparse",
+        "_step_news_persistence",
+        "_step_m35b_backfill",
+        "_step_m36_dedup",
+        "_step_corpus_candidate",
+        "_step_bundle_export",
+    ):
+        monkeypatch.setattr(module, name, _forbidden_seam(name))
+
+    argv = _resume_argv(tmp_path)
+    signal_calls: list[tuple[int, object]] = []
+
+    def fake_signal(signum, handler):
+        signal_calls.append((signum, handler))
+        return "previous-handler"
+
+    def fake_getsignal(signum):
+        return "previous-handler"
+
+    monkeypatch.setattr(module.signal, "signal", fake_signal)
+    monkeypatch.setattr(module.signal, "getsignal", fake_getsignal)
+
+    observed: dict[str, object] = {}
+
+    def fake_resume(conn, *, build_id, now=None, failure_injector=None,
+                    deadline=900.0, operator_interrupt=None):
+        observed["operator_interrupt"] = operator_interrupt
+        assert isinstance(operator_interrupt, dict)
+        installed = dict(signal_calls)
+        handler = installed.get(signal.SIGINT) or installed.get(signal.SIGTERM)
+        assert handler is not None
+        # The handler must only set the flag and never raise.
+        handler(signal.SIGINT, None)
+        assert operator_interrupt["operator_interrupt"] is True
+        raise ResumableResourceStop("operator_interrupt", "interrupted by operator")
+
+    monkeypatch.setattr(
+        "catalyst_data.corpus.streaming_publication.resume_candidate_reconciliation",
+        fake_resume,
+    )
+
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 2
+    assert json.loads(out)["ok"] is False
+    assert json.loads(out)["error"] == "[operator_interrupt] interrupted by operator"
+    assert observed["operator_interrupt"]["operator_interrupt"] is True
+    # Handlers must be restored after _prepare_resume raised: the last signal
+    # install for each signal is the previous handler.
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        last = [h for s, h in signal_calls if s == signum][-1]
+        assert last == "previous-handler"
+    # getSignal reports the previous handler after restore.
+    assert module.signal.getsignal(signal.SIGINT) == "previous-handler"
+    assert module.signal.getsignal(signal.SIGTERM) == "previous-handler"
