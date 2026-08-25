@@ -24,11 +24,14 @@ from pathlib import Path
 from typing import Any
 
 from catalyst_data.retrieval.index_manifest import IndexManifest
+from catalyst_data.retrieval.result import SEARCHABLE_STATUSES
 
 from catalyst_eval.post_import.case_pack import (
     compute_case_pack_id,
     load_case_pack,
 )
+from catalyst_eval.post_import import index_identity as _index_identity
+from catalyst_eval.post_import import t4_evidence as _t4_evidence
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
@@ -354,11 +357,118 @@ def _preflight(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _m3_runtime_identity(
+    args: argparse.Namespace,
+    identities: dict[str, Any],
+    *,
+    db_foreign_key_violations: int,
+) -> _index_identity.ResolvedRuntimeIdentity:
+    """Resolved runtime identity built exclusively from M3 artifacts.
+
+    The M1 APPROVED constant is never used; every field is bound to the
+    already-preflighted M3 derivative, LanceDB generation, index manifest,
+    active pointer, and implementation HEAD.
+    """
+    return _index_identity.ResolvedRuntimeIdentity(
+        lancedb_dir=Path(args.lancedb_dir).resolve(),
+        active_table_name=identities["active_table_name"],
+        snapshot_id=identities["snapshot_id"],
+        corpus_manifest_id=identities["corpus_manifest_id"],
+        source_bundle_id=identities["source_bundle_id"],
+        index_manifest_id=identities["index_manifest_id"],
+        probe_report_id=identities["probe_report_id"],
+        postbuild_readiness_id=identities["postbuild_readiness_id"],
+        code_revision=args.implementation_head,
+        git_head=args.implementation_head,
+        model_name=identities["gpu"]["model"],
+        model_revision=identities["gpu"]["revision"],
+        tokenizer_revision=identities["gpu"]["revision"],
+        dimension=identities["gpu"]["dimension"],
+        dtype="float32",
+        normalization_mode="l2",
+        vector_count=identities["chunk_count"],
+        db_path=Path(args.db).resolve(),
+        db_sha256=args.expected_db_sha256,
+        db_user_version=args.expected_user_version,
+        db_foreign_key_violations=db_foreign_key_violations,
+        lancedb_row_count=identities["chunk_count"],
+    )
+
+
+def _build_m3_t4_evidence(
+    args: argparse.Namespace,
+    identities: dict[str, Any],
+    conn: sqlite3.Connection,
+    cases: list[Any],
+    *,
+    resolved: _index_identity.ResolvedRuntimeIdentity,
+) -> _t4_evidence.ValidatedT4Evidence:
+    """Generate and validate M3-bound T4 probe evidence (never the M1 pack).
+
+    The served-corpus probe runs against the M3 derivative and promoted
+    manifest; its evidence directory binds every M3 identity, then passes the
+    production ``validate_t4_evidence`` contract against the M3 runtime
+    identity. The output lands under ``output-root/<run-id>_t4_evidence`` so
+    the four-arm runner's own ``output-root/<run-id>`` stays free.
+    """
+    from catalyst_eval.post_import.probe import (
+        run_served_corpus_probe,
+        write_probe_evidence,
+    )
+
+    report = run_served_corpus_probe(
+        conn,
+        corpus_manifest_id=identities["corpus_manifest_id"],
+        cases=cases,
+        statuses=SEARCHABLE_STATUSES,
+    )
+    evidence_dir = Path(args.output_root) / f"{args.run_id}_t4_evidence"
+    import shutil
+
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(Path(args.case_pack), evidence_dir / "case_pack.jsonl")
+    write_probe_evidence(
+        report,
+        run_dir=evidence_dir,
+        statuses=SEARCHABLE_STATUSES,
+        db_sha256=args.expected_db_sha256,
+        corpus_manifest_id=identities["corpus_manifest_id"],
+        case_pack_id=compute_case_pack_id(cases),
+        case_pack_path="case_pack.jsonl",
+        runtime_git_head=args.implementation_head,
+        index_build_code_revision=args.implementation_head,
+        snapshot_id=identities["snapshot_id"],
+        source_bundle_id=identities["source_bundle_id"],
+        probe_report_id=identities["probe_report_id"],
+        postbuild_readiness_id=identities["postbuild_readiness_id"],
+        index_manifest_id=identities["index_manifest_id"],
+        db_path=str(Path(args.db).resolve()),
+        db_user_version=args.expected_user_version,
+        db_foreign_key_violations=resolved.db_foreign_key_violations,
+        lancedb_dir=str(Path(args.lancedb_dir).resolve()),
+        active_table_name=identities["active_table_name"],
+        model_name=identities["gpu"]["model"],
+        model_revision=identities["gpu"]["revision"],
+        tokenizer_revision=identities["gpu"]["revision"],
+        dimension=identities["gpu"]["dimension"],
+        dtype="float32",
+        normalization_mode="l2",
+        embedding_mode="production_pinned",
+    )
+    return _t4_evidence.validate_t4_evidence(
+        evidence_dir=evidence_dir,
+        current_case_pack=cases,
+        resolved=resolved,
+    )
+
+
 def _run_four_arm(args: argparse.Namespace, identities: dict[str, Any]) -> Any:
     """Production-pinned four-arm retrieval on the M3 derivative/new dense gen.
 
     FAST tests monkeypatch this seam; production requires CUDA + pinned BGE-M3
-    and writes ``FOUR_ARM_E2E_OK`` under ``output-root/run-id``.
+    and writes ``FOUR_ARM_E2E_OK`` under ``output-root/run-id``. The success
+    token additionally requires M3-bound validated T4 evidence and runtime
+    identity, which this runner generates from the M3 artifacts.
     """
     from catalyst_agents.runtime.query_embedding import (
         ProductionBgeM3QueryEmbeddingFactory,
@@ -374,69 +484,83 @@ def _run_four_arm(args: argparse.Namespace, identities: dict[str, Any]) -> Any:
 
     cases = load_case_pack(args.case_pack)
     case_pack_id = compute_case_pack_id(cases)
-    factory = ProductionBgeM3QueryEmbeddingFactory()
-    embedder = factory.create(model_name=BGE_M3_MODEL)
-    reranker = load_reranker(model_name=BGE_RERANKER_MODEL)
-    if reranker is None:
-        raise RuntimeError("production reranker could not be loaded")
-    import torch
-
-    cuda_available = bool(torch.cuda.is_available())
-
-    run_identities = RunIdentities(
-        code_revision=args.implementation_head,
-        git_head=args.implementation_head,
-        snapshot_id=identities["snapshot_id"],
-        corpus_manifest_id=identities["corpus_manifest_id"],
-        source_bundle_id=identities["source_bundle_id"],
-        probe_report_id=identities["probe_report_id"],
-        postbuild_readiness_id=identities["postbuild_readiness_id"],
-        index_manifest_id=identities["index_manifest_id"],
-        lancedb_dir=str(args.lancedb_dir),
-        active_table_name=identities["active_table_name"],
-        model_name=identities["gpu"]["model"],
-        model_revision=identities["gpu"]["revision"],
-        tokenizer_revision=identities["gpu"]["revision"],
-        reranker_model=BGE_RERANKER_MODEL,
-        reranker_revision="953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
-        dimension=identities["gpu"]["dimension"],
-        dtype="float32",
-        normalization_mode="l2",
-        vector_count=identities["chunk_count"],
-        lancedb_row_count=identities["chunk_count"],
-        db_path=str(args.db),
-        db_sha256=args.expected_db_sha256,
-        db_user_version=args.expected_user_version,
-        db_foreign_key_violations=0,
+    conn = sqlite3.connect(
+        f"{Path(args.db).resolve().as_uri()}?mode=ro&immutable=1",
+        uri=True,
     )
-    boundary = EmbeddingBoundary(
-        embedding_mode="production_pinned",
-        dimension=identities["gpu"]["dimension"],
-        model_revision=identities["gpu"]["revision"],
-        tokenizer_revision=identities["gpu"]["revision"],
-        is_mock=False,
-        cuda_available=cuda_available,
-    )
-    import lancedb
+    try:
+        foreign_key_violations = len(conn.execute("PRAGMA foreign_key_check").fetchall())
+        resolved = _m3_runtime_identity(
+            args, identities, db_foreign_key_violations=foreign_key_violations
+        )
+        validated_evidence = _build_m3_t4_evidence(
+            args, identities, conn, cases, resolved=resolved
+        )
 
-    lancedb_db = lancedb.connect(str(args.lancedb_dir))
-    table = lancedb_db.open_table(identities["active_table_name"])
-    return run_four_arm_cases(
-        db=sqlite3.connect(
-            f"{Path(args.db).resolve().as_uri()}?mode=ro&immutable=1",
-            uri=True,
-        ),
-        lancedb_table=table,
-        cases=cases,
-        run_id=args.run_id,
-        output_root=args.output_root,
-        identities=run_identities,
-        boundary=boundary,
-        query_embedding_fn=embedder.embed_query,
-        reranker=reranker,
-        case_pack_id=case_pack_id,
-        case_pack_path=str(args.case_pack),
-    )
+        factory = ProductionBgeM3QueryEmbeddingFactory()
+        embedder = factory.create(model_name=BGE_M3_MODEL)
+        reranker = load_reranker(model_name=BGE_RERANKER_MODEL)
+        if reranker is None:
+            raise RuntimeError("production reranker could not be loaded")
+        import torch
+
+        cuda_available = bool(torch.cuda.is_available())
+
+        run_identities = RunIdentities(
+            code_revision=args.implementation_head,
+            git_head=args.implementation_head,
+            snapshot_id=identities["snapshot_id"],
+            corpus_manifest_id=identities["corpus_manifest_id"],
+            source_bundle_id=identities["source_bundle_id"],
+            probe_report_id=identities["probe_report_id"],
+            postbuild_readiness_id=identities["postbuild_readiness_id"],
+            index_manifest_id=identities["index_manifest_id"],
+            lancedb_dir=str(args.lancedb_dir),
+            active_table_name=identities["active_table_name"],
+            model_name=identities["gpu"]["model"],
+            model_revision=identities["gpu"]["revision"],
+            tokenizer_revision=identities["gpu"]["revision"],
+            reranker_model=BGE_RERANKER_MODEL,
+            reranker_revision="953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e",
+            dimension=identities["gpu"]["dimension"],
+            dtype="float32",
+            normalization_mode="l2",
+            vector_count=identities["chunk_count"],
+            lancedb_row_count=identities["chunk_count"],
+            db_path=str(args.db),
+            db_sha256=args.expected_db_sha256,
+            db_user_version=args.expected_user_version,
+            db_foreign_key_violations=foreign_key_violations,
+        )
+        boundary = EmbeddingBoundary(
+            embedding_mode="production_pinned",
+            dimension=identities["gpu"]["dimension"],
+            model_revision=identities["gpu"]["revision"],
+            tokenizer_revision=identities["gpu"]["revision"],
+            is_mock=False,
+            cuda_available=cuda_available,
+        )
+        import lancedb
+
+        lancedb_db = lancedb.connect(str(args.lancedb_dir))
+        table = lancedb_db.open_table(identities["active_table_name"])
+        return run_four_arm_cases(
+            db=conn,
+            lancedb_table=table,
+            cases=cases,
+            run_id=args.run_id,
+            output_root=args.output_root,
+            identities=run_identities,
+            boundary=boundary,
+            query_embedding_fn=embedder.embed_query,
+            reranker=reranker,
+            case_pack_id=case_pack_id,
+            case_pack_path=str(args.case_pack),
+            validated_evidence=validated_evidence,
+            validated_runtime_identity=resolved,
+        )
+    finally:
+        conn.close()
 
 
 def _build_report(

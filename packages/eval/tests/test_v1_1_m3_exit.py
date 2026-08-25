@@ -20,7 +20,7 @@ from catalyst_data.corpus.tokenizer import TOKENIZER_REVISION
 from catalyst_data.retrieval.index_manifest import IndexManifest
 from catalyst_data.storage.sqlite import init_db
 
-from catalyst_eval.post_import.case_pack import CasePackCase, write_case_pack
+from catalyst_eval.post_import.case_pack import CasePackCase, compute_case_pack_id, load_case_pack, write_case_pack
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = REPO_ROOT / "packages" / "eval" / "scripts" / "run_v1_1_m3_exit.py"
@@ -393,3 +393,127 @@ def test_report_is_path_redacted_and_secret_free(tmp_path, monkeypatch, capsys):
     assert "/Users/" not in report_text
     report = json.loads(report_text)
     assert "DEEPSEEK_API_KEY" not in report
+
+
+def _m3_args(tmp_path: Path) -> SimpleNamespace:
+    return SimpleNamespace(
+        db=tmp_path / "derivative.db",
+        lancedb_dir=tmp_path / "lancedb",
+        case_pack=tmp_path / "case_pack.jsonl",
+        run_id="m3-evidence-test",
+        output_root=tmp_path / "output",
+        implementation_head=HEAD,
+        expected_db_sha256="e" * 64,
+        expected_user_version=14,
+    )
+
+
+def _m3_identities() -> dict:
+    return {
+        "build_id": BUILD_ID,
+        "corpus_manifest_id": CORPUS,
+        "dense_index_manifest_id": "9" * 64,
+        "index_manifest_id": "8" * 64,
+        "source_bundle_id": SOURCE,
+        "snapshot_id": SNAPSHOT,
+        "probe_report_id": PROBE,
+        "postbuild_readiness_id": POSTBUILD,
+        "active_table_name": "candidate_abcdef1234567890",
+        "chunk_count": 2,
+        "case_pack_id": "c" * 64,
+        "gpu": {
+            "model": BGE_M3_MODEL,
+            "revision": BGE_M3_REVISION,
+            "dimension": BGE_M3_DIMENSION,
+        },
+    }
+
+
+def test_m3_runtime_identity_binds_m3_artifacts(tmp_path):
+    """Resolved runtime identity is built from M3 artifacts only; the M1
+    APPROVED constant is never used."""
+    module = _load_script()
+    identities = _m3_identities()
+    resolved = module._m3_runtime_identity(
+        _m3_args(tmp_path), identities, db_foreign_key_violations=0
+    )
+    assert resolved.corpus_manifest_id == CORPUS
+    assert resolved.index_manifest_id == identities["index_manifest_id"]
+    assert resolved.snapshot_id == SNAPSHOT
+    assert resolved.source_bundle_id == SOURCE
+    assert resolved.probe_report_id == PROBE
+    assert resolved.postbuild_readiness_id == POSTBUILD
+    assert resolved.active_table_name == identities["active_table_name"]
+    assert resolved.code_revision == HEAD
+    assert resolved.git_head == HEAD
+    assert resolved.db_sha256 == "e" * 64
+    assert resolved.db_user_version == 14
+    assert resolved.db_foreign_key_violations == 0
+    assert resolved.model_name == BGE_M3_MODEL
+    assert resolved.model_revision == BGE_M3_REVISION
+    assert resolved.dimension == BGE_M3_DIMENSION
+    assert resolved.vector_count == identities["chunk_count"]
+
+
+def test_build_m3_t4_evidence_generates_valid_m3_evidence(tmp_path):
+    """The M3 exit runner generates and validates its own T4 probe evidence
+    bound to the M3 derivative/manifest (never the M1 evidence pack)."""
+    module = _load_script()
+    args = _m3_args(tmp_path)
+    identities = _m3_identities()
+    args.output_root.mkdir()
+    db = args.db
+    conn = sqlite3.connect(db)
+    init_db(conn)
+    conn.execute(
+        "PRAGMA foreign_keys=OFF"
+    )
+    case_rows = []
+    tickers = ["TSLA", "NVDA", "AMD", "UNH", "AMZN", "TSLA", "AAPL", "GOOGL", "JPM", "MSFT"]
+    for index, ticker in enumerate(tickers):
+        case_rows.append(
+            (
+                f"chunk:{index:04d}", f"doc:{index}", "news_v2", "body", "0001",
+                "text", "a" * 64, "b" * 64, "reported_news", None, None, None,
+                "2025-01-01T00:00:00Z", json.dumps([ticker]), "eligible", CORPUS,
+                "active", "sentence", 0, 10, 0, 0, 0, 0,
+                "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z",
+            )
+        )
+    conn.executemany(
+        """INSERT INTO corpus_chunks (
+               chunk_id, document_id, chunk_profile_version, section_key,
+               ordinal, content_text, content_hash, metadata_hash,
+               source_class, dedup_cluster_id, cluster_first_available_at,
+               representative_document_id, available_at, ticker_associations,
+               eligibility, manifest_id, status, boundary_kind,
+               body_token_start, body_token_end, body_overlap_tokens,
+               prefix_token_count, prefix_truncated, section_parse_degraded,
+               created_at, updated_at
+           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        case_rows,
+    )
+    conn.commit()
+    conn.close()
+
+    cases = load_case_pack(
+        Path("/Users/yiannischen/Projects/Catalyst/data/run_reports/post_import/t4_wave23_final3/case_pack.jsonl")
+    )
+    write_case_pack(cases, args.case_pack)
+    resolved = module._m3_runtime_identity(args, identities, db_foreign_key_violations=0)
+    conn = sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
+    try:
+        evidence = module._build_m3_t4_evidence(
+            args, identities, conn, cases, resolved=resolved
+        )
+    finally:
+        conn.close()
+    assert evidence.case_pack_id == compute_case_pack_id(cases)
+    assert evidence.case_count == 10
+    assert evidence.passed_count == 10
+    assert evidence.corpus_manifest_id == CORPUS
+    assert evidence.db_user_version == 14
+    assert evidence.index_manifest_id == identities["index_manifest_id"]
+    assert evidence.active_table_name == identities["active_table_name"]
+    token = args.output_root / f"{args.run_id}_t4_evidence" / "T4_PROBE_TOKEN.txt"
+    assert token.is_file()
