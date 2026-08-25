@@ -544,6 +544,146 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _prepare_resume(args: argparse.Namespace) -> dict[str, Any]:
+    """Resume reconciliation + candidate bundle + FTS for an existing build.
+
+    L4 order: L1 bind/validate -> additive schema ensure -> read-only audit ->
+    real DATA-01 -> gate check -> resume_candidate_reconciliation ->
+    export_candidate_source_bundle (M3-9) -> build_candidate_fts (M3-10) ->
+    verify_source_bundle -> preparation evidence. Forbidden seams are never
+    called: derivative migration, accepted time, sec reparse, news persistence,
+    backfill, dedup, stage_corpus_candidate, recover_primary, canonical records,
+    _manifest_phase, _cutover, retrieval FTS5 builder, _build_id.
+    """
+    from catalyst_data.corpus.streaming_publication import (
+        build_candidate_fts,
+        ensure_streaming_publication_schema,
+        explain_reconciliation_dml,
+        reconciliation_resume_state,
+        resume_candidate_reconciliation,
+    )
+    from catalyst_data.retrieval.gpu_contract import verify_source_bundle
+    from catalyst_data.retrieval.source_bundle import export_candidate_source_bundle
+
+    derivative = _resolve_required(args.derivative, label="--derivative")
+    _reject_aliased_db(derivative)
+    benchmark = _resolve_required(args.benchmark_manifest, label="--benchmark-manifest")
+    q005 = _resolve_required(args.q005_approval, label="--q005-approval")
+    bundle_root = _resolve_required(
+        args.source_bundle_output_root, label="--source-bundle-output-root"
+    )
+    evidence_path = _resolve_required(
+        args.preparation_evidence, label="--preparation-evidence"
+    )
+    snapshot_id = _validate_hex64(args.snapshot_id, label="--snapshot-id")
+    probe_report_id = _validate_hex64(
+        args.probe_report_id, label="--probe-report-id"
+    )
+    postbuild_readiness_id = _validate_hex64(
+        args.postbuild_readiness_id, label="--postbuild-readiness-id"
+    )
+    build_id = _validate_hex64(args.resume_build_id, label="--resume-build-id")
+    git_revision = _seal_git_revision(benchmark, q005)
+
+    conn = _open_derivative(derivative)
+    try:
+        original_status, _ = reconciliation_resume_state(
+            conn, build_id=build_id
+        )
+        row = conn.execute(
+            "SELECT updated_at FROM corpus_publication_builds WHERE build_id=?",
+            (build_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("resume build row not found")
+        original_manifest_ready_at = str(row[0])
+
+        if args.dry_run:
+            ensure_streaming_publication_schema(conn)
+            reconciliation_resume_state(conn, build_id=build_id)
+            explain_reconciliation_dml(conn, build_id=build_id)
+            return {
+                "schema_version": "preparation_evidence_v1",
+                "git_revision": git_revision,
+                "dry_run": True,
+                "derivative": str(derivative),
+                "snapshot_id": snapshot_id,
+                "probe_report_id": probe_report_id,
+                "postbuild_readiness_id": postbuild_readiness_id,
+                "resume": {
+                    "implementation_head": args.expected_implementation_head,
+                    "build_id": build_id,
+                    "original_status": original_status,
+                    "original_manifest_ready_at": original_manifest_ready_at,
+                    "original_git_revision": git_revision,
+                },
+            }
+
+        ensure_streaming_publication_schema(conn)
+        reconciliation_resume_state(conn, build_id=build_id)
+        evidence: dict[str, Any] = {
+            "schema_version": "preparation_evidence_v1",
+            "git_revision": git_revision,
+            "generated_at": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "snapshot_id": snapshot_id,
+            "probe_report_id": probe_report_id,
+            "postbuild_readiness_id": postbuild_readiness_id,
+        }
+        evidence["audit"] = _step_audit(conn)
+        evidence["data01"] = _step_data01(conn, benchmark, q005, git_revision)
+        if not evidence["data01"].get("gate_passed"):
+            raise ValueError(
+                "DATA-01 gate failed; refusing to resume a candidate"
+            )
+        summary = resume_candidate_reconciliation(conn, build_id=build_id)
+        manifest_row = conn.execute(
+            "SELECT manifest_id FROM corpus_publication_builds WHERE build_id=?",
+            (build_id,),
+        ).fetchone()
+        if manifest_row is None or not manifest_row[0]:
+            raise ValueError("resumed build has no committed manifest_id")
+        manifest_id = str(manifest_row[0])
+        bundle_id, bundle_path = export_candidate_source_bundle(
+            conn,
+            build_id=build_id,
+            manifest_id=manifest_id,
+            snapshot_id=snapshot_id,
+            probe_report_id=probe_report_id,
+            postbuild_readiness_id=postbuild_readiness_id,
+            output_root=bundle_root,
+        )
+        lexical = build_candidate_fts(conn, build_id=build_id)
+        verified = verify_source_bundle(
+            Path(bundle_path),
+            expected_source_bundle_id=bundle_id,
+        )
+        evidence["resume"] = {
+            "implementation_head": args.expected_implementation_head,
+            "build_id": build_id,
+            "corpus_manifest_id": manifest_id,
+            "original_status": original_status,
+            "original_manifest_ready_at": original_manifest_ready_at,
+            "original_git_revision": git_revision,
+        }
+        evidence["reconciliation"] = {
+            "to_embed_count": summary.to_embed_count,
+            "metadata_update_count": summary.metadata_update_count,
+            "tombstone_count": summary.tombstone_count,
+        }
+        evidence["build_id"] = build_id
+        evidence["corpus_manifest_id"] = manifest_id
+        evidence["chunk_count"] = lexical.row_count
+        evidence["lexical_digest"] = lexical.digest
+        evidence["source_bundle_id"] = verified.source_bundle_id
+        evidence["source_bundle_path"] = str(verified.path)
+    finally:
+        conn.close()
+    _write_json_atomic(evidence_path, evidence)
+    return evidence
+
+
 def _prepare(args: argparse.Namespace) -> dict[str, Any]:
     _require_head(args.expected_implementation_head)
     derivative = _resolve_required(args.derivative, label="--derivative")
@@ -564,6 +704,9 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         args.postbuild_readiness_id, label="--postbuild-readiness-id"
     )
     git_revision = _seal_git_revision(benchmark, q005)
+
+    if args.resume_build_id is not None:
+        return _prepare_resume(args)
 
     if args.dry_run:
         return {
@@ -956,6 +1099,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     prepare.add_argument("--probe-report-id", required=True)
     prepare.add_argument("--postbuild-readiness-id", required=True)
     prepare.add_argument("--expected-implementation-head", required=True)
+    prepare.add_argument("--resume-build-id", default=None,
+                        help="resume reconciliation/FTS for an existing build id")
     prepare.add_argument("--dry-run", action="store_true")
 
     promote = subparsers.add_parser("promote", help="promote a prepared generation")

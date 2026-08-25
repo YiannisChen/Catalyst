@@ -1472,3 +1472,1096 @@ def test_cli_payload_returns_ids_counts_and_page_access_without_chunk_collection
         "lexical_row_count": 34,
         "chunk_access": "iter_chunk_pages",
     }
+
+
+def test_reconciliation_checkpoint_columns_added_by_schema_ensure(tmp_path):
+    conn = _make_db(tmp_path / "schema-ensure.db")
+    user_version_before = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert user_version_before == CURRENT_SCHEMA_VERSION
+    ensure_streaming_publication_schema(conn)
+    columns = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(corpus_publication_builds)")
+    }
+    for name in (
+        "reconciliation_checkpoint",
+        "reconciliation_base_manifest_id",
+        "reconciliation_base_chunk_count",
+        "reconciliation_base_inventory_digest",
+    ):
+        assert name in columns
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == user_version_before
+    # Idempotent: a second ensure must not duplicate columns.
+    ensure_streaming_publication_schema(conn)
+    columns_again = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(corpus_publication_builds)")
+    }
+    assert columns_again == columns
+
+
+def _stop_after_reconciliation(tmp_path: Path, name: str):
+    """Run a build stopped after reconciliation (status=reconciliation_ready)."""
+    conn = _make_db(tmp_path / name)
+
+    def fail(point: str) -> None:
+        if point == "after_reconciliation":
+            raise RuntimeError("stop-after-reconciliation")
+
+    with pytest.raises(RuntimeError, match="stop-after-reconciliation"):
+        build_streaming_corpus_and_lexical_index(
+            conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=fail,
+        )
+    return conn
+
+
+def test_reconciliation_ready_null_checkpoint_validates_and_backfills(tmp_path):
+    from catalyst_data.corpus.streaming_publication import resume_candidate_reconciliation
+
+    conn = _stop_after_reconciliation(tmp_path, "old-ready.db")
+    build_id = conn.execute("SELECT build_id FROM corpus_publication_builds").fetchone()[0]
+    conn.execute(
+        "UPDATE corpus_publication_builds SET reconciliation_checkpoint=NULL "
+        "WHERE build_id=?",
+        (build_id,),
+    )
+    conn.commit()
+    deltas_before = conn.execute(
+        "SELECT COUNT(*) FROM corpus_build_deltas WHERE build_id=?", (build_id,)
+    ).fetchone()[0]
+    assert deltas_before > 0
+
+    summary = resume_candidate_reconciliation(conn, build_id=build_id)
+    assert summary.to_embed_count >= 0
+
+    row = conn.execute(
+        "SELECT status, reconciliation_checkpoint, reconciliation_ready "
+        "FROM corpus_publication_builds WHERE build_id=?",
+        (build_id,),
+    ).fetchone()
+    assert row == ("reconciliation_ready", "reconciliation_ready", 1)
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM corpus_build_deltas WHERE build_id=?", (build_id,)
+        ).fetchone()[0]
+        == deltas_before
+    )
+
+    # Validation failure must NOT backfill the checkpoint.
+    conn.execute(
+        "UPDATE corpus_publication_builds SET reconciliation_checkpoint=NULL "
+        "WHERE build_id=?",
+        (build_id,),
+    )
+    conn.execute(
+        """INSERT INTO corpus_build_deltas
+           (build_id, delta_kind, chunk_id, document_id)
+           VALUES (?, 'to_embed', 'missing:news_v2:body:0001', 'missing-doc')""",
+        (build_id,),
+    )
+    conn.commit()
+    with pytest.raises(ValueError, match="finalize validation failed"):
+        resume_candidate_reconciliation(conn, build_id=build_id)
+    checkpoint = conn.execute(
+        "SELECT reconciliation_checkpoint FROM corpus_publication_builds "
+        "WHERE build_id=?",
+        (build_id,),
+    ).fetchone()[0]
+    assert checkpoint is None
+
+
+def test_reconciliation_manifest_ready_with_ready_checkpoint_is_inconsistent(tmp_path):
+    from catalyst_data.corpus.streaming_publication import (
+        reconciliation_resume_state,
+        resume_candidate_reconciliation,
+    )
+
+    conn = _stop_after_reconciliation(tmp_path, "inconsistent-status.db")
+    build_id = conn.execute("SELECT build_id FROM corpus_publication_builds").fetchone()[0]
+    conn.execute(
+        "UPDATE corpus_publication_builds SET status='manifest_ready' WHERE build_id=?",
+        (build_id,),
+    )
+    conn.commit()
+    with pytest.raises(ValueError, match="inconsistent reconciliation state"):
+        reconciliation_resume_state(conn, build_id=build_id)
+    with pytest.raises(ValueError, match="inconsistent reconciliation state"):
+        resume_candidate_reconciliation(conn, build_id=build_id)
+
+
+def test_reconciliation_ready_with_partial_checkpoint_is_inconsistent(tmp_path):
+    from catalyst_data.corpus.streaming_publication import (
+        reconciliation_resume_state,
+        resume_candidate_reconciliation,
+    )
+
+    conn = _make_db(tmp_path / "partial-ready.db")
+
+    def fail(point: str) -> None:
+        if point == "after_recon_to_embed_done":
+            raise RuntimeError("stop-after-to-embed")
+
+    with pytest.raises(RuntimeError, match="stop-after-to-embed"):
+        build_streaming_corpus_and_lexical_index(
+            conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=fail,
+        )
+    build_id = conn.execute("SELECT build_id FROM corpus_publication_builds").fetchone()[0]
+    checkpoint = conn.execute(
+        "SELECT reconciliation_checkpoint FROM corpus_publication_builds "
+        "WHERE build_id=?",
+        (build_id,),
+    ).fetchone()[0]
+    assert checkpoint == "to_embed_done"
+    conn.execute(
+        "UPDATE corpus_publication_builds SET status='reconciliation_ready' "
+        "WHERE build_id=?",
+        (build_id,),
+    )
+    conn.commit()
+    with pytest.raises(ValueError, match="inconsistent reconciliation state"):
+        reconciliation_resume_state(conn, build_id=build_id)
+    with pytest.raises(ValueError, match="inconsistent reconciliation state"):
+        resume_candidate_reconciliation(conn, build_id=build_id)
+
+
+def test_publication_entrypoint_does_not_destage_reconciliation_ready(tmp_path):
+    conn = _make_db(tmp_path / "no-destage.db")
+
+    def fail(point: str) -> None:
+        if point == "after_reconciliation":
+            raise RuntimeError("stop-after-reconciliation")
+
+    with pytest.raises(RuntimeError, match="stop-after-reconciliation"):
+        build_streaming_corpus_and_lexical_index(
+            conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=fail,
+        )
+    build_id = conn.execute("SELECT build_id FROM corpus_publication_builds").fetchone()[0]
+    state = conn.execute(
+        "SELECT status, reconciliation_checkpoint FROM corpus_publication_builds "
+        "WHERE build_id=?",
+        (build_id,),
+    ).fetchone()
+    assert state == ("reconciliation_ready", "reconciliation_ready")
+
+    # Chunks are frozen as soon as the build is reconciliation_ready.
+    with pytest.raises(sqlite3.IntegrityError, match="corpus_build_chunks_frozen"):
+        conn.execute(
+            "UPDATE corpus_build_chunks SET content_text='tampered' "
+            "WHERE build_id=? AND chunk_id=(SELECT MIN(chunk_id) FROM "
+            "corpus_build_chunks WHERE build_id=?)",
+            (build_id, build_id),
+        )
+
+    # Any attempt to destage a reconciliation_ready build must abort.
+    conn.execute(
+        """CREATE TRIGGER forbid_destage_reconciliation_ready
+           BEFORE UPDATE ON corpus_publication_builds
+           WHEN OLD.status IN ('reconciliation_ready','lexical_ready','published')
+                AND NEW.status='staging_ready'
+           BEGIN SELECT RAISE(ABORT, 'destaged_reconciliation_ready'); END"""
+    )
+    conn.commit()
+
+    result = build_streaming_corpus_and_lexical_index(
+        conn,
+        certified_snapshot_identity=SNAPSHOT_ID,
+        clock=lambda: NOW,
+    )
+    assert result.build_id == build_id
+    assert (
+        conn.execute(
+            "SELECT status FROM corpus_publication_builds WHERE build_id=?", (build_id,)
+        ).fetchone()[0]
+        == "published"
+    )
+    # Resume must never have written staging_ready after reconciliation_ready.
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' "
+            "AND name='forbid_destage_reconciliation_ready'"
+        ).fetchone()[0]
+        == 1
+    )
+
+
+def test_reconciliation_dispatch_to_embed_done_does_not_rerun_to_embed(tmp_path):
+    from catalyst_data.corpus.streaming_publication import resume_candidate_reconciliation
+
+    conn = _make_db(tmp_path / "dispatch.db")
+
+    def fail(point: str) -> None:
+        if point == "after_recon_to_embed_done":
+            raise RuntimeError("stop-after-to-embed")
+
+    with pytest.raises(RuntimeError, match="stop-after-to-embed"):
+        build_streaming_corpus_and_lexical_index(
+            conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=fail,
+        )
+    build_id = conn.execute("SELECT build_id FROM corpus_publication_builds").fetchone()[0]
+    checkpoint = conn.execute(
+        "SELECT reconciliation_checkpoint FROM corpus_publication_builds "
+        "WHERE build_id=?",
+        (build_id,),
+    ).fetchone()[0]
+    assert checkpoint == "to_embed_done"
+    to_embed_before = conn.execute(
+        "SELECT COUNT(*) FROM corpus_build_deltas WHERE build_id=? AND delta_kind='to_embed'",
+        (build_id,),
+    ).fetchone()[0]
+    assert to_embed_before > 0
+
+    summary = resume_candidate_reconciliation(conn, build_id=build_id)
+    to_embed_after = conn.execute(
+        "SELECT COUNT(*) FROM corpus_build_deltas WHERE build_id=? AND delta_kind='to_embed'",
+        (build_id,),
+    ).fetchone()[0]
+    assert to_embed_after == to_embed_before
+    assert summary.tombstone_count >= 0
+    assert (
+        conn.execute(
+            "SELECT status, reconciliation_checkpoint FROM corpus_publication_builds "
+            "WHERE build_id=?",
+            (build_id,),
+        ).fetchone()
+        == ("reconciliation_ready", "reconciliation_ready")
+    )
+
+
+def test_reconciliation_delta_sql_uses_temp_indexes_no_served_view(tmp_path):
+    from catalyst_data.corpus import streaming_publication as sp
+
+    for sql in (
+        sp._RECON_TO_EMBED_SQL,
+        sp._RECON_CLUSTER_TOMBSTONE_SQL,
+        sp._RECON_METADATA_UPDATE_SQL,
+        sp._RECON_REMOVED_TOMBSTONE_SQL,
+    ):
+        assert "temp_previous_served" in sql
+        assert "corpus_served_chunks" not in sql
+    removed = sp._RECON_REMOVED_TOMBSTONE_SQL
+    assert "temp_profile_replacements" in removed
+    assert "GROUP BY" not in removed
+    assert "EXISTS (" not in removed
+    assert "MIN(replacement.chunk_id" not in removed
+    replacements = sp._RECON_PROFILE_REPLACEMENTS_SQL
+    assert "GROUP BY" in replacements
+    assert "temp_new_doc_profiles" in replacements
+    assert "temp_previous_served" in replacements
+
+    conn = _make_db(tmp_path / "explain.db")
+    ensure_streaming_publication_schema(conn)
+    build_id = "b" * 64
+    plans = sp.explain_reconciliation_dml(conn, build_id=build_id)
+    removed_plan = " ".join(str(row) for row in plans["removed_tombstones"])
+    assert "idx_temp_profile_replacements_lookup" in removed_plan
+    assert "SCAN p" in removed_plan  # temp_previous_served is the previous-served scan
+    assert "corpus_served_chunks" not in removed_plan
+    assert "SCALAR SUBQUERY" not in removed_plan
+    for phase in ("to_embed", "cluster_tombstones", "metadata_updates"):
+        phase_plan = " ".join(str(row) for row in plans[phase])
+        assert "idx_temp_previous_served_chunk" in phase_plan
+        assert "corpus_served_chunks" not in phase_plan
+
+
+def test_reconciliation_deadline_stops_phase_and_rolls_back(tmp_path):
+    from catalyst_data.corpus.streaming_publication import (
+        ReconciliationDeadlineStop,
+        ResumableResourceStop,
+        resume_candidate_reconciliation,
+    )
+
+    conn = _make_db(
+        tmp_path / "deadline.db", article_count=250, body_words=60
+    )
+    with pytest.raises(RuntimeError, match="stop-after-manifest"):
+        build_streaming_corpus_and_lexical_index(
+            conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=lambda point: (
+                (_ for _ in ()).throw(RuntimeError("stop-after-manifest"))
+                if point == "after_manifest"
+                else None
+            ),
+        )
+    build_id = conn.execute("SELECT build_id FROM corpus_publication_builds").fetchone()[0]
+    checkpoint_before = conn.execute(
+        "SELECT reconciliation_checkpoint FROM corpus_publication_builds "
+        "WHERE build_id=?",
+        (build_id,),
+    ).fetchone()[0]
+    assert checkpoint_before is None
+
+    with pytest.raises(ReconciliationDeadlineStop):
+        resume_candidate_reconciliation(conn, build_id=build_id, deadline=0.0)
+    checkpoint_after = conn.execute(
+        "SELECT reconciliation_checkpoint FROM corpus_publication_builds "
+        "WHERE build_id=?",
+        (build_id,),
+    ).fetchone()[0]
+    assert checkpoint_after is None
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM corpus_build_deltas WHERE build_id=?", (build_id,)
+        ).fetchone()[0]
+        == 0
+    )
+    # No open transaction and the progress handler was cleared.
+    assert conn.in_transaction is False
+    assert conn.execute("SELECT 1").fetchone() == (1,)
+
+    # Operator interrupt uses the typed ResumableResourceStop path.
+    with pytest.raises(ResumableResourceStop, match="operator_interrupt"):
+        resume_candidate_reconciliation(
+            conn,
+            build_id=build_id,
+            deadline=900.0,
+            operator_interrupt={"operator_interrupt": True},
+        )
+    assert conn.in_transaction is False
+    assert conn.execute("SELECT 1").fetchone() == (1,)
+
+    # A normal resume completes the remaining phases.
+    summary = resume_candidate_reconciliation(conn, build_id=build_id)
+    assert summary.to_embed_count >= 0
+    assert (
+        conn.execute(
+            "SELECT status, reconciliation_checkpoint FROM corpus_publication_builds "
+            "WHERE build_id=?",
+            (build_id,),
+        ).fetchone()
+        == ("reconciliation_ready", "reconciliation_ready")
+    )
+
+
+def test_reconciliation_resume_rejects_changed_base_digest(tmp_path):
+    from catalyst_data.corpus.streaming_publication import resume_candidate_reconciliation
+
+    conn = _make_db(tmp_path / "changed-base.db")
+
+    def fail(point: str) -> None:
+        if point == "after_recon_initialized":
+            raise RuntimeError("stop-after-initialized")
+
+    with pytest.raises(RuntimeError, match="stop-after-initialized"):
+        build_streaming_corpus_and_lexical_index(
+            conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=fail,
+        )
+    build_id = conn.execute("SELECT build_id FROM corpus_publication_builds").fetchone()[0]
+    bound = conn.execute(
+        """SELECT reconciliation_base_manifest_id, reconciliation_base_chunk_count,
+                  reconciliation_base_inventory_digest
+           FROM corpus_publication_builds WHERE build_id=?""",
+        (build_id,),
+    ).fetchone()
+    assert bound[0] == OLD_MANIFEST_ID
+    assert int(bound[1]) >= 1
+    assert bound[2]
+
+    # Change a previous-served content_hash without changing the row count.
+    conn.execute(
+        """UPDATE corpus_chunks
+           SET content_hash=?
+           WHERE manifest_id=? AND chunk_id=(SELECT MIN(chunk_id) FROM corpus_chunks)""",
+        (hashlib.sha256(b"changed-base").hexdigest(), OLD_MANIFEST_ID),
+    )
+    conn.commit()
+    with pytest.raises(ValueError, match="base inventory digest changed"):
+        resume_candidate_reconciliation(conn, build_id=build_id)
+
+    # Restore the digest; a moved current manifest must also fail closed.
+    conn.execute(
+        "UPDATE corpus_chunks SET content_hash=? WHERE manifest_id=?",
+        (
+            hashlib.sha256(b"old text").hexdigest(),
+            OLD_MANIFEST_ID,
+        ),
+    )
+    conn.execute("UPDATE corpus_manifest SET is_current=0 WHERE manifest_id=?", (OLD_MANIFEST_ID,))
+    conn.execute(
+        """INSERT INTO corpus_manifest (manifest_id, manifest_json, is_current, created_at)
+           VALUES (?, '{}', 1, ?)""",
+        ("c" * 64, NOW),
+    )
+    conn.commit()
+    with pytest.raises(ValueError, match="base manifest changed"):
+        resume_candidate_reconciliation(conn, build_id=build_id)
+
+
+def _h64(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _seed_legacy_matrix(conn: sqlite3.Connection) -> None:
+    conn.execute("DELETE FROM corpus_chunks WHERE manifest_id=?", (OLD_MANIFEST_ID,))
+    rows = (
+        # chunk_id, document_id, content_hash, metadata_hash, dedup_cluster_id
+        ("u:news_v2:body:0001", "doc-u", _h64("c1"), _h64("m1"), "d1"),
+        ("c:news_v2:body:0001", "doc-c", _h64("old"), _h64("m1"), "d1"),
+        ("m:news_v2:body:0001", "doc-m", _h64("c1"), _h64("old-meta"), "d1"),
+        ("d:news_v2:body:0001", "doc-d", _h64("c1"), _h64("m1"), "d-old"),
+        ("r:news_v2:body:0001", "doc-r", _h64("c1"), _h64("m1"), "d1"),
+        ("nullsame:news_v2:body:0001", "doc-null-same", _h64("c1"), _h64("m1"), None),
+        ("nullto:news_v2:body:0001", "doc-null-to", _h64("c1"), _h64("m1"), None),
+    )
+    for chunk_id, document_id, content_hash, metadata_hash, dedup_cluster_id in rows:
+        conn.execute(
+            """INSERT INTO corpus_chunks
+               (chunk_id, document_id, chunk_profile_version, section_key, ordinal,
+                content_text, content_hash, metadata_hash, source_class,
+                dedup_cluster_id, available_at, ticker_associations, eligibility,
+                manifest_id, status, boundary_kind, body_token_start,
+                body_token_end, body_overlap_tokens, prefix_token_count,
+                prefix_truncated, section_parse_degraded, created_at, updated_at)
+               VALUES (?, ?, 'news_v2', 'body', '0001', 'text', ?, ?,
+                       'reported_news', ?, ?, '["AAPL"]', 'eligible', ?,
+                       'active', 'document_end', 0, 1, 0, 0, 0, 0, ?, ?)""",
+            (
+                chunk_id,
+                document_id,
+                content_hash,
+                metadata_hash,
+                dedup_cluster_id,
+                NOW,
+                OLD_MANIFEST_ID,
+                NOW,
+                NOW,
+            ),
+        )
+    conn.commit()
+
+
+def _seed_matrix_build(conn: sqlite3.Connection, build_id: str) -> None:
+    ensure_streaming_publication_schema(conn)
+    conn.execute(
+        """INSERT INTO corpus_manifest
+           (manifest_id, manifest_json, is_current, created_at)
+           VALUES (?, '{}', 0, ?)""",
+        ("1" * 64, NOW),
+    )
+    conn.execute(
+        """INSERT INTO corpus_publication_builds
+           (build_id, certified_snapshot_identity, header_json, status,
+            manifest_id, document_count, chunk_count, inventory_digest,
+            reconciliation_ready, created_at, updated_at)
+           VALUES (?, ?, '{}', 'manifest_ready', ?, 7, 7, ?, 0, ?, ?)""",
+        (build_id, SNAPSHOT_ID, "1" * 64, "9" * 64, NOW, NOW),
+    )
+    rows = (
+        # chunk_id, document_id, content_hash, metadata_hash, dedup_cluster_id
+        ("u:news_v2:body:0001", "doc-u", _h64("c1"), _h64("m1"), "d1"),
+        ("c:news_v2:body:0001", "doc-c", _h64("new"), _h64("m1"), "d1"),
+        ("m:news_v2:body:0001", "doc-m", _h64("c1"), _h64("new-meta"), "d1"),
+        ("d:news_v2:body:0001", "doc-d", _h64("c1"), _h64("m1"), "d-new"),
+        ("n:news_v2:body:0001", "doc-n", _h64("c1"), _h64("m1"), "d1"),
+        ("nullsame:news_v2:body:0001", "doc-null-same", _h64("c1"), _h64("m1"), None),
+        ("nullto:news_v2:body:0001", "doc-null-to", _h64("c1"), _h64("m1"), "X"),
+    )
+    for chunk_id, document_id, content_hash, metadata_hash, dedup_cluster_id in rows:
+        conn.execute(
+            """INSERT INTO corpus_build_chunks
+               (build_id, chunk_id, document_id, chunk_profile_version,
+                section_key, ordinal, content_text, content_hash, metadata_hash,
+                source_class, dedup_cluster_id, available_at,
+                ticker_associations, eligibility, status, boundary_kind,
+                body_token_start, body_token_end, body_overlap_tokens,
+                prefix_token_count, prefix_truncated, section_parse_degraded,
+                source_kind, created_at, updated_at)
+               VALUES (?, ?, ?, 'news_v2', 'body', '0001', 'text', ?, ?,
+                       'reported_news', ?, ?, '["AAPL"]', 'eligible', 'active',
+                       'document_end', 0, 1, 0, 0, 0, 0, 'article', ?, ?)""",
+            (
+                build_id,
+                chunk_id,
+                document_id,
+                content_hash,
+                metadata_hash,
+                dedup_cluster_id,
+                NOW,
+                NOW,
+                NOW,
+            ),
+        )
+    conn.commit()
+
+
+def _delta_set(conn: sqlite3.Connection, build_id: str, kind: str) -> set[str]:
+    return {
+        row[0]
+        for row in conn.execute(
+            "SELECT chunk_id FROM corpus_build_deltas "
+            "WHERE build_id=? AND delta_kind=?",
+            (build_id, kind),
+        )
+    }
+
+
+def test_reconciliation_delta_matrix_unchanged_new_content_metadata_dedup(tmp_path):
+    from catalyst_data.corpus.streaming_publication import resume_candidate_reconciliation
+
+    conn = _make_db(tmp_path / "matrix.db", article_count=1)
+    _seed_legacy_matrix(conn)
+    build_id = "a" * 64
+    _seed_matrix_build(conn, build_id)
+
+    summary = resume_candidate_reconciliation(conn, build_id=build_id)
+    assert summary.to_embed_count == 4
+    assert summary.metadata_update_count == 1
+    assert summary.tombstone_count == 3
+
+    assert _delta_set(conn, build_id, "to_embed") == {
+        "c:news_v2:body:0001",
+        "d:news_v2:body:0001",
+        "n:news_v2:body:0001",
+        "nullto:news_v2:body:0001",
+    }
+    assert _delta_set(conn, build_id, "metadata_update") == {"m:news_v2:body:0001"}
+    cluster = conn.execute(
+        """SELECT chunk_id FROM corpus_build_deltas
+           WHERE build_id=? AND delta_kind='tombstone'
+             AND reason='dedup_cluster_reassigned'""",
+        (build_id,),
+    ).fetchall()
+    assert {row[0] for row in cluster} == {
+        "d:news_v2:body:0001",
+        "nullto:news_v2:body:0001",
+    }
+    removed = conn.execute(
+        """SELECT chunk_id, reason FROM corpus_build_deltas
+           WHERE build_id=? AND delta_kind='tombstone'
+             AND reason IN ('eligibility_lost','profile_version_replaced',
+                            'disappeared_child','document_removed')""",
+        (build_id,),
+    ).fetchall()
+    assert {row[0]: row[1] for row in removed} == {
+        "r:news_v2:body:0001": "document_removed"
+    }
+    # NULL IS semantics: nullsame (NULL->NULL) has no delta; nullto (NULL->X)
+    # is both to_embed and dedup_cluster_reassigned.
+    assert "nullsame:news_v2:body:0001" not in _delta_set(conn, build_id, "to_embed")
+    assert (
+        conn.execute(
+            "SELECT status, reconciliation_checkpoint FROM corpus_publication_builds "
+            "WHERE build_id=?",
+            (build_id,),
+        ).fetchone()
+        == ("reconciliation_ready", "reconciliation_ready")
+    )
+    statuses = {
+        row[0]: row[1]
+        for row in conn.execute(
+            "SELECT chunk_id, status FROM corpus_build_chunks WHERE build_id=?",
+            (build_id,),
+        )
+    }
+    assert statuses["c:news_v2:body:0001"] == "pending_embedding"
+    assert statuses["n:news_v2:body:0001"] == "pending_embedding"
+    assert statuses["m:news_v2:body:0001"] == "metadata_only"
+    assert statuses["u:news_v2:body:0001"] == "active"
+
+
+def test_reconciliation_removed_tombstone_absent_from_target_passes_finalize(tmp_path):
+    from catalyst_data.corpus.streaming_publication import resume_candidate_reconciliation
+
+    conn = _make_db(tmp_path / "removed-target.db", article_count=1)
+    _seed_legacy_matrix(conn)
+    build_id = "a" * 64
+    _seed_matrix_build(conn, build_id)
+    summary = resume_candidate_reconciliation(conn, build_id=build_id)
+    assert summary.tombstone_count == 3
+    removed = conn.execute(
+        """SELECT chunk_id FROM corpus_build_deltas
+           WHERE build_id=? AND delta_kind='tombstone'
+             AND reason='document_removed'""",
+        (build_id,),
+    ).fetchall()
+    for (chunk_id,) in removed:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM corpus_build_chunks WHERE build_id=? AND chunk_id=?",
+                (build_id, chunk_id),
+            ).fetchone()
+            is None
+        )
+
+
+def test_reconciliation_cluster_tombstone_present_in_target(tmp_path):
+    from catalyst_data.corpus.streaming_publication import resume_candidate_reconciliation
+
+    conn = _make_db(tmp_path / "cluster-target.db", article_count=1)
+    _seed_legacy_matrix(conn)
+    build_id = "a" * 64
+    _seed_matrix_build(conn, build_id)
+    resume_candidate_reconciliation(conn, build_id=build_id)
+    cluster = conn.execute(
+        """SELECT chunk_id FROM corpus_build_deltas
+           WHERE build_id=? AND delta_kind='tombstone'
+             AND reason='dedup_cluster_reassigned'""",
+        (build_id,),
+    ).fetchall()
+    assert cluster
+    for (chunk_id,) in cluster:
+        assert (
+            conn.execute(
+                "SELECT 1 FROM corpus_build_chunks WHERE build_id=? AND chunk_id=?",
+                (build_id, chunk_id),
+            ).fetchone()
+            is not None
+        )
+
+
+def _ordered_deltas(
+    conn: sqlite3.Connection, build_id: str
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        conn.execute(
+            """SELECT delta_kind, chunk_id, document_id, reason,
+                      previous_content_hash, previous_metadata_hash,
+                      replacement_chunk_id
+               FROM corpus_build_deltas WHERE build_id=?
+               ORDER BY delta_kind COLLATE BINARY, chunk_id COLLATE BINARY""",
+            (build_id,),
+        ).fetchall()
+    )
+
+
+def _frozen_legacy_reconciliation(
+    conn: sqlite3.Connection, build_id: str
+) -> None:
+    """Frozen pre-TDD reconciliation SQL (previous = served view), verbatim."""
+    previous = "corpus_served_chunks"
+    conn.execute("DELETE FROM corpus_build_deltas WHERE build_id=?", (build_id,))
+    conn.execute(
+        f"""INSERT INTO corpus_build_deltas
+            (build_id, delta_kind, chunk_id, document_id,
+             previous_content_hash, previous_metadata_hash)
+            SELECT ?, 'to_embed', n.chunk_id, n.document_id,
+                   p.content_hash, p.metadata_hash
+            FROM corpus_build_chunks n
+            LEFT JOIN {previous} p ON p.chunk_id=n.chunk_id
+            WHERE n.build_id=? AND n.eligibility='eligible'
+              AND (p.chunk_id IS NULL OR p.content_hash != n.content_hash
+                   OR p.dedup_cluster_id IS NOT n.dedup_cluster_id)""",
+        (build_id, build_id),
+    )
+    conn.execute(
+        f"""INSERT INTO corpus_build_deltas
+            (build_id, delta_kind, chunk_id, document_id, reason,
+             previous_content_hash, previous_metadata_hash)
+            SELECT ?, 'tombstone', n.chunk_id, n.document_id,
+                   'dedup_cluster_reassigned', p.content_hash, p.metadata_hash
+            FROM corpus_build_chunks n
+            JOIN {previous} p ON p.chunk_id=n.chunk_id
+            WHERE n.build_id=? AND n.eligibility='eligible'
+              AND p.dedup_cluster_id IS NOT n.dedup_cluster_id""",
+        (build_id, build_id),
+    )
+    conn.execute(
+        f"""INSERT INTO corpus_build_deltas
+            (build_id, delta_kind, chunk_id, document_id,
+             previous_content_hash, previous_metadata_hash)
+            SELECT ?, 'metadata_update', n.chunk_id, n.document_id,
+                   p.content_hash, p.metadata_hash
+            FROM corpus_build_chunks n
+            JOIN {previous} p ON p.chunk_id=n.chunk_id
+            WHERE n.build_id=? AND n.eligibility='eligible'
+              AND p.content_hash=n.content_hash
+              AND p.metadata_hash != n.metadata_hash
+              AND p.dedup_cluster_id IS n.dedup_cluster_id""",
+        (build_id, build_id),
+    )
+    conn.execute(
+        f"""INSERT INTO corpus_build_deltas
+            (build_id, delta_kind, chunk_id, document_id, reason,
+             previous_content_hash, previous_metadata_hash,
+             replacement_chunk_id)
+            SELECT ?, 'tombstone', p.chunk_id, p.document_id,
+                   CASE
+                     WHEN EXISTS (
+                       SELECT 1 FROM corpus_build_source_documents source_doc
+                       WHERE source_doc.build_id=?
+                         AND source_doc.document_id=p.document_id
+                         AND source_doc.eligibility='ineligible'
+                     ) THEN 'eligibility_lost'
+                     WHEN EXISTS (
+                       SELECT 1 FROM corpus_build_chunks same_doc
+                       WHERE same_doc.build_id=?
+                         AND same_doc.document_id=p.document_id
+                         AND same_doc.chunk_profile_version != p.chunk_profile_version
+                     ) THEN 'profile_version_replaced'
+                     WHEN EXISTS (
+                       SELECT 1 FROM corpus_build_chunks same_doc
+                       WHERE same_doc.build_id=?
+                         AND same_doc.document_id=p.document_id
+                     ) THEN 'disappeared_child'
+                     ELSE 'document_removed'
+                   END,
+                   p.content_hash, p.metadata_hash,
+                   (SELECT MIN(replacement.chunk_id COLLATE BINARY)
+                    FROM corpus_build_chunks replacement
+                    WHERE replacement.build_id=?
+                      AND replacement.document_id=p.document_id
+                      AND replacement.chunk_profile_version != p.chunk_profile_version)
+            FROM {previous} p
+            LEFT JOIN corpus_build_chunks n
+              ON n.build_id=? AND n.chunk_id=p.chunk_id
+            WHERE n.chunk_id IS NULL""",
+        (build_id, build_id, build_id, build_id, build_id, build_id),
+    )
+    conn.execute(
+        """UPDATE corpus_build_chunks SET status='pending_embedding'
+           WHERE build_id=? AND chunk_id IN (
+               SELECT chunk_id FROM corpus_build_deltas
+               WHERE build_id=? AND delta_kind='to_embed'
+           )""",
+        (build_id, build_id),
+    )
+    conn.execute(
+        """UPDATE corpus_build_chunks SET status='metadata_only'
+           WHERE build_id=? AND chunk_id IN (
+               SELECT chunk_id FROM corpus_build_deltas
+               WHERE build_id=? AND delta_kind='metadata_update'
+           )""",
+        (build_id, build_id),
+    )
+    conn.execute(
+        """UPDATE corpus_publication_builds
+           SET status='reconciliation_ready', reconciliation_ready=1, updated_at=?
+           WHERE build_id=?""",
+        (NOW, build_id),
+    )
+
+
+def test_reconciliation_delta_sql_byte_equivalent_to_frozen_legacy(tmp_path):
+    phased_conn = _make_db(tmp_path / "phased.db", article_count=2)
+    with pytest.raises(RuntimeError, match="stop-after-reconciliation"):
+        build_streaming_corpus_and_lexical_index(
+            phased_conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=lambda point: (
+                (_ for _ in ()).throw(RuntimeError("stop-after-reconciliation"))
+                if point == "after_reconciliation"
+                else None
+            ),
+        )
+    build_id = phased_conn.execute(
+        "SELECT build_id FROM corpus_publication_builds"
+    ).fetchone()[0]
+    phased_deltas = _ordered_deltas(phased_conn, build_id)
+
+    legacy_conn = _make_db(tmp_path / "legacy.db", article_count=2)
+    with pytest.raises(RuntimeError, match="stop-after-manifest"):
+        build_streaming_corpus_and_lexical_index(
+            legacy_conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=lambda point: (
+                (_ for _ in ()).throw(RuntimeError("stop-after-manifest"))
+                if point == "after_manifest"
+                else None
+            ),
+        )
+    legacy_build_id = legacy_conn.execute(
+        "SELECT build_id FROM corpus_publication_builds"
+    ).fetchone()[0]
+    assert legacy_build_id == build_id
+    legacy_conn.execute("BEGIN")
+    _frozen_legacy_reconciliation(legacy_conn, build_id)
+    legacy_deltas = _ordered_deltas(legacy_conn, build_id)
+    legacy_conn.rollback()
+    assert legacy_deltas == phased_deltas
+
+
+@pytest.mark.parametrize(
+    ("stop_point", "expected_checkpoint"),
+    [
+        ("after_recon_initialized", "initialized"),
+        ("after_recon_to_embed_done", "to_embed_done"),
+        ("after_recon_cluster_tombstones_done", "cluster_tombstones_done"),
+        ("after_recon_metadata_updates_done", "metadata_updates_done"),
+        ("after_recon_removed_tombstones_done", "removed_tombstones_done"),
+        ("after_recon_statuses_done", "statuses_done"),
+        ("after_recon_finalize", "reconciliation_ready"),
+    ],
+)
+def test_reconciliation_resume_after_every_checkpoint_no_duplicate_deltas(
+    tmp_path, stop_point: str, expected_checkpoint: str
+):
+    from catalyst_data.corpus.streaming_publication import resume_candidate_reconciliation
+
+    conn = _make_db(tmp_path / f"resume-{stop_point}.db", article_count=2)
+    with pytest.raises(RuntimeError, match=f"injected:{stop_point}"):
+        build_streaming_corpus_and_lexical_index(
+            conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=lambda point: (
+                (_ for _ in ()).throw(RuntimeError(f"injected:{stop_point}"))
+                if point == stop_point
+                else None
+            ),
+        )
+    build_id = conn.execute("SELECT build_id FROM corpus_publication_builds").fetchone()[0]
+    checkpoint = conn.execute(
+        "SELECT reconciliation_checkpoint FROM corpus_publication_builds "
+        "WHERE build_id=?",
+        (build_id,),
+    ).fetchone()[0]
+    assert checkpoint == expected_checkpoint
+
+    def delta_counts() -> dict[str, int]:
+        return {
+            kind: int(count)
+            for kind, count in conn.execute(
+                """SELECT delta_kind, COUNT(*) FROM corpus_build_deltas
+                   WHERE build_id=? GROUP BY delta_kind""",
+                (build_id,),
+            ).fetchall()
+        }
+
+    before = delta_counts()
+    summary = resume_candidate_reconciliation(conn, build_id=build_id)
+    after = delta_counts()
+    # Already-completed delta kinds must never be duplicated by remaining phases.
+    for kind, count in before.items():
+        assert after[kind] == count
+    assert (
+        conn.execute(
+            "SELECT status, reconciliation_checkpoint FROM corpus_publication_builds "
+            "WHERE build_id=?",
+            (build_id,),
+        ).fetchone()
+        == ("reconciliation_ready", "reconciliation_ready")
+    )
+    again = resume_candidate_reconciliation(conn, build_id=build_id)
+    assert again.to_embed_count == summary.to_embed_count
+    assert delta_counts() == after
+
+
+def test_reconciliation_poisoned_served_view_not_touched(tmp_path):
+    from catalyst_data.corpus.streaming_publication import (
+        _materialize_reconciliation_temp,
+        _recon_flags,
+        _recon_phase_to_embed,
+    )
+
+    conn = _make_db(tmp_path / "poisoned-view.db", article_count=2)
+    with pytest.raises(RuntimeError, match="stop-after-manifest"):
+        build_streaming_corpus_and_lexical_index(
+            conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=lambda point: (
+                (_ for _ in ()).throw(RuntimeError("stop-after-manifest"))
+                if point == "after_manifest"
+                else None
+            ),
+        )
+    build_id = conn.execute("SELECT build_id FROM corpus_publication_builds").fetchone()[0]
+    flags = _recon_flags(None)
+    _materialize_reconciliation_temp(conn, build_id=build_id, deadline=900.0, flags=flags)
+
+    # Any SELECT from the served view now fails.
+    conn.execute("DROP VIEW corpus_served_chunks")
+    conn.execute(
+        "CREATE VIEW corpus_served_chunks AS SELECT * FROM missing_table"
+    )
+    conn.commit()
+
+    _recon_phase_to_embed(
+        conn,
+        build_id=build_id,
+        now=NOW,
+        deadline=900.0,
+        flags=flags,
+        failure_injector=None,
+        state={},
+    )
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM corpus_build_deltas "
+            "WHERE build_id=? AND delta_kind='to_embed'",
+            (build_id,),
+        ).fetchone()[0]
+        > 0
+    )
+
+
+def test_reconciliation_pathological_fixture_bounded(tmp_path):
+    from catalyst_data.corpus.streaming_publication import resume_candidate_reconciliation
+
+    conn = _make_db(tmp_path / "pathological.db", article_count=1)
+    ensure_streaming_publication_schema(conn)
+    conn.execute("DELETE FROM corpus_chunks WHERE manifest_id=?", (OLD_MANIFEST_ID,))
+    for index in range(1000):
+        conn.execute(
+            """INSERT INTO corpus_chunks
+               (chunk_id, document_id, chunk_profile_version, section_key, ordinal,
+                content_text, content_hash, metadata_hash, source_class,
+                dedup_cluster_id, available_at, ticker_associations, eligibility,
+                manifest_id, status, boundary_kind, body_token_start,
+                body_token_end, body_overlap_tokens, prefix_token_count,
+                prefix_truncated, section_parse_degraded, created_at, updated_at)
+               VALUES (?, 'doc-p', 'filing_v2', 'item', ?, 'text', ?, ?,
+                       'official_government', 'p-cluster', ?, '[]', 'eligible', ?,
+                       'active', 'document_end', 0, 1, 0, 0, 0, 0, ?, ?)""",
+            (
+                f"doc-p:filing_v2:item:{index:04d}",
+                f"{index:04d}",
+                _h64(f"p{index}"),
+                _h64(f"pm{index}"),
+                NOW,
+                OLD_MANIFEST_ID,
+                NOW,
+                NOW,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO corpus_chunks
+               (chunk_id, document_id, chunk_profile_version, section_key, ordinal,
+                content_text, content_hash, metadata_hash, source_class,
+                dedup_cluster_id, available_at, ticker_associations, eligibility,
+                manifest_id, status, boundary_kind, body_token_start,
+                body_token_end, body_overlap_tokens, prefix_token_count,
+                prefix_truncated, section_parse_degraded, created_at, updated_at)
+               VALUES (?, 'doc-q', 'news_v2', 'body', ?, 'text', ?, ?,
+                       'reported_news', 'q-cluster', ?, '[]', 'eligible', ?,
+                       'active', 'document_end', 0, 1, 0, 0, 0, 0, ?, ?)""",
+            (
+                f"doc-q:news_v2:body:{index:04d}",
+                f"{index:04d}",
+                _h64(f"q{index}"),
+                _h64(f"qm{index}"),
+                NOW,
+                OLD_MANIFEST_ID,
+                NOW,
+                NOW,
+            ),
+        )
+    conn.execute(
+        """INSERT INTO corpus_manifest (manifest_id, manifest_json, is_current, created_at)
+           VALUES (?, '{}', 0, ?)""",
+        ("1" * 64, NOW),
+    )
+    conn.execute(
+        """INSERT INTO corpus_publication_builds
+           (build_id, certified_snapshot_identity, header_json, status,
+            manifest_id, document_count, chunk_count, inventory_digest,
+            reconciliation_ready, created_at, updated_at)
+           VALUES (?, ?, '{}', 'manifest_ready', ?, 1, 500, ?, 0, ?, ?)""",
+        ("a" * 64, SNAPSHOT_ID, "1" * 64, "9" * 64, NOW, NOW),
+    )
+    for index in range(500):
+        conn.execute(
+            """INSERT INTO corpus_build_chunks
+               (build_id, chunk_id, document_id, chunk_profile_version,
+                section_key, ordinal, content_text, content_hash, metadata_hash,
+                source_class, dedup_cluster_id, available_at,
+                ticker_associations, eligibility, status, boundary_kind,
+                body_token_start, body_token_end, body_overlap_tokens,
+                prefix_token_count, prefix_truncated, section_parse_degraded,
+                source_kind, created_at, updated_at)
+               VALUES (?, ?, 'doc-p', 'filing_v3', 'item', ?, 'text', ?, ?,
+                       'official_government', 'p-cluster', ?, '[]', 'eligible',
+                       'active', 'document_end', 0, 1, 0, 0, 0, 0, 'filing', ?, ?)""",
+            (
+                "a" * 64,
+                f"doc-p:filing_v3:item:{index:04d}",
+                f"{index:04d}",
+                _h64(f"p{index}"),
+                _h64(f"pm{index}"),
+                NOW,
+                NOW,
+                NOW,
+            ),
+        )
+    conn.commit()
+
+    summary = resume_candidate_reconciliation(conn, build_id="a" * 64)
+    assert summary.tombstone_count == 2000
+    replaced = conn.execute(
+        """SELECT COUNT(*) FROM corpus_build_deltas
+           WHERE build_id=? AND delta_kind='tombstone'
+             AND reason='profile_version_replaced'""",
+        ("a" * 64,),
+    ).fetchone()[0]
+    removed = conn.execute(
+        """SELECT COUNT(*) FROM corpus_build_deltas
+           WHERE build_id=? AND delta_kind='tombstone'
+             AND reason='document_removed'""",
+        ("a" * 64,),
+    ).fetchone()[0]
+    assert replaced == 1000
+    assert removed == 1000
+    expected_replacement = "doc-p:filing_v3:item:0000"
+    bad_replacement = conn.execute(
+        """SELECT COUNT(*) FROM corpus_build_deltas
+           WHERE build_id=? AND delta_kind='tombstone'
+             AND reason='profile_version_replaced'
+             AND replacement_chunk_id != ?""",
+        ("a" * 64, expected_replacement),
+    ).fetchone()[0]
+    assert bad_replacement == 0
+    assert (
+        conn.execute(
+            "SELECT status, reconciliation_checkpoint FROM corpus_publication_builds "
+            "WHERE build_id=?",
+            ("a" * 64,),
+        ).fetchone()
+        == ("reconciliation_ready", "reconciliation_ready")
+    )
+
+
+def test_reconciliation_resume_rejects_base_appearing_after_initialize(tmp_path):
+    from catalyst_data.corpus.streaming_publication import resume_candidate_reconciliation
+
+    conn = _make_db(tmp_path / "base-appears.db", article_count=2)
+    # No previous served at initialize time: make the current manifest non-current.
+    conn.execute(
+        "UPDATE corpus_manifest SET is_current=0 WHERE manifest_id=?", (OLD_MANIFEST_ID,)
+    )
+    conn.commit()
+
+    def fail(point: str) -> None:
+        if point == "after_recon_initialized":
+            raise RuntimeError("stop-after-initialized")
+
+    with pytest.raises(RuntimeError, match="stop-after-initialized"):
+        build_streaming_corpus_and_lexical_index(
+            conn,
+            certified_snapshot_identity=SNAPSHOT_ID,
+            clock=lambda: NOW,
+            failure_injector=fail,
+        )
+    build_id = conn.execute("SELECT build_id FROM corpus_publication_builds").fetchone()[0]
+    bound = conn.execute(
+        """SELECT reconciliation_base_manifest_id, reconciliation_base_chunk_count,
+                  reconciliation_base_inventory_digest
+           FROM corpus_publication_builds WHERE build_id=?""",
+        (build_id,),
+    ).fetchone()
+    assert bound[0] is None
+    assert int(bound[1]) == 0
+
+    # A served base appears after initialize; resume must fail closed even
+    # though the bound manifest id was NULL.
+    conn.execute("UPDATE corpus_manifest SET is_current=1 WHERE manifest_id=?", (OLD_MANIFEST_ID,))
+    conn.commit()
+    with pytest.raises(ValueError, match="base manifest changed"):
+        resume_candidate_reconciliation(conn, build_id=build_id)

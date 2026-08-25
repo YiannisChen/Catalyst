@@ -1306,3 +1306,398 @@ def test_recover_sec_primary_secret_safe_errors(tmp_path, monkeypatch, capsys):
     assert "SecretUA" not in out
     assert "[REDACTED]" in payload["error"]
     assert not (tmp_path / "recovery_report.json").exists()
+
+
+def test_prepare_parser_accepts_resume_build_id(tmp_path):
+    """L4: prepare accepts --resume-build-id and defaults it to None."""
+    module = _load_script()
+    argv = _prepare_argv(tmp_path) + ["--resume-build-id", "a" * 64]
+    args = module._parse_args(argv)
+    assert args.resume_build_id == "a" * 64
+    plain = module._parse_args(_prepare_argv(tmp_path))
+    assert plain.resume_build_id is None
+
+
+def _resumable_derivative(
+    tmp_path: Path,
+    *,
+    checkpoint: str | None = None,
+    name: str = "resumable.db",
+) -> Path:
+    """Derivative with a manifest_ready candidate build row and one chunk."""
+    from catalyst_data.corpus.streaming_publication import (
+        ensure_streaming_publication_schema,
+    )
+    from catalyst_data.storage.sqlite import init_db
+
+    db = tmp_path / name
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    init_db(conn)
+    ensure_streaming_publication_schema(conn)
+    conn.execute(
+        """INSERT INTO corpus_manifest
+           (manifest_id, manifest_json, is_current, created_at)
+           VALUES (?, '{}', 0, ?)""",
+        ("1" * 64, "2026-08-23T00:00:00Z"),
+    )
+    conn.execute(
+        """INSERT INTO corpus_publication_builds
+           (build_id, certified_snapshot_identity, header_json, status,
+            manifest_id, document_count, chunk_count, inventory_digest,
+            reconciliation_ready, reconciliation_checkpoint, created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            "a" * 64,
+            "7" * 64,
+            "{}",
+            "manifest_ready",
+            "1" * 64,
+            1,
+            1,
+            "9" * 64,
+            0,
+            checkpoint,
+            "2026-08-23T00:00:00Z",
+            "2026-08-23T00:00:00Z",
+        ),
+    )
+    conn.execute(
+        """INSERT INTO corpus_build_chunks
+           (build_id, chunk_id, document_id, chunk_profile_version, section_key,
+            ordinal, content_text, content_hash, metadata_hash, source_class,
+            available_at, ticker_associations, eligibility, status, boundary_kind,
+            body_token_start, body_token_end, body_overlap_tokens,
+            prefix_token_count, prefix_truncated, section_parse_degraded,
+            source_kind, created_at, updated_at)
+           VALUES (?, ?, 'doc:1', 'news_v2', 'body', '0001', 'resume text',
+                   ?, ?, 'reported_news', '2026-08-23T00:00:00Z', '["AAPL"]',
+                   'eligible', 'active', 'document_end', 0, 1, 0, 0, 0, 0,
+                   'article', ?, ?)""",
+        (
+            "a" * 64,
+            "resume:news_v2:body:0001",
+            hashlib.sha256(b"resume text").hexdigest(),
+            hashlib.sha256(b"resume metadata").hexdigest(),
+            "2026-08-23T00:00:00Z",
+            "2026-08-23T00:00:00Z",
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return db
+
+
+def _resume_argv(tmp_path: Path, *, dry_run: bool = False) -> list[str]:
+    bench, q005 = _seal_files(tmp_path)
+    argv = [
+        "prepare",
+        "--derivative", str(_resumable_derivative(tmp_path)),
+        "--benchmark-manifest", str(bench),
+        "--q005-approval", str(q005),
+        "--source-bundle-output-root", str(tmp_path / "bundles"),
+        "--preparation-evidence", str(tmp_path / "preparation_evidence.json"),
+        "--snapshot-id", "7" * 64,
+        "--probe-report-id", "8" * 64,
+        "--postbuild-readiness-id", "9" * 64,
+        "--expected-implementation-head", HEAD,
+        "--resume-build-id", "a" * 64,
+    ]
+    if dry_run:
+        argv.append("--dry-run")
+    return argv
+
+
+def _resume_state_snapshot(conn: sqlite3.Connection) -> dict[str, object]:
+    build_columns = [
+        "build_id",
+        "certified_snapshot_identity",
+        "header_json",
+        "status",
+        "manifest_id",
+        "manifest_json",
+        "document_count",
+        "chunk_count",
+        "source_utf8_bytes",
+        "inventory_digest",
+        "lexical_expected_digest",
+        "lexical_digest",
+        "lexical_row_count",
+        "lexical_repair_checkpoint",
+        "lexical_repair_cursor",
+        "reconciliation_ready",
+        "lexical_ready",
+        "created_at",
+        "updated_at",
+        "published_at",
+    ]
+    build_select = ", ".join(build_columns)
+    return {
+        "user_version": conn.execute("PRAGMA user_version").fetchone()[0],
+        "builds": tuple(
+            tuple(row) for row in conn.execute(f"SELECT {build_select} FROM corpus_publication_builds")
+        ),
+        "manifests": tuple(
+            tuple(row) for row in conn.execute(
+                "SELECT manifest_id, manifest_json, is_current, created_at FROM corpus_manifest"
+            )
+        ),
+        "lexical": tuple(
+            tuple(row) for row in conn.execute(
+                "SELECT * FROM lexical_index_state"
+            )
+        ),
+        "chunks": conn.execute("SELECT COUNT(*) FROM corpus_build_chunks").fetchone()[0],
+        "deltas": conn.execute("SELECT COUNT(*) FROM corpus_build_deltas").fetchone()[0],
+        "fts_batches": conn.execute("SELECT COUNT(*) FROM corpus_build_fts_batches").fetchone()[0],
+    }
+
+
+def _forbidden_seam(name: str):
+    """Return a function that raises if a forbidden resume seam is invoked."""
+
+    def seam(*a, **k):
+        raise AssertionError(f"forbidden resume seam invoked: {name}")
+
+    return seam
+
+
+def test_prepare_resume_dry_run_allows_additive_columns_but_writes_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda *a, **k: HEAD)
+    argv = _resume_argv(tmp_path, dry_run=True)
+    derivative = Path(argv[2])
+    evidence_path = Path(argv[argv.index("--preparation-evidence") + 1])
+    conn = sqlite3.connect(derivative)
+    conn.row_factory = sqlite3.Row
+    before = _resume_state_snapshot(conn)
+    conn.close()
+
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert json.loads(out)["ok"] is True
+    assert not evidence_path.exists()
+    assert not (tmp_path / "bundles").exists()
+
+    conn = sqlite3.connect(derivative)
+    conn.row_factory = sqlite3.Row
+    after = _resume_state_snapshot(conn)
+    assert after == before
+    columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(corpus_publication_builds)")
+    }
+    for name in (
+        "reconciliation_checkpoint",
+        "reconciliation_base_manifest_id",
+        "reconciliation_base_chunk_count",
+        "reconciliation_base_inventory_digest",
+    ):
+        assert name in columns
+    status, checkpoint = conn.execute(
+        "SELECT status, reconciliation_checkpoint FROM corpus_publication_builds"
+    ).fetchone()
+    assert (status, checkpoint) == ("manifest_ready", None)
+    conn.close()
+
+
+def test_prepare_resume_recomputes_audit_and_data01_and_mocks_forbidden_steps(
+    tmp_path, monkeypatch, capsys
+):
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda *a, **k: HEAD)
+    argv = _resume_argv(tmp_path)
+    derivative = Path(argv[2])
+    evidence_path = Path(argv[argv.index("--preparation-evidence") + 1])
+    order: list[str] = []
+
+    def record(name):
+        def step(*a, **k):
+            order.append(name)
+            if name == "_step_data01":
+                return {
+                    "denominator": 5229,
+                    "numerator": 5229,
+                    "gate_passed": True,
+                    "accepted_time_recovered_count": 0,
+                    "fail_closed_eligibility_count": 0,
+                }
+            if name == "_step_audit":
+                return {"failures": 0}
+            return {"name": name}
+
+        return step
+
+    for name in (
+        "_step_derivative_migration",
+        "_step_accepted_time",
+        "_step_sec_reparse",
+        "_step_news_persistence",
+        "_step_m35b_backfill",
+        "_step_m36_dedup",
+        "_step_corpus_candidate",
+        "_step_bundle_export",
+    ):
+        monkeypatch.setattr(module, name, record(name))
+    monkeypatch.setattr(module, "_step_audit", record("_step_audit"))
+    monkeypatch.setattr(module, "_step_data01", record("_step_data01"))
+
+    forbidden = {
+        "_manifest_phase": "catalyst_data.corpus.streaming_publication._manifest_phase",
+        "_cutover": "catalyst_data.corpus.streaming_publication._cutover",
+        "_stage_document": "catalyst_data.corpus.streaming_publication._stage_document",
+        "_stage_source_presence": "catalyst_data.corpus.streaming_publication._stage_source_presence",
+        "_build_id": "catalyst_data.corpus.streaming_publication._build_id",
+        "build_canonical_corpus_records": "catalyst_data.index_builder.build_canonical_corpus_records",
+        "build_fts5_index": "catalyst_data.retrieval.fts5_builder.build_fts5_index",
+    }
+    for target, dotted in forbidden.items():
+        import importlib
+
+        package, _, name = dotted.rpartition(".")
+        mod = importlib.import_module(package)
+        monkeypatch.setattr(mod, name, _forbidden_seam(target))
+
+    from types import SimpleNamespace
+
+    fake_bundle = SimpleNamespace(
+        source_bundle_id="2" * 64,
+        chunk_count=1,
+        path=tmp_path / "bundles" / "source_2222",
+    )
+
+    def fake_bundle_export(*a, **k):
+        order.append("export_candidate_source_bundle")
+        return ("2" * 64, tmp_path / "bundles" / "source_2222")
+
+    monkeypatch.setattr(
+        "catalyst_data.retrieval.source_bundle.export_candidate_source_bundle",
+        fake_bundle_export,
+    )
+
+    def fake_fts(*a, **k):
+        order.append("build_candidate_fts")
+        return SimpleNamespace(
+            manifest_id="1" * 64, mode_served="fts5", row_count=1, digest="d" * 64
+        )
+
+    monkeypatch.setattr(
+        "catalyst_data.corpus.streaming_publication.build_candidate_fts", fake_fts
+    )
+
+    def fake_verify(bundle_path, **kw):
+        order.append("verify_source_bundle")
+        return SimpleNamespace(
+            source_bundle_id="2" * 64, chunk_count=1, path=Path(bundle_path)
+        )
+
+    monkeypatch.setattr(
+        "catalyst_data.retrieval.gpu_contract.verify_source_bundle", fake_verify
+    )
+
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert json.loads(out)["ok"] is True
+    assert order == [
+        "_step_audit",
+        "_step_data01",
+        "export_candidate_source_bundle",
+        "build_candidate_fts",
+        "verify_source_bundle",
+    ]
+    assert evidence_path.is_file()
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["schema_version"] == "preparation_evidence_v1"
+    assert evidence["resume"]["implementation_head"] == HEAD
+    assert evidence["resume"]["build_id"] == "a" * 64
+    assert evidence["resume"]["corpus_manifest_id"] == "1" * 64
+    assert evidence["resume"]["original_status"] == "manifest_ready"
+    assert evidence["resume"]["original_manifest_ready_at"] == "2026-08-23T00:00:00Z"
+    assert evidence["resume"]["original_git_revision"] == evidence["git_revision"]
+    assert evidence["resume"]["original_git_revision"] != HEAD
+
+
+def test_prepare_resume_end_to_end_real_bundle_fts_and_verify(
+    tmp_path, monkeypatch, capsys
+):
+    """L4 end-to-end: real recon -> real bundle export -> real FTS -> real verify."""
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda *a, **k: HEAD)
+    argv = _resume_argv(tmp_path)
+    evidence_path = Path(argv[argv.index("--preparation-evidence") + 1])
+    bundle_root = Path(argv[argv.index("--source-bundle-output-root") + 1])
+
+    def audit(conn):
+        return {"failures": 0}
+
+    def data01(conn, benchmark, q005, git_revision):
+        return {
+            "denominator": 5229,
+            "numerator": 5229,
+            "gate_passed": True,
+            "accepted_time_recovered_count": 0,
+            "fail_closed_eligibility_count": 0,
+        }
+
+    monkeypatch.setattr(module, "_step_audit", audit)
+    monkeypatch.setattr(module, "_step_data01", data01)
+    for name in (
+        "_step_derivative_migration",
+        "_step_accepted_time",
+        "_step_sec_reparse",
+        "_step_news_persistence",
+        "_step_m35b_backfill",
+        "_step_m36_dedup",
+        "_step_corpus_candidate",
+        "_step_bundle_export",
+    ):
+        monkeypatch.setattr(module, name, _forbidden_seam(name))
+
+    rc = module.main(argv)
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert json.loads(out)["ok"] is True
+    assert evidence_path.is_file()
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["build_id"] == "a" * 64
+    assert evidence["corpus_manifest_id"] == "1" * 64
+    assert evidence["chunk_count"] == 1
+    assert evidence["reconciliation"] == {
+        "to_embed_count": 1,
+        "metadata_update_count": 0,
+        "tombstone_count": 0,
+    }
+    bundle_dir = Path(evidence["source_bundle_path"])
+    assert bundle_dir.is_dir()
+    assert {
+        path.name for path in bundle_dir.iterdir() if path.is_file()
+    } == {"chunks.jsonl", "source_bundle_manifest.json", "checksums.sha256"}
+    assert evidence["source_bundle_id"]
+    assert evidence["lexical_digest"]
+    # Real verification of the exported bundle succeeded inside _prepare_resume.
+    from catalyst_data.retrieval.gpu_contract import verify_source_bundle
+
+    verified = verify_source_bundle(
+        bundle_dir,
+        expected_source_bundle_id=evidence["source_bundle_id"],
+    )
+    assert verified.chunk_count == 1
+    # The candidate build reached lexical_ready without cutover.
+    conn = sqlite3.connect(argv[2])
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT status, lexical_ready FROM corpus_publication_builds WHERE build_id=?",
+        ("a" * 64,),
+    ).fetchone()
+    conn.close()
+    assert row is not None
+    assert row["status"] == "lexical_ready"
+    assert row["lexical_ready"] == 1
+    # The resume evidence carries the additive resume keys.
+    assert evidence["resume"]["original_status"] == "manifest_ready"
+    assert evidence["resume"]["original_manifest_ready_at"] == "2026-08-23T00:00:00Z"
+    assert evidence["resume"]["original_git_revision"] == evidence["git_revision"]
+    assert not (bundle_root / "other").exists()
