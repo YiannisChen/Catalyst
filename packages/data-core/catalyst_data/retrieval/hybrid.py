@@ -12,7 +12,7 @@ import math
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Literal, overload
 
 import numpy as np
 
@@ -310,6 +310,50 @@ class ProductionHybridRetriever:
         return list(result.final_results[:top_k])
 
 
+@overload
+def retrieve_hybrid(
+    db: Any,
+    *,
+    query: str,
+    ticker: str,
+    cutoff: str,
+    mode: str = "hybrid",
+    reranker: Any = None,
+    query_embedding: Any = None,
+    requested_manifest_id: str,
+    index_manifest_id: str,
+    lancedb_table: Any,
+    source_classes: tuple[str, ...] | None = None,
+    evidence_types: tuple[str, ...] | None = None,
+    reranker_timeout_seconds: float = 2.0,
+    reranker_gate: RerankerGate | None = None,
+    return_v1: Literal[False],
+) -> HybridRetrievalResult:
+    """Overload: explicit ``return_v1=False`` always yields the legacy shape."""
+
+
+@overload
+def retrieve_hybrid(
+    db: Any,
+    *,
+    query: str,
+    ticker: str,
+    cutoff: str,
+    mode: str = "hybrid",
+    reranker: Any = None,
+    query_embedding: Any = None,
+    requested_manifest_id: str,
+    index_manifest_id: str,
+    lancedb_table: Any,
+    source_classes: tuple[str, ...] | None = None,
+    evidence_types: tuple[str, ...] | None = None,
+    reranker_timeout_seconds: float = 2.0,
+    reranker_gate: RerankerGate | None = None,
+    return_v1: Literal[True] = True,
+) -> v1_result.RetrievalResultSet | HybridRetrievalResult:
+    """Overload: the default path may emit the V1.1 set or a legacy result."""
+
+
 def retrieve_hybrid(
     db: Any,
     *,
@@ -327,15 +371,16 @@ def retrieve_hybrid(
     reranker_timeout_seconds: float = 2.0,
     reranker_gate: RerankerGate | None = None,
     return_v1: bool = True,
-) -> HybridRetrievalResult:
+) -> v1_result.RetrievalResultSet | HybridRetrievalResult:
     """Run lexical and dense arms directly with identical scope arguments.
 
-    ``return_v1`` defaults to True and emits the M3-11 V1.1
-    ``v1_result.RetrievalResultSet`` for a successful ``mode="reranked"`` run.
-    The M1/M3 four-arm exit library consumes the legacy ``HybridRetrievalResult``
-    shape (outer arm result sets + flat temporal identity) and passes
-    ``return_v1=False`` to opt out of the V1 conversion; all other callers are
-    unchanged.
+    The declared return type reflects both runtime shapes: a successful
+    default ``return_v1=True`` ``mode="reranked"`` run emits the M3-11 V1.1
+    ``v1_result.RetrievalResultSet``; ``return_v1=False``, ``mode="hybrid"``,
+    and fail/degraded paths emit the legacy ``HybridRetrievalResult`` (outer
+    arm result sets + flat temporal identity). The M1/M3 four-arm exit library
+    passes ``return_v1=False`` to opt out of the V1 conversion; all other
+    callers are unchanged.
     """
     _validate_hybrid_inputs(
         db,

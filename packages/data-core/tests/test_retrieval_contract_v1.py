@@ -226,3 +226,46 @@ def test_retrieve_hybrid_return_v1_false_keeps_legacy_shape(tmp_path, monkeypatc
     for item in result.final_results:
         assert item.temporal_center_date == result.temporal_center_date
         assert item.query_date_decision == result.query_date_decision
+
+
+def test_retrieve_hybrid_return_type_annotation_is_accurate():
+    """The public annotation must reflect both runtime return shapes.
+
+    ``retrieve_hybrid`` may return the V1.1 ``RetrievalResultSet`` (default,
+    successful reranked) or the legacy ``HybridRetrievalResult``
+    (``return_v1=False``, hybrid mode, fail/degraded paths). The declared type
+    and the overload set must state that; runtime semantics are unchanged.
+    """
+    import typing
+
+    from catalyst_data.retrieval.hybrid import (
+        HybridRetrievalResult,
+        retrieve_hybrid,
+    )
+    from catalyst_data.retrieval.v1_result import (
+        RetrievalResultSet as V1RetrievalResultSet,
+    )
+
+    hints = typing.get_type_hints(retrieve_hybrid)
+    declared = hints["return"]
+    declared_args = set(typing.get_args(declared))
+    assert V1RetrievalResultSet in declared_args
+    assert HybridRetrievalResult in declared_args
+
+    overloads = typing.get_overloads(retrieve_hybrid)
+    assert len(overloads) == 2
+    legacy_overload = None
+    default_overload = None
+    for fn in overloads:
+        fn_hints = typing.get_type_hints(fn)
+        rv_args = typing.get_args(fn_hints.get("return_v1", ()))
+        if rv_args == (False,):
+            legacy_overload = fn_hints
+        elif rv_args == (True,):
+            default_overload = fn_hints
+    assert legacy_overload is not None, "Literal[False] overload missing"
+    assert default_overload is not None, "Literal[True] overload missing"
+    assert legacy_overload["return"] == HybridRetrievalResult
+    default_args = set(typing.get_args(default_overload["return"]))
+    assert V1RetrievalResultSet in default_args
+    assert HybridRetrievalResult in default_args
