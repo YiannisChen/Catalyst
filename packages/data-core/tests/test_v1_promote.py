@@ -38,8 +38,8 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _artifact_dir(root: Path, *, count: int) -> Path:
-    chunk_ids = [f"chunk:{index:04d}" for index in range(count)]
+def _artifact_dir(root: Path, *, chunk_ids: list[str]) -> Path:
+    count = len(chunk_ids)
     vectors = np.zeros((count, BGE_M3_DIMENSION), dtype=np.float32)
     for index in range(count):
         vectors[index, index] = 1.0
@@ -47,21 +47,8 @@ def _artifact_dir(root: Path, *, count: int) -> Path:
     artifact.mkdir(parents=True)
     np.save(artifact / "vectors.npy", vectors)
     (artifact / "chunk_ids.json").write_text(json.dumps(chunk_ids), encoding="utf-8")
-    lines = []
-    for chunk_id in chunk_ids:
-        record = {
-            "chunk_id": chunk_id,
-            "document_id": f"doc:{chunk_id}",
-            "content_text": f"fixture {chunk_id}",
-            "content_hash": hashlib.sha256(chunk_id.encode()).hexdigest(),
-            "metadata_hash": "b" * 64,
-            "available_at": NOW,
-            "ticker_associations": '["AAPL"]',
-            "corpus_manifest_id": "c" * 64,
-            "chunk_profile_version": "news_v2",
-        }
-        lines.append(json.dumps(record, sort_keys=True, separators=(",", ":")))
-    (artifact / "chunks.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Real GPU artifacts never contain chunks.jsonl; per-row metadata is read
+    # from the derivative corpus_build_chunks via source_conn/source_build_id.
     checksums = {
         "vectors.npy": _sha(artifact / "vectors.npy"),
         "chunk_ids.json": _sha(artifact / "chunk_ids.json"),
@@ -123,7 +110,16 @@ def _promotable(tmp_path: Path, name: str = "promote"):
         postbuild_readiness_id=POSTBUILD,
     )
     lexical = build_candidate_fts(conn, build_id=candidate.build_id)
-    artifact = _artifact_dir(root, count=candidate.chunk_count)
+    db_chunk_ids = [
+        str(row[0])
+        for row in conn.execute(
+            "SELECT chunk_id FROM corpus_build_chunks WHERE build_id=? "
+            "ORDER BY chunk_id COLLATE BINARY",
+            (candidate.build_id,),
+        ).fetchall()
+    ]
+    assert len(db_chunk_ids) == candidate.chunk_count
+    artifact = _artifact_dir(root, chunk_ids=db_chunk_ids)
     manifest = _dense_manifest(
         artifact,
         vector_count=candidate.chunk_count,
@@ -136,6 +132,8 @@ def _promotable(tmp_path: Path, name: str = "promote"):
         embedding_artifact_dir=artifact,
         new_index_manifest=manifest,
         expected_chunk_count=candidate.chunk_count,
+        source_conn=conn,
+        source_build_id=candidate.build_id,
     )
     return root, conn, active_path, candidate, lexical, dense
 

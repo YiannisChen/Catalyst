@@ -3,15 +3,40 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 
 from catalyst_data.config import BGE_M3_DIMENSION, BGE_M3_MODEL, BGE_M3_REVISION
 from catalyst_data.retrieval.gpu_contract import _atomic_json, production_lancedb_schema
 from catalyst_data.retrieval.index_manifest import IndexManifest
+
+_STAGING_PAGE_SIZE = 500
+_STAGING_ADD_BATCH = 512
+
+# Every LanceDB row field that cannot be synthesized; the artifact-only path
+# requires all of them, and the derivative path must supply each one.
+_REQUIRED_METADATA_FIELDS = (
+    "chunk_id",
+    "document_id",
+    "content_text",
+    "content_hash",
+    "metadata_hash",
+    "available_at",
+    "ticker_associations",
+    "chunk_profile_version",
+    "source_class",
+    "status",
+    "eligibility",
+)
+_NULLABLE_METADATA_FIELDS = (
+    "dedup_cluster_id",
+    "cluster_first_available_at",
+    "representative_document_id",
+)
 
 
 @dataclass(frozen=True)
@@ -68,6 +93,111 @@ def _iter_chunk_records(path: Path) -> dict[str, dict[str, Any]]:
     return records
 
 
+def _validate_ticker_associations(value: Any, *, chunk_id: str) -> list[str]:
+    """Parse the persisted JSON ticker list; fail closed on any malformed value."""
+    if isinstance(value, list):
+        tickers = value
+    elif isinstance(value, str) and value:
+        try:
+            tickers = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"ticker_associations malformed for {chunk_id}") from exc
+    else:
+        raise ValueError(f"ticker_associations missing for {chunk_id}")
+    if not isinstance(tickers, list) or not all(isinstance(item, str) for item in tickers):
+        raise ValueError(f"ticker_associations must be a JSON array of strings for {chunk_id}")
+    return list(tickers)
+
+
+def _validate_metadata_record(record: dict[str, Any]) -> None:
+    """Fail closed when a metadata record omits any required non-synthesized field."""
+    chunk_id = record.get("chunk_id")
+    if not isinstance(chunk_id, str) or not chunk_id:
+        raise ValueError("chunk metadata missing chunk_id")
+    missing = [
+        name for name in _REQUIRED_METADATA_FIELDS
+        if record.get(name) is None or (isinstance(record.get(name), str) and not record[name])
+    ]
+    if missing:
+        raise ValueError(
+            "chunk metadata missing required field(s): " + ",".join(missing)
+        )
+    content_hash = record["content_hash"]
+    expected_hash = hashlib.sha256(record["content_text"].encode("utf-8")).hexdigest()
+    if content_hash != expected_hash:
+        raise ValueError(f"content_hash mismatch for {chunk_id}")
+    _validate_ticker_associations(record["ticker_associations"], chunk_id=chunk_id)
+
+
+def _iter_candidate_metadata(
+    conn: sqlite3.Connection,
+    *,
+    build_id: str,
+) -> Iterator[dict[str, Any]]:
+    """Stream the authoritative candidate build rows in chunk_id order.
+
+    Reads only ``corpus_build_chunks WHERE build_id=?`` (never the served
+    corpus view, never the active generation). Rows are bounded via
+    ``fetchmany`` and validated per row: chunk order, content hash, and ticker
+    JSON. Missing/placeholder fields fail closed.
+    """
+    cursor = conn.execute(
+        """
+        SELECT chunk_id, document_id, content_text, content_hash, metadata_hash,
+               available_at, ticker_associations, chunk_profile_version,
+               source_class, status, eligibility, dedup_cluster_id,
+               cluster_first_available_at, representative_document_id
+        FROM corpus_build_chunks
+        WHERE build_id=?
+        ORDER BY chunk_id COLLATE BINARY
+        """,
+        (build_id,),
+    )
+    previous = ""
+    while True:
+        page = cursor.fetchmany(_STAGING_PAGE_SIZE)
+        if not page:
+            return
+        for raw in page:
+            row = {
+                "chunk_id": raw[0],
+                "document_id": raw[1],
+                "content_text": raw[2] or "",
+                "content_hash": raw[3],
+                "metadata_hash": raw[4],
+                "available_at": raw[5],
+                "ticker_associations": raw[6],
+                "chunk_profile_version": raw[7],
+                "source_class": raw[8],
+                "status": raw[9],
+                "eligibility": raw[10],
+                "dedup_cluster_id": raw[11],
+                "cluster_first_available_at": raw[12],
+                "representative_document_id": raw[13],
+            }
+            chunk_id = str(row["chunk_id"] or "")
+            if not chunk_id or (previous and chunk_id <= previous):
+                raise ValueError(
+                    "corpus_build_chunks chunk_id order or duplicate violation"
+                )
+            previous = chunk_id
+            _validate_metadata_record(row)
+            yield row
+
+
+def _artifact_metadata_rows(
+    artifact_records: dict[str, dict[str, Any]],
+    chunk_ids: list[str],
+) -> Iterator[dict[str, Any]]:
+    """Artifact-only path: requires a complete metadata record per chunk id."""
+    for chunk_id in chunk_ids:
+        record = artifact_records.get(chunk_id)
+        if record is None:
+            raise ValueError(f"artifact chunks.jsonl missing {chunk_id}")
+        _validate_metadata_record(record)
+        yield record
+
+
 def _candidate_payload(candidate: InactiveDenseCandidate) -> dict[str, Any]:
     return {
         "schema_version": "candidate_generation_v1",
@@ -116,6 +246,8 @@ def stage_dense(
     embedding_artifact_dir: Path,
     new_index_manifest: Any,
     expected_chunk_count: int,
+    source_conn: sqlite3.Connection | None = None,
+    source_build_id: str | None = None,
 ) -> InactiveDenseCandidate:
     if not isinstance(new_index_manifest, IndexManifest):
         raise TypeError("new_index_manifest must be an IndexManifest")
@@ -147,9 +279,21 @@ def stage_dense(
         raise ValueError("embedding dimension mismatch")
     if new_index_manifest.vector_count != expected_chunk_count:
         raise ValueError("index manifest vector_count mismatch")
-    records = _iter_chunk_records(chunks_path) if chunks_path.is_file() else {}
-    if chunks_path.is_file() and set(records) != set(chunk_ids):
+
+    artifact_records = _iter_chunk_records(chunks_path) if chunks_path.is_file() else {}
+    if artifact_records and set(artifact_records) != set(chunk_ids):
         raise ValueError("chunk_id/content identity mismatch")
+
+    has_db = source_conn is not None or source_build_id is not None
+    if has_db and (source_conn is None or source_build_id is None):
+        raise ValueError(
+            "stage_dense requires both source_conn and source_build_id together"
+        )
+    if not has_db and not artifact_records:
+        raise ValueError(
+            "no authoritative chunk metadata source: pass source_conn/source_build_id "
+            "or a complete artifact chunks.jsonl"
+        )
 
     manifest_dir = Path(manifest_dir)
     manifest_dir.mkdir(parents=True, exist_ok=True)
@@ -174,32 +318,54 @@ def stage_dense(
         validate_dense_candidate(candidate, expected_chunk_count=expected_chunk_count)
         return candidate
 
+    if has_db:
+        metadata_iter = _iter_candidate_metadata(source_conn, build_id=source_build_id)
+    else:
+        metadata_iter = _artifact_metadata_rows(artifact_records, chunk_ids)
+
     import lancedb
 
     db = lancedb.connect(str(manifest_dir))
     table = db.create_table(table_name, data=[], schema=production_lancedb_schema())
-    rows = []
+    batch: list[dict[str, Any]] = []
+    previous_chunk_id = ""
     for index, chunk_id in enumerate(chunk_ids):
-        record = records.get(chunk_id, {})
-        text = str(record.get("content_text") or "")
-        content_hash = record.get("content_hash") or hashlib.sha256(text.encode()).hexdigest()
-        metadata_hash = record.get("metadata_hash") or ("b" * 64)
-        rows.append(
+        try:
+            row = next(metadata_iter)
+        except StopIteration as exc:
+            raise ValueError(
+                "chunk metadata source has fewer rows than artifact chunk_ids"
+            ) from exc
+        if row["chunk_id"] != chunk_id:
+            raise ValueError(
+                "chunk_id mismatch between artifact and chunk metadata source"
+            )
+        if previous_chunk_id and chunk_id <= previous_chunk_id:
+            raise ValueError("chunk_id order or duplicate violation")
+        previous_chunk_id = chunk_id
+        if artifact_records:
+            artifact_row = artifact_records[chunk_id]
+            if artifact_row.get("content_hash") != row["content_hash"]:
+                raise ValueError(f"artifact/content_hash mismatch for {chunk_id}")
+        ticker_associations = _validate_ticker_associations(
+            row["ticker_associations"], chunk_id=chunk_id
+        )
+        batch.append(
             {
                 "chunk_id": chunk_id,
-                "document_id": record.get("document_id") or chunk_id,
-                "content_text": text,
-                "content_hash": content_hash,
-                "metadata_hash": metadata_hash,
-                "available_at": record.get("available_at") or "1970-01-01T00:00:00Z",
-                "ticker_associations": ["AAPL"],
-                "source_class": record.get("source_class") or "reported_news",
-                "chunk_profile_version": record.get("chunk_profile_version") or "news_v2",
-                "status": "active",
-                "eligibility": "eligible",
-                "dedup_cluster_id": None,
-                "cluster_first_available_at": None,
-                "representative_document_id": None,
+                "document_id": row["document_id"],
+                "content_text": row["content_text"],
+                "content_hash": row["content_hash"],
+                "metadata_hash": row["metadata_hash"],
+                "available_at": row["available_at"],
+                "ticker_associations": ticker_associations,
+                "source_class": row["source_class"],
+                "chunk_profile_version": row["chunk_profile_version"],
+                "status": row["status"],
+                "eligibility": row["eligibility"],
+                "dedup_cluster_id": row["dedup_cluster_id"],
+                "cluster_first_available_at": row["cluster_first_available_at"],
+                "representative_document_id": row["representative_document_id"],
                 "corpus_manifest_id": new_index_manifest.corpus_manifest_id,
                 "source_bundle_id": new_index_manifest.source_bundle_id,
                 "snapshot_id": new_index_manifest.snapshot_id,
@@ -209,7 +375,16 @@ def stage_dense(
                 "vector": vectors[index].tolist(),
             }
         )
-    if rows:
-        table.add(rows)
+        if len(batch) >= _STAGING_ADD_BATCH:
+            table.add(batch)
+            batch = []
+    try:
+        extra = next(metadata_iter, None)
+    except StopIteration:
+        extra = None
+    if extra is not None:
+        raise ValueError("chunk metadata source has more rows than artifact chunk_ids")
+    if batch:
+        table.add(batch)
     _atomic_json(candidate.candidate_generation_path, _candidate_payload(candidate))
     return candidate

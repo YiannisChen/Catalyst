@@ -872,6 +872,8 @@ def _promote(args: argparse.Namespace) -> dict[str, Any]:
             embedding_artifact_dir=artifact_dir,
             new_index_manifest=manifest,
             expected_chunk_count=verified.chunk_count,
+            source_conn=conn,
+            source_build_id=build_id,
         )
         if dense_candidate.corpus_manifest_id != verified.corpus_manifest_id:
             raise ValueError("dense candidate corpus_manifest_id mismatch")
