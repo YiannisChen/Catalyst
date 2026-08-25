@@ -2125,3 +2125,29 @@ def test_inner_query_date_attribute_absent_rejected():
     )
     with pytest.raises(RunnerValidationError, match="final_results"):
         validate_runtime_temporal_identity(case, hybrid)
+
+
+def test_four_arm_requests_legacy_hybrid_shape(tmp_path, monkeypatch):
+    """The four-arm exit path must opt out of the V1 result-set conversion.
+
+    Regression for the M3 exit gate: ``retrieve_hybrid`` defaults to the V1.1
+    ``RetrievalResultSet`` for ``mode="reranked"``, which does not carry the
+    outer legacy arm result sets or the flat temporal identity the four-arm
+    library validates. The four-arm call must pass ``return_v1=False``.
+    """
+    import catalyst_eval.post_import.four_arm as four_arm
+
+    captured: dict[str, object] = {}
+
+    def recording_retrieve(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        return _ok_hybrid()
+
+    monkeypatch.setattr(four_arm, "_retrieve_hybrid", recording_retrieve)
+    summary = _run_once(tmp_path, monkeypatch)
+    # The run completes and writes arm artifacts; the mock boundary does not
+    # satisfy the production success-token gate, so token_written stays False.
+    assert summary.arms_written == 1
+    kwargs = captured["kwargs"]
+    assert kwargs.get("mode") == "reranked"
+    assert kwargs.get("return_v1") is False

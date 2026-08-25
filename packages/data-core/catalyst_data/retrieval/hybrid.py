@@ -326,8 +326,17 @@ def retrieve_hybrid(
     evidence_types: tuple[str, ...] | None = None,
     reranker_timeout_seconds: float = 2.0,
     reranker_gate: RerankerGate | None = None,
+    return_v1: bool = True,
 ) -> HybridRetrievalResult:
-    """Run lexical and dense arms directly with identical scope arguments."""
+    """Run lexical and dense arms directly with identical scope arguments.
+
+    ``return_v1`` defaults to True and emits the M3-11 V1.1
+    ``v1_result.RetrievalResultSet`` for a successful ``mode="reranked"`` run.
+    The M1/M3 four-arm exit library consumes the legacy ``HybridRetrievalResult``
+    shape (outer arm result sets + flat temporal identity) and passes
+    ``return_v1=False`` to opt out of the V1 conversion; all other callers are
+    unchanged.
+    """
     _validate_hybrid_inputs(
         db,
         query=query,
@@ -418,6 +427,8 @@ def retrieve_hybrid(
         final_results=finals, degradation_reasons=tuple(reasons),
         **temporal_kwargs,
     )
+    if not return_v1:
+        return hybrid_result
     v1 = _to_v1_result_set(
         db,
         hybrid=hybrid_result,
