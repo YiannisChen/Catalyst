@@ -520,3 +520,157 @@ def export_source_bundle(
                 raise RuntimeError(f"checksum verification failed for {name}")
         os.replace(str(bundle_dir), str(final_dir))
     return source_bundle_id
+
+
+def _iter_candidate_bundle_records(
+    conn: sqlite3.Connection,
+    *,
+    build_id: str,
+    manifest_id: str,
+) -> Iterator[dict[str, Any]]:
+    cursor = conn.execute(
+        """
+        SELECT chunk_id, document_id, content_text, content_hash, metadata_hash,
+               available_at, ticker_associations, chunk_profile_version
+        FROM corpus_build_chunks
+        WHERE build_id=?
+        ORDER BY chunk_id COLLATE BINARY
+        """,
+        (build_id,),
+    )
+    previous = ""
+    while True:
+        page = cursor.fetchmany(_PAGE_SIZE)
+        if not page:
+            return
+        for row in page:
+            record = {
+                "chunk_id": row[0],
+                "document_id": row[1],
+                "content_text": row[2] or "",
+                "content_hash": row[3],
+                "metadata_hash": row[4],
+                "available_at": row[5],
+                "ticker_associations": row[6],
+                "corpus_manifest_id": manifest_id,
+                "chunk_profile_version": row[7],
+            }
+            chunk_id = str(record["chunk_id"] or "")
+            if not chunk_id or (previous and chunk_id <= previous):
+                raise ValueError("chunk_id order or duplicate violation")
+            if record["content_hash"] != _content_hash(record["content_text"]):
+                raise ValueError(f"content_hash mismatch for {chunk_id}")
+            previous = chunk_id
+            yield record
+
+
+def export_candidate_source_bundle(
+    conn: sqlite3.Connection,
+    *,
+    build_id: str,
+    manifest_id: str,
+    snapshot_id: str,
+    probe_report_id: str,
+    postbuild_readiness_id: str,
+    output_root: Path,
+) -> tuple[str, Path]:
+    """Export an inactive candidate bundle from corpus_build_chunks.
+
+    Requires ``corpus_manifest.is_current=0``. Never reads corpus_served_chunks
+    and never writes lexical_index_state.
+    """
+    row = conn.execute(
+        "SELECT is_current FROM corpus_manifest WHERE manifest_id=?",
+        (manifest_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("corpus_manifest_id not found in corpus_manifest")
+    if int(row[0] or 0) != 0:
+        raise ValueError("candidate export requires corpus_manifest.is_current=0")
+
+    selected_count = 0
+
+    def identity_hashes() -> Iterator[str]:
+        nonlocal selected_count
+        for record in _iter_candidate_bundle_records(
+            conn, build_id=build_id, manifest_id=manifest_id
+        ):
+            selected_count += 1
+            yield _chunk_record_hash(record)
+
+    source_bundle_id = _stream_source_bundle_id(
+        corpus_manifest_id=manifest_id,
+        snapshot_id=snapshot_id,
+        probe_report_id=probe_report_id,
+        postbuild_readiness_id=postbuild_readiness_id,
+        record_hashes=identity_hashes(),
+    )
+    if selected_count == 0:
+        raise ValueError("candidate source bundle must be non-empty")
+    output_root = Path(output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+    final_dir = output_root / f"source_{source_bundle_id}"
+    manifest_body = {
+        "schema_version": "1.1.0",
+        "source_bundle_id": source_bundle_id,
+        "corpus_manifest_id": manifest_id,
+        "snapshot_id": snapshot_id,
+        "universe_manifest_id": snapshot_id,
+        "probe_report_id": probe_report_id,
+        "postbuild_readiness_id": postbuild_readiness_id,
+        "chunk_count": selected_count,
+        "build_id": build_id,
+    }
+
+    def _write_bundle(bundle_dir: Path) -> None:
+        bundle_dir.mkdir(parents=True, exist_ok=True)
+        chunks_path = bundle_dir / "chunks.jsonl"
+        with chunks_path.open("w", encoding="utf-8") as handle:
+            for record in _iter_candidate_bundle_records(
+                conn, build_id=build_id, manifest_id=manifest_id
+            ):
+                handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
+                handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        manifest_path = bundle_dir / "source_bundle_manifest.json"
+        with manifest_path.open("w", encoding="utf-8") as handle:
+            json.dump(manifest_body, handle, sort_keys=True, separators=(",", ":"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        digest_by_name = {
+            name: _file_sha256(bundle_dir / name)
+            for name in ("chunks.jsonl", "source_bundle_manifest.json")
+        }
+        checksum_path = bundle_dir / "checksums.sha256"
+        with checksum_path.open("w", encoding="utf-8") as handle:
+            handle.write(
+                "\n".join(
+                    f"{value}  {name}" for name, value in sorted(digest_by_name.items())
+                )
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    artifact_names = (
+        "chunks.jsonl",
+        "source_bundle_manifest.json",
+        "checksums.sha256",
+    )
+    if final_dir.exists():
+        with tempfile.TemporaryDirectory(dir=str(output_root)) as tmp:
+            probe_dir = Path(tmp) / f"source_{source_bundle_id}"
+            _write_bundle(probe_dir)
+            for name in artifact_names:
+                on_disk = final_dir / name
+                probe_path = probe_dir / name
+                if not on_disk.is_file() or _file_sha256(on_disk) != _file_sha256(probe_path):
+                    raise ValueError("existing candidate source bundle identity mismatch")
+        return source_bundle_id, final_dir
+
+    with tempfile.TemporaryDirectory(dir=str(output_root)) as tmp:
+        bundle_dir = Path(tmp) / f"source_{source_bundle_id}"
+        _write_bundle(bundle_dir)
+        os.replace(str(bundle_dir), str(final_dir))
+    return source_bundle_id, final_dir

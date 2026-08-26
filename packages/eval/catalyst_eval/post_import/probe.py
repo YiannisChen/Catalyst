@@ -78,21 +78,33 @@ def run_served_corpus_probe(
     *,
     corpus_manifest_id: str,
     cases: list[CasePackCase],
+    statuses: tuple[str, ...] = ("active",),
 ) -> ServedCorpusProbeReport:
+    """Count searchable served chunks per approved T4 case.
+
+    The default status set is the manager-approved b6g predicate
+    (``status='active'``). The M3 exit path passes ``SEARCHABLE_STATUSES``
+    because the M3 generation freezes chunk lifecycle statuses at
+    ``pending_embedding`` / ``metadata_only`` (execution-lock L1.3) and the
+    four-arm served contract admits exactly ``SEARCHABLE_STATUSES``.
+    """
+    if not statuses:
+        raise ValueError("statuses must be non-empty")
+    placeholders = ",".join("?" for _ in statuses)
     relation = served_chunks_relation(conn)
     per_case: list[CaseProbeResult] = []
     for case in cases:
         count = conn.execute(
             f"""SELECT COUNT(*) FROM {relation} c
                 WHERE c.manifest_id = ?
-                  AND c.status = 'active'
+                  AND c.status IN ({placeholders})
                   AND c.eligibility = 'eligible'
                   AND c.available_at <= ?
                   AND EXISTS (
                     SELECT 1 FROM json_each(c.ticker_associations) je
                     WHERE je.value = ?
                   )""",
-            (corpus_manifest_id, case.cutoff, case.ticker),
+            (corpus_manifest_id, *statuses, case.cutoff, case.ticker),
         ).fetchone()[0]
         per_case.append(CaseProbeResult(case.case_id, case.ticker, case.cutoff, int(count)))
     passed = sum(1 for result in per_case if result.ok)
@@ -133,6 +145,7 @@ def write_probe_evidence(
     report: ServedCorpusProbeReport,
     *,
     run_dir: Path,
+    statuses: tuple[str, ...] = ("active",),
     db_sha256: str,
     corpus_manifest_id: str,
     case_pack_id: str,
@@ -163,6 +176,11 @@ def write_probe_evidence(
         )
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
+    if len(statuses) == 1:
+        status_clause = f"status='{statuses[0]}'"
+    else:
+        quoted = ",".join(f"'{value}'" for value in statuses)
+        status_clause = f"status IN ({quoted})"
     probe_body = {
         "schema_version": SCHEMA_VERSION,
         "corpus_manifest_id": corpus_manifest_id,
@@ -172,7 +190,7 @@ def write_probe_evidence(
         "all_passed": True,
         "per_case": [result.to_dict() for result in report.per_case],
         "query_predicate": (
-            "status='active' AND eligibility='eligible' AND manifest_id=current "
+            f"{status_clause} AND eligibility='eligible' AND manifest_id=current "
             "AND available_at <= cutoff AND ticker in ticker_associations (json_each)"
         ),
     }

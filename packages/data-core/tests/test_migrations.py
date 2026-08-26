@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from catalyst_data.migrations import MIGRATIONS, run_migrations
+from catalyst_data.migrations import CURRENT_SCHEMA_VERSION, MIGRATIONS, run_migrations
 from catalyst_data.db_paths import DEV_DB, FROZEN_DB, assert_writable
 
 
@@ -33,6 +33,8 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS ohlcv (symbol TEXT, date TEXT, source TEXT, PRIMARY KEY (symbol, date, source))")
         conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
+        from catalyst_data.storage.sqlite import ensure_filings_tables
+        ensure_filings_tables(conn)
         v1 = run_migrations(conn)
         v2 = run_migrations(conn)
         assert v1 == v2
@@ -52,9 +54,11 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS ohlcv (symbol TEXT, date TEXT, source TEXT, PRIMARY KEY (symbol, date, source))")
         conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
+        from catalyst_data.storage.sqlite import ensure_filings_tables
+        ensure_filings_tables(conn)
         v = run_migrations(conn)
-        assert v == 13
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert v == CURRENT_SCHEMA_VERSION
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
         conn.close()
 
     def test_per_statement_catch(self, tmp_path: Path):
@@ -88,8 +92,10 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS ohlcv (symbol TEXT, date TEXT, source TEXT, PRIMARY KEY (symbol, date, source))")
         conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
+        from catalyst_data.storage.sqlite import ensure_filings_tables
+        ensure_filings_tables(conn)
         v = run_migrations(conn)
-        assert v == 13
+        assert v == CURRENT_SCHEMA_VERSION
         conn.close()
 
     def test_duplicate_column_skipped(self, tmp_path: Path):
@@ -118,6 +124,8 @@ class TestMigrations:
         conn.execute("CREATE TABLE IF NOT EXISTS index_state (chunk_id TEXT NOT NULL, chunk_level TEXT NOT NULL DEFAULT 'l1', corpus_item_id TEXT NOT NULL, source_kind TEXT NOT NULL, content_hash TEXT NOT NULL, content_text TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending')")
         conn.commit()
         # All v1 columns exist → should skip all 6 ALTER statements without error
+        from catalyst_data.storage.sqlite import ensure_filings_tables
+        ensure_filings_tables(conn)
         v = run_migrations(conn)
         assert v >= 1
         conn.close()

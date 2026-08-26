@@ -80,6 +80,23 @@ def _init_v11_db(conn: sqlite3.Connection) -> None:
         BEGIN SELECT RAISE(ABORT, 'checkpoint_v2_contract'); END""",
     ]:
         conn.execute(trigger_sql)
+    # Tables that must pre-exist before v14 ALTERs them (B9 guard): the
+    # canonical registry ALTERs normalized_provenance / filings / articles /
+    # filing_documents, so a DB that runs migrations to 14 needs them.
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS articles (article_id TEXT PRIMARY KEY, "
+        "published_utc TEXT)"
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS normalized_provenance (
+               entity_type TEXT NOT NULL, entity_id TEXT NOT NULL,
+               entity_version TEXT NOT NULL, raw_asset_id TEXT NOT NULL,
+               normalizer_version TEXT NOT NULL, created_at TEXT NOT NULL
+           )"""
+    )
+    from catalyst_data.storage.sqlite import ensure_filings_tables
+
+    ensure_filings_tables(conn)
     conn.execute("PRAGMA user_version = 11")
     conn.commit()
 

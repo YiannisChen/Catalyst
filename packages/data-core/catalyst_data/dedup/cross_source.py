@@ -25,7 +25,12 @@ class AssetCandidate:
 def canonical_url(url: str) -> str:
     parsed = urlsplit(url)
     host = parsed.hostname.lower() if parsed.hostname else ""
-    port = f":{parsed.port}" if parsed.port is not None else ""
+    # M3-5: drop default ports 80/443 so default-port URLs match portless forms.
+    port = (
+        f":{parsed.port}"
+        if parsed.port is not None and parsed.port not in (80, 443)
+        else ""
+    )
     netloc = host + port
 
     query_items = [

@@ -118,10 +118,11 @@ def _seed_filing_v2_chunk(conn: sqlite3.Connection, chunk_id: str = "chunk_a") -
     conn.commit()
 
 
-def test_current_schema_version_is_13():
-    assert CURRENT_SCHEMA_VERSION == 13
+def test_current_schema_version_has_v13_and_v14():
+    assert CURRENT_SCHEMA_VERSION == 14
     versions = [m.version for m in MIGRATIONS]
     assert 13 in versions
+    assert 14 in versions
 
 
 def test_v13_always_table_rebuild_not_alter_check(tmp_path: Path):
@@ -129,7 +130,7 @@ def test_v13_always_table_rebuild_not_alter_check(tmp_path: Path):
     conn = sqlite3.connect(tmp_path / "t.db")
     _bootstrap_minimal_v12(conn)
     run_migrations(conn)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == CURRENT_SCHEMA_VERSION
     sql = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='corpus_chunks'"
     ).fetchone()[0]
@@ -179,7 +180,7 @@ def test_upgrade_v12_to_v13_preserves_filing_v2_rows(tmp_path: Path):
     # Force apply only up to 12 by setting CURRENT temporarily - instead insert after v12 manually:
     # Run migrations with version 13 removed? Cleaner approach:
     versions = sorted(m.version for m in MIGRATIONS)
-    assert max(versions) == 13
+    assert max(versions) == CURRENT_SCHEMA_VERSION
     # Apply migrations to 12 by executing without v13:
     saved = list(mig.MIGRATIONS)
     mig.MIGRATIONS[:] = [m for m in saved if m.version <= 12]
@@ -192,9 +193,9 @@ def test_upgrade_v12_to_v13_preserves_filing_v2_rows(tmp_path: Path):
         ).fetchall()
     finally:
         mig.MIGRATIONS[:] = saved
-    # Now apply v13
+    # Now apply v13..latest
     v = run_migrations(conn)
-    assert v == 13
+    assert v == CURRENT_SCHEMA_VERSION
     after = conn.execute(
         "SELECT chunk_id, document_id, content_hash, content_text FROM corpus_chunks"
     ).fetchall()

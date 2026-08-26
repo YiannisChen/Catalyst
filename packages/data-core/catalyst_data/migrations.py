@@ -14,6 +14,8 @@ import logging
 import sqlite3
 from dataclasses import dataclass
 
+from catalyst_data.canonical.registry import CANONICAL_REGISTRY_DDL
+
 logger = logging.getLogger(__name__)
 
 CORPUS_CHUNKS_FTS_DDL = """CREATE VIRTUAL TABLE IF NOT EXISTS corpus_chunks_fts USING fts5(
@@ -1089,11 +1091,124 @@ MIGRATIONS: list[Migration] = [
         "-- v13: rebuild corpus_chunks for filing_v3; add filing_documents.document_id.",
         "-- Applied via _apply_migration_v13() within SAVEPOINT.",
     ], reversible=False),
+    Migration(version=14, name="canonical_registry", statements=[
+        "-- v14: additive canonical registry (canonical_assets, content versions,",
+        "-- associations, structured-fact refs) plus repair-persistence columns.",
+        "-- Applied via _apply_migration_v14() within SAVEPOINT.",
+    ], reversible=False),
 
 ]
 
 # Bootstrap, snapshot, and tests derive the current schema from the registry.
 CURRENT_SCHEMA_VERSION: int = max(migration.version for migration in MIGRATIONS)
+
+
+# Required v14 objects (Batch B B9): every table/column must exist before the
+# migration stamps PRAGMA user_version=14. If a required ALTER was skipped
+# because its table was missing, the stamp is refused (fail closed).
+_REQUIRED_V14_OBJECTS: dict[str, set[str] | None] = {
+    "canonical_assets": None,
+    "canonical_content_versions": None,
+    "canonical_asset_tickers": None,
+    "canonical_asset_links": None,
+    "canonical_subtype_assoc": None,
+    "canonical_structured_fact_refs": None,
+    "normalized_provenance": {"canonical_asset_id", "canonical_content_version_id"},
+    "filings": {
+        "accepted_time_utc",
+        "eligible_at",
+        "eligible_at_reason",
+        "temporal_precision",
+        "accepted_time_recovered",
+        "eligibility_fail_closed",
+    },
+    "articles": {
+        "normalized_url",
+        "recovered_body_text",
+        "recovered_content_state",
+        "recovered_content_hash",
+        "body_normalizer_version",
+    },
+    "filing_documents": {
+        "parser_version",
+        "document_hash",
+        "parse_quality",
+        "section_parse_degraded",
+    },
+}
+
+
+def _assert_v14_objects_present(conn: sqlite3.Connection) -> None:
+    """Fail closed unless every required v14 object exists (B9)."""
+    for table, required_columns in _REQUIRED_V14_OBJECTS.items():
+        table_row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        if table_row is None:
+            raise RuntimeError(
+                f"migration v14: required table {table!r} is missing; "
+                "refusing to stamp user_version=14"
+            )
+        if required_columns is None:
+            continue
+        present = {
+            row[1]
+            for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        missing = required_columns - present
+        if missing:
+            raise RuntimeError(
+                f"migration v14: required column(s) {sorted(missing)} "
+                f"missing from {table!r}; refusing to stamp user_version=14"
+            )
+
+
+def _apply_migration_v14(conn: sqlite3.Connection) -> None:
+    """Apply v14 canonical_registry DDL (execution-lock §B; Batch B B9).
+
+    Additive canonical tables plus repair-persistence columns on
+    normalized_provenance, filings, articles, and filing_documents.
+    Per-statement idempotent: duplicate-column/already-exists errors are
+    skipped so reruns are safe. After application every required v14 object
+    must exist; otherwise the stamp is refused (fail closed).
+    """
+    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current_version >= 14:
+        return
+    for stmt in CANONICAL_REGISTRY_DDL:
+        if stmt.strip().startswith("--"):
+            continue
+        # v13 precedent: subtype tables created outside the migration registry
+        # (filings/filing_documents via storage.sqlite init) may be absent on a
+        # minimal/partial DB; skip the additive ALTER rather than failing.
+        # The post-apply guard below then refuses to stamp 14.
+        normalized_stmt = " ".join(stmt.split()).lower()
+        table = None
+        if normalized_stmt.startswith("alter table"):
+            table = normalized_stmt[len("alter table "):].split(" ", 1)[0].strip('"')
+        elif normalized_stmt.startswith("create index"):
+            # CREATE INDEX [IF NOT EXISTS] <name> ON <table>(...) [WHERE ...]
+            on_clause = normalized_stmt.split(" on ", 1)
+            if len(on_clause) == 2:
+                table = on_clause[1].split("(", 1)[0].strip().strip('"')
+        if table is not None:
+            exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (table,),
+            ).fetchone()
+            if not exists:
+                logger.debug("Migration v14: skipping statement for missing table %s", table)
+                continue
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as exc:
+            err = str(exc).lower()
+            if "duplicate column name" in err or "already exists" in err:
+                logger.debug("Migration v14: statement already applied, skipping")
+                continue
+            raise
+    _assert_v14_objects_present(conn)
 
 
 def run_migrations(conn: sqlite3.Connection) -> int:
@@ -1142,6 +1257,19 @@ def run_migrations(conn: sqlite3.Connection) -> int:
             conn.execute(f"SAVEPOINT migration_v{migration.version}")
             try:
                 _apply_migration_v13(conn)
+                conn.execute(f"PRAGMA user_version = {migration.version}")
+                conn.execute(f"RELEASE SAVEPOINT migration_v{migration.version}")
+            except Exception:
+                conn.execute(f"ROLLBACK TO SAVEPOINT migration_v{migration.version}")
+                conn.execute(f"RELEASE SAVEPOINT migration_v{migration.version}")
+                raise
+            logger.info("Applied migration v%d (%s)", migration.version, migration.name)
+            continue
+
+        if migration.version == 14:
+            conn.execute(f"SAVEPOINT migration_v{migration.version}")
+            try:
+                _apply_migration_v14(conn)
                 conn.execute(f"PRAGMA user_version = {migration.version}")
                 conn.execute(f"RELEASE SAVEPOINT migration_v{migration.version}")
             except Exception:

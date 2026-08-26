@@ -482,8 +482,10 @@ def run_pre_b6_sec_readiness_audit(
     conn.execute("PRAGMA query_only = ON")
     try:
         db_uv = int(conn.execute("PRAGMA user_version").fetchone()[0])
-        if db_uv != 13:
-            raise SecReadinessError(f"Pre-B6 requires user_version=13, got {db_uv}")
+        if db_uv < 13:
+            raise SecReadinessError(
+                f"Pre-B6 requires user_version >= 13, got {db_uv}"
+            )
 
         s1_lineage = resolve_run_lineage(conn, s1_terminal_run_id, expected_plan_hash=evidence["s1_plan_hash"])
         s2_lineage = resolve_run_lineage(conn, s2_terminal_run_id, expected_plan_hash=evidence["s2_plan_hash"])

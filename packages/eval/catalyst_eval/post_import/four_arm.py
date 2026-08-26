@@ -872,6 +872,7 @@ def run_four_arm_cases(
                 lancedb_table=lancedb_table, reranker=reranker,
                 reranker_timeout_seconds=reranker_timeout_seconds,
                 reranker_gate=reranker_gate,
+                return_v1=False,
             )
             hybrid_latency_ms = (time.perf_counter() - started_hybrid) * 1000.0
 
