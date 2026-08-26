@@ -38,7 +38,14 @@ class ContextInputs:
 
 
 class ContextProvider(Protocol):
-    def load_context_inputs(self, *, ticker: str, session_date: str, cutoff: str) -> ContextInputs:
+    def load_context_inputs(
+        self,
+        *,
+        ticker: str,
+        session_date: str,
+        cutoff: str,
+        information_window_start_at: str | None = None,
+    ) -> ContextInputs:
         ...
 
 

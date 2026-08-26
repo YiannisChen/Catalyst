@@ -461,12 +461,15 @@ def build_foundation_graph(
     The Analyst boundary is a fixture stub in M4; M5 replaces it with the
     production EvidenceAnalyst.
     """
-    # 1. observation_build
+    # 1. observation_build (TemporalIdentity-authoritative window)
     observation_builder = ObservationBuilder(
         provider=observation_provider, policy=policy_config
     )
     move_profile = observation_builder.build(
-        ticker=ticker, session_date=cutoff[:10], cutoff=cutoff,
+        ticker=ticker,
+        session_date=temporal_identity.session_date,
+        cutoff=temporal_identity.cutoff_at.isoformat(),
+        temporal_identity=temporal_identity,
     )
 
     # 2. research_policy

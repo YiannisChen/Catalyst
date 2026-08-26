@@ -23,6 +23,22 @@ from catalyst_agents.attribution.provider import ContextProvider
 from catalyst_agents.runtime.manifest import ObservationPolicyConfig
 
 
+def _parse_utc(value: str):
+    from datetime import datetime, timezone
+
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _utc_iso(value: Any) -> str:
+    from datetime import timezone
+
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _finite_positive(value: float | None) -> bool:
     return value is not None and math.isfinite(float(value)) and float(value) > 0
 
@@ -357,9 +373,38 @@ class ObservationBuilder:
         cutoff: str,
         temporal_identity: Any = None,
     ) -> MoveProfile:
-        del temporal_identity  # request identity is carried by the execution path
+        """Build the MoveProfile under the validated TemporalIdentity.
+
+        When a TemporalIdentity is supplied it is authoritative: the session
+        date comes from ``temporal_identity.session_date`` and the cutoff from
+        ``temporal_identity.cutoff_at``. Explicit string arguments must agree
+        and fail closed on disagreement; they are never silently discarded.
+        """
+        if temporal_identity is not None:
+            if session_date is not None and session_date != temporal_identity.session_date:
+                raise ValueError(
+                    "session_date disagrees with TemporalIdentity.session_date"
+                )
+            if cutoff is not None and _parse_utc(cutoff) != temporal_identity.cutoff_at:
+                raise ValueError(
+                    "cutoff disagrees with TemporalIdentity.cutoff_at"
+                )
+            session_date = temporal_identity.session_date
+            cutoff = _utc_iso(temporal_identity.cutoff_at)
+            information_window_start_at = _utc_iso(
+                temporal_identity.information_window_start_at
+            )
+        else:
+            information_window_start_at = None
+        if not session_date or not cutoff:
+            raise ValueError(
+                "session_date and cutoff are required when TemporalIdentity is absent"
+            )
         inputs = self.provider.load_context_inputs(
-            ticker=ticker, session_date=session_date, cutoff=cutoff
+            ticker=ticker,
+            session_date=session_date,
+            cutoff=cutoff,
+            information_window_start_at=information_window_start_at,
         )
         target_return = _return_pct(inputs.target_close, inputs.previous_target_close)
         prior_return = _return_pct(
@@ -461,8 +506,8 @@ class ObservationBuilder:
                 )
             )
 
-        macro_flags = tuple(
-            sorted(inputs.scheduled_macro_flags, key=lambda flag: (flag.name, str(flag.scheduled_at)))
+        macro_flags = self._window_filtered_macro_flags(
+            inputs.scheduled_macro_flags, temporal_identity
         )
         return MoveProfile(
             target_return=target_return,
@@ -481,6 +526,37 @@ class ObservationBuilder:
             coverage_flags=tuple(sorted(coverage_flags)),
             degraded_fields=tuple(degraded_fields),
         )
+
+    def _window_filtered_macro_flags(
+        self,
+        flags: tuple[Any, ...],
+        temporal_identity: Any,
+    ) -> tuple[Any, ...]:
+        """Deterministic dedup/sort of configured releases bounded by the
+        information window; releases outside the window never produce flags."""
+        if temporal_identity is not None:
+            filtered = []
+            for flag in flags:
+                scheduled_at = getattr(flag, "scheduled_at", None)
+                if scheduled_at is None:
+                    continue
+                if not (
+                    temporal_identity.information_window_start_at
+                    <= scheduled_at
+                    <= temporal_identity.cutoff_at
+                ):
+                    continue
+                filtered.append(flag)
+            flags = tuple(filtered)
+        seen: set[str] = set()
+        deduped = []
+        for flag in sorted(flags, key=lambda f: (f.name, str(f.scheduled_at))):
+            key = f"{flag.name}:{flag.scheduled_at}"
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(flag)
+        return tuple(deduped)
 
 
 __all__ = [

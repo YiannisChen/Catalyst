@@ -52,7 +52,14 @@ class FixtureContextProvider:
         self._rows = dict(rows)
         self.calls: list[tuple[str, str, str]] = []
 
-    def load_context_inputs(self, *, ticker: str, session_date: str, cutoff: str) -> FixtureContextInputs:
+    def load_context_inputs(
+        self,
+        *,
+        ticker: str,
+        session_date: str,
+        cutoff: str,
+        information_window_start_at: str | None = None,
+    ) -> FixtureContextInputs:
         key = (ticker, session_date, cutoff)
         self.calls.append(key)
         if key not in self._rows:

@@ -22,6 +22,12 @@ from catalyst_agents.attribution.provider import ContextInputs
 from catalyst_agents.runtime.manifest import ObservationPolicyConfig
 
 
+def _utc(iso: str):
+    from datetime import datetime, timezone
+
+    return datetime.fromisoformat(iso.replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
+
+
 def _policy(**overrides) -> ObservationPolicyConfig:
     base = dict(
         material_target_return_pct=2.0,
@@ -66,20 +72,28 @@ def _inputs(**overrides) -> ContextInputs:
 class RecordingProvider:
     def __init__(self, inputs: ContextInputs):
         self._inputs = inputs
-        self.calls: list[tuple[str, str, str]] = []
+        self.calls: list[tuple[str, str, str, str | None]] = []
         self.document_lookups = 0
 
-    def load_context_inputs(self, *, ticker: str, session_date: str, cutoff: str) -> ContextInputs:
-        self.calls.append((ticker, session_date, cutoff))
+    def load_context_inputs(
+        self,
+        *,
+        ticker: str,
+        session_date: str,
+        cutoff: str,
+        information_window_start_at: str | None = None,
+    ) -> ContextInputs:
+        self.calls.append((ticker, session_date, cutoff, information_window_start_at))
         return self._inputs
 
 
-def _build(provider, policy=None):
+def _build(provider, policy=None, temporal_identity=None):
     builder = ObservationBuilder(
         provider=provider, policy=policy or _policy()
     )
     return builder.build(
-        ticker="AAPL", session_date="2026-01-15", cutoff="2026-01-15T21:00:00Z"
+        ticker="AAPL", session_date="2026-01-15", cutoff="2026-01-15T21:00:00Z",
+        temporal_identity=temporal_identity,
     )
 
 
@@ -234,7 +248,8 @@ def test_observation_builder_performs_no_documentary_lookup():
     provider = RecordingProvider(_inputs())
     _build(provider)
     assert len(provider.calls) == 1
-    assert provider.calls[0] == ("AAPL", "2026-01-15", "2026-01-15T21:00:00Z")
+    assert provider.calls[0][:3] == ("AAPL", "2026-01-15", "2026-01-15T21:00:00Z")
+    assert provider.calls[0][3] is None  # no TemporalIdentity -> no window passed
     assert provider.document_lookups == 0
 
 
@@ -259,3 +274,143 @@ def test_observation_builder_session_validity_distinct_from_price_availability()
 def test_observation_builder_requires_policy():
     with pytest.raises(TypeError):
         ObservationBuilder(provider=RecordingProvider(_inputs()))
+
+
+# ---------------------------------------------------------------------------
+# Corrective pass FIX 2: TemporalIdentity-authoritative observation window
+# ---------------------------------------------------------------------------
+
+
+def _temporal_identity(session_date: str = "2026-01-15",
+                       cutoff: str = "2026-01-15T21:00:00Z",
+                       window_start: str = "2026-01-14T21:00:00Z"):
+    from catalyst_data.canonical.temporal import TemporalIdentity
+
+    return TemporalIdentity(
+        session_date=session_date,
+        market_timezone="America/New_York",
+        session_open_at=_utc("2026-01-15T14:30:00Z"),
+        session_close_at=_utc("2026-01-15T21:00:00Z"),
+        information_window_start_at=_utc(window_start),
+        cutoff_at=_utc(cutoff),
+    )
+
+
+def test_observation_builder_uses_temporal_identity_session_and_cutoff():
+    """After-close cutoff whose UTC date differs from the exchange session
+    date: the builder derives session date and cutoff from the validated
+    TemporalIdentity, never from cutoff[:10]."""
+    temporal = _temporal_identity(cutoff="2026-01-16T00:30:00Z")
+    assert temporal.cutoff_at.date().isoformat() != temporal.session_date
+    provider = RecordingProvider(_inputs())
+    builder = ObservationBuilder(provider=provider, policy=_policy())
+    # Legacy string arguments agree with the temporal identity.
+    builder.build(
+        ticker="AAPL",
+        session_date=temporal.session_date,
+        cutoff="2026-01-16T00:30:00Z",
+        temporal_identity=temporal,
+    )
+    # Session date stays the exchange session date; cutoff is the after-close UTC.
+    assert provider.calls[-1][1] == "2026-01-15"
+    assert provider.calls[-1][2] == "2026-01-16T00:30:00Z"
+    assert provider.calls[-1][3] == "2026-01-14T21:00:00Z"
+
+
+def test_macro_release_before_information_window_excluded():
+    """Historical macro releases before information_window_start_at must not
+    produce flags."""
+    from catalyst_agents.attribution.move_profile import ScheduledMacroFlag
+
+    temporal = _temporal_identity()
+    flags = (
+        ScheduledMacroFlag(name="OLD", scheduled_at=_utc("2026-01-14T12:00:00Z")),
+        ScheduledMacroFlag(name="IN", scheduled_at=_utc("2026-01-15T08:00:00Z")),
+        ScheduledMacroFlag(name="AFTER", scheduled_at=_utc("2026-01-15T22:00:00Z")),
+    )
+    provider = RecordingProvider(
+        _inputs(scheduled_macro_flags=flags, macro_source_available=True)
+    )
+    profile = _build(provider, temporal_identity=temporal)
+    names = [flag.name for flag in profile.scheduled_macro_flags]
+    assert names == ["IN"]
+
+
+def test_macro_release_inside_window_included():
+    from catalyst_agents.attribution.move_profile import ScheduledMacroFlag
+
+    temporal = _temporal_identity()
+    flags = (ScheduledMacroFlag(name="FOMC", scheduled_at=_utc("2026-01-15T09:00:00Z")),)
+    provider = RecordingProvider(
+        _inputs(scheduled_macro_flags=flags, macro_source_available=True)
+    )
+    profile = _build(provider, temporal_identity=temporal)
+    assert [flag.name for flag in profile.scheduled_macro_flags] == ["FOMC"]
+    assert bool(profile.scheduled_macro_flags) is True
+
+
+def test_cutoff_session_disagreement_fails_closed():
+    """Explicit session/cutoff arguments that disagree with the validated
+    TemporalIdentity fail closed."""
+    temporal = _temporal_identity(session_date="2026-01-15", cutoff="2026-01-15T21:00:00Z")
+    builder = ObservationBuilder(provider=RecordingProvider(_inputs()), policy=_policy())
+    with pytest.raises(ValueError):
+        builder.build(
+            ticker="AAPL", session_date="2026-01-16", cutoff="2026-01-15T21:00:00Z",
+            temporal_identity=temporal,
+        )
+    with pytest.raises(ValueError):
+        builder.build(
+            ticker="AAPL", session_date="2026-01-15", cutoff="2026-01-16T21:00:00Z",
+            temporal_identity=temporal,
+        )
+    # Agreeing arguments pass.
+    profile = builder.build(
+        ticker="AAPL", session_date="2026-01-15", cutoff="2026-01-15T21:00:00Z",
+        temporal_identity=temporal,
+    )
+    assert profile.target_return is not None
+
+
+def test_sqlite_context_provider_macro_lookup_bounded_by_information_window(tmp_path):
+    """Scheduled macro lookup is bounded by
+    information_window_start_at <= released_at <= cutoff_at at the SQL layer."""
+    import sqlite3
+
+    from catalyst_agents.runtime.context import SQLiteContextProvider
+
+    db = tmp_path / "ctx.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE ohlcv (symbol TEXT, date TEXT, open REAL, close REAL, volume REAL)"
+    )
+    conn.execute(
+        "INSERT INTO ohlcv VALUES ('AAPL','2026-01-15',100.0,110.0,2000.0)"
+    )
+    conn.execute(
+        "CREATE TABLE macro_observations (series_id TEXT, released_at TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO macro_observations VALUES ('FED','2026-01-14T12:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO macro_observations VALUES ('FED','2026-01-15T09:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO macro_observations VALUES ('FED','2026-01-15T22:00:00Z')"
+    )
+    conn.commit()
+    conn.close()
+
+    provider = SQLiteContextProvider(db, major_series_ids=("FED",))
+    inputs = provider.load_context_inputs(
+        ticker="AAPL",
+        session_date="2026-01-15",
+        cutoff="2026-01-15T21:00:00Z",
+        information_window_start_at="2026-01-14T21:00:00Z",
+    )
+    assert inputs.macro_source_available is True
+    assert [flag.name for flag in inputs.scheduled_macro_flags] == ["FED"]
+    assert [flag.scheduled_at for flag in inputs.scheduled_macro_flags] == [
+        _utc("2026-01-15T09:00:00Z")
+    ]

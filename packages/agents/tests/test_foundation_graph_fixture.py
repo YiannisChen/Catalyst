@@ -63,7 +63,8 @@ class FakeObservationProvider:
     def __init__(self):
         self.calls = 0
 
-    def load_context_inputs(self, *, ticker, session_date, cutoff) -> ContextInputs:
+    def load_context_inputs(self, *, ticker, session_date, cutoff,
+                           information_window_start_at=None) -> ContextInputs:
         self.calls += 1
         return ContextInputs(
             ticker=ticker,

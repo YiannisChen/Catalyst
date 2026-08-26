@@ -28,7 +28,14 @@ class SQLiteContextProvider:
         self.db_path = Path(db_path)
         self.major_series_ids = tuple(major_series_ids)
 
-    def load_context_inputs(self, *, ticker: str, session_date: str, cutoff: str) -> ContextInputs:
+    def load_context_inputs(
+        self,
+        *,
+        ticker: str,
+        session_date: str,
+        cutoff: str,
+        information_window_start_at: str | None = None,
+    ) -> ContextInputs:
         with sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True) as conn:
             rows = conn.execute(
                 """
@@ -64,7 +71,9 @@ class SQLiteContextProvider:
             sector_ticker=None,
             sector_return_pct=None,
             peer_returns_by_ticker={},
-            scheduled_macro_flags=self._load_macro_flags(cutoff),
+            scheduled_macro_flags=self._load_macro_flags(
+                cutoff, information_window_start_at=information_window_start_at
+            ),
             macro_source_available=self._macro_source_available(),
         )
 
@@ -78,20 +87,40 @@ class SQLiteContextProvider:
             return False
         return True
 
-    def _load_macro_flags(self, cutoff: str) -> tuple[ScheduledMacroFlag, ...]:
+    def _load_macro_flags(
+        self,
+        cutoff: str,
+        *,
+        information_window_start_at: str | None = None,
+    ) -> tuple[ScheduledMacroFlag, ...]:
+        """Configured MAJOR releases bounded by the information window:
+        ``information_window_start_at <= released_at <= cutoff_at`` (FIX 2)."""
         if not self.major_series_ids:
             return ()
         try:
             with sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True) as conn:
-                rows = conn.execute(
-                    """SELECT series_id, released_at
-                       FROM macro_observations
-                       WHERE series_id IN ({placeholders}) AND released_at <= ?
-                       ORDER BY series_id, released_at""".format(
-                        placeholders=", ".join("?" for _ in self.major_series_ids)
-                    ),
-                    (*self.major_series_ids, cutoff),
-                ).fetchall()
+                if information_window_start_at is not None:
+                    rows = conn.execute(
+                        """SELECT series_id, released_at
+                           FROM macro_observations
+                           WHERE series_id IN ({placeholders})
+                             AND released_at >= ?
+                             AND released_at <= ?
+                           ORDER BY series_id, released_at""".format(
+                            placeholders=", ".join("?" for _ in self.major_series_ids)
+                        ),
+                        (*self.major_series_ids, information_window_start_at, cutoff),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """SELECT series_id, released_at
+                           FROM macro_observations
+                           WHERE series_id IN ({placeholders}) AND released_at <= ?
+                           ORDER BY series_id, released_at""".format(
+                            placeholders=", ".join("?" for _ in self.major_series_ids)
+                        ),
+                        (*self.major_series_ids, cutoff),
+                    ).fetchall()
         except sqlite3.Error:
             return ()
         flags = []
