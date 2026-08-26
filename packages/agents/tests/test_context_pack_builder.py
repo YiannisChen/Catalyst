@@ -1,0 +1,448 @@
+"""M4-6: deterministic context pack draft/finalizer pipeline (amendment §5)."""
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import datetime, timezone
+
+import pytest
+
+from catalyst_agents.attribution.context_pack import (
+    ContextBudget,
+    EvidenceAnalystContextPack,
+    EvidencePayloadItem,
+    PriorAssessmentContext,
+    TokenCountReport,
+    TruncationRecord,
+)
+from catalyst_agents.attribution.context_pack_builder import (
+    ContextPackBuilder,
+    ContextPackFinalizer,
+    PackedContextDraft,
+    RenderMessage,
+    canonical_context_pack_json,
+)
+from catalyst_agents.attribution.coverage import CoverageSummary
+from catalyst_agents.attribution.coverage_builder import build_coverage_summary
+from catalyst_agents.attribution.evidence_state import EvidenceState, EvidenceStateItem
+from catalyst_agents.attribution.evidence_state_builder import (
+    EvidenceStateBuildContext,
+    build_evidence_state,
+)
+from catalyst_agents.attribution.move_profile import MoveProfile
+from catalyst_agents.runtime.token_budget import (
+    TokenCounter,
+    UTF8ByteUpperBoundCounter,
+)
+from catalyst_data.canonical.identity import DataRuntimeIdentity
+from catalyst_data.canonical.temporal import TemporalIdentity
+
+
+def _utc(iso: str) -> datetime:
+    return datetime.fromisoformat(iso.replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
+
+
+def _temporal() -> TemporalIdentity:
+    return TemporalIdentity(
+        session_date="2026-01-15",
+        market_timezone="America/New_York",
+        session_open_at=_utc("2026-01-15T14:30:00Z"),
+        session_close_at=_utc("2026-01-15T21:00:00Z"),
+        information_window_start_at=_utc("2026-01-14T21:00:00Z"),
+        cutoff_at=_utc("2026-01-15T21:00:00Z"),
+    )
+
+
+def _runtime() -> DataRuntimeIdentity:
+    return DataRuntimeIdentity(
+        data_snapshot_id="s" * 64,
+        corpus_manifest_id="m" * 64,
+        fts_index_version="build:fts",
+        dense_index_version="d" * 64,
+        embedding_model_revision="emb:1",
+        reranker_revision="rr:1",
+        query_policy_version="qp:v1",
+    )
+
+
+def _budget(**overrides) -> ContextBudget:
+    base = dict(
+        model_context_limit=4_000,
+        reserved_output_tokens=200,
+        reserved_system_instruction_tokens=100,
+        observation_tokens=100,
+        coverage_summary_tokens=100,
+        research_history_tokens=50,
+        inventory_tokens=100,
+        evidence_payload_tokens=1_000,
+        per_news_item_max_tokens=120,
+        per_sec_chunk_max_tokens=150,
+        lead_only_tokens=60,
+        safety_margin_tokens=50,
+    )
+    base.update(overrides)
+    return ContextBudget(**base)
+
+
+def _item(
+    evidence_id: str,
+    *,
+    source_class: str,
+    evidence_role: str,
+    content_state: str = "FULL_TEXT",
+    material_capability: str = "MATERIAL_CAPABLE",
+    independence_group_id: str | None = None,
+    section_key: str = "body",
+    ordinal: int = 1,
+    excerpt: str = "The company reported strong results.",
+    eligible_at: str = "2026-01-15T10:00:00Z",
+    first_seen_round: int = 1,
+    task_id: str = "t:1",
+    priority: int = 0,
+    fact_id: str | None = None,
+) -> EvidenceStateItem:
+    is_fact = fact_id is not None
+    return EvidenceStateItem(
+        evidence_id=evidence_id,
+        canonical_asset_id=f"asset:{evidence_id}",
+        canonical_content_version_id=f"version:{evidence_id}",
+        corpus_document_id=f"doc:{evidence_id}",
+        chunk_id=None if is_fact else evidence_id,
+        fact_id=fact_id,
+        section_key=None if is_fact else section_key,
+        chunk_ordinal=None if is_fact else ordinal,
+        asset_type="STRUCTURED_CONTEXT" if is_fact else "NEWS",
+        provider="polygon",
+        publisher=None,
+        canonical_url=None,
+        source_class=source_class,
+        evidence_role=evidence_role,
+        eligible_at=_utc(eligible_at),
+        temporal_precision="publication_time",
+        content_state=content_state,
+        material_capability=material_capability,
+        serving_status="body_candidate",
+        parse_quality="full",
+        independence_group_id=independence_group_id,
+        independence_status=(
+            "KNOWN_GROUP" if independence_group_id else "UNKNOWN"
+        ),
+        content_hash="c" * 64,
+        text_ref=evidence_id,
+        excerpt_text=excerpt,
+        first_seen_round=first_seen_round,
+        contributing_task_ids=(task_id,),
+        retrieval_contributions=(),
+    )
+
+
+def _empty_state() -> EvidenceState:
+    return EvidenceState(
+        schema_version="evidence_state_v1",
+        run_id="run:1",
+        round=1,
+        temporal_identity=_temporal(),
+        data_runtime_identity=_runtime(),
+        research_policy_version="sp:v1",
+        task_results=(),
+        evidence_items=(),
+        structured_facts=(),
+        degradations=(),
+        capability_gaps=(),
+        state_hash="0" * 64,
+    )
+
+
+def _profile() -> MoveProfile:
+    return MoveProfile(
+        target_return=3.0,
+        prior_session_return=2.0,
+        gap_return=0.5,
+        market_return=2.9,
+        sector_return=2.8,
+        market_adjusted_return=0.1,
+        sector_adjusted_return=0.2,
+        volume_abnormality=None,
+        scheduled_macro_flags=(),
+        market_comove=None,
+        sector_comove=None,
+        peer_comove=None,
+        coverage_flags=(),
+        degraded_fields=(),
+    )
+
+
+def _coverage(state: EvidenceState) -> CoverageSummary:
+    return build_coverage_summary(state, _profile(), (), ())
+
+
+def _builder(**overrides) -> ContextPackBuilder:
+    base = dict(
+        packing_policy_version="pack:v1",
+        schema_version="context_pack_v1",
+        budget=_budget(),
+        token_counter=UTF8ByteUpperBoundCounter(
+            provider="test", model_id="test-model",
+            message_overhead_tokens=0,
+        ),
+    )
+    base.update(overrides)
+    return ContextPackBuilder(**base)
+
+
+def _draft(state: EvidenceState, *, round: int = 1, prior: EvidenceState | None = None, **kwargs):
+    del prior
+    builder = _builder()
+    return builder.build_draft(
+        run_id="run:1",
+        round=round,
+        temporal_identity=_temporal(),
+        data_runtime_identity=_runtime(),
+        evidence_state=state,
+        move_profile=_profile(),
+        coverage_summary=_coverage(state),
+        research_history=(),
+        **kwargs,
+    )
+
+
+def _finalizer(**overrides) -> ContextPackFinalizer:
+    base = dict(
+        template_bytes=b"system: analyse the evidence\n",
+        template_version="prompt:v1",
+        renderer=default_renderer,
+        token_counter=UTF8ByteUpperBoundCounter(
+            provider="test", model_id="test-model", message_overhead_tokens=0
+        ),
+    )
+    base.update(overrides)
+    return ContextPackFinalizer(**base)
+
+
+def default_renderer(draft: PackedContextDraft) -> tuple[RenderMessage, ...]:
+    """Deterministic test renderer: bounded section text; never includes the
+    pack hash."""
+    return (
+        RenderMessage(
+            role="system",
+            content="observation=" + canonical_context_pack_json(
+                draft.observation.model_dump(mode="json")
+            ).decode("utf-8"),
+        ),
+        RenderMessage(
+            role="system",
+            content="inventory=" + ",".join(
+                item.evidence_id for item in draft.evidence_inventory
+            ),
+        ),
+        RenderMessage(
+            role="system",
+            content="direct_primary=" + ",".join(
+                item.evidence_id for item in draft.direct_primary_evidence
+            ),
+        ),
+        RenderMessage(
+            role="system",
+            content="lead_only=" + ",".join(
+                item.evidence_id for item in draft.lead_only_evidence
+            ),
+        ),
+    )
+
+
+def test_draft_inventories_every_item_and_partitions_included_excluded():
+    state = _empty_state()
+    state = state.upsert(_item("a", source_class="issuer_disclosure", evidence_role="DIRECT_PRIMARY"))
+    state = state.upsert(_item("b", source_class="reported_news", evidence_role="INDEPENDENT_REPORT"))
+    draft = _draft(state)
+    assert isinstance(draft, PackedContextDraft)
+    ids = {item.evidence_id for item in draft.evidence_inventory}
+    assert ids == {"a", "b"}
+    assert set(draft.included_evidence_ids) | set(draft.excluded_evidence_ids) == ids
+    assert set(draft.included_evidence_ids) & set(draft.excluded_evidence_ids) == set()
+
+
+def test_draft_excludes_empty_failed_and_post_cutoff_with_records():
+    state = _empty_state()
+    state = state.upsert(_item("a", source_class="issuer_disclosure", evidence_role="DIRECT_PRIMARY"))
+    state = state.upsert(
+        _item("empty", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+              content_state="EMPTY", material_capability="NOT_CAPABLE", excerpt="")
+    )
+    state = state.upsert(
+        _item("failed", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+              content_state="FAILED", material_capability="NOT_CAPABLE", excerpt="")
+    )
+    state = state.upsert(
+        _item("late", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+              eligible_at="2026-01-16T10:00:00Z")
+    )
+    draft = _draft(state)
+    ids = {item.evidence_id for item in draft.evidence_inventory}
+    assert ids == {"a", "empty", "failed", "late"}
+    assert "empty" in draft.excluded_evidence_ids
+    assert "failed" in draft.excluded_evidence_ids
+    assert "late" in draft.excluded_evidence_ids
+    actions = {record.evidence_id: record.action for record in draft.truncation_metadata}
+    assert actions["empty"] == "EXCLUDED_MATERIALITY"
+    assert actions["failed"] == "EXCLUDED_MATERIALITY"
+    assert actions["late"] == "EXCLUDED_INELIGIBLE"
+
+
+def test_draft_metadata_only_lead_no_body():
+    state = _empty_state()
+    state = state.upsert(
+        _item("meta", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+              content_state="METADATA_ONLY", material_capability="NOT_CAPABLE",
+              excerpt="title lead only")
+    )
+    draft = _draft(state)
+    actions = {record.evidence_id: record.action for record in draft.truncation_metadata}
+    assert actions["meta"] == "METADATA_ONLY"
+    # Inventory retains identity metadata; the item is not body evidence.
+    inventory = {item.evidence_id: item for item in draft.evidence_inventory}
+    assert inventory["meta"].material_capability == "NOT_CAPABLE"
+
+
+def test_draft_order_identical_across_task_completion_orders():
+    state_a = _empty_state()
+    state_a = state_a.upsert(_item("a", source_class="issuer_disclosure", evidence_role="DIRECT_PRIMARY", task_id="t:1", priority=0))
+    state_a = state_a.upsert(_item("b", source_class="reported_news", evidence_role="INDEPENDENT_REPORT", task_id="t:2", priority=1))
+    draft_a = _draft(state_a)
+    state_b = _empty_state()
+    state_b = state_b.upsert(_item("b", source_class="reported_news", evidence_role="INDEPENDENT_REPORT", task_id="t:2", priority=1))
+    state_b = state_b.upsert(_item("a", source_class="issuer_disclosure", evidence_role="DIRECT_PRIMARY", task_id="t:1", priority=0))
+    draft_b = _draft(state_b)
+    assert draft_a == draft_b
+    assert [item.evidence_id for item in draft_a.evidence_inventory] == [
+        item.evidence_id for item in draft_b.evidence_inventory
+    ]
+
+
+def test_draft_news_duplicate_compression_deterministic():
+    state = _empty_state()
+    state = state.upsert(
+        _item("news:1", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+              independence_group_id="g:1", excerpt="first wire copy")
+    )
+    state = state.upsert(
+        _item("news:2", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+              independence_group_id="g:1", excerpt="second wire copy")
+    )
+    draft = _draft(state)
+    ids = {item.evidence_id for item in draft.evidence_inventory}
+    assert ids == {"news:1", "news:2"}  # every member inventoried
+    actions = {record.evidence_id: record.action for record in draft.truncation_metadata}
+    duplicated = [evidence_id for evidence_id, action in actions.items() if action == "EXCLUDED_DUPLICATE"]
+    assert len(duplicated) == 1
+    payload_ids = {item.evidence_id for item in draft.independent_reports if item.excerpt_text}
+    assert len(payload_ids) == 1  # one representative body per group
+
+
+def test_draft_sec_sections_stay_distinct():
+    state = _empty_state()
+    state = state.upsert(
+        _item("filing:item1.01", source_class="issuer_disclosure", evidence_role="DIRECT_PRIMARY",
+              section_key="item_1.01", excerpt="section 1.01 text")
+    )
+    state = state.upsert(
+        _item("filing:item2.02", source_class="issuer_disclosure", evidence_role="DIRECT_PRIMARY",
+              section_key="item_2.02", excerpt="section 2.02 text")
+    )
+    draft = _draft(state)
+    sections = {item.section_key for item in draft.evidence_inventory}
+    assert sections == {"item_1.01", "item_2.02"}
+    assert {item.evidence_id for item in draft.direct_primary_evidence} == {
+        "filing:item1.01", "filing:item2.02"
+    }
+
+
+def test_draft_round_two_delta_priority_and_prior_refs():
+    round_one = build_evidence_state(
+        EvidenceStateBuildContext(
+            run_id="run:1", round=1, temporal_identity=_temporal(),
+            data_runtime_identity=_runtime(), research_policy_version="sp:v1",
+            task_results=(),
+        )
+    )
+    round_two = EvidenceState.model_validate({
+        **round_one.model_dump(mode="python"),
+        "round": 2,
+        "evidence_items": (
+            _item("old", source_class="issuer_disclosure", evidence_role="DIRECT_PRIMARY", first_seen_round=1),
+            _item("new", source_class="reported_news", evidence_role="INDEPENDENT_REPORT", first_seen_round=2),
+        ),
+        "state_hash": "0" * 64,
+    })
+    prior = PriorAssessmentContext(
+        prior_counter_evidence_ids=("old",),
+        prior_evidence_assessment_ref="assessment:1",
+    )
+    draft = _draft(round_two, round=2, prior_assessment_context=prior)
+    assert draft.round == 2
+    assert set(draft.delta_evidence_ids) == {"new"}
+    assert draft.prior_assessment_context == prior
+    ordered = [item.evidence_id for item in draft.evidence_inventory]
+    assert ordered[0] == "new"  # round-two delta prioritized
+
+
+def test_finalizer_computes_hashes_and_budget_invariant():
+    state = _empty_state()
+    state = state.upsert(_item("a", source_class="issuer_disclosure", evidence_role="DIRECT_PRIMARY"))
+    draft = _draft(state)
+    pack = _finalizer().finalize(draft)
+    assert isinstance(pack, EvidenceAnalystContextPack)
+    assert len(pack.context_pack_sha256) == 64
+    assert len(pack.prompt_template_sha256) == 64
+    assert len(pack.rendered_messages_sha256) == 64
+    assert pack.prompt_template_version == "prompt:v1"
+    used = (
+        pack.token_count_report.rendered_messages_tokens
+        + pack.token_count_report.reserved_output_tokens
+        + pack.token_count_report.safety_margin_tokens
+    )
+    assert used <= pack.context_budget.model_context_limit
+
+
+def test_replay_is_byte_identical():
+    state = _empty_state()
+    state = state.upsert(_item("a", source_class="issuer_disclosure", evidence_role="DIRECT_PRIMARY"))
+    draft = _draft(state)
+    pack_a = _finalizer().finalize(draft)
+    draft_b = _draft(state)
+    pack_b = _finalizer().finalize(draft_b)
+    assert pack_a == pack_b
+    assert pack_a.context_pack_sha256 == pack_b.context_pack_sha256
+    assert pack_a.rendered_messages_sha256 == pack_b.rendered_messages_sha256
+
+
+def test_renderer_messages_exclude_pack_hash_and_are_strict():
+    state = _empty_state()
+    state = state.upsert(_item("a", source_class="issuer_disclosure", evidence_role="DIRECT_PRIMARY"))
+    draft = _draft(state)
+    messages = default_renderer(draft)
+    assert messages
+    for message in messages:
+        assert set(RenderMessage.model_fields) == {"role", "content"}
+        assert isinstance(message.content, str)
+        assert "context_pack_sha256" not in message.content
+
+
+def test_token_counter_modes_are_labeled():
+    counter = UTF8ByteUpperBoundCounter(
+        provider="p", model_id="m", message_overhead_tokens=2,
+    )
+    assert counter.counting_mode == "UTF8_BYTE_UPPER_BOUND"
+    assert counter.count_text("héllo") == len("héllo".encode("utf-8")) + 2
+    text, original, included = counter.truncate_with_offsets("héllo wörld", 6)
+    assert original == len("héllo wörld".encode("utf-8"))
+    assert included <= 6
+    assert "�" not in text  # never splits a UTF-8 code point
+
+
+def test_canonical_pack_json_uses_locked_serializer():
+    payload = {"z": 1, "a": "héllo"}
+    assert canonical_context_pack_json(payload) == json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
