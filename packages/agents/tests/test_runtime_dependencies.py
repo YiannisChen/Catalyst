@@ -232,3 +232,83 @@ def test_loader_sqlite_connection_reusable_across_threads(tmp_path, monkeypatch)
     with ThreadPoolExecutor(max_workers=1) as executor:
         result = executor.submit(lambda: db.execute("SELECT 1").fetchone()).result(timeout=5)
     assert result == (1,)
+
+
+def test_loader_constructs_data_runtime_identity_from_loaded_components(tmp_path, monkeypatch):
+    """The runtime dependency authority emits the single DataRuntimeIdentity
+    from actual loaded component versions and injects it into the production
+    retriever (M4-0 amendment §1.5)."""
+    import sqlite3
+
+    from catalyst_agents.runtime.dependencies import RuntimeDependencyLoader
+    from catalyst_data.canonical.identity import DataRuntimeIdentity
+    from catalyst_data.config import BGE_M3_REVISION
+    from catalyst_data.retrieval.hybrid import V1_QUERY_POLICY_VERSION
+
+    sqlite_path = tmp_path / "runtime.db"
+    conn = sqlite3.connect(sqlite_path)
+    conn.execute("CREATE TABLE corpus_manifest (manifest_id TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO corpus_manifest VALUES (?)", ("c" * 64,))
+    conn.execute(
+        "CREATE TABLE lexical_index_state (singleton_id INTEGER, lexical_generation_id TEXT, mode_served TEXT)"
+    )
+    conn.execute("INSERT INTO lexical_index_state VALUES (1, 'build:fts', 'fts5')")
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("CATALYST_SNAPSHOT_ID", "s" * 64)
+    monkeypatch.setenv("CATALYST_LANCEDB_DIR", str(tmp_path / "ldb"))
+
+    loader = RuntimeDependencyLoader(
+        sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
+        requested_manifest_id="c" * 64,
+        index_manifest_id="i" * 64,
+        embedding_factory=lambda _: (lambda _q: [0.1, 0.2, 0.3], 3),
+        reranker_factory=lambda _: object(),
+        lancedb_connect_factory=lambda _path: FakeLanceDB(FakeTable(vector_dim=3)),
+    )
+    deps = loader.get_dependencies()
+    identity = deps.data_runtime_identity
+    assert isinstance(identity, DataRuntimeIdentity)
+    assert identity.data_snapshot_id == "s" * 64
+    assert identity.corpus_manifest_id == "c" * 64
+    assert identity.fts_index_version == "build:fts"
+    assert identity.dense_index_version == "i" * 64
+    assert identity.embedding_model_revision == BGE_M3_REVISION
+    assert identity.query_policy_version == V1_QUERY_POLICY_VERSION
+    assert deps.retriever._retriever.data_runtime_identity == identity
+
+
+def test_cached_dependencies_never_hold_request_temporal_identity(tmp_path, monkeypatch):
+    """TemporalIdentity is request/session-scoped and never stored in the
+    globally cached RuntimeDependencies (supervisor clarification 1)."""
+    from dataclasses import fields
+
+    import sqlite3
+
+    from catalyst_agents.runtime.dependencies import RuntimeDependencies, RuntimeDependencyLoader
+
+    sqlite_path = tmp_path / "runtime.db"
+    conn = sqlite3.connect(sqlite_path)
+    conn.execute("CREATE TABLE corpus_manifest (manifest_id TEXT PRIMARY KEY)")
+    conn.execute("INSERT INTO corpus_manifest VALUES (?)", ("c" * 64,))
+    conn.commit()
+    conn.close()
+    monkeypatch.setenv("CATALYST_SNAPSHOT_ID", "s" * 64)
+    monkeypatch.setenv("CATALYST_LANCEDB_DIR", str(tmp_path / "ldb"))
+
+    loader = RuntimeDependencyLoader(
+        sqlite_db_path=sqlite_path,
+        lancedb_table_name="chunks",
+        requested_manifest_id="c" * 64,
+        index_manifest_id="i" * 64,
+        embedding_factory=lambda _: (lambda _q: [0.1, 0.2, 0.3], 3),
+        reranker_factory=lambda _: object(),
+        lancedb_connect_factory=lambda _path: FakeLanceDB(FakeTable(vector_dim=3)),
+    )
+    deps = loader.get_dependencies()
+    assert "temporal_identity" not in {field.name for field in fields(RuntimeDependencies)}
+    assert not hasattr(deps, "temporal_identity")
+    # Two sequential requests use the same cached identity while TemporalIdentity
+    # is passed per request through the retriever seam.
+    assert deps.data_runtime_identity is loader.get_dependencies().data_runtime_identity

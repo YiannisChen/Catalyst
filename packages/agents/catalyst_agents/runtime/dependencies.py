@@ -25,9 +25,14 @@ import sqlite3
 import threading
 from typing import Any, Callable
 
-from catalyst_data.storage import lancedb_store
-from catalyst_data.retrieval.hybrid import ProductionHybridRetriever
+from catalyst_data.canonical.identity import DataRuntimeIdentity
+from catalyst_data.config import BGE_M3_REVISION
+from catalyst_data.retrieval.hybrid import (
+    ProductionHybridRetriever,
+    V1_QUERY_POLICY_VERSION,
+)
 from catalyst_data.retrieval.index_manifest import IndexManifest
+from catalyst_data.storage import lancedb_store
 
 from .query_embedding import QueryEmbeddingFactory
 from .retrieval_adapter import AgentRetrieverAdapter
@@ -58,6 +63,7 @@ class RuntimeDependencies:
     retriever: AgentRetrieverAdapter | None = None
     requested_manifest_id: str | None = None
     index_manifest_id: str | None = None
+    data_runtime_identity: DataRuntimeIdentity | None = None
 
 
 class RuntimeDependencyLoader:
@@ -249,16 +255,29 @@ class RuntimeDependencyLoader:
 
         retriever = None
         readonly_db = None
+        data_runtime_identity: DataRuntimeIdentity | None = None
         if self.requested_manifest_id and self.index_manifest_id:
             readonly_db = sqlite3.connect(
                 f"file:{self.sqlite_db_path}?mode=ro", uri=True, check_same_thread=False
             )
+            fts_index_version = _read_fts_index_version(readonly_db)
+            if self.snapshot_id:
+                data_runtime_identity = DataRuntimeIdentity(
+                    data_snapshot_id=self.snapshot_id,
+                    corpus_manifest_id=self.requested_manifest_id,
+                    fts_index_version=fts_index_version,
+                    dense_index_version=self.index_manifest_id,
+                    embedding_model_revision=BGE_M3_REVISION,
+                    reranker_revision=self.reranker_model if reranker is not None else None,
+                    query_policy_version=V1_QUERY_POLICY_VERSION,
+                )
             production_retriever = ProductionHybridRetriever(
                 db=readonly_db,
                 lancedb_table=lancedb_table,
                 embedding_fn=embedding_fn,
                 reranker=reranker,
                 index_manifest_id=self.index_manifest_id,
+                data_runtime_identity=data_runtime_identity,
                 reranker_timeout_seconds=self.reranker_timeout_seconds,
             )
             retriever = AgentRetrieverAdapter(production_retriever)
@@ -282,6 +301,7 @@ class RuntimeDependencyLoader:
             retriever=retriever,
             requested_manifest_id=self.requested_manifest_id,
             index_manifest_id=self.index_manifest_id,
+            data_runtime_identity=data_runtime_identity,
         )
 
     def _resolve_lancedb_dir(self, health: dict[str, Any]) -> Path | None:
@@ -329,6 +349,21 @@ class RuntimeDependencyLoader:
         health["lancedb"]["active_generation"] = str(active_path)
         health["lancedb"]["table"] = table_name
         return table_name
+
+
+def _read_fts_index_version(db: Any) -> str:
+    """Read the actual loaded FTS generation/mode from lexical_index_state."""
+    try:
+        row = db.execute(
+            "SELECT lexical_generation_id, mode_served FROM lexical_index_state "
+            "WHERE singleton_id=1"
+        ).fetchone()
+    except Exception:
+        return "fts5"
+    if row is None:
+        return "fts5"
+    generation_id, mode_served = row
+    return str(generation_id or mode_served or "fts5")
 
 
 def _failed_dependencies(health: dict[str, Any], *, component: str, message: str) -> RuntimeDependencies:

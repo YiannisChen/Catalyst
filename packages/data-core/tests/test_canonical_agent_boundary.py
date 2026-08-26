@@ -60,6 +60,16 @@ def _text_hit() -> RetrievalHit:
         retrieval_policy_version="qp:v1",
         temporal_identity=_temporal(),
         data_runtime_identity=_runtime(),
+        section_key="body",
+        chunk_ordinal=1,
+        asset_type="NEWS",
+        content_hash="c" * 64,
+        material_capability="MATERIAL_CAPABLE",
+        serving_status="body_candidate",
+        temporal_precision="publication_time",
+        independence_group_id=None,
+        canonical_url="https://example.test/a",
+        evidence_role="INDEPENDENT_REPORT",
     )
 
 
@@ -172,6 +182,16 @@ def test_structured_hit_fact_id_flows_to_agents_unchanged() -> None:
         retrieval_policy_version="qp:v1",
         temporal_identity=_temporal(),
         data_runtime_identity=_runtime(),
+        section_key=None,
+        chunk_ordinal=None,
+        asset_type="STRUCTURED_CONTEXT",
+        content_hash=None,
+        material_capability="MATERIAL_CAPABLE",
+        serving_status="body_candidate",
+        temporal_precision="publication_time",
+        independence_group_id=None,
+        canonical_url=None,
+        evidence_role="STRUCTURED_CONTEXT",
     )
     item = EvidenceStateItem(**_state_item(hit, independence_status="KNOWN_GROUP"))
     assert item.evidence_id == "fact:42"

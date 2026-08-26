@@ -69,6 +69,16 @@ def _hit(**overrides: Any) -> dict[str, Any]:
         "retrieval_policy_version": "qp:v1",
         "temporal_identity": _temporal_identity(),
         "data_runtime_identity": _runtime_identity(),
+        "section_key": "body",
+        "chunk_ordinal": 1,
+        "asset_type": "NEWS",
+        "content_hash": "c" * 64,
+        "material_capability": "MATERIAL_CAPABLE",
+        "serving_status": "body_candidate",
+        "temporal_precision": "publication_time",
+        "independence_group_id": None,
+        "canonical_url": "https://example.test/a",
+        "evidence_role": "INDEPENDENT_REPORT",
     }
     base.update(overrides)
     return base
@@ -256,6 +266,14 @@ def test_v1_hit_carries_structured_fact_identity_without_chunk() -> None:
             content_state="FULL_TEXT",
             provider="fmp",
             publisher=None,
+            section_key=None,
+            chunk_ordinal=None,
+            asset_type="STRUCTURED_CONTEXT",
+            content_hash=None,
+            material_capability="MATERIAL_CAPABLE",
+            temporal_precision="publication_time",
+            canonical_url=None,
+            evidence_role="STRUCTURED_CONTEXT",
         )
     )
     assert hit.evidence_id == "fact:42"
