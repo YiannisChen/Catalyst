@@ -303,3 +303,60 @@ def test_run_manifest_rejects_invalid_nested_context_budget() -> None:
                 )
             )
         )
+
+
+def test_runtime_configuration_research_limits_are_typed_and_bounded():
+    """M4-2 amendment §3: typed research stage timeout/concurrency in
+    RuntimeConfiguration, strictly bounded by the 60-second run deadline."""
+    from catalyst_agents.runtime.manifest import RuntimeConfiguration
+
+    base = _runtime_config()
+    cfg = RuntimeConfiguration(
+        observation_policy=base.observation_policy,
+        context_budget=base.context_budget,
+        research_stage_timeout_seconds=30,
+        max_initial_research_concurrency=2,
+    )
+    assert cfg.research_stage_timeout_seconds == 30
+    assert cfg.max_initial_research_concurrency == 2
+    with pytest.raises(ValidationError):
+        RuntimeConfiguration(
+            observation_policy=base.observation_policy,
+            context_budget=base.context_budget,
+            research_stage_timeout_seconds=60,  # must be strictly below deadline
+            max_initial_research_concurrency=2,
+        )
+    with pytest.raises(ValidationError):
+        RuntimeConfiguration(
+            observation_policy=base.observation_policy,
+            context_budget=base.context_budget,
+            research_stage_timeout_seconds=61,
+            max_initial_research_concurrency=2,
+        )
+    with pytest.raises(ValidationError):
+        RuntimeConfiguration(
+            observation_policy=base.observation_policy,
+            context_budget=base.context_budget,
+            research_stage_timeout_seconds=0,
+            max_initial_research_concurrency=2,
+        )
+    with pytest.raises(ValidationError):
+        RuntimeConfiguration(
+            observation_policy=base.observation_policy,
+            context_budget=base.context_budget,
+            research_stage_timeout_seconds=30,
+            max_initial_research_concurrency=0,
+        )
+    with pytest.raises(ValidationError):
+        RuntimeConfiguration(
+            observation_policy=base.observation_policy,
+            context_budget=base.context_budget,
+            research_stage_timeout_seconds=30,
+            max_initial_research_concurrency=4,  # > max initial task count
+        )
+
+
+def test_run_manifest_persists_research_limits_in_runtime_configuration():
+    manifest = RunManifest(**_manifest())
+    assert manifest.runtime_configuration.research_stage_timeout_seconds < manifest.run_timeout_seconds
+    assert 1 <= manifest.runtime_configuration.max_initial_research_concurrency <= 3
