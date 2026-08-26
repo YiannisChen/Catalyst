@@ -147,9 +147,11 @@ class ResearchExecutor:
                 capability_gaps=(),
                 degradations=(),
             )
+        # One absolute monotonic stage deadline, computed once (FIX 3B).
         deadline = time.monotonic() + self.stage_timeout_seconds
         accumulator = _Accumulator()
-        with ThreadPoolExecutor(max_workers=min(self.concurrency, len(tasks))) as pool:
+        pool = ThreadPoolExecutor(max_workers=min(self.concurrency, len(tasks)))
+        try:
             futures = {}
             for task in tasks:
                 remaining = deadline - time.monotonic()
@@ -173,12 +175,24 @@ class ResearchExecutor:
                 remaining = deadline - time.monotonic()
                 try:
                     future.result(timeout=max(remaining, 0.0))
-                except (ResearchIntegrityError, ResearchDeadlineError):
-                    raise
                 except TimeoutError:
                     raise ResearchDeadlineError(
                         f"research stage deadline expired for task {task.task_id}"
                     ) from None
+            # All futures completed before the deadline.
+            pool.shutdown(wait=True)
+        except ResearchDeadlineError:
+            # Never wait for the timed-out worker: cancel pending futures and
+            # leave the pool; late results can never become accepted stage
+            # output because the accumulator is discarded on the raise path.
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        except ResearchIntegrityError:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        except BaseException:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
         ordered = tuple(
             sorted(accumulator.results, key=lambda item: (item.priority, item.task_id))
         )

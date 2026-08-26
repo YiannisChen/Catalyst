@@ -455,12 +455,27 @@ def build_foundation_graph(
     template_version: str,
     analyst_boundary: Callable[[EvidenceAnalystContextPack], Any] | None = None,
     structured_provider: Any | None = None,
+    run_deadline_epoch_ms: int | None = None,
 ) -> FoundationRunResult:
     """Run the V1.1 foundation pipeline in fixture mode (no Miner/Critic/Judge).
 
     The Analyst boundary is a fixture stub in M4; M5 replaces it with the
-    production EvidenceAnalyst.
+    production EvidenceAnalyst. ``run_deadline_epoch_ms`` is the absolute Unix
+    epoch-millisecond run deadline from the runtime/manifest authority; the
+    stage deadline may shorten but never extend it.
     """
+    # Deadline is computed once, before the pipeline, in Unix epoch ms
+    # (never time.monotonic(); FIX 3C).
+    stage_deadline_epoch_ms = int((time.time() + research_stage_timeout_seconds) * 1000)
+    if run_deadline_epoch_ms is not None:
+        if stage_deadline_epoch_ms > run_deadline_epoch_ms:
+            raise ValueError(
+                "research stage deadline must not extend the run deadline"
+            )
+        deadline_epoch_ms = run_deadline_epoch_ms
+    else:
+        deadline_epoch_ms = stage_deadline_epoch_ms
+
     # 1. observation_build (TemporalIdentity-authoritative window)
     observation_builder = ObservationBuilder(
         provider=observation_provider, policy=policy_config
@@ -563,9 +578,6 @@ def build_foundation_graph(
     # 8. fixture Analyst boundary (M5 replaces this stub)
     analyst_result = analyst_boundary(pack) if analyst_boundary is not None else None
 
-    deadline_epoch_ms = int(
-        (time.monotonic() + research_stage_timeout_seconds) * 1000
-    )
     state: FoundationGraphState = {
         "run_id": run_id,
         "stage": FoundationStage.ANALYST_BOUNDARY,

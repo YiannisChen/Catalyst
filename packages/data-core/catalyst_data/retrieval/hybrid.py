@@ -435,7 +435,8 @@ class ProductionHybridRetriever:
     def __init__(
         self,
         *,
-        db: Any,
+        db: Any = None,
+        db_conn_factory: Callable[[], Any] | None = None,
         lancedb_table: Any,
         embedding_fn: Callable[[str], Any],
         reranker: object | None,
@@ -443,7 +444,12 @@ class ProductionHybridRetriever:
         data_runtime_identity: DataRuntimeIdentity | None = None,
         reranker_timeout_seconds: float = 2.0,
     ) -> None:
-        self.db = db
+        # ``db`` is the narrow injected fixture seam for tests that already
+        # hold a connection; production uses ``db_conn_factory`` so every
+        # retrieval operation obtains and closes its own read-only connection
+        # (Final TSD §16 connection-per-operation; FIX 3A).
+        self._db = db
+        self._db_conn_factory = db_conn_factory
         self.lancedb_table = lancedb_table
         self.embedding_fn = embedding_fn
         self.reranker = reranker
@@ -451,6 +457,17 @@ class ProductionHybridRetriever:
         self.data_runtime_identity = data_runtime_identity
         self.reranker_timeout_seconds = reranker_timeout_seconds
         self._reranker_gate = RerankerGate()
+
+    def _operation_connection(self) -> tuple[Any, bool]:
+        """Return (connection, owned). Owned connections must be closed."""
+        if self._db is not None:
+            return self._db, False
+        if self._db_conn_factory is None:
+            raise RetrievalContractError(
+                "db_conn_factory_unavailable",
+                "production retrieval requires a read-only connection factory",
+            )
+        return self._db_conn_factory(), True
 
     def retrieve(
         self,
@@ -477,28 +494,33 @@ class ProductionHybridRetriever:
                 "production retrieval requires the validated request "
                 "TemporalIdentity",
             )
-        result = retrieve_hybrid(
-            self.db,
-            query=query,
-            ticker=ticker,
-            cutoff=cutoff,
-            mode="reranked",
-            reranker=self.reranker,
-            query_embedding=self.embedding_fn(query),
-            requested_manifest_id=requested_manifest_id,
-            index_manifest_id=self.index_manifest_id,
-            lancedb_table=self.lancedb_table,
-            reranker_timeout_seconds=self.reranker_timeout_seconds,
-            reranker_gate=self._reranker_gate,
-            temporal_identity=temporal_identity,
-            data_runtime_identity=self.data_runtime_identity,
-        )
-        if not isinstance(result, v1_result.RetrievalResultSet):
-            raise RetrievalContractError(
-                "retrieval_v1_contract_not_served",
-                "production hybrid retrieval did not serve the V1.1 result set",
+        conn, owned = self._operation_connection()
+        try:
+            result = retrieve_hybrid(
+                conn,
+                query=query,
+                ticker=ticker,
+                cutoff=cutoff,
+                mode="reranked",
+                reranker=self.reranker,
+                query_embedding=self.embedding_fn(query),
+                requested_manifest_id=requested_manifest_id,
+                index_manifest_id=self.index_manifest_id,
+                lancedb_table=self.lancedb_table,
+                reranker_timeout_seconds=self.reranker_timeout_seconds,
+                reranker_gate=self._reranker_gate,
+                temporal_identity=temporal_identity,
+                data_runtime_identity=self.data_runtime_identity,
             )
-        return result
+            if not isinstance(result, v1_result.RetrievalResultSet):
+                raise RetrievalContractError(
+                    "retrieval_v1_contract_not_served",
+                    "production hybrid retrieval did not serve the V1.1 result set",
+                )
+            return result
+        finally:
+            if owned:
+                conn.close()
 
 
 @overload

@@ -254,13 +254,23 @@ class RuntimeDependencyLoader:
             health["reranker"]["message"] = "Reranker unavailable; retrieval fallback enabled."
 
         retriever = None
-        readonly_db = None
         data_runtime_identity: DataRuntimeIdentity | None = None
         if self.requested_manifest_id and self.index_manifest_id:
-            readonly_db = sqlite3.connect(
-                f"file:{self.sqlite_db_path}?mode=ro", uri=True, check_same_thread=False
-            )
-            fts_index_version = _read_fts_index_version(readonly_db)
+            # Connection-per-operation (Final TSD §16; FIX 3A): the loader
+            # supplies a read-only factory; each retrieval operation opens and
+            # closes its own connection. No sqlite3.Connection is cached.
+            def _readonly_factory() -> sqlite3.Connection:
+                return sqlite3.connect(
+                    f"file:{self.sqlite_db_path}?mode=ro",
+                    uri=True,
+                    check_same_thread=False,
+                )
+
+            probe = _readonly_factory()
+            try:
+                fts_index_version = _read_fts_index_version(probe)
+            finally:
+                probe.close()
             if self.snapshot_id:
                 data_runtime_identity = DataRuntimeIdentity(
                     data_snapshot_id=self.snapshot_id,
@@ -272,7 +282,7 @@ class RuntimeDependencyLoader:
                     query_policy_version=V1_QUERY_POLICY_VERSION,
                 )
             production_retriever = ProductionHybridRetriever(
-                db=readonly_db,
+                db_conn_factory=_readonly_factory,
                 lancedb_table=lancedb_table,
                 embedding_fn=embedding_fn,
                 reranker=reranker,

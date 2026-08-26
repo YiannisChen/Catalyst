@@ -453,3 +453,45 @@ def test_executor_deterministic_merge_order_within_and_across_tasks():
         )
     ]
     assert merged == ["a1", "a0", "b1"]
+
+
+# ---------------------------------------------------------------------------
+# Corrective pass FIX 3B: real shared wall-clock deadline
+# ---------------------------------------------------------------------------
+
+
+class SleepingRetriever:
+    """Retriever that sleeps for the requested duration before returning."""
+
+    def __init__(self, sleep_seconds: float = 1.0):
+        self.sleep_seconds = sleep_seconds
+        self.calls = 0
+
+    def retrieve(self, query, *, ticker, cutoff, requested_manifest_id,
+                 temporal_identity=None, top_k=8, candidate_depth=20):
+        self.calls += 1
+        time.sleep(self.sleep_seconds)
+        return (_evidence(f"chunk:{query}:{self.calls}", 1),)
+
+
+def test_executor_deadline_raises_promptly_at_wall_clock_deadline():
+    """A ~1s worker with a 0.05s stage timeout must raise ResearchDeadlineError
+    well below the worker sleep; leaving the executor must not wait for the
+    timed-out worker."""
+    retriever = SleepingRetriever(sleep_seconds=1.0)
+    executor = _executor(retriever, stage_timeout_seconds=0.05, concurrency=1)
+    started = time.monotonic()
+    with pytest.raises(ResearchDeadlineError):
+        _run(executor)
+    elapsed = time.monotonic() - started
+    assert elapsed < 0.5, f"deadline took {elapsed:.3f}s, expected prompt raise"
+
+
+def test_executor_deadline_discards_late_worker_results():
+    """Late results from a timed-out worker must never become accepted stage
+    output (no fabricated evidence or ABSTAIN)."""
+    retriever = SleepingRetriever(sleep_seconds=0.6)
+    executor = _executor(retriever, stage_timeout_seconds=0.05, concurrency=1)
+    with pytest.raises(ResearchDeadlineError):
+        _run(executor)
+    # The executor raised; no accepted stage output is returned.

@@ -50,10 +50,22 @@ def _runtime(corpus_manifest_id: str) -> DataRuntimeIdentity:
     )
 
 
-def _canonical_db() -> sqlite3.Connection:
+class _TrackedConnection(sqlite3.Connection):
+    """sqlite connection that records whether close() was called."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.was_closed = False
+
+    def close(self) -> None:
+        self.was_closed = True
+        super().close()
+
+
+def _canonical_db(factory: type[sqlite3.Connection] = sqlite3.Connection) -> sqlite3.Connection:
     """Minimal served-generation DB: corpus_manifest, publication build,
     corpus_build_chunks, canonical_assets, canonical_content_versions."""
-    conn = sqlite3.connect(":memory:")
+    conn = factory(":memory:")
     conn.row_factory = sqlite3.Row
     conn.executescript(
         """
@@ -283,3 +295,122 @@ def test_production_retriever_fails_closed_without_injected_identity():
             "q", ticker="NVDA", cutoff=CUTOFF,
             requested_manifest_id=MANIFEST_HEX,
         )
+
+
+def test_retriever_opens_and_closes_connection_per_operation(monkeypatch):
+    """Concurrent/sequential retrieval operations must receive different
+    read-only connections and close each one (per-operation connections)."""
+    import catalyst_data.retrieval.hybrid as hybrid_module
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.hybrid import ProductionHybridRetriever
+    from catalyst_data.retrieval.result import RetrievalFilters, RetrievalResult, RetrievalResultSet
+
+    opened: list[sqlite3.Connection] = []
+
+    def factory() -> sqlite3.Connection:
+        conn = _canonical_db(factory=_TrackedConnection)
+        row = conn.execute(
+            "SELECT chunk_id, document_id, content_text, available_at FROM corpus_build_chunks LIMIT 1"
+        ).fetchone()
+        value = RetrievalResult(
+            chunk_id=row["chunk_id"],
+            document_id=row["document_id"],
+            available_at=row["available_at"],
+            cutoff=CUTOFF,
+            content_text=row["content_text"],
+            filters_applied=RetrievalFilters(
+                ticker="NVDA", requested_manifest_id=MANIFEST_HEX, cutoff=CUTOFF,
+            ),
+            source_class="reported_news",
+            lexical_raw_score=-1.0,
+            lexical_rank=1,
+            corpus_manifest_id=MANIFEST_HEX,
+            index_manifest_id="d" * 64,
+            mode_requested="lexical",
+            mode_served="fts5",
+            is_degraded=False,
+            timing_ms=1.0,
+        )
+        arm = RetrievalResultSet(
+            candidates=(value,), results=(value,), candidate_count=1,
+            mode_requested="lexical", mode_served="fts5", is_degraded=False,
+        )
+        conn._arm = arm  # stash for the monkeypatched arms below
+        opened.append(conn)
+        return conn
+
+    monkeypatch.setattr(
+        hybrid_module, "retrieve_lexical",
+        lambda db, *a, **k: db._arm,
+    )
+    monkeypatch.setattr(
+        hybrid_module, "retrieve_dense",
+        lambda db, *a, **k: db._arm,
+    )
+
+    class Reranker:
+        def score(self, query, candidates):
+            return [1.0 for _ in candidates]
+
+    retriever = ProductionHybridRetriever(
+        db_conn_factory=factory,
+        lancedb_table=object(),
+        embedding_fn=lambda q: np.ones(1024, dtype=np.float32),
+        reranker=Reranker(),
+        index_manifest_id="d" * 64,
+        data_runtime_identity=_runtime(MANIFEST_HEX),
+    )
+    adapter = AgentRetrieverAdapter(retriever)
+    temporal = _temporal()
+    first = adapter.retrieve(
+        "why did NVDA move", ticker="NVDA", cutoff=CUTOFF,
+        requested_manifest_id=MANIFEST_HEX, temporal_identity=temporal,
+    )
+    second = adapter.retrieve(
+        "why did NVDA move", ticker="NVDA", cutoff=CUTOFF,
+        requested_manifest_id=MANIFEST_HEX, temporal_identity=temporal,
+    )
+    assert len(first) == 1
+    assert len(second) == 1
+    assert len(opened) == 2
+    assert opened[0] is not opened[1]
+    assert opened[0].was_closed is True
+    assert opened[1].was_closed is True
+
+
+def test_retriever_closes_connection_even_on_failure(monkeypatch):
+    """A failed operation must still close its per-operation connection."""
+    import catalyst_data.retrieval.hybrid as hybrid_module
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.hybrid import ProductionHybridRetriever
+    from catalyst_data.retrieval.result import RetrievalContractError
+
+    opened: list[sqlite3.Connection] = []
+
+    def factory() -> sqlite3.Connection:
+        conn = _canonical_db(factory=_TrackedConnection)
+        opened.append(conn)
+        return conn
+
+    def boom(db, *a, **k):
+        raise RetrievalContractError("manifest_not_found")
+
+    monkeypatch.setattr(hybrid_module, "retrieve_lexical", boom)
+    monkeypatch.setattr(hybrid_module, "retrieve_dense", boom)
+
+    retriever = ProductionHybridRetriever(
+        db_conn_factory=factory,
+        lancedb_table=object(),
+        embedding_fn=lambda q: np.ones(1024, dtype=np.float32),
+        reranker=None,
+        index_manifest_id="d" * 64,
+        data_runtime_identity=_runtime(MANIFEST_HEX),
+    )
+    adapter = AgentRetrieverAdapter(retriever)
+    with pytest.raises(RetrievalContractError):
+        adapter.retrieve(
+            "why", ticker="NVDA", cutoff=CUTOFF,
+            requested_manifest_id=MANIFEST_HEX, temporal_identity=_temporal(),
+        )
+    assert len(opened) == 1
+    assert opened[0].was_closed is True

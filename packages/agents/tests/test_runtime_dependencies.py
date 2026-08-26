@@ -204,9 +204,10 @@ def test_vector_dim_detection_prefers_bounded_fts_sampling(tmp_path, monkeypatch
     assert table.to_list_called is False
 
 
-def test_loader_sqlite_connection_reusable_across_threads(tmp_path, monkeypatch):
-    """The runtime graph executes in a worker thread; the loader's read-only
-    SQLite connection must be usable across threads (check_same_thread=False)."""
+def test_loader_supplies_readonly_connection_factory_usable_across_threads(tmp_path, monkeypatch):
+    """Connection-per-operation (FIX 3A): the loader supplies a read-only
+    connection factory; each operation opens its own connection and closes it.
+    No sqlite3.Connection is cached on the retriever."""
     import sqlite3
     from concurrent.futures import ThreadPoolExecutor
 
@@ -227,11 +228,32 @@ def test_loader_sqlite_connection_reusable_across_threads(tmp_path, monkeypatch)
         lancedb_connect_factory=lambda _path: FakeLanceDB(FakeTable(vector_dim=3)),
     )
     deps = loader.get_dependencies()
-    db = deps.retriever._retriever.db
+    retriever = deps.retriever._retriever
+    assert not hasattr(retriever, "db")
+    assert callable(retriever._db_conn_factory)
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        result = executor.submit(lambda: db.execute("SELECT 1").fetchone()).result(timeout=5)
-    assert result == (1,)
+    opened: list[sqlite3.Connection] = []
+    original_factory = retriever._db_conn_factory
+
+    def tracking_factory():
+        db = original_factory()
+        opened.append(db)
+        return db
+
+    retriever._db_conn_factory = tracking_factory
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                lambda: retriever._db_conn_factory().execute("SELECT 1").fetchone()
+            )
+            for _ in range(2)
+        ]
+        results = [future.result(timeout=5) for future in futures]
+    assert results == [(1,), (1,)]
+    assert len(opened) == 2
+    assert opened[0] is not opened[1]
+    for db in opened:
+        db.close()
 
 
 def test_loader_constructs_data_runtime_identity_from_loaded_components(tmp_path, monkeypatch):

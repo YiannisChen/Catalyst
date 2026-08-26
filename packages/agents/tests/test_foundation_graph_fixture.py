@@ -256,3 +256,32 @@ def test_foundation_graph_legacy_mcj_still_compiles():
     from catalyst_agents.graph import build_attribution_graph
 
     assert callable(build_attribution_graph)
+
+
+# ---------------------------------------------------------------------------
+# Corrective pass FIX 3C: epoch-based injected run deadline
+# ---------------------------------------------------------------------------
+
+
+def test_foundation_graph_deadline_is_epoch_and_injected():
+    """deadline_epoch_ms must be Unix epoch milliseconds from the
+    runtime/manifest authority, never time.monotonic()."""
+    import time as _time
+
+    run_deadline = int((_time.time() + 60.0) * 1000)
+    assert run_deadline > 1_600_000_000_000  # sane epoch ms
+    result = build_foundation_graph(**_run_kwargs(run_deadline_epoch_ms=run_deadline))
+    assert result.state["deadline_epoch_ms"] == run_deadline
+
+
+def test_foundation_graph_stage_deadline_never_extends_run_deadline():
+    import time as _time
+
+    run_deadline = int((_time.time() + 0.001) * 1000)
+    with pytest.raises(ValueError):
+        build_foundation_graph(
+            **_run_kwargs(
+                run_deadline_epoch_ms=run_deadline,
+                research_stage_timeout_seconds=5.0,
+            )
+        )
