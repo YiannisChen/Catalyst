@@ -100,18 +100,23 @@ def _item(
     task_id: str = "t:1",
     priority: int = 0,
     fact_id: str | None = None,
+    canonical_asset_id: str | None = None,
+    canonical_content_version_id: str | None = None,
+    corpus_document_id: str | None = None,
+    content_hash: str | None = None,
+    asset_type: str | None = None,
 ) -> EvidenceStateItem:
     is_fact = fact_id is not None
     return EvidenceStateItem(
         evidence_id=evidence_id,
-        canonical_asset_id=f"asset:{evidence_id}",
-        canonical_content_version_id=f"version:{evidence_id}",
-        corpus_document_id=f"doc:{evidence_id}",
+        canonical_asset_id=canonical_asset_id or f"asset:{evidence_id}",
+        canonical_content_version_id=canonical_content_version_id or f"version:{evidence_id}",
+        corpus_document_id=corpus_document_id or f"doc:{evidence_id}",
         chunk_id=None if is_fact else evidence_id,
         fact_id=fact_id,
         section_key=None if is_fact else section_key,
         chunk_ordinal=None if is_fact else ordinal,
-        asset_type="STRUCTURED_CONTEXT" if is_fact else "NEWS",
+        asset_type=asset_type or ("STRUCTURED_CONTEXT" if is_fact else "NEWS"),
         provider="polygon",
         publisher=None,
         canonical_url=None,
@@ -127,7 +132,7 @@ def _item(
         independence_status=(
             "KNOWN_GROUP" if independence_group_id else "UNKNOWN"
         ),
-        content_hash="c" * 64,
+        content_hash=content_hash or "c" * 64,
         text_ref=evidence_id,
         excerpt_text=excerpt,
         first_seen_round=first_seen_round,
@@ -446,3 +451,179 @@ def test_canonical_pack_json_uses_locked_serializer():
         payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
         allow_nan=False,
     ).encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Corrective pass FIX 1: materiality and filing-section preservation
+# ---------------------------------------------------------------------------
+
+
+def _filing_item(
+    evidence_id: str,
+    *,
+    section_key: str,
+    ordinal: int,
+    content_hash: str,
+    excerpt: str,
+    **overrides,
+) -> EvidenceStateItem:
+    """Two filing chunks that share the canonical chain but differ by section."""
+    base = dict(
+        source_class="issuer_disclosure",
+        evidence_role="DIRECT_PRIMARY",
+        content_state="FULL_TEXT",
+        material_capability="MATERIAL_CAPABLE",
+        section_key=section_key,
+        ordinal=ordinal,
+        excerpt=excerpt,
+        canonical_asset_id="asset:filing:1",
+        canonical_content_version_id="version:filing:1",
+        corpus_document_id="doc:filing:1",
+        content_hash=content_hash,
+    )
+    base.update(overrides)
+    return _item(evidence_id, **base)
+
+
+def test_metadata_only_marker_never_appears_in_draft_or_pack_bytes():
+    """METADATA_ONLY must never retain/expose excerpt body text: a non-empty
+    secret-marker excerpt must not appear in the canonical draft or final pack
+    bytes, and the item is excluded from payload inclusion."""
+    secret = "SECRET-MARKER-METADATA-BODY"
+    state = _empty_state()
+    state = state.upsert(
+        _item("meta", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+              content_state="METADATA_ONLY", material_capability="NOT_CAPABLE",
+              excerpt=secret)
+    )
+    draft = _draft(state)
+    assert "meta" in draft.excluded_evidence_ids
+    assert "meta" not in draft.included_evidence_ids
+    actions = {record.evidence_id: record.action for record in draft.truncation_metadata}
+    assert actions["meta"] == "METADATA_ONLY"
+    record = next(r for r in draft.truncation_metadata if r.evidence_id == "meta")
+    assert record.included_token_count == 0
+    inventory = {item.evidence_id: item for item in draft.evidence_inventory}
+    assert inventory["meta"].excerpt_text is None
+    assert inventory["meta"].source_start_offset is None
+    assert inventory["meta"].source_end_offset is None
+    assert inventory["meta"].tokenizer_identity is None
+    assert secret not in canonical_context_pack_json(
+        draft.model_dump(mode="json")
+    ).decode("utf-8")
+
+    pack = _finalizer().finalize(draft)
+    assert secret not in canonical_context_pack_json(
+        pack.model_dump(mode="json")
+    ).decode("utf-8")
+    assert all(
+        item.evidence_id != "meta"
+        for array in (
+            pack.direct_primary_evidence,
+            pack.primary_authority_evidence,
+            pack.independent_reports,
+            pack.structured_context,
+        )
+        for item in array
+    )
+
+
+def test_metadata_only_not_in_any_role_array():
+    state = _empty_state()
+    state = state.upsert(
+        _item("meta", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+              content_state="METADATA_ONLY", material_capability="NOT_CAPABLE",
+              excerpt="lead")
+    )
+    draft = _draft(state)
+    role_ids = set()
+    for array in (
+        draft.direct_primary_evidence,
+        draft.primary_authority_evidence,
+        draft.independent_reports,
+        draft.lead_only_evidence,
+        draft.structured_context,
+    ):
+        role_ids.update(item.evidence_id for item in array)
+    assert "meta" not in role_ids
+
+
+def test_distinct_filing_sections_survive_shared_canonical_chain():
+    """Two chunks sharing canonical_asset_id, corpus_document_id,
+    canonical_content_version_id, and content_hash but with distinct
+    section_key values must both be included."""
+    state = _empty_state()
+    state = state.upsert(
+        _filing_item("filing:1:item1.01", section_key="item_1.01", ordinal=1,
+                     content_hash="c" * 64, excerpt="section 1.01 text")
+    )
+    state = state.upsert(
+        _filing_item("filing:1:item2.02", section_key="item_2.02", ordinal=1,
+                     content_hash="c" * 64, excerpt="section 2.02 text")
+    )
+    draft = _draft(state)
+    assert {item.evidence_id for item in draft.evidence_inventory} == {
+        "filing:1:item1.01", "filing:1:item2.02"
+    }
+    assert set(draft.included_evidence_ids) == {
+        "filing:1:item1.01", "filing:1:item2.02"
+    }
+    sections = {
+        item.section_key for item in draft.evidence_inventory
+    }
+    assert sections == {"item_1.01", "item_2.02"}
+    actions = {
+        record.evidence_id: record.action for record in draft.truncation_metadata
+    }
+    assert actions.get("filing:1:item1.01") != "EXCLUDED_DUPLICATE"
+    assert actions.get("filing:1:item2.02") != "EXCLUDED_DUPLICATE"
+    assert {item.evidence_id for item in draft.direct_primary_evidence} == {
+        "filing:1:item1.01", "filing:1:item2.02"
+    }
+
+
+def test_distinct_ordinal_chunks_same_section_remain_eligible_within_budget():
+    """Two chunks from one section with distinct (section_key, ordinal) are
+    both eligible within budget; exact chunk identity is not erased."""
+    state = _empty_state()
+    state = state.upsert(
+        _filing_item("filing:1:item1.01:0001", section_key="item_1.01", ordinal=1,
+                     content_hash="a" * 64, excerpt="first paragraph of section 1.01")
+    )
+    state = state.upsert(
+        _filing_item("filing:1:item1.01:0002", section_key="item_1.01", ordinal=2,
+                     content_hash="b" * 64, excerpt="second paragraph of section 1.01")
+    )
+    draft = _draft(state)
+    assert set(draft.included_evidence_ids) == {
+        "filing:1:item1.01:0001", "filing:1:item1.01:0002"
+    }
+    actions = {
+        record.evidence_id: record.action for record in draft.truncation_metadata
+    }
+    assert actions.get("filing:1:item1.01:0001") != "EXCLUDED_DUPLICATE"
+    assert actions.get("filing:1:item1.01:0002") != "EXCLUDED_DUPLICATE"
+
+
+def test_exact_duplicate_news_within_group_still_collapses():
+    """News known-independence-group compression remains unchanged: one
+    representative body per group, every member inventoried."""
+    state = _empty_state()
+    state = state.upsert(
+        _item("news:1", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+              independence_group_id="g:1", excerpt="wire copy one")
+    )
+    state = state.upsert(
+        _item("news:2", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+              independence_group_id="g:1", excerpt="wire copy two")
+    )
+    draft = _draft(state)
+    assert {item.evidence_id for item in draft.evidence_inventory} == {"news:1", "news:2"}
+    actions = {
+        record.evidence_id: record.action for record in draft.truncation_metadata
+    }
+    duplicated = [
+        evidence_id for evidence_id, action in actions.items()
+        if action == "EXCLUDED_DUPLICATE"
+    ]
+    assert len(duplicated) == 1

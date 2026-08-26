@@ -217,6 +217,7 @@ class ContextPackBuilder:
 
         records: dict[str, TruncationRecord] = {}
         excluded: set[str] = set()
+        metadata_only: set[str] = set()
         for item, payload in ordered:
             if payload.eligible_at > temporal_identity.cutoff_at:
                 records[payload.evidence_id] = self._record(
@@ -229,16 +230,26 @@ class ContextPackBuilder:
                 )
                 excluded.add(payload.evidence_id)
             elif payload.content_state == "METADATA_ONLY":
+                # Identity-only inventory entry: never body evidence. The
+                # excerpt/body representation is cleared below and the item is
+                # excluded from payload inclusion and role arrays.
                 records[payload.evidence_id] = self._record(
                     payload, "METADATA_ONLY", "metadata_only_never_body", 0
                 )
+                excluded.add(payload.evidence_id)
+                metadata_only.add(payload.evidence_id)
 
-        # Novelty pass: one representative body per known independence group and
-        # per exact duplicate document; distinct SEC sections survive.
-        representatives: set[str] = set()
+        # Novelty pass (FIX 1C): filing selection is keyed initially by
+        # (canonical_asset_id, section_key); distinct filing sections survive
+        # even when they share corpus_document_id/content_hash. Within one
+        # section only exact chunk-identity duplicates (section_key, ordinal,
+        # content_hash) collapse; distinct ordinals remain eligible within
+        # budget. News known-independence-group compression is unchanged and
+        # exact duplicate body documents still collapse.
         seen_group: dict[str, str] = {}
         seen_document: dict[str, str] = {}
-        seen_section: dict[str, str] = {}
+        seen_filing_sections: dict[tuple[str, str], str] = {}
+        seen_filing_chunks: set[tuple[str, int | None, str | None]] = set()
         for item, payload in ordered:
             if payload.evidence_id in excluded:
                 continue
@@ -248,8 +259,6 @@ class ContextPackBuilder:
                 and payload.independence_group_id
                 else None
             )
-            document_key = f"{payload.corpus_document_id}:{payload.content_hash}"
-            section_key = f"{payload.canonical_asset_id}:{payload.section_key or ''}"
             if group is not None:
                 if group in seen_group:
                     records[payload.evidence_id] = self._record(
@@ -259,6 +268,30 @@ class ContextPackBuilder:
                     excluded.add(payload.evidence_id)
                     continue
                 seen_group[group] = payload.evidence_id
+            is_filing = (
+                payload.fact_id is None
+                and payload.section_key not in (None, "", "body")
+            )
+            if is_filing:
+                filing_section_key = (payload.canonical_asset_id, payload.section_key)
+                chunk_identity = (
+                    payload.section_key,
+                    payload.chunk_ordinal,
+                    payload.content_hash,
+                )
+                if chunk_identity in seen_filing_chunks:
+                    records[payload.evidence_id] = self._record(
+                        payload, "EXCLUDED_DUPLICATE", "identical_filing_chunk",
+                        self._truncate_to_zero(payload),
+                    )
+                    excluded.add(payload.evidence_id)
+                    continue
+                seen_filing_chunks.add(chunk_identity)
+                seen_filing_sections.setdefault(
+                    filing_section_key, payload.evidence_id
+                )
+                continue
+            document_key = (payload.corpus_document_id, payload.content_hash)
             if document_key in seen_document and payload.fact_id is None:
                 records[payload.evidence_id] = self._record(
                     payload, "EXCLUDED_DUPLICATE", "exact_duplicate_document",
@@ -267,17 +300,6 @@ class ContextPackBuilder:
                 excluded.add(payload.evidence_id)
                 continue
             seen_document[document_key] = payload.evidence_id
-            if section_key in seen_section and payload.fact_id is None:
-                # Additional same-section chunks are only admitted within the
-                # remaining payload budget (distinct sections always survive).
-                records[payload.evidence_id] = self._record(
-                    payload, "EXCLUDED_DUPLICATE", "additional_section_chunk",
-                    self._truncate_to_zero(payload),
-                )
-                excluded.add(payload.evidence_id)
-                continue
-            seen_section[section_key] = payload.evidence_id
-            representatives.add(payload.evidence_id)
 
         # Payload allocation with tokenizer-offset truncation. Payload items are
         # immutable; truncation produces rebuilt items used consistently in the
@@ -287,7 +309,19 @@ class ContextPackBuilder:
         payload_budget_remaining = self.budget.evidence_payload_tokens
         for item, payload in ordered:
             if payload.evidence_id in excluded:
-                final_payloads[payload.evidence_id] = payload
+                if payload.evidence_id in metadata_only:
+                    # Identity-only inventory: no body, no offsets, no
+                    # tokenizer metadata may remain serialized.
+                    final_payloads[payload.evidence_id] = payload.model_copy(
+                        update={
+                            "excerpt_text": None,
+                            "source_start_offset": None,
+                            "source_end_offset": None,
+                            "tokenizer_identity": None,
+                        }
+                    )
+                else:
+                    final_payloads[payload.evidence_id] = payload
                 continue
             per_item_cap = self._per_item_cap(payload)
             truncated, original, included_count = self.token_counter.truncate_with_offsets(
