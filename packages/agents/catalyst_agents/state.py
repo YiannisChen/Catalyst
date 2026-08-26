@@ -119,3 +119,49 @@ class AttributionState(TypedDict):
     total_cost_usd: float
     total_tokens: int
     model_id: str
+
+
+# ---------------------------------------------------------------------------
+# V1.1 foundation graph state (M4-8; Final TSD §3 "Graph state")
+# ---------------------------------------------------------------------------
+# Thin orchestration state: run/stage, immutable artifact refs/hashes, round,
+# attempt counters, deadline/cancel, and terminal error only. No copied
+# evidence lists, prose, causes, hidden reasoning, or mutable semantic state
+# lives in the V1.1 fields. The sealed MCJ fields above remain baseline-only.
+
+
+class FoundationStage(str, Enum):
+    OBSERVATION_BUILD = "observation_build"
+    RESEARCH_POLICY = "research_policy"
+    RESEARCH_EXECUTION = "research_execution"
+    EVIDENCE_STATE = "evidence_state"
+    COVERAGE_SUMMARY = "coverage_summary"
+    CONTEXT_PACK_BUILD = "context_pack_build"
+    ANALYST_BOUNDARY = "analyst_boundary"
+
+
+class FoundationGraphState(TypedDict, total=False):
+    run_id: str
+    stage: FoundationStage | None
+    round: int
+    attempt: int
+    deadline_epoch_ms: int | None
+    cancel_requested: bool
+    terminal_error: str | None
+
+    # Artifact references and hashes only (never duplicated payloads).
+    observation_ref: str | None
+    observation_hash: str | None
+    research_tasks_ref: str | None
+    research_results_ref: str | None
+    evidence_state_ref: str | None
+    evidence_state_hash: str | None
+    coverage_summary_ref: str | None
+    coverage_summary_hash: str | None
+    context_pack_ref: str | None
+    context_pack_hash: str | None
+    rendered_messages_ref: str | None
+    rendered_messages_hash: str | None
+    prompt_template_version: str | None
+    prompt_template_sha256: str | None
+    policy_version: str | None
