@@ -2,11 +2,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Mapping, Protocol
+from typing import TYPE_CHECKING, Mapping, Protocol
+
+if TYPE_CHECKING:
+    from catalyst_agents.attribution.move_profile import ScheduledMacroFlag
 
 
 @dataclass(frozen=True)
 class ContextInputs:
+    """Point-in-time structured observation inputs (data-core owned facts).
+
+    M4-1 extends the PIT fact contract with session open, a second prior close
+    (for the prior-session return), and configured major macro release facts.
+    Missing facts stay explicit nulls/unknowns; the builder never fetches or
+    fabricates proxies (Q-008).
+    """
+
     ticker: str
     session_date: date
     cutoff: str
@@ -20,6 +31,10 @@ class ContextInputs:
     sector_ticker: str | None
     sector_return_pct: float | None
     peer_returns_by_ticker: Mapping[str, float | None]
+    target_open: float | None = None
+    previous_2_target_close: float | None = None
+    scheduled_macro_flags: tuple["ScheduledMacroFlag", ...] = ()
+    macro_source_available: bool = False
 
 
 class ContextProvider(Protocol):
