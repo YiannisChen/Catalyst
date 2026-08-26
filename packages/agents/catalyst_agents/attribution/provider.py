@@ -73,6 +73,8 @@ class RetrievedEvidence:
     fusion_score: float | None = None
     reranker_score: float | None = None
     reranker_rank: int | None = None
+    dense_score: float | None = None
+    dense_rank: int | None = None
     # AMEND-5.2A: structured temporal identity on production evidence.
     temporal_center_date: str | None = None
     query_date: str | None = None
@@ -103,7 +105,11 @@ class RetrievedEvidence:
     data_runtime_identity: object | None = None
 
     def to_evidence_state_item(
-        self, *, first_seen_round: int, contributing_task_ids: tuple[str, ...]
+        self,
+        *,
+        first_seen_round: int,
+        contributing_task_ids: tuple[str, ...],
+        retrieval_contribution: "object | None" = None,
     ) -> "object":
         """Build the V1.1 EvidenceStateItem from this evidence record.
 
@@ -177,6 +183,9 @@ class RetrievedEvidence:
             excerpt_text=self.content_text or None,
             first_seen_round=first_seen_round,
             contributing_task_ids=tuple(contributing_task_ids),
+            retrieval_contributions=(
+                (retrieval_contribution,) if retrieval_contribution is not None else ()
+            ),
         )
 
 class Retriever(Protocol):

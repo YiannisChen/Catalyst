@@ -63,6 +63,8 @@ def _to_retrieved_evidence(hit: RetrievalHit) -> RetrievedEvidence:
         fusion_score=scores.get("fusion"),
         reranker_score=scores.get("reranked"),
         reranker_rank=ranks.get("reranked"),
+        dense_score=scores.get("dense"),
+        dense_rank=ranks.get("dense"),
         temporal_center_date=hit.temporal_identity.session_date,
         query_date=None,
         query_date_conflict=False,
