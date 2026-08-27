@@ -24,6 +24,7 @@ from catalyst_agents.attribution.context_pack_builder import (
     canonical_context_pack_json,
 )
 from catalyst_agents.runtime.pack_persistence import (
+    PackNotPersistedError,
     PackPersistence,
     require_committed_pair,
 )
@@ -135,6 +136,27 @@ def _parse_decision(raw: Any, schema: type[AnalystDecision]) -> AnalystDecision:
         ) from exc
 
 
+
+
+def _structured_output_surface(llm: Any, schema: type[AnalystDecision]) -> Any | None:
+    """Return the provider's admitted native structured-output surface.
+
+    ``with_structured_output(schema)`` is a factory, not a model call. If the
+    provider does not expose it (or it is unusable), None is returned and the
+    strict invoke+parse fallback is used (fake-provider testability).
+    """
+    with_structured = getattr(llm, "with_structured_output", None)
+    if not callable(with_structured):
+        return None
+    try:
+        surface = with_structured(schema)
+    except Exception:
+        return None
+    if surface is None or not callable(getattr(surface, "invoke", None)):
+        return None
+    return surface
+
+
 def evidence_analyst(
     state: dict,
     *,
@@ -145,14 +167,42 @@ def evidence_analyst(
     schema: type[AnalystDecision] = AnalystDecision,
     pack_inventory_ids: tuple[str, ...] | None = None,
 ) -> dict:
-    """Run one EvidenceAnalyst logical call and emit decision/ref artifacts."""
+    """Run one EvidenceAnalyst logical call and emit decision/ref artifacts.
+
+    The provider dispatch gate requires the persisted pack body (Final TSD
+    §7): the Analyst inventory is derived ONLY from
+    ``pair.pack.included_evidence_ids``. A caller-supplied ``pack_inventory_ids``
+    override is rejected unless it is byte-for-byte equal to the persisted
+    inventory. Missing pack, omitted/empty inventory, or an enlarged override
+    fail closed before any provider call. When the admitted provider exposes a
+    native structured-output surface (``with_structured_output(schema)``), it is
+    invoked; otherwise the strict invoke+parse path is used. Reference-integrity
+    validation stays inside the bounded identical-input retry boundary.
+    """
     run_id = state.get("run_id")
     if not run_id:
         raise ValueError("evidence_analyst requires run_id in state")
 
     # Provider dispatch gate: never call a provider before the persisted
-    # pack/render pair is committed (Final TSD §7).
+    # pack/render pair is committed AND the persisted pack body exists.
     pair = require_committed_pair(persistence, run_id=run_id)
+    if pair.pack is None:
+        raise PackNotPersistedError(
+            f"run {run_id!r} has no persisted pack artifact; the Analyst "
+            "inventory cannot be derived and provider dispatch is prohibited"
+        )
+    persisted_inventory = tuple(pair.pack.included_evidence_ids)
+    if not persisted_inventory:
+        raise PackNotPersistedError(
+            f"run {run_id!r} persisted pack has an empty evidence inventory; "
+            "provider dispatch is prohibited"
+        )
+    if pack_inventory_ids is not None and tuple(pack_inventory_ids) != persisted_inventory:
+        raise PackNotPersistedError(
+            "caller-supplied pack_inventory_ids does not byte-for-byte match "
+            "the persisted pack inventory"
+        )
+    inventory = set(persisted_inventory)
     rendered_messages = pair.rendered_messages
 
     prompt = _prompt_template(prompt_path, prompt_template)
@@ -169,27 +219,32 @@ def evidence_analyst(
         messages.append(RenderMessage(role="system", content=prompt))
     messages.extend(rendered_messages)
 
+    # Admitted native structured-output surface (built once; not a model call).
+    structured_surface = _structured_output_surface(llm, schema)
+
     def attempt() -> AnalystDecision:
-        raw = _invoke_llm(llm, messages)
+        if structured_surface is not None:
+            raw = structured_surface.invoke(messages)
+        else:
+            raw = _invoke_llm(llm, messages)
         decision = _parse_decision(raw, schema)
-        # Reference-integrity against the pack inventory is structured-output
-        # validation INSIDE the bounded technical retry boundary (C6): an
-        # unknown/pack-external evidence ref is a ModelSchemaFailure that gets
-        # at most one identical-semantic-input retry, then MODEL_SCHEMA_FAILURE.
-        if pack_inventory_ids is not None:
-            inventory = set(pack_inventory_ids)
-            referenced = set(decision.evidence_decisions and [
-                item.evidence_id for item in decision.evidence_decisions
-            ])
-            for hypothesis in decision.candidate_hypotheses:
-                referenced.update(hypothesis.supporting_evidence_ids)
-                referenced.update(hypothesis.contradicting_evidence_ids)
-            unknown = sorted(referenced - inventory)
-            if unknown:
-                raise ModelSchemaFailure(
-                    "AnalystDecision references evidence outside the pack "
-                    f"inventory: {unknown}"
-                )
+        # Reference-integrity against the authoritative persisted inventory is
+        # structured-output validation INSIDE the bounded technical retry
+        # boundary: an unknown/pack-external evidence ref is a
+        # ModelSchemaFailure that gets at most one identical-semantic-input
+        # retry, then MODEL_SCHEMA_FAILURE.
+        referenced = {
+            item.evidence_id for item in decision.evidence_decisions
+        }
+        for hypothesis in decision.candidate_hypotheses:
+            referenced.update(hypothesis.supporting_evidence_ids)
+            referenced.update(hypothesis.contradicting_evidence_ids)
+        unknown = sorted(referenced - inventory)
+        if unknown:
+            raise ModelSchemaFailure(
+                "AnalystDecision references evidence outside the pack "
+                f"inventory: {unknown}"
+            )
         return decision
 
     try:
