@@ -552,3 +552,59 @@ def test_no_material_requires_gates_and_is_partial() -> None:
     )
     assert degraded.final_attribution_type is AttributionType.EVIDENCE_BACKED_CAUSAL
     assert degraded.final_status is AttributionStatus.ABSTAIN
+
+
+def test_invalid_earlier_proposal_does_not_rebind_later_valid_gap() -> None:
+    """C4: gaps are bound by proposal_ref, never by compacted tuple position.
+
+    An invalid p1 must not steal p2's gap identity; only p2 receives its own
+    gap_id and research fingerprint, and the corrective batch references p2.
+    """
+    decision = _decision(
+        research_decision="FOLLOW_UP",
+        recommended_status="PARTIAL",
+        proposed_missing_evidence=(
+            {
+                "proposal_ref": "p1",
+                "evidence_need": "COMPANY_NEWS",
+                "time_scope": "PRIOR_SESSION",
+                "expected_information": "invalid need/reason pairing",
+                "reason_code": "MISSING_PRIMARY_CONFIRMATION",
+            },
+            {
+                "proposal_ref": "p2",
+                "evidence_need": "COMPANY_PRIMARY",
+                "time_scope": "PRIOR_SESSION",
+                "expected_information": "issuer filing confirmation",
+                "reason_code": "MISSING_PRIMARY_CONFIRMATION",
+            },
+        ),
+        proposed_corrective_intents=(
+            {"proposal_ref": "p1", "query_hints": ("stale-hint",)},
+            {"proposal_ref": "p2", "query_hints": ("8-K",)},
+        ),
+    )
+    assessment = _normalize(
+        decision,
+        included_evidence_ids=("e1",),
+        evidence_inventory=(
+            FakeInventoryItem(evidence_id="e1", evidence_role="DIRECT_PRIMARY"),
+        ),
+    )
+    # Only p2 is validated.
+    assert len(assessment.validated_missing_evidence) == 1
+    gap2 = assessment.validated_missing_evidence[0]
+    assert gap2.gap_id.startswith("gap:")
+    # Intent binding is by proposal_ref: p1 gets nothing, p2 gets its own gap.
+    by_ref = {
+        intent.proposal_ref: intent
+        for intent in assessment.normalized_corrective_intents
+    }
+    assert by_ref["p1"].gap_id is None
+    assert by_ref["p1"].research_fingerprint is None
+    assert by_ref["p2"].gap_id == gap2.gap_id
+    assert by_ref["p2"].research_fingerprint
+    # The corrective batch references exactly p2's gap.
+    assert assessment.corrective_batch is not None
+    assert assessment.corrective_batch.actions[0].gap_id == gap2.gap_id
+    assert assessment.corrective_batch.actions[0].query_hints == ("8-K",)

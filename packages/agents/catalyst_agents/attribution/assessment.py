@@ -338,8 +338,14 @@ def _validate_gaps(
     decision_hash: str,
     capability_registry: CapabilityRegistrySurface,
     violations: list[str],
-) -> tuple[MissingEvidence, ...]:
-    gaps: list[MissingEvidence] = []
+) -> dict[str, MissingEvidence]:
+    """Validate proposed gaps and return proposal_ref -> MissingEvidence.
+
+    Binding is by ``proposal_ref`` so an invalid earlier proposal can never
+    rebind a later valid gap (C4). The caller derives the canonical tuple from
+    the mapping.
+    """
+    gap_by_proposal: dict[str, MissingEvidence] = {}
     for proposal in decision.proposed_missing_evidence:
         allowed_needs = _GAP_REASON_NEED_MAPPING.get(proposal.reason_code)
         if allowed_needs is None or proposal.evidence_need not in allowed_needs:
@@ -366,37 +372,36 @@ def _validate_gaps(
                 proposal.reason_code.value,
             )
         )
-        gaps.append(
-            MissingEvidence(
-                gap_id=gap_id,
-                evidence_need=proposal.evidence_need,
-                time_scope=proposal.time_scope,
-                expected_information=proposal.expected_information,
-                reason_code=proposal.reason_code,
-                recoverable=recoverable,
-            )
+        gap_by_proposal[proposal.proposal_ref] = MissingEvidence(
+            gap_id=gap_id,
+            evidence_need=proposal.evidence_need,
+            time_scope=proposal.time_scope,
+            expected_information=proposal.expected_information,
+            reason_code=proposal.reason_code,
+            recoverable=recoverable,
         )
-    return tuple(gaps)
+    return gap_by_proposal
 
 
 def _normalize_intents(
     decision: AnalystDecision,
     *,
-    validated_gaps: tuple[MissingEvidence, ...],
+    gap_by_proposal: dict[str, MissingEvidence],
     policy_version: str,
 ) -> tuple[NormalizedCorrectiveIntent, ...]:
-    gap_by_proposal: dict[str, MissingEvidence] = {}
+    """Sanitize corrective intents and bind each to its OWN validated gap.
+
+    Binding is strictly by proposal_ref: an invalid earlier proposal never
+    rebinds a later valid gap (C4).
+    """
     proposal_refs = {proposal.proposal_ref: proposal for proposal in decision.proposed_missing_evidence}
-    for index, proposal in enumerate(decision.proposed_missing_evidence):
-        if index < len(validated_gaps):
-            gap_by_proposal[proposal.proposal_ref] = validated_gaps[index]
     intents: list[NormalizedCorrectiveIntent] = []
     for intent in decision.proposed_corrective_intents:
         hints = sanitize_query_hints(intent.query_hints)
         proposal = proposal_refs.get(intent.proposal_ref)
+        gap = gap_by_proposal.get(intent.proposal_ref)
         fingerprint = None
-        if proposal is not None and intent.proposal_ref in gap_by_proposal:
-            gap = gap_by_proposal[intent.proposal_ref]
+        if proposal is not None and gap is not None:
             fingerprint = compute_research_fingerprint(
                 evidence_need=gap.evidence_need,
                 time_scope=gap.time_scope,
@@ -407,9 +412,7 @@ def _normalize_intents(
         intents.append(
             NormalizedCorrectiveIntent(
                 proposal_ref=intent.proposal_ref,
-                gap_id=gap_by_proposal.get(intent.proposal_ref).gap_id
-                if intent.proposal_ref in gap_by_proposal
-                else None,
+                gap_id=gap.gap_id if gap is not None else None,
                 query_hints=hints,
                 research_fingerprint=fingerprint,
             )
@@ -657,8 +660,9 @@ def normalize_decision(
             )
         )
 
-    # Step 5a: validate gaps and compute recoverability (code-owned).
-    validated_gaps = _validate_gaps(
+    # Step 5a: validate gaps and compute recoverability (code-owned). Gaps are
+    # bound by proposal_ref so filtering cannot rebind a later valid gap (C4).
+    gap_by_proposal = _validate_gaps(
         decision,
         run_id=run_id,
         round=round,
@@ -666,14 +670,15 @@ def normalize_decision(
         capability_registry=capability_registry,
         violations=violations,
     )
-    gap_id_by_proposal: dict[str, str] = {}
-    for index, proposal in enumerate(decision.proposed_missing_evidence):
-        if index < len(validated_gaps):
-            gap_id_by_proposal[proposal.proposal_ref] = validated_gaps[index].gap_id
+    validated_gaps = tuple(gap_by_proposal.values())
+    gap_id_by_proposal: dict[str, str] = {
+        proposal_ref: gap.gap_id
+        for proposal_ref, gap in gap_by_proposal.items()
+    }
 
     normalized_intents = _normalize_intents(
         decision,
-        validated_gaps=validated_gaps,
+        gap_by_proposal=gap_by_proposal,
         policy_version=policy_version,
     )
 
