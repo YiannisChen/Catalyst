@@ -1,352 +1,20 @@
-"""LangGraph MCJ workflow assembly.
+"""V1.1 production graph - one selectable semantic path (M5).
 
-Provides build_attribution_graph() which wires Miner → Critic → DecisionRouter
-→ Judge/Refuse with validation and finalization.
-
-langgraph is a required dependency — there is no fallback runner.  If it
-is missing, build_attribution_graph raises ImportError immediately so the
-failure is explicit (BUG-009).
-
-Spec reference: Section 4.4 — Graph Construction.
+The sealed MCJ graph was archived at M5-11 after the automated M5-10 gates
+passed. The V1.1 graph is built by ``run_v1_graph`` (Frozen 6.1): observation
+-> research -> EvidenceState -> CoverageSummary -> ContextPack ->
+EvidenceAnalyst (routed READY/FOLLOW_UP/ABSTAIN) -> at most one corrective
+round -> ClaimPlan -> ClaimValidator -> StreamingWriter -> structural
+assurance -> thin Finalizer. ``build_foundation_graph`` and
+``run_corrective_round`` are the M4/M5-4 building blocks.
 """
-from __future__ import annotations
 
-from functools import partial
-import json
-import time
-from typing import Any
-
-from catalyst_agents.state import AttributionState
-from catalyst_agents.attribution.context_builder import ContextBuilder, canonical_context_bytes
-from catalyst_agents.nodes.miner import miner
-from catalyst_agents.nodes.critic import critic, insufficient_handler, system_error_handler
-from catalyst_agents.nodes.decision_router import decision_router, route_after_decision_router
-from catalyst_agents.nodes.judge import judge
-from catalyst_agents.nodes.validator import validator
-from catalyst_agents.nodes.finalizer import finalizer
-from catalyst_agents.retrieval.policy import Layer
-from catalyst_agents.trace.artifacts import write_node_artifact
-from catalyst_agents.trace.projection import project_node_artifacts
-from catalyst_agents.trace.writer import TraceWriter, activate_writer, get_current_writer
-
-
-class AttributionDependencyError(RuntimeError):
-    pass
-
-
-def context_builder_node(state: dict, *, context_provider: Any, cutoff_policy: Any) -> dict:
-    cutoff = cutoff_policy.compute_cutoff(ticker=state["ticker"], session_date=state["trade_date"], mode="attribution")
-    artifact = ContextBuilder(provider=context_provider).build(
-        ticker=state["ticker"],
-        session_date=state["trade_date"],
-        cutoff=cutoff,
-    )
-    return {
-        "context_artifact": artifact.model_dump(mode="json"),
-        "context_artifact_sha256": __import__("hashlib").sha256(canonical_context_bytes(artifact)).hexdigest(),
-        "cutoff": cutoff,
-        "context_cutoff": cutoff,
-        "price_move_pct": artifact.target_return_pct,
-        "market_session_valid": artifact.target_return_pct is not None,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Expansion transition
-# ---------------------------------------------------------------------------
-
-def expand_macro_transition(state: dict) -> dict:
-    """Switch the retrieval path to Layer 2 and loop back through Miner."""
-    metadata = state.get("retrieval_metadata")
-    if metadata is not None and hasattr(metadata, "expansion_reasons"):
-        reasons = getattr(metadata, "expansion_reasons")
-        if "critic_expand_macro" not in reasons:
-            reasons.append("critic_expand_macro")
-    return {
-        "router_reason": state.get("router_reason", "critic_expand_macro"),
-        "current_layer": Layer.MACRO,
-        "expansions_used": int(state.get("expansions_used", 0) or 0) + 1,
-        "retrieval_metadata": metadata,
-    }
-
-
-def _baseline_graded_evidence(reranked_chunks: list[dict]) -> list[dict]:
-    """Project Miner output into Judge-readable evidence when Critic is disabled."""
-    return [
-        {
-            "chunk_id": chunk.get("asset_id", ""),
-            "relevance": min(1.0, float(chunk.get("rerank_score", chunk.get("rrf_score", 1.0)) or 0.0)),
-            "category": "unknown",
-            "temporal_match": True,
-            "reasoning": "Critic disabled; forwarding Miner evidence directly to Judge.",
-        }
-        for chunk in reranked_chunks
-    ]
-
-
-def baseline_prepare_evidence(state: dict) -> dict:
-    """Prepare Judge-readable evidence when Critic is disabled."""
-    return {
-        "graded_evidence": _baseline_graded_evidence(state.get("reranked_chunks", [])),
-    }
-
-
-def _status_name(value: Any) -> str | None:
-    if value is None:
-        return None
-    return getattr(value, "name", None) or str(value)
-
-
-def _decision_payload(node_name: str, merged_state: dict) -> str | None:
-    payload: dict[str, Any] = {}
-    if node_name == "decision_router":
-        payload = {
-            "router_edge": merged_state.get("router_edge"),
-            "router_reason": merged_state.get("router_reason"),
-        }
-    elif node_name == "critic" and merged_state.get("critic_decision") is not None:
-        decision = merged_state["critic_decision"]
-        payload = {
-            "sufficiency": decision.sufficiency,
-            "next_action": decision.next_action,
-            "magnitude_coverage": decision.magnitude_coverage,
-        }
-    elif node_name in {"miner", "expand_macro"} and merged_state.get("retrieval_metadata") is not None:
-        metadata = merged_state["retrieval_metadata"]
-        payload = {
-            "layers_attempted": [getattr(layer, "value", str(layer)) for layer in getattr(metadata, "layers_attempted", [])],
-            "stop_reason": getattr(metadata, "stop_reason", None),
-            "hit_counts_per_layer": {
-                getattr(layer, "value", str(layer)): count
-                for layer, count in getattr(metadata, "hit_counts_per_layer", {}).items()
-            },
-            "expansion_reasons": list(getattr(metadata, "expansion_reasons", [])),
-        }
-    if not payload:
-        return None
-    return json.dumps(payload, sort_keys=True)
-
-
-def _error_message(merged_state: dict) -> str | None:
-    if merged_state.get("error_type") == "system_error":
-        return merged_state.get("critic_reasoning") or merged_state.get("summary_md")
-    return merged_state.get("validation_error")
-
-
-def _trace_node(node_name: str, fn):
-    """Wrap a graph node so every invocation emits one trace event when tracing is active."""
-
-    def wrapped(state: dict) -> dict:
-        writer = get_current_writer()
-        if writer is None:
-            return fn(state)
-
-        started_wall = time.time()
-        started_perf = time.perf_counter()
-        started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_wall))
-        before_status = _status_name(state.get("output_status"))
-        before_breakdown_len = len(state.get("cost_breakdown", []) or [])
-
-        try:
-            result = fn(state)
-        except Exception as exc:
-            ended_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            writer.event(
-                node=node_name,
-                started_at=started_at,
-                ended_at=ended_at,
-                latency_ms=int((time.perf_counter() - started_perf) * 1000),
-                model_id=state.get("model_id"),
-                input_tokens=0,
-                output_tokens=0,
-                cost_usd=0.0,
-                decision=None,
-                error_type="system_error",
-                error_message=str(exc),
-                status_before=before_status,
-                status_after=before_status,
-            )
-            raise
-
-        merged_state = {**state, **result}
-        new_breakdown = (merged_state.get("cost_breakdown", []) or [])[before_breakdown_len:]
-        event_seq = writer.event(
-            node=node_name,
-            started_at=started_at,
-            ended_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            latency_ms=int((time.perf_counter() - started_perf) * 1000),
-            model_id=merged_state.get("model_id"),
-            input_tokens=sum(int(entry.get("input_tokens", 0) or 0) for entry in new_breakdown),
-            output_tokens=sum(int(entry.get("output_tokens", 0) or 0) for entry in new_breakdown),
-            cost_usd=None if any(entry.get("cost_status") == "unknown" or entry.get("cost_usd") is None for entry in new_breakdown) else sum(float(entry.get("cost_usd", 0.0) or 0.0) for entry in new_breakdown),
-            decision=_decision_payload(node_name, merged_state),
-            error_type=merged_state.get("error_type"),
-            error_message=_error_message(merged_state),
-            status_before=before_status,
-            status_after=_status_name(merged_state.get("output_status")),
-        )
-        try:
-            for artifact in project_node_artifacts(node_name, merged_state, result):
-                write_node_artifact(
-                    writer.conn,
-                    run_id=writer.run_id,
-                    event_seq=event_seq,
-                    node=node_name,
-                    artifact_type=artifact["artifact_type"],
-                    payload=artifact["payload_json"],
-                )
-        except Exception:
-            # Artifact persistence is observability-only and must not override MCJ node success.
-            pass
-        return result
-
-    return wrapped
-
-
-class _TracedCompiledGraph:
-    """Thin wrapper that attaches a TraceWriter around compiled graph execution."""
-
-    def __init__(self, compiled_graph: Any, *, config_name: str) -> None:
-        self._compiled_graph = compiled_graph
-        self._config_name = config_name
-
-    def invoke(self, state: dict, run_id: str | None = None) -> dict:
-        with TraceWriter(
-            run_id=run_id,
-            ticker=state.get("ticker"),
-            trade_date=state.get("trade_date"),
-            config=self._config_name,
-        ) as writer:
-            try:
-                with activate_writer(writer):
-                    result = self._compiled_graph.invoke(state)
-            except Exception as exc:
-                writer.complete({
-                    **state,
-                    "output_status": "SYSTEM_ERROR",
-                    "error_type": "system_error",
-                    "validation_error": str(exc),
-                })
-                raise
-            writer.complete(result)
-            return {
-                **result,
-                "run_id": writer.run_id,
-                "trace_id": writer.trace_id,
-            }
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._compiled_graph, name)
-
-
-# ---------------------------------------------------------------------------
-# Graph builder
-# ---------------------------------------------------------------------------
-
-def build_attribution_graph(
-    *,
-    context_provider: Any = None,
-    retriever: Any = None,
-    cutoff_policy: Any = None,
-    requested_manifest_id: str | None = None,
-    use_critic: bool = True,
-    table: Any = None,
-    embedding_fn: Any = None,
-    reranker: Any = None,
-    llm: Any = None,
-):
-    """Build the MCJ attribution graph.
-
-    Dependencies are bound via functools.partial so nodes receive their
-    injected deps when invoked by the graph runner.
-
-    Uses the real ``langgraph.graph.StateGraph``.  ``langgraph`` is a required
-    dependency (see ``pyproject.toml``); if it is missing the import fails
-    loudly at call time — no silent fallback (BUG-009).
-
-    Args:
-        use_critic:   When True, inserts the Critic node and conditional routing
-                      between Miner and Judge. When False, Miner feeds directly
-                      into Judge (baseline ablation mode).
-        table:        LanceDB table passed to the Miner node.
-        embedding_fn: Callable(str) -> list[float] passed to the Miner node.
-        reranker:     Cross-encoder reranker passed to the Miner node.
-        llm:          LLM client passed to Critic and Judge nodes.
-
-    Returns:
-        A compiled langgraph StateGraph with ``.invoke(state: dict) -> dict``.
-    """
-    from langgraph.graph import StateGraph, END
-
-    if context_provider is None or retriever is None or cutoff_policy is None or not requested_manifest_id:
-        raise AttributionDependencyError(
-            "build_attribution_graph requires context_provider, retriever, cutoff_policy, and requested_manifest_id"
-        )
-
-    # Bind dependencies to nodes via partial application
-    bound_context = _trace_node("context_builder", partial(context_builder_node, context_provider=context_provider, cutoff_policy=cutoff_policy))
-    bound_miner = _trace_node("miner", partial(miner, retriever=retriever, cutoff_policy=cutoff_policy, requested_manifest_id=requested_manifest_id, table=table, embedding_fn=embedding_fn, reranker=reranker))
-    bound_critic = _trace_node("critic", partial(critic, llm=llm))
-    bound_router = _trace_node("decision_router", decision_router)
-    bound_judge = _trace_node("judge", partial(judge, llm=llm))
-    bound_validator = _trace_node("validator", partial(validator, llm=llm, cutoff_policy=cutoff_policy))
-    bound_finalizer = _trace_node("finalizer", finalizer)
-    bound_insufficient = _trace_node("insufficient_handler", insufficient_handler)
-    bound_system_error = _trace_node("system_error_handler", system_error_handler)
-    bound_baseline = _trace_node("baseline_prepare_evidence", baseline_prepare_evidence)
-    bound_expand_macro = _trace_node("expand_macro", expand_macro_transition)
-
-    graph = StateGraph(AttributionState)
-    graph.add_node("context_builder", bound_context)
-    graph.add_node("miner", bound_miner)
-    graph.add_node("decision_router", bound_router)
-    graph.add_node("expand_macro", bound_expand_macro)
-    graph.add_node("judge", bound_judge)
-    graph.add_node("validator", bound_validator)
-    graph.add_node("finalizer", bound_finalizer)
-    graph.add_node("insufficient_handler", bound_insufficient)
-    graph.add_node("system_error_handler", bound_system_error)
-    graph.add_node("baseline_prepare_evidence", bound_baseline)
-
-    graph.set_entry_point("context_builder")
-    graph.add_edge("context_builder", "miner")
-
-    if use_critic:
-        graph.add_node("critic", bound_critic)
-        graph.add_edge("miner", "critic")
-        graph.add_edge("critic", "decision_router")
-        graph.add_conditional_edges(
-            "decision_router",
-            route_after_decision_router,
-            {
-                "judge": "judge",
-                "expand_macro": "expand_macro",
-                "insufficient": "insufficient_handler",
-                "system_error": "system_error_handler",
-            },
-        )
-    else:
-        graph.add_edge("miner", "baseline_prepare_evidence")
-        graph.add_edge("baseline_prepare_evidence", "judge")
-
-    graph.add_edge("judge", "validator")
-    graph.add_edge("expand_macro", "miner")
-    graph.add_edge("validator", "finalizer")
-    graph.add_edge("insufficient_handler", "finalizer")
-    graph.add_edge("system_error_handler", "finalizer")
-    graph.add_edge("finalizer", END)
-    compiled = graph.compile()
-    return _TracedCompiledGraph(compiled, config_name="mcj_full" if use_critic else "baseline")
-
-
-# ---------------------------------------------------------------------------
 # M4-8: authoritative V1.1 foundation graph (fixture mode)
 # ---------------------------------------------------------------------------
 # The foundation path wires observation_build -> research_policy ->
 # research_execution -> evidence_state -> coverage_summary ->
 # context_pack_build -> fixture Analyst boundary. It never runs
-# Miner/Critic/Judge. The sealed MCJ graph above is BASELINE_ONLY and stays
-# readable/compilable until the M5 comparison gate; nothing is deleted.
+# Miner/Critic/Judge (archived at M5-11).
 
 from dataclasses import dataclass
 import hashlib
@@ -1214,4 +882,53 @@ def run_v1_graph(
         writer_logical_calls=writer_result["writer_logical_calls"],
         writer_provider_attempts=writer_result["writer_provider_attempts"],
         corrective_rounds=corrective_rounds,
+    )
+
+
+# ---------------------------------------------------------------------------
+# M5-11: app graph-factory adapter (M5/M6 boundary)
+# ---------------------------------------------------------------------------
+
+class V1AppRuntimeNotWired(RuntimeError):
+    """The V1.1 app runtime wiring (run admission, persistence, SSE) is M6.
+
+    M5 owns the agents V1.1 graph and its FAST in-memory sinks; the production
+    app factory that invokes ``run_v1_graph`` with real temporal identity,
+    observation provider, persistence envelope, and LLM clients lands in M6.
+    """
+
+
+class V1GraphAdapter:
+    """Graph-factory surface returned by the app dependency loader in M5.
+
+    ``invoke`` raises until the M6 app runtime wires the V1.1 dependencies;
+    the adapter keeps the dependency loader free of the archived legacy graph
+    while the V1.1 production wiring lands in M6.
+    """
+
+    def __init__(self, *, model: Any = None, retriever: Any = None,
+                 requested_manifest_id: str | None = None):
+        self.model = model
+        self.retriever = retriever
+        self.requested_manifest_id = requested_manifest_id
+
+    def invoke(self, state: dict, run_id: str | None = None) -> dict:
+        del state, run_id
+        raise V1AppRuntimeNotWired(
+            "V1.1 app runtime wiring lands in M6; the agents V1.1 graph is "
+            "run_v1_graph (FAST tests use in-memory sinks)"
+        )
+
+
+def build_v1_graph_adapter(
+    *,
+    model: Any = None,
+    retriever: Any = None,
+    requested_manifest_id: str | None = None,
+) -> V1GraphAdapter:
+    """Return the M5 app-factory surface for the V1.1 graph (M6 wires invoke)."""
+    return V1GraphAdapter(
+        model=model,
+        retriever=retriever,
+        requested_manifest_id=requested_manifest_id,
     )

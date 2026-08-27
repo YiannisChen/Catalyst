@@ -240,22 +240,16 @@ def test_foundation_graph_state_holds_references_not_copied_payloads():
 
 
 def test_foundation_graph_does_not_run_mcj_nodes():
-    """The foundation path never runs Miner/Critic/Judge; the legacy MCJ graph
-    still imports and compiles as the baseline instrument."""
+    """The foundation path never runs Miner/Critic/Judge (archived at M5-11);
+    the V1.1 graph is the only production graph."""
     import catalyst_agents.graph as graph_module
 
-    assert hasattr(graph_module, "build_attribution_graph")  # baseline intact
     assert hasattr(graph_module, "build_foundation_graph")
+    assert hasattr(graph_module, "run_v1_graph")
     result = build_foundation_graph(**_run_kwargs())
     # No MCJ semantic fields appear in the foundation state.
     assert "critic_decision" not in result.state
     assert "causes" not in result.state
-
-
-def test_foundation_graph_legacy_mcj_still_compiles():
-    from catalyst_agents.graph import build_attribution_graph
-
-    assert callable(build_attribution_graph)
 
 
 # ---------------------------------------------------------------------------

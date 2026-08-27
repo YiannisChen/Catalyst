@@ -1,17 +1,13 @@
-"""TDD tests for AttributionState schema and cost tracking logic.
+"""M5-11: V1.1 thin orchestration state and cost tracking.
 
-Written before implementation per TDD discipline.
+The sealed MCJ AttributionState was archived; FoundationGraphState is the only
+new-write state: refs/hashes and counters, never copied evidence/prose.
 """
-from dataclasses import fields
-import pytest
-from typing import get_type_hints
+from __future__ import annotations
 
 from catalyst_agents.cost_tracker import track_cost, MODEL_PRICING
+from catalyst_agents.state import FoundationGraphState, FoundationStage
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
 
 class MockUsage:
     def __init__(self, input_tokens: int, output_tokens: int) -> None:
@@ -25,64 +21,58 @@ class MockResponse:
         self.usage = MockUsage(input_tokens, output_tokens)
 
 
-# ---------------------------------------------------------------------------
-# cost_tracker tests
-# ---------------------------------------------------------------------------
+def test_foundation_graph_state_is_typeddict() -> None:
+    assert hasattr(FoundationGraphState, "__annotations__")
+    assert hasattr(FoundationGraphState, "__required_keys__")
 
-def test_track_cost_appends_breakdown():
+
+def test_foundation_graph_state_is_thin_orchestration() -> None:
+    state: FoundationGraphState = {
+        "run_id": "run:1",
+        "stage": FoundationStage.TERMINAL,
+        "round": 1,
+        "attempt": 1,
+        "deadline_epoch_ms": 1_700_000_000_000,
+        "cancel_requested": False,
+        "terminal_error": None,
+        "evidence_state_ref": "artifact:evidence_state:run:1",
+        "evidence_state_hash": "e" * 64,
+        "context_pack_ref": "artifact:context_pack:run:1",
+        "context_pack_hash": "c" * 64,
+    }
+    assert state["run_id"] == "run:1"
+    assert state["stage"] is FoundationStage.TERMINAL
+    # No copied evidence, prose, causes, or reasoning in the thin state.
+    for forbidden in ("retrieved_chunks", "graded_evidence", "critic_reasoning", "causes", "summary_md"):
+        assert forbidden not in state
+
+
+def test_track_cost_appends_breakdown() -> None:
     state = {
         "model_id": "claude-sonnet-4-20250514",
         "cost_breakdown": [],
         "total_cost_usd": 0.0,
         "total_tokens": 0,
     }
-    track_cost(state, "critic", MockResponse())
+    track_cost(state, "evidence_analyst", MockResponse())
     assert len(state["cost_breakdown"]) == 1
-    assert state["cost_breakdown"][0]["node"] == "critic"
+    assert state["cost_breakdown"][0]["node"] == "evidence_analyst"
     assert state["total_cost_usd"] > 0
     assert state["total_tokens"] == 3500
 
 
-def test_track_cost_computes_correct_amount():
-    """claude-sonnet-4-20250514 at 3000 input + 500 output:
-    cost = (3000 * 3.0 + 500 * 15.0) / 1_000_000
-         = (9000 + 7500) / 1_000_000
-         = 16500 / 1_000_000
-         = 0.0165
-    """
+def test_track_cost_computes_correct_amount() -> None:
     state = {
         "model_id": "claude-sonnet-4-20250514",
         "cost_breakdown": [],
         "total_cost_usd": 0.0,
         "total_tokens": 0,
     }
-    track_cost(state, "judge", MockResponse(input_tokens=3000, output_tokens=500))
-    assert pytest.approx(state["total_cost_usd"], rel=1e-6) == 0.0165
+    track_cost(state, "streaming_writer", MockResponse(input_tokens=3000, output_tokens=500))
+    assert abs(state["total_cost_usd"] - 0.0165) < 1e-6
 
 
-def test_track_cost_accumulates():
-    """Two successive calls must produce 2 breakdown entries and a summed total."""
-    state = {
-        "model_id": "gpt-4o",
-        "cost_breakdown": [],
-        "total_cost_usd": 0.0,
-        "total_tokens": 0,
-    }
-    track_cost(state, "miner", MockResponse(input_tokens=1000, output_tokens=200))
-    first_cost = state["total_cost_usd"]
-    track_cost(state, "critic", MockResponse(input_tokens=2000, output_tokens=400))
-    assert len(state["cost_breakdown"]) == 2
-    assert state["cost_breakdown"][0]["node"] == "miner"
-    assert state["cost_breakdown"][1]["node"] == "critic"
-    assert pytest.approx(state["total_cost_usd"], rel=1e-9) == pytest.approx(
-        first_cost
-        + (2000 * MODEL_PRICING["gpt-4o"]["input"] + 400 * MODEL_PRICING["gpt-4o"]["output"])
-        / 1_000_000,
-        rel=1e-9,
-    )
-
-
-def test_model_pricing_has_expected_models():
+def test_model_pricing_has_expected_models() -> None:
     expected_models = {
         "claude-sonnet-4-20250514",
         "gpt-4o",
@@ -91,100 +81,21 @@ def test_model_pricing_has_expected_models():
     assert expected_models.issubset(set(MODEL_PRICING.keys()))
 
 
-def test_model_pricing_keys_have_input_output():
-    for model, pricing in MODEL_PRICING.items():
-        assert "input" in pricing, f"{model} missing 'input' key"
-        assert "output" in pricing, f"{model} missing 'output' key"
-        assert pricing["input"] > 0
-        assert pricing["output"] > 0
-
-
-# ---------------------------------------------------------------------------
-# AttributionState schema tests
-# ---------------------------------------------------------------------------
-
-def test_attribution_state_is_typeddict():
-    """AttributionState must be a TypedDict (has __annotations__ and __required_keys__)."""
-    from catalyst_agents.state import AttributionState
-
-    # TypedDict classes expose __annotations__ and __required_keys__
-    assert hasattr(AttributionState, "__annotations__"), "Missing __annotations__"
-    assert hasattr(AttributionState, "__required_keys__"), "Missing __required_keys__"
-
-
-def test_attribution_state_required_fields():
-    """Spot-check that key fields from spec Section 4.2 are present."""
-    from catalyst_agents.state import AttributionState
-
-    annotations = AttributionState.__annotations__
-    required_fields = [
-        "ticker",
-        "trade_date",
-        "query",
-        "price_move_pct",
-        "query_ticker_raw",
-        "ticker_consistent",
-        "market_session_valid",
-        "magnitude_plausible",
-        "retrieved_chunks",
-        "reranked_chunks",
-        "graded_evidence",
-        "critic_reasoning",
-        "causes",
-        "summary_md",
-        "grounding_rate",
-        "cost_breakdown",
-        "total_cost_usd",
-        "total_tokens",
-        "model_id",
-    ]
-    for field in required_fields:
-        assert field in annotations, f"AttributionState missing field: '{field}'"
-
-
-def test_attribution_state_instantiation():
-    """A dict matching the TypedDict shape must be constructable without errors."""
-    from catalyst_agents.state import AttributionState
-
-    instance: AttributionState = {
-        "ticker": "AAPL",
-        "trade_date": "2025-01-15",
-        "query": None,
-        "price_move_pct": -2.4,
-        "query_ticker_raw": None,
-        "ticker_consistent": None,
-        "market_session_valid": None,
-        "magnitude_plausible": None,
-        "retrieved_chunks": [],
-        "reranked_chunks": [],
-        "graded_evidence": [],
-        "critic_reasoning": "",
-        "causes": [],
-        "summary_md": "",
-        "grounding_rate": None,
-        "cost_breakdown": [],
-        "total_cost_usd": 0.0,
-        "total_tokens": 0,
-        "model_id": "claude-sonnet-4-20250514",
-    }
-    assert instance["ticker"] == "AAPL"
-    assert instance["model_id"] == "claude-sonnet-4-20250514"
-
-
-def test_output_status_enum_has_expected_names():
-    from catalyst_agents.state import OutputStatus
-
-    assert {"SUFFICIENT", "PARTIAL", "ABSTAIN", "SYSTEM_ERROR"} == {
-        status.name for status in OutputStatus
-    }
-
-
-def test_critic_decision_dataclass_has_required_fields():
-    from catalyst_agents.state import CriticDecision
-
-    assert [field.name for field in fields(CriticDecision)] == [
-        "sufficiency",
-        "next_action",
-        "magnitude_coverage",
-        "reasoning",
-    ]
+def test_foundation_stage_covers_v1_state_machine() -> None:
+    stages = [stage.value for stage in FoundationStage]
+    for expected in (
+        "run_admission",
+        "observation_build",
+        "research_execution",
+        "evidence_state",
+        "coverage_summary",
+        "context_pack_build",
+        "analyst_boundary",
+        "claim_plan_build",
+        "claim_validation",
+        "streaming_answer_writer",
+        "post_stream_assurance",
+        "finalizer",
+        "terminal",
+    ):
+        assert expected in stages

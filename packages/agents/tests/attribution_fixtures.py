@@ -240,38 +240,6 @@ def fixture_evidence():
     )
 
 
-def make_hypothesis(**kwargs: Any):
-    from catalyst_agents.attribution.hypothesis import Hypothesis
-
-    data = dict(
-        cause_label=kwargs.pop("cause", "market"),
-        direction="negative",
-        transmission_mechanism="Fixture mechanism",
-        supporting_evidence=(),
-        counter_evidence=(),
-        supporting_evidence_ids=("c1",),
-        counter_evidence_ids=(),
-        missing_evidence=(),
-        change_condition="Reassess on contrary evidence.",
-        facts=(),
-        calculations=(),
-        inferences=(),
-        unavailable_evidence=(),
-        prerequisite_gate_passed=kwargs.pop("gate_passed", True),
-        prerequisite_gate_reason="fixture",
-        direct_support_exists=kwargs.pop("direct_support", False),
-        independent_supporting_cluster_count=kwargs.pop("dedup_clusters", 1),
-        max_supporting_critic_relevance=kwargs.pop("max_relevance", 0.8),
-        source_support_degradation_count=kwargs.pop("degradation_flags", 0),
-        max_counter_evidence_relevance=kwargs.pop("max_counter_relevance", 0.0),
-        is_novel=kwargs.pop("is_novel", True),
-        source_support_flags={},
-        validation_violations=(),
-    )
-    data.update(kwargs)
-    return Hypothesis(**data)
-
-
 VALID_ASSURANCE_RECORD = {
     "schema_version": "1.0.0",
     "run_id": "run-001",

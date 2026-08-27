@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from attribution_fixtures import FixtureRetriever, RecordingCutoffPolicy, mock_provider_with_ohlcv
-from catalyst_agents.graph import build_attribution_graph
 from catalyst_agents.trace.artifacts import read_node_artifacts, write_node_artifact
 from catalyst_agents.trace.exporter import export_run
 from catalyst_agents.trace.projection import project_node_artifacts
@@ -476,120 +475,6 @@ def test_exporter_writes_json_file(tmp_path: Path):
     assert payload["run_id"] == writer.run_id
     assert loaded["trace_id"] == writer.trace_id
     assert loaded["events"][0]["node"] == "decision_router"
-
-
-def test_graph_invoke_persists_trace_rows(tmp_path: Path, monkeypatch):
-    db_path = tmp_path / "trace_graph.db"
-    monkeypatch.setenv("CATALYST_TRACE_DB_PATH", str(db_path))
-
-    class MockUsage:
-        def __init__(self) -> None:
-            self.input_tokens = 3000
-            self.output_tokens = 500
-            self.total_tokens = 3500
-
-    class MockResponse:
-        def __init__(self, content: str) -> None:
-            self.content = content
-            self.usage = MockUsage()
-
-    class MockLLM:
-        def __init__(self) -> None:
-            self.calls = 0
-            self.responses = [
-                json.dumps(
-                    {
-                        "graded_chunks": [
-                            {
-                                "chunk_id": "c1",
-                                "relevance": 0.9,
-                                "category": "earnings",
-                                "temporal_match": True,
-                                "reasoning": "Direct cause",
-                            }
-                        ],
-                        "reasoning": "Strong evidence",
-                    }
-                ),
-                json.dumps(
-                    {
-                        "hypotheses": [
-                            {
-                                "cause_label": "earnings_guidance",
-                                "direction": "negative",
-                                "transmission_mechanism": "Guidance weakness reduced expectations",
-                                "supporting_evidence_ids": ["c1"],
-                                "counter_evidence_ids": [],
-                                "missing_evidence": [],
-                                "change_condition": "Reassess if guidance improves",
-                                "facts": ["Guidance was reduced"],
-                                "calculations": [],
-                                "inferences": ["Investors priced lower forward revenue"],
-                                "unavailable_evidence": [],
-                            }
-                        ],
-                        "summary_md": "AAPL dropped due to [c1] export ban.",
-                    }
-                ),
-            ]
-
-        def invoke(self, prompt: str) -> MockResponse:
-            idx = min(self.calls, len(self.responses) - 1)
-            self.calls += 1
-            return MockResponse(self.responses[idx])
-
-    graph = build_attribution_graph(
-        context_provider=mock_provider_with_ohlcv(),
-        retriever=FixtureRetriever(),
-        cutoff_policy=RecordingCutoffPolicy(),
-        requested_manifest_id="corpus-fixture-v1",
-        use_critic=True,
-        llm=MockLLM(),
-    )
-    result = graph.invoke(
-        {
-            "ticker": "AAPL",
-            "trade_date": "2026-01-15",
-            "query": None,
-            "price_move_pct": -4.2,
-            "retrieved_chunks": [],
-            "reranked_chunks": [],
-            "graded_evidence": [],
-            "critic_reasoning": "",
-            "critic_decision": None,
-            "causes": [],
-            "summary_md": "",
-            "grounding_rate": None,
-            "output_status": None,
-            "validation_error": None,
-            "validator_attempts": 0,
-            "phase": None,
-            "router_edge": None,
-            "router_reason": None,
-            "expansions_used": 0,
-            "max_expansions": 2,
-            "current_layer": "direct",
-            "retrieval_metadata": None,
-            "cost_breakdown": [],
-            "total_cost_usd": 0.0,
-            "total_tokens": 0,
-            "model_id": "claude-sonnet-4-20250514",
-            "error_type": None,
-        }
-    )
-
-    conn = sqlite3.connect(db_path)
-    run_row = conn.execute("SELECT run_id, trace_id, status FROM agent_runs ORDER BY started_at DESC LIMIT 1").fetchone()
-    event_count = conn.execute("SELECT COUNT(*) FROM trace_events WHERE run_id = ?", (run_row[0],)).fetchone()[0]
-    nodes = [row[0] for row in conn.execute("SELECT node FROM trace_events WHERE run_id = ? ORDER BY event_seq", (run_row[0],)).fetchall()]
-    conn.close()
-
-    assert result["summary_md"] != ""
-    assert run_row is not None
-    assert run_row[2] in {"SUFFICIENT", "PARTIAL"}
-    assert event_count >= 6
-    assert "miner" in nodes
-    assert "finalizer" in nodes
 
 
 def test_unknown_run_cost_persists_as_null(tmp_path: Path, monkeypatch):

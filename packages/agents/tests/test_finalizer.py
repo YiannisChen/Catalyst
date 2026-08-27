@@ -1,24 +1,70 @@
+"""M5-8/M5-11: thin Finalizer persists only an assured terminal envelope."""
 from __future__ import annotations
 
-from attribution_fixtures import make_hypothesis
-from catalyst_agents.nodes.finalizer import finalizer
-from catalyst_agents.state import OutputStatus
+import pytest
+
+from catalyst_agents.nodes.finalizer import (
+    PROVISIONAL_RENDERING,
+    AssuranceFailed,
+    thin_finalizer,
+)
+from catalyst_agents.runtime.assurance.record import AssuranceCheck
+from catalyst_agents.runtime.delta_sink import InMemoryDeltaSink
 
 
-def test_finalizer_ranks_hypotheses_with_single_ranking_body():
-    h1 = make_hypothesis(cause="market", gate_passed=True, direct_support=True, dedup_clusters=1, max_relevance=1.0)
-    h2 = make_hypothesis(cause="earnings_guidance", gate_passed=True, direct_support=True, dedup_clusters=2, max_relevance=0.9)
-    out = finalizer({"hypotheses": [h1.model_dump(mode="json"), h2.model_dump(mode="json")], "context_artifact": {"ok": True}})
-    assert [h["cause_label"] for h in out["ranked_hypotheses"]] == ["earnings_guidance", "market"]
-    assert out["output_status"] == OutputStatus.SUFFICIENT
+class _ValidatedPlan:
+    status = type("S", (), {"value": "SUFFICIENT"})()
+    attribution_type = type("T", (), {"value": "EVIDENCE_BACKED_CAUSAL"})()
 
 
-def test_finalizer_gate_failed_hypotheses_abstain():
-    h = make_hypothesis(cause="market", gate_passed=False, direct_support=True, dedup_clusters=2, max_relevance=1.0)
-    out = finalizer({"hypotheses": [h.model_dump(mode="json")], "context_artifact": {"ok": True}})
-    assert out["output_status"] == OutputStatus.ABSTAIN
+def _passing_checks() -> list[AssuranceCheck]:
+    return [
+        AssuranceCheck(check_name=name, status="pass", detail="ok", checked_at="2026-01-01T00:00:00Z")
+        for name in (
+            "stream_complete",
+            "citation_resolution",
+            "claim_markers_subset",
+            "required_sections",
+            "required_limitations",
+            "status_type_alignment",
+            "hash_coherence",
+            "metadata_consistency",
+        )
+    ]
 
 
-def test_finalizer_preserves_system_error():
-    out = finalizer({"output_status": OutputStatus.SYSTEM_ERROR, "hypotheses": []})
-    assert out["output_status"] == OutputStatus.SYSTEM_ERROR
+def test_thin_finalizer_persists_assured_envelope() -> None:
+    sink = InMemoryDeltaSink()
+    result = thin_finalizer(
+        {"run_id": "run:1"},
+        answer_text="assured answer",
+        validated_plan=_ValidatedPlan(),
+        assurance_checks=_passing_checks(),
+        sink=sink,
+    )
+    assert result["assured"] is True
+    envelope = sink.assured_envelope()
+    assert envelope is not None
+    assert envelope["final_status"] == "SUFFICIENT"
+    assert envelope["assured"] is True
+
+
+def test_thin_finalizer_refuses_non_assured_envelope() -> None:
+    sink = InMemoryDeltaSink()
+    failing = _passing_checks()
+    failing[0] = AssuranceCheck(
+        check_name="stream_complete", status="fail", detail="incomplete", checked_at="2026-01-01T00:00:00Z"
+    )
+    with pytest.raises(AssuranceFailed, match="ASSURANCE_FAILED"):
+        thin_finalizer(
+            {"run_id": "run:1"},
+            answer_text="provisional",
+            validated_plan=_ValidatedPlan(),
+            assurance_checks=failing,
+            sink=sink,
+        )
+    assert sink.assured_envelope() is None
+
+
+def test_provisional_rendering_label() -> None:
+    assert PROVISIONAL_RENDERING == "PROVISIONAL_RENDERING"
