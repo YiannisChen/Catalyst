@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from typing import Any
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -15,11 +18,37 @@ from catalyst_app.routers.live_runs import router as live_runs_router
 from catalyst_app.routers.workbench import router as workbench_router
 
 
-def create_app(*, service_override=None, dependency_loader_override=None, workbench_store_override=None) -> FastAPI:
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """M6 runtime lifespan.
+
+    Startup recovery completes before admission reopens; shutdown stops new
+    admission, waits one bounded grace period, and leaves unresolved rows for
+    the same startup-recovery policy (Final TSD §11/§15).
+    """
+    controller = getattr(app.state, "admission_controller", None)
+    if controller is None:
+        from catalyst_app.runtime_wiring import build_default_admission_controller
+
+        controller = build_default_admission_controller()
+        app.state.admission_controller = controller
+    controller.startup_recovery()
+    yield
+    controller.shutdown()
+
+
+def create_app(
+    *,
+    service_override=None,
+    dependency_loader_override=None,
+    workbench_store_override=None,
+    admission_controller: Any = None,
+) -> FastAPI:
     load_env_files()
-    app = FastAPI(title="Catalyst Live Runtime API", version="0.1.0")
+    app = FastAPI(title="Catalyst Live Runtime API", version="0.1.0", lifespan=_lifespan)
     app.include_router(live_runs_router)
     app.include_router(workbench_router)
+    app.state.admission_controller = admission_controller
 
     if service_override is not None:
         app.dependency_overrides[get_live_run_service] = lambda: service_override
