@@ -1,0 +1,12 @@
+{
+  "m5_import_assertion": 0,
+  "m5_agents_fast": 0,
+  "m5_app_fast": 0,
+  "m5_eval_fast": 0,
+  "m5_v1_graph_call_counts": 0,
+  "m5_no_legacy_production_imports": 0,
+  "m5_gate_a_sealed_baseline_integrity": 0,
+  "m5_gate_b_semantic_ontology_regression": 0,
+  "m5_gates_cli_both": 0,
+  "m5_git_diff_check": 0
+}
