@@ -4,6 +4,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+from catalyst_agents.attribution.claims import ClaimRole
 from catalyst_agents.runtime.assurance.record import AssuranceCheck, CHECK_ORDER
 
 
@@ -124,23 +125,35 @@ def run_structural_assurance(run_id: str, artifacts: dict[str, Any]) -> list[Ass
     stream_complete = bool(artifacts.get("stream_complete"))
     answer_upper = answer_text.upper()
 
-    # Claim/citation markers: a plan that carries claims requires the answer to
-    # emit at least one claim marker and citation; a fixed ABSTAIN answer is
-    # explicitly exempt (no cause accepted -> no markers expected).
+    # Required PRIMARY coverage: every required PRIMARY claim marker must occur
+    # in the streamed answer and every required PRIMARY citation binding must
+    # resolve to same-run permitted evidence. Optional SECONDARY/CONTEXT marker
+    # subsets remain allowed (TSD §13). The fixed-ABSTAIN answer is explicitly
+    # exempt (no cause accepted -> no required markers).
     abstain = validated_status == "ABSTAIN"
-    plan_requires_markers = False
-    if validated_plan is not None:
-        plan_requires_markers = any(
-            claim.citation_evidence_ids or claim.support_evidence_ids
+    required_primary_ids: set[str] = set()
+    required_primary_citations: set[str] = set()
+    if validated_plan is not None and not abstain:
+        required_primary_ids = {
+            claim.claim_id
             for claim in validated_plan.claims
-        )
-    markers_required = (not abstain) and plan_requires_markers
+            if claim.role is ClaimRole.PRIMARY
+        }
+        required_primary_citations = {
+            citation
+            for claim in validated_plan.claims
+            if claim.role is ClaimRole.PRIMARY
+            for citation in claim.citation_evidence_ids
+        }
 
-    citation_ok = emitted_citations.issubset(permitted_evidence)
-    claim_markers_ok = emitted_claim_markers.issubset(permitted_claims)
-    if markers_required:
-        citation_ok = citation_ok and len(emitted_citations) >= 1
-        claim_markers_ok = claim_markers_ok and len(emitted_claim_markers) >= 1
+    citation_ok = (
+        emitted_citations.issubset(permitted_evidence)
+        and required_primary_citations.issubset(emitted_citations)
+    )
+    claim_markers_ok = (
+        emitted_claim_markers.issubset(permitted_claims)
+        and required_primary_ids.issubset(emitted_claim_markers)
+    )
 
     sections_ok = all(section in answer_upper for section in required_sections)
     limitations_ok = all(
@@ -200,8 +213,8 @@ def run_structural_assurance(run_id: str, artifacts: dict[str, Any]) -> list[Ass
 
     checks = {
         "stream_complete": _check("stream_complete", stream_complete, "provider stream reached a valid terminal completion", checked_at=checked_at),
-        "citation_resolution": _check("citation_resolution", citation_ok, "every emitted citation resolves to permitted same-run evidence (and markers are present when claims require them)", checked_at=checked_at),
-        "claim_markers_subset": _check("claim_markers_subset", claim_markers_ok, "emitted claim markers are a subset of permitted claims (and present when claims require them)", checked_at=checked_at),
+        "citation_resolution": _check("citation_resolution", citation_ok, "every emitted citation resolves to permitted same-run evidence and every required PRIMARY citation is emitted", checked_at=checked_at),
+        "claim_markers_subset": _check("claim_markers_subset", claim_markers_ok, "emitted claim markers are a subset of permitted claims and every required PRIMARY marker is emitted", checked_at=checked_at),
         "required_sections": _check("required_sections", sections_ok, "all required sections are present", checked_at=checked_at),
         "required_limitations": _check("required_limitations", limitations_ok, "all required limitations are present", checked_at=checked_at),
         "status_type_alignment": _check("status_type_alignment", status_ok, "emitted status/type equals the validated plan", checked_at=checked_at),

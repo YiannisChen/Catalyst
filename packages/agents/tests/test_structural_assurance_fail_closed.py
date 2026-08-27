@@ -253,3 +253,132 @@ def test_abstain_answer_without_markers_passes() -> None:
         input_hash=derive_writer_input_hash(writer_input),
     )
     assert _failing_checks(artifacts) == set()
+
+
+# ---------------------------------------------------------------------------
+# FINAL NARROW PASS: required PRIMARY claim/citation coverage
+# ---------------------------------------------------------------------------
+
+def _mixed_validated_plan() -> ValidatedClaimPlan:
+    """PRIMARY (citation e1) + SECONDARY (citation e2) + CONTEXT (citation e3)."""
+    primary = Claim(
+        claim_id="claim:primary",
+        role=ClaimRole.PRIMARY,
+        statement="AAPL rose on record guidance.",
+        support_evidence_ids=("e1",),
+        counter_evidence_ids=(),
+        limitations=(),
+        source_hypothesis_id="hyp:run:1:primary",
+        magnitude_fit=MagnitudeFit.STRONG,
+        conflict_refs=(),
+        citation_evidence_ids=("e1",),
+        order_index=0,
+    )
+    secondary = Claim(
+        claim_id="claim:secondary",
+        role=ClaimRole.SECONDARY,
+        statement="The sector rallied in sympathy.",
+        support_evidence_ids=("e2",),
+        counter_evidence_ids=(),
+        limitations=(),
+        source_hypothesis_id="hyp:run:1:secondary",
+        magnitude_fit=MagnitudeFit.PLAUSIBLE,
+        conflict_refs=(),
+        citation_evidence_ids=("e2",),
+        order_index=1,
+    )
+    context = Claim(
+        claim_id="claim:context",
+        role=ClaimRole.CONTEXT,
+        statement="Macro backdrop was supportive.",
+        support_evidence_ids=("e3",),
+        counter_evidence_ids=(),
+        limitations=(),
+        source_hypothesis_id="hyp:run:1:context",
+        magnitude_fit=None,
+        conflict_refs=(),
+        citation_evidence_ids=("e3",),
+        order_index=2,
+    )
+    return ValidatedClaimPlan(
+        status=AttributionStatus.PARTIAL,
+        attribution_type=AttributionType.EVIDENCE_BACKED_CAUSAL,
+        claims=(primary, secondary, context),
+        assessment_hash="a" * 64,
+        context_pack_sha256="c" * 64,
+        evidence_state_hash="e" * 64,
+        required_limitations=(),
+        citation_map=tuple(
+            CitationMapEntry(claim_id=claim.claim_id, citation_evidence_ids=claim.citation_evidence_ids)
+            for claim in (primary, secondary, context)
+        ),
+        permitted_claim_ids=("claim:primary", "claim:secondary", "claim:context"),
+        permitted_evidence_ids=("e1", "e2", "e3"),
+        source_role_independence_summary=SourceRoleIndependenceSummary(direct_primary_support_count=1),
+        ordering_policy_version="claim-ordering-v1",
+        plan_hash="f" * 64,
+    )
+
+
+def _mixed_artifacts(
+    *,
+    emitted_citations: tuple[str, ...],
+    emitted_claim_markers: tuple[str, ...],
+) -> dict[str, Any]:
+    plan = _mixed_validated_plan()
+    writer_input = _writer_input(plan)
+    answer_text = "SUMMARY\nAAPL rose.\nCAUSAL_EXPLANATION\nDetail.\nLIMITATIONS\nNone."
+    base = _artifacts(
+        validated_plan=plan,
+        writer_input=writer_input,
+        permitted_claim_ids=plan.permitted_claim_ids,
+        permitted_evidence_ids=plan.permitted_evidence_ids,
+        required_limitations=plan.required_limitations,
+        emitted_citations=emitted_citations,
+        emitted_claim_markers=emitted_claim_markers,
+        validated_status="PARTIAL",
+        emitted_status="PARTIAL",
+        input_hash=derive_writer_input_hash(writer_input),
+        plan_hash=plan.plan_hash,
+        evidence_state_hash=plan.evidence_state_hash,
+        output_hash=derive_answer_output_hash(answer_text),
+        answer_text=answer_text,
+        answer_text_sha256=derive_answer_output_hash(answer_text),
+    )
+    return base
+
+
+def test_primary_plus_context_emitting_only_context_fails() -> None:
+    """A plan requiring a PRIMARY claim must fail when only the CONTEXT marker
+    is emitted (optional subsets do not substitute for required PRIMARY)."""
+    failed = _failing_checks(
+        _mixed_artifacts(
+            emitted_citations=("e3",),
+            emitted_claim_markers=("claim:context",),
+        )
+    )
+    assert "claim_markers_subset" in failed
+
+
+def test_primary_missing_required_citation_fails() -> None:
+    """Every required PRIMARY claim's citation binding must resolve: the
+    streamed answer must emit the PRIMARY claim's required citations."""
+    failed = _failing_checks(
+        _mixed_artifacts(
+            emitted_citations=("e2", "e3"),
+            emitted_claim_markers=("claim:primary", "claim:secondary", "claim:context"),
+        )
+    )
+    assert "citation_resolution" in failed
+
+
+def test_secondary_context_markers_are_optional() -> None:
+    """PRIMARY marker + citation emitted; SECONDARY/CONTEXT markers omitted is
+    allowed (optional subsets per TSD)."""
+    failed = _failing_checks(
+        _mixed_artifacts(
+            emitted_citations=("e1",),
+            emitted_claim_markers=("claim:primary",),
+        )
+    )
+    assert failed == set()
