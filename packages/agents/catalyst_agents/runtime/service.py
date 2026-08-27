@@ -198,7 +198,7 @@ class LiveRunService:
             "sub_reason": normalized["sub_reason"],
             "failure": failure,
             "last_completed_node": last_node,
-            "predicted_next_node": None if normalized["status"] in _TERMINAL_STATUSES else _NEXT_NODE.get(last_node, "miner"),
+            "predicted_next_node": None if normalized["status"] in _TERMINAL_STATUSES else _NEXT_NODE.get(last_node, "run_admission"),
         }
 
     def get_events(self, run_id: str, *, after_seq: int | None = None) -> list[dict[str, Any]]:

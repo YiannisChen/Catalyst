@@ -94,7 +94,7 @@ def track_cost(state: dict[str, Any], node: str, response: Any) -> None:
         state:    The mutable LangGraph state dict.  Must contain the keys
                   ``model_id``, ``cost_breakdown``, ``total_cost_usd``, and
                   ``total_tokens``.
-        node:     Name of the calling LangGraph node (e.g. ``"miner"``).
+        node:     Name of the calling LangGraph node (e.g. ``"evidence_analyst"``).
         response: LLM response object — supports Anthropic SDK ``.usage``,
                   LangChain ``usage_metadata``, and ``response_metadata``
                   token-usage formats.  Falls back to zero when unavailable.

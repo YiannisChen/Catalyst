@@ -50,3 +50,31 @@ def test_no_legacy_node_modules_remain_in_production_package() -> None:
         assert not (nodes_dir / name).exists(), f"{name} still exists in production nodes"
     for name in ("critic.md", "judge.md"):
         assert not (prompts_dir / name).exists(), f"{name} still exists in production prompts"
+
+
+def test_no_mcj_defaults_or_legacy_fallback_routes_in_production() -> None:
+    """C7: production defaults/routes must not name the legacy MCJ graph or
+    miner nodes, even as strings (not only imports)."""
+    for relative in ("runtime/service.py", "runtime/runner.py"):
+        source = (AGENTS_ROOT / relative).read_text(encoding="utf-8")
+        assert "mcj_full" not in source, f"{relative} still defaults to mcj_full"
+        assert "miner" not in source, f"{relative} still routes to miner"
+
+    app_schemas = (
+        Path(__file__).resolve().parents[3]
+        / "packages/app/catalyst_app/schemas.py"
+    )
+    schema_source = app_schemas.read_text(encoding="utf-8")
+    assert '"mcj_full"' not in schema_source, "app schema still defaults config to mcj_full"
+
+
+def test_v1_graph_adapter_fails_closed_until_m6_wiring() -> None:
+    """C7: the app graph factory must fail closed (M6-not-wired) rather than
+    silently fall back to the archived legacy graph."""
+    import pytest
+
+    from catalyst_agents.graph import V1AppRuntimeNotWired, build_v1_graph_adapter
+
+    adapter = build_v1_graph_adapter(model=None, retriever=object())
+    with pytest.raises(V1AppRuntimeNotWired):
+        adapter.invoke({"ticker": "AAPL"}, run_id="run:1")

@@ -98,7 +98,7 @@ class CreateRunRequest(BaseModel):
     query: str | None = None
     model_id: str | None = None  # DEPRECATED - use model instead
     model: "ModelConfig | None" = None
-    config: str = "mcj_full"
+    config: str = "v1.1"
 
     @field_validator("query")
     @classmethod
