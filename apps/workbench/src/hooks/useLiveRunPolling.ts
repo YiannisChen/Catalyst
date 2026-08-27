@@ -1,3 +1,7 @@
+// MIGRATION-ONLY (M6-13): this polling hook is not part of the default live
+// path. The V1.1 workbench uses the SSE stream client; this hook remains
+// available only for the M8 caller audit and must not be activated by the
+// default App/LiveWorkbench path.
 import { useEffect, useRef, useCallback } from 'react';
 import { getLiveRun, getLiveRunEvents } from '../api/client';
 import { isPollingRequired } from '../state/workbench-state';
