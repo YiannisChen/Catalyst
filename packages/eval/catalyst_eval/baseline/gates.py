@@ -355,30 +355,6 @@ class _FixtureAnalystProvider:
                 return outer.invoke(messages)
 
         return Surface()
-        return {
-            "schema_version": "1.0",
-            "evidence_decisions": [
-                {
-                    "evidence_id": self.evidence_id,
-                    "disposition": "SUPPORT",
-                    "supports_hypothesis_refs": ["h1"],
-                    "reason_code": "material_support",
-                }
-            ],
-            "candidate_hypotheses": [
-                {
-                    "hypothesis_ref": "h1",
-                    "cause_type": "COMPANY_SPECIFIC_CATALYST",
-                    "statement": "Deterministic fixture explanation.",
-                    "supporting_evidence_ids": [self.evidence_id],
-                    "magnitude_fit": "STRONG",
-                    "proposed_role": "PRIMARY",
-                }
-            ],
-            "research_decision": "READY",
-            "recommended_status": "SUFFICIENT",
-            "proposed_attribution_type": "EVIDENCE_BACKED_CAUSAL",
-        }
 
 
 class _FixtureWriterProvider:
