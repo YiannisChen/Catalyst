@@ -143,6 +143,7 @@ def evidence_analyst(
     prompt_template: str | None = None,
     prompt_path: Path | None = None,
     schema: type[AnalystDecision] = AnalystDecision,
+    pack_inventory_ids: tuple[str, ...] | None = None,
 ) -> dict:
     """Run one EvidenceAnalyst logical call and emit decision/ref artifacts."""
     run_id = state.get("run_id")
@@ -170,7 +171,26 @@ def evidence_analyst(
 
     def attempt() -> AnalystDecision:
         raw = _invoke_llm(llm, messages)
-        return _parse_decision(raw, schema)
+        decision = _parse_decision(raw, schema)
+        # Reference-integrity against the pack inventory is structured-output
+        # validation INSIDE the bounded technical retry boundary (C6): an
+        # unknown/pack-external evidence ref is a ModelSchemaFailure that gets
+        # at most one identical-semantic-input retry, then MODEL_SCHEMA_FAILURE.
+        if pack_inventory_ids is not None:
+            inventory = set(pack_inventory_ids)
+            referenced = set(decision.evidence_decisions and [
+                item.evidence_id for item in decision.evidence_decisions
+            ])
+            for hypothesis in decision.candidate_hypotheses:
+                referenced.update(hypothesis.supporting_evidence_ids)
+                referenced.update(hypothesis.contradicting_evidence_ids)
+            unknown = sorted(referenced - inventory)
+            if unknown:
+                raise ModelSchemaFailure(
+                    "AnalystDecision references evidence outside the pack "
+                    f"inventory: {unknown}"
+                )
+        return decision
 
     try:
         bounded = invoke_with_bounded_retry(

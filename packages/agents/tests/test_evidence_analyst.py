@@ -143,6 +143,7 @@ def _node_kwargs(store: InMemoryPackStore, llm: FakeAnalystProvider) -> dict:
         "persistence": store,
         "prompt_template": "You are the Evidence Analyst. Emit the strict schema.",
         "schema": AnalystDecision,
+        "pack_inventory_ids": ("e1", "e2"),
     }
 
 
@@ -354,3 +355,41 @@ def test_missing_persisted_pair_fails_closed_before_provider_call() -> None:
     with pytest.raises(PackNotPersistedError):
         evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
     assert llm.calls == 0
+
+
+def test_pack_external_evidence_ref_retries_once_then_model_schema_failure() -> None:
+    """C6: reference-integrity against the pack inventory is structured-output
+    validation inside the bounded technical retry boundary: a pack-external
+    evidence ref gets at most one identical-semantic-input retry, then
+    MODEL_SCHEMA_FAILURE (never ABSTAIN, never an extra logical call)."""
+    store = InMemoryPackStore()
+    _persist_pair(store)
+
+    def bad() -> dict:
+        payload = _valid_decision_dict()
+        payload["evidence_decisions"].append(
+            {
+                "evidence_id": "e9",
+                "disposition": "SUPPORT",
+                "supports_hypothesis_refs": ["h1"],
+                "reason_code": "material_support",
+            }
+        )
+        payload["candidate_hypotheses"][0]["supporting_evidence_ids"] = ["e1", "e9"]
+        return payload
+
+    llm = FakeAnalystProvider(bad)
+    with pytest.raises(ModelRoleCallError, match="MODEL_SCHEMA_FAILURE") as excinfo:
+        evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert llm.calls == 2  # exactly one technical retry; never a third call
+    assert not isinstance(excinfo.value, AttributionStatus)
+    assert "e9" in str(excinfo.value)
+
+
+def test_pack_internal_evidence_refs_pass_without_retry() -> None:
+    store = InMemoryPackStore()
+    _persist_pair(store)
+    llm = FakeAnalystProvider(_valid_decision_dict)
+    result = evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert llm.calls == 1
+    assert result["analyst_logical_calls"] == 1

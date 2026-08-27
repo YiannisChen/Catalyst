@@ -526,6 +526,7 @@ def run_corrective_round(
         llm=llm,
         persistence=persistence,
         prompt_template=prompt_template,
+        pack_inventory_ids=pack.included_evidence_ids,
     )
     assessment = normalize_decision(
         analyst["analyst_decision"],
@@ -711,6 +712,7 @@ def run_v1_graph(
         llm=analyst_llm,
         persistence=persistence,
         prompt_template=prompt_template,
+        pack_inventory_ids=foundation.context_pack.included_evidence_ids,
     )
     assessment = normalize_decision(
         analyst1["analyst_decision"],
