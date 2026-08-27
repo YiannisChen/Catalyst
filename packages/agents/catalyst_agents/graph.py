@@ -643,3 +643,264 @@ def _foundation_budget():
         lead_only_tokens=80,
         safety_margin_tokens=100,
     )
+
+
+# ---------------------------------------------------------------------------
+# M5-4: round-two EvidenceAnalyst over cumulative evidence
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CorrectiveRoundResult:
+    """Bounded round-two result: thin state plus immutable artifacts."""
+
+    state: FoundationGraphState
+    research_execution: ResearchExecution
+    evidence_state: EvidenceState
+    coverage_summary: CoverageSummary
+    context_pack: EvidenceAnalystContextPack
+    persisted_pair: PersistedPackPair | None
+    analyst_decision: Any
+    assessment: Any
+    analyst_logical_calls: int
+    analyst_provider_attempts: int
+    delta_evidence_ids: tuple[str, ...]
+
+
+def run_corrective_round(
+    *,
+    run_id: str,
+    round: int,
+    temporal_identity: TemporalIdentity,
+    data_runtime_identity: DataRuntimeIdentity,
+    ticker: str,
+    cutoff: str,
+    requested_manifest_id: str,
+    scenario: Any,
+    move_profile: MoveProfile,
+    prior_evidence_state: EvidenceState,
+    prior_research_execution: ResearchExecution,
+    prior_assessment: Any,
+    research_policy_version: str,
+    retriever: ResearchRetriever,
+    research_concurrency: int,
+    research_stage_timeout_seconds: float,
+    persistence: PackPersistence,
+    packing_policy_version: str,
+    template_bytes: bytes,
+    template_version: str,
+    llm: Any,
+    capability_registry: Any,
+    query_builder: Callable[[Any, str], str] | None = None,
+    structured_provider: Any | None = None,
+    run_deadline_epoch_ms: int | None = None,
+    policy: Any | None = None,
+    normalization_policy_version: str = "assessment-normalizer-v1",
+    prompt_template: str | None = None,
+    research_history: tuple[Any, ...] = (),
+) -> CorrectiveRoundResult:
+    """Execute one corrective round over cumulative evidence (Frozen §6.4).
+
+    FOLLOW_UP -> one CorrectiveResearchBatch -> ResearchExecutor -> cumulative
+    EvidenceState (round-1 union round-2) -> recomputed CoverageSummary ->
+    rebuilt round-2 ContextPack with prior assessment context -> second
+    EvidenceAnalyst call -> round-2 EvidenceAssessment. There is no third
+    Analyst call after round 2; a missing batch refuses to run and never calls
+    the Analyst.
+    """
+    from catalyst_agents.attribution.assessment import normalize_decision
+    from catalyst_agents.attribution.context_pack import PriorAssessmentContext
+    from catalyst_agents.nodes.evidence_analyst import evidence_analyst
+    from catalyst_agents.retrieval.corrective import (
+        CorrectivePolicy,
+        corrective_research_tasks,
+    )
+
+    if prior_assessment.corrective_batch is None:
+        raise ValueError(
+            "no corrective batch on the prior assessment; a second Analyst "
+            "call must not run"
+        )
+    batch = prior_assessment.corrective_batch
+    effective_policy = policy or CorrectivePolicy()
+
+    now_epoch_ms = int(time.time() * 1000)
+    configured_stage_deadline = now_epoch_ms + int(
+        research_stage_timeout_seconds * 1000
+    )
+    effective_deadline = (
+        min(configured_stage_deadline, run_deadline_epoch_ms)
+        if run_deadline_epoch_ms is not None
+        else configured_stage_deadline
+    )
+    current_epoch_ms = int(time.time() * 1000)
+    remaining_seconds = (effective_deadline - current_epoch_ms) / 1000
+    if remaining_seconds <= 0:
+        raise ResearchDeadlineError(
+            "research stage deadline expired before corrective execution"
+        )
+
+    tasks = corrective_research_tasks(
+        batch.actions,
+        run_id=run_id,
+        round=round,
+        scenario=scenario,
+        retrieval_policy_id="corrective-v1",
+    )
+    full_research_history = tuple((*research_history, *tasks))
+    executor = ResearchExecutor(
+        retriever=retriever,
+        concurrency=research_concurrency,
+        stage_timeout_seconds=remaining_seconds,
+        structured_provider=structured_provider,
+        query_builder=query_builder,
+    )
+    corrective_execution = executor.execute(
+        tasks=tasks,
+        run_id=run_id,
+        round=round,
+        temporal_identity=temporal_identity,
+        data_runtime_identity=data_runtime_identity,
+        research_policy_version=research_policy_version,
+        ticker=ticker,
+        cutoff=cutoff,
+        requested_manifest_id=requested_manifest_id,
+    )
+
+    # Cumulative evidence: round-1 union round-2, deduped by evidence/fact ID.
+    evidence_state = build_evidence_state(
+        EvidenceStateBuildContext(
+            run_id=run_id,
+            round=round,
+            temporal_identity=temporal_identity,
+            data_runtime_identity=data_runtime_identity,
+            research_policy_version=research_policy_version,
+            task_results=tuple(
+                (*prior_research_execution.task_results, *corrective_execution.task_results)
+            ),
+            prior=prior_evidence_state,
+        )
+    )
+    coverage = build_coverage_summary(
+        evidence_state,
+        move_profile,
+        tuple((*prior_research_execution.degradations, *corrective_execution.degradations)),
+        tuple((*prior_research_execution.capability_gaps, *corrective_execution.capability_gaps)),
+    )
+
+    prior_assessment_context = PriorAssessmentContext(
+        prior_counter_evidence_ids=tuple(
+            sorted(
+                {
+                    evidence_id
+                    for hypothesis in prior_assessment.normalized_hypotheses
+                    for evidence_id in hypothesis.contradicting_evidence_ids
+                }
+            )
+        ),
+        prior_semantic_conflicts=tuple(prior_assessment.normalized_conflicts),
+        previously_supported_hypothesis_ids=tuple(
+            hypothesis.hypothesis_id
+            for hypothesis in prior_assessment.normalized_hypotheses
+            if hypothesis.supporting_evidence_ids
+        ),
+        unresolved_gap_ids=tuple(
+            gap.gap_id for gap in prior_assessment.validated_missing_evidence
+        ),
+        prior_evidence_assessment_ref=f"artifact:assessment:{run_id}:{round - 1}",
+    )
+
+    counter = UTF8ByteUpperBoundCounter(provider="catalyst", model_id="analyst-default")
+    builder = ContextPackBuilder(
+        packing_policy_version=packing_policy_version,
+        budget=_foundation_budget(),
+        token_counter=counter,
+    )
+    draft = builder.build_draft(
+        run_id=run_id,
+        round=round,
+        temporal_identity=temporal_identity,
+        data_runtime_identity=data_runtime_identity,
+        evidence_state=evidence_state,
+        move_profile=move_profile,
+        coverage_summary=coverage,
+        research_history=full_research_history,
+        prior_assessment_context=prior_assessment_context,
+    )
+    finalizer = ContextPackFinalizer(
+        template_bytes=template_bytes,
+        template_version=template_version,
+        renderer=_foundation_renderer,
+        token_counter=counter,
+    )
+    pack = finalizer.finalize(draft)
+
+    messages = _foundation_renderer(draft)
+    refs = persistence.persist_pack_and_render(
+        run_id=run_id,
+        pack=pack,
+        pack_sha256=pack.context_pack_sha256,
+        rendered_messages=messages,
+        rendered_messages_sha256=pack.rendered_messages_sha256,
+        prompt_template_version=template_version,
+        prompt_template_sha256=pack.prompt_template_sha256,
+    )
+    persisted_pair = persistence.load_pair(run_id=run_id)
+    replay_asserts_pair(
+        refs,
+        pack_sha256=pack.context_pack_sha256,
+        rendered_messages=messages,
+        rendered_messages_sha256=pack.rendered_messages_sha256,
+        prompt_template_sha256=pack.prompt_template_sha256,
+    )
+
+    analyst = evidence_analyst(
+        {"run_id": run_id},
+        llm=llm,
+        persistence=persistence,
+        prompt_template=prompt_template,
+    )
+    assessment = normalize_decision(
+        analyst["analyst_decision"],
+        pack,
+        capability_registry,
+        normalization_policy_version,
+        policy=effective_policy,
+    )
+
+    state: FoundationGraphState = {
+        "run_id": run_id,
+        "stage": FoundationStage.ANALYST_BOUNDARY,
+        "round": round,
+        "attempt": 1,
+        "deadline_epoch_ms": effective_deadline,
+        "cancel_requested": False,
+        "terminal_error": None,
+        "observation_ref": f"artifact:observation:{run_id}:1",
+        "observation_hash": _artifact_hash(move_profile),
+        "research_tasks_ref": f"artifact:corrective_tasks:{run_id}:{round}",
+        "research_results_ref": f"artifact:research_results:{run_id}:{round}",
+        "evidence_state_ref": f"artifact:evidence_state:{run_id}:{round}",
+        "evidence_state_hash": evidence_state.state_hash,
+        "coverage_summary_ref": f"artifact:coverage_summary:{run_id}:{round}",
+        "coverage_summary_hash": _artifact_hash(coverage),
+        "context_pack_ref": refs.pack_artifact_id,
+        "context_pack_hash": pack.context_pack_sha256,
+        "rendered_messages_ref": refs.rendered_messages_artifact_id,
+        "rendered_messages_hash": pack.rendered_messages_sha256,
+        "prompt_template_version": template_version,
+        "prompt_template_sha256": pack.prompt_template_sha256,
+        "policy_version": research_policy_version,
+    }
+    return CorrectiveRoundResult(
+        state=state,
+        research_execution=corrective_execution,
+        evidence_state=evidence_state,
+        coverage_summary=coverage,
+        context_pack=pack,
+        persisted_pair=persisted_pair,
+        analyst_decision=analyst["analyst_decision"],
+        assessment=assessment,
+        analyst_logical_calls=analyst["analyst_logical_calls"],
+        analyst_provider_attempts=analyst["analyst_provider_attempts"],
+        delta_evidence_ids=draft.delta_evidence_ids,
+    )

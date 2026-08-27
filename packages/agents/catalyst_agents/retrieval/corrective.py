@@ -136,6 +136,7 @@ class CorrectiveResearchBatch(BaseModel):
 
 __all__ = [
     "BackendCapability",
+    "corrective_research_tasks",
     "BackendHealth",
     "CorrectiveCapabilityRegistry",
     "CorrectivePolicy",
@@ -404,3 +405,66 @@ def build_corrective_batch(
         policy_version=policy.policy_version,
         cancellation_token_ref=None,
     )
+
+
+def corrective_research_tasks(
+    actions: tuple[CorrectiveResearchAction, ...],
+    *,
+    run_id: str,
+    round: int,
+    scenario: "object",
+    retrieval_policy_id: str,
+    source_classes_by_need: dict[object, tuple[object, ...]] | None = None,
+) -> tuple[object, ...]:
+    """Convert one corrective batch's actions into ResearchTasks (Phase 4 §17).
+
+    Trusted runtime fields (ticker/cutoff/filters/limits) come from the
+    executor call; only the typed need/scope/hints from the action enter the
+    task. Task identity and fingerprint are deterministic.
+    """
+    from catalyst_agents.retrieval.policy import source_classes_for_need
+    from catalyst_agents.retrieval.task import ResearchTask, ScenarioType
+    from catalyst_data.canonical.ids import canonical_json_bytes
+
+    tasks: list[ResearchTask] = []
+    for priority, action in enumerate(actions):
+        source_classes = tuple(
+            source_classes_for_need(action.evidence_need)
+            if source_classes_by_need is None
+            else (source_classes_by_need or {}).get(action.evidence_need, ())
+        )
+        semantics = {
+            "schema_version": "research_task_v1",
+            "round": round,
+            "priority": priority,
+            "scenario": scenario.value if hasattr(scenario, "value") else str(scenario),
+            "evidence_need": action.evidence_need.value,
+            "time_scope": action.time_scope.value,
+            "lookback_sessions": action.lookback_sessions,
+            "ticker_scope": [],
+            "source_classes": [c.value for c in source_classes],
+            "evidence_types": [],
+            "query_hints": list(action.query_hints),
+            "retrieval_policy_id": retrieval_policy_id,
+            "research_fingerprint": action.research_fingerprint,
+        }
+        fingerprint = hashlib.sha256(canonical_json_bytes(semantics)).hexdigest()
+        tasks.append(
+            ResearchTask(
+                schema_version="research_task_v1",
+                task_id=f"corrective:{run_id}:{round}:{priority}:{fingerprint[:12]}",
+                round=round,
+                priority=priority,
+                scenario=scenario if isinstance(scenario, ScenarioType) else ScenarioType(ScenarioType.QUIET_OR_UNCLASSIFIED),
+                evidence_need=action.evidence_need,
+                time_scope=action.time_scope,
+                lookback_sessions=action.lookback_sessions,
+                ticker_scope=(),
+                source_classes=source_classes,
+                evidence_types=(),
+                query_hints=action.query_hints,
+                retrieval_policy_id=retrieval_policy_id,
+                task_fingerprint=fingerprint,
+            )
+        )
+    return tuple(tasks)
