@@ -1,7 +1,7 @@
 /**
  * LiveWorkbench — BYOK production path.
  *
- * Real API calls only. No runtime imports from mock/demoCases or workflow-state.
+ * Real API calls only. No runtime imports from demo fixtures or workflow-state.
  * View-model stubs and workspace mapping are delegated to workspace-adapter.ts.
  */
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
@@ -36,7 +36,7 @@ import {
   makeCasesList,
 } from './workspace-adapter';
 import { getNews } from '../../api/client';
-import type { EvidenceItem } from '../../mock/demoCases';
+import type { EvidenceItem } from './workspace-adapter';
 import WorkbenchHeader from './v4/WorkbenchHeader';
 import MarketSessionPanel from './v4/MarketSessionPanel';
 import SessionOverviewPanel from './v4/SessionOverviewPanel';
@@ -315,6 +315,9 @@ export default function LiveWorkbench() {
         errorMessage={errorMessage}
         artifacts={artifacts}
         runtimeMs={workspace?.runtime_ms ?? undefined}
+        attributionStatus={v1Display.attributionStatus}
+        attributionType={v1Display.attributionType}
+        limitations={v1Display.limitations}
       />
       </div>
     </div>

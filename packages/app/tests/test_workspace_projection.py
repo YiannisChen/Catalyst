@@ -469,3 +469,74 @@ def test_workspace_result_uses_validator_projected_summary_and_causes():
     assert result["causes"] == []
     assert result["summary_md"] == canonical
     assert "demand weakness" not in (result["summary_md"] or "")
+
+
+def test_project_workspace_v1_derives_from_persisted_public_events(tmp_path):
+    """M6-11: the V1.1 projection derives only from public events/artifacts."""
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.persistence.schema import init_runtime_db
+    from catalyst_app.workspace_projection import project_workspace_v1
+
+    db_path = tmp_path / "runtime.db"
+    with open_rw(db_path) as conn:
+        init_runtime_db(conn)
+        conn.execute(
+            "INSERT INTO runs (run_id, lifecycle_status, idempotency_key, request_hash,"
+            " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at)"
+            " VALUES ('run:proj', 'COMPLETED', NULL, 'a'*64, 'm', 'b'*64, 0, 't', 't')"
+        )
+        conn.execute(
+            "INSERT INTO run_events (run_id, seq, occurred_at, event_type, stage, payload_json, schema_version)"
+            " VALUES ('run:proj', 1, 't', 'run.accepted', 'ADMISSION', '{}', 'v1')"
+        )
+        conn.execute(
+            "INSERT INTO run_events (run_id, seq, occurred_at, event_type, stage, payload_json, schema_version)"
+            " VALUES ('run:proj', 2, 't', 'answer.delta', 'STREAMING_ANSWER', ?, 'v1')",
+            ('{"delta_text": "Strong "}',),
+        )
+        conn.execute(
+            "INSERT INTO run_events (run_id, seq, occurred_at, event_type, stage, payload_json, schema_version)"
+            " VALUES ('run:proj', 3, 't', 'answer.delta', 'STREAMING_ANSWER', ?, 'v1')",
+            ('{"delta_text": "revenue."}',),
+        )
+        conn.execute(
+            "INSERT INTO run_events (run_id, seq, occurred_at, event_type, stage, payload_json, schema_version)"
+            " VALUES ('run:proj', 4, 't', 'evidence.assessed', 'ASSESSMENT', ?, 'v1')",
+            ('{"gap_ids": ["gap:coverage"]}',),
+        )
+        conn.execute(
+            "INSERT INTO run_events (run_id, seq, occurred_at, event_type, stage, payload_json, schema_version)"
+            " VALUES ('run:proj', 5, 't', 'run.completed', 'TERMINAL', ?, 'v1')",
+            ('{"result_status": "ABSTAIN"}',),
+        )
+        conn.execute(
+            "INSERT INTO run_artifacts (artifact_id, run_id, event_seq, artifact_type, payload_hash, payload_json, optional)"
+            " VALUES ('attribution:run:proj', 'run:proj', 5, 'attribution_result', ?, ?, 0)",
+            ("c" * 64, '{"attribution_status": "ABSTAIN", "attribution_type": "EVIDENCE_BACKED_CAUSAL"}'),
+        )
+        conn.commit()
+
+    projection = project_workspace_v1(db_path, "run:proj")
+
+    assert projection["run_id"] == "run:proj"
+    assert projection["lifecycle_status"] == "COMPLETED"
+    assert projection["attribution_status"] == "ABSTAIN"
+    assert projection["answer"] == "Strong revenue."
+    assert projection["limitations"] == ("Evidence gap: gap:coverage",)
+    assert any(ref["artifact_type"] == "attribution_result" for ref in projection["artifact_refs"])
+
+
+def test_project_workspace_v1_missing_run_raises(tmp_path):
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.persistence.schema import init_runtime_db
+    from catalyst_app.workspace_projection import project_workspace_v1
+
+    db_path = tmp_path / "runtime.db"
+    with open_rw(db_path) as conn:
+        init_runtime_db(conn)
+        conn.commit()
+
+    import pytest
+
+    with pytest.raises(KeyError):
+        project_workspace_v1(db_path, "missing")

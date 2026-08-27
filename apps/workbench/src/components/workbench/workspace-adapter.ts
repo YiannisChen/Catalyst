@@ -16,6 +16,8 @@ import type {
   EvidenceDecision,
 } from '../../mock/demoCases';
 
+export type { EvidenceItem };
+
 // ── Evidence mapping ──
 
 export function mapEvidence(items: WorkspaceEvidenceItem[]): EvidenceItem[] {
