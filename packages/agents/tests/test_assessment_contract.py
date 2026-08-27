@@ -91,7 +91,7 @@ def _assessment(**overrides: Any) -> dict[str, Any]:
                 ),
             ),
             shared_deadline=_utc("2026-01-06T21:00:00Z"),
-            internal_deadline=_utc("2026-01-06T21:00:00Z"),
+            internal_deadline_monotonic=1000.0,
             total_result_budget=20,
             policy_version="cp:v1",
             cancellation_token_ref=None,
