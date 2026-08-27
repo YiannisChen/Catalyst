@@ -299,9 +299,15 @@ class _FixtureRetriever:
         return (self._evidence(self.evidence_id, 1),)
 
 
+# Predeclared fixture policy, independent of hidden gold: refusal fixture
+# cases are identified ONLY by the public ``source_set`` request fact.
+REFUSAL_SOURCE_SUFFIX = "h_refusal_cases.validated.json"
+
+
 class _FixtureAnalystProvider:
     """Deterministic Analyst: READY+SUPPORT for answerable cases, ABSTAIN for
-    refusal cases. Gold is hidden; only request facts shape the decision."""
+    refusal cases. Behavior derives only from public request facts (the case
+    source set) via the predeclared fixture policy; hidden gold is never read."""
 
     def __init__(self, case, evidence_id):
         self.case = case
@@ -317,7 +323,7 @@ class _FixtureAnalystProvider:
 
     def invoke(self, messages):
         self.calls += 1
-        if self.case.golden.get("should_refuse"):
+        if str(self.case.source_set).endswith(REFUSAL_SOURCE_SUFFIX):
             return {
                 "schema_version": "1.0",
                 "evidence_decisions": [],
@@ -499,6 +505,7 @@ def v1_fixture_run(case: Any) -> dict[str, Any]:
         "case_id": case.case_id,
         "ticker": case.ticker,
         "cutoff": case.cutoff,
+        "retrieval_cutoff": retriever.served_cutoff,
         "evidence_items": [
             {
                 "evidence_id": item.evidence_id,
@@ -510,6 +517,8 @@ def v1_fixture_run(case: Any) -> dict[str, Any]:
         "runtime_identity": runtime,
         "bound_runtime_identity": result.evidence_state.data_runtime_identity,
         "context_pack_sha256": result.context_pack.context_pack_sha256,
+        "assessment_context_pack_sha256": result.assessment.context_pack_sha256,
+        "plan_context_pack_sha256": result.validated_claim_plan.context_pack_sha256,
         "assessment": result.assessment,
         "validated_claim_plan": result.validated_claim_plan,
         "answer_text": result.answer.text,
@@ -524,6 +533,8 @@ def _v1_metrics(run: dict[str, Any], case: Any) -> dict[str, float | int]:
         tzinfo=_timezone.utc
     )
     violations = 0
+    if run.get("retrieval_cutoff") != case.cutoff:
+        violations += 1
     for item in run["evidence_items"]:
         if item.get("ticker") != case.ticker:
             violations += 1
@@ -535,7 +546,20 @@ def _v1_metrics(run: dict[str, Any], case: Any) -> dict[str, float | int]:
     resolved = sum(1 for citation in citations if citation in permitted)
 
     bound = 1 if run["bound_runtime_identity"] == run["runtime_identity"] else 0
-    context_ok = 1 if _HEX64_RE.fullmatch(run["context_pack_sha256"] or "") else 0
+    # ContextPack identity requires EXACT equality across the persisted pack,
+    # the normalized assessment, and the validated claim plan (hex64 alone is
+    # not sufficient).
+    context_hashes = (
+        run["context_pack_sha256"],
+        run["assessment_context_pack_sha256"],
+        run["plan_context_pack_sha256"],
+    )
+    context_ok = (
+        1
+        if len(set(context_hashes)) == 1
+        and _HEX64_RE.fullmatch(context_hashes[0] or "")
+        else 0
+    )
 
     hypothesis_by_id = {
         hypothesis.hypothesis_id: hypothesis

@@ -166,3 +166,70 @@ def test_gate_b_context_pack_identity_is_derived_not_hardcoded(tmp_path) -> None
 
     with pytest.raises(GateFailure, match="context"):
         _gate(tmp_path, v1_runner=_mutated_runner(mutate))
+
+
+# ---------------------------------------------------------------------------
+# FINAL NARROW PASS: Gate B identity/cutoff/hidden-gold fail-closed
+# ---------------------------------------------------------------------------
+
+def test_gate_b_fails_on_different_valid_context_pack_hex64(tmp_path) -> None:
+    """A different (but valid) ContextPack hash must fail Gate B: identity
+    requires exact equality across persisted pack / assessment / plan."""
+    def mutate(run, case):
+        run["context_pack_sha256"] = "1" * 64  # valid hex64, different identity
+        return run
+
+    with pytest.raises(GateFailure, match="context"):
+        _gate(tmp_path, v1_runner=_mutated_runner(mutate))
+
+
+def test_gate_b_fails_on_different_valid_retrieval_cutoff(tmp_path) -> None:
+    """The actual retrieval cutoff served by the fixture retriever must equal
+    the case cutoff; a different valid cutoff must fail."""
+    def mutate(run, case):
+        run["retrieval_cutoff"] = "2026-01-16T21:00:00Z"
+        return run
+
+    with pytest.raises(GateFailure, match="ticker|cutoff"):
+        _gate(tmp_path, v1_runner=_mutated_runner(mutate))
+
+
+def test_gate_b_fixture_policy_is_independent_of_hidden_gold() -> None:
+    """Fixture-provider behavior must derive from public request facts, not
+    the hidden golden payload."""
+    from dataclasses import replace
+
+    from catalyst_eval.baseline.gates import _FixtureAnalystProvider
+    from catalyst_eval.post_import.case_pack import build_smoke_case_pack
+
+    cases = build_smoke_case_pack(GOLDEN_DIR)
+    answerable = next(c for c in cases if c.case_id == "g006")
+    refusal = next(c for c in cases if c.case_id == "h001")
+
+    blank_answerable = replace(answerable, golden={})
+    blank_refusal = replace(refusal, golden={})
+
+    provider_answerable = _FixtureAnalystProvider(blank_answerable, f"chunk:{answerable.case_id}")
+    provider_refusal = _FixtureAnalystProvider(blank_refusal, f"chunk:{refusal.case_id}")
+
+    answer = provider_answerable.invoke([])
+    refusal_answer = provider_refusal.invoke([])
+    # Public request facts decide: answerable cases are READY+SUPPORT; refusal
+    # source-set cases are ABSTAIN — with hidden gold blanked.
+    assert answer["research_decision"] == "READY"
+    assert answer["candidate_hypotheses"]
+    assert refusal_answer["research_decision"] == "ABSTAIN"
+    assert refusal_answer["candidate_hypotheses"] == []
+
+
+def test_gate_b_context_pack_identity_requires_exact_three_way_equality() -> None:
+    """The gate surface must expose all three ContextPack identities and the
+    metric must require exact equality, not merely hex64 shape."""
+    from catalyst_eval.baseline.gates import v1_fixture_run
+    from catalyst_eval.post_import.case_pack import build_smoke_case_pack
+
+    cases = build_smoke_case_pack(GOLDEN_DIR)
+    run = v1_fixture_run(next(c for c in cases if c.case_id == "g006"))
+    assert run["context_pack_sha256"]
+    assert run["assessment_context_pack_sha256"] == run["context_pack_sha256"]
+    assert run["plan_context_pack_sha256"] == run["context_pack_sha256"]
