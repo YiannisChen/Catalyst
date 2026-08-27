@@ -51,7 +51,8 @@ class FakeContextPack:
                  evidence_inventory: tuple[Any, ...] = (), research_history: tuple[Any, ...] = (),
                  coverage_summary: Any = None, data_coverage_gaps: tuple[Any, ...] = (),
                  capability_gaps: tuple[Any, ...] = (), retrieval_degradations: tuple[Any, ...] = (),
-                 context_pack_sha256: str = "a" * 64, rendered_messages_sha256: str = "b" * 64):
+                 context_pack_sha256: str = "a" * 64, rendered_messages_sha256: str = "b" * 64,
+                 data_runtime_identity: Any = None):
         self.run_id = run_id
         self.round = round
         self.included_evidence_ids = included_evidence_ids
@@ -63,6 +64,9 @@ class FakeContextPack:
         self.retrieval_degradations = retrieval_degradations
         self.context_pack_sha256 = context_pack_sha256
         self.rendered_messages_sha256 = rendered_messages_sha256
+        self.data_runtime_identity = (
+            data_runtime_identity if data_runtime_identity is not None else _runtime_identity("1")
+        )
 
 
 class FakeRegistry:
@@ -81,8 +85,27 @@ def _temporal() -> TemporalIdentity:
     )
 
 
-def _runtime() -> str:
-    return "runtime:1"
+def _runtime_identity(seed: str = "1"):
+    import hashlib
+
+    from catalyst_data.canonical.identity import DataRuntimeIdentity
+
+    def h(part: str) -> str:
+        return hashlib.sha256(f"{seed}:{part}".encode("utf-8")).hexdigest()
+
+    return DataRuntimeIdentity(
+        data_snapshot_id=h("snapshot"),
+        corpus_manifest_id=h("corpus"),
+        fts_index_version="build:fts",
+        dense_index_version=h("dense"),
+        embedding_model_revision="emb:1",
+        reranker_revision="rr:1",
+        query_policy_version="qp:v1",
+    )
+
+
+def _runtime() -> Any:
+    return _runtime_identity("1")
 
 
 def _decision(**overrides: Any) -> AnalystDecision:
@@ -292,3 +315,220 @@ def test_claim_validator_node_is_thin_wrapper() -> None:
     )
     assert "validated_claim_plan" in result
     assert result["validated_claim_plan"].assessment_hash == plan.assessment_hash
+
+
+# ---------------------------------------------------------------------------
+# C5: exact typed evidence bindings and unconditional identity binding
+# ---------------------------------------------------------------------------
+
+def _decision_with_counter(**overrides: Any) -> AnalystDecision:
+    """h1 PRIMARY (support e1); h2 SECONDARY (support e3, contradict e2).
+
+    The counter-evidence defeats only the secondary explanation so the plan
+    keeps a causal claim carrying typed counter-evidence.
+    """
+    base = {
+        "schema_version": "1.0",
+        "evidence_decisions": (
+            {
+                "evidence_id": "e1",
+                "disposition": "SUPPORT",
+                "supports_hypothesis_refs": ("h1",),
+                "reason_code": "material_support",
+            },
+            {
+                "evidence_id": "e3",
+                "disposition": "SUPPORT",
+                "supports_hypothesis_refs": ("h2",),
+                "reason_code": "material_support",
+            },
+            {
+                "evidence_id": "e2",
+                "disposition": "CONTRADICT",
+                "contradicts_hypothesis_refs": ("h2",),
+                "reason_code": "material_contradiction",
+            },
+        ),
+        "candidate_hypotheses": (
+            {
+                "hypothesis_ref": "h1",
+                "cause_type": "COMPANY_SPECIFIC_CATALYST",
+                "statement": "AAPL rose on record guidance.",
+                "supporting_evidence_ids": ("e1",),
+                "magnitude_fit": "STRONG",
+                "proposed_role": "PRIMARY",
+            },
+            {
+                "hypothesis_ref": "h2",
+                "cause_type": "SECTOR_MOVE",
+                "statement": "The sector rallied in sympathy.",
+                "supporting_evidence_ids": ("e3",),
+                "contradicting_evidence_ids": ("e2",),
+                "magnitude_fit": "PLAUSIBLE",
+                "proposed_role": "SECONDARY",
+            },
+        ),
+        "research_decision": "READY",
+        "recommended_status": "PARTIAL",
+        "proposed_attribution_type": "EVIDENCE_BACKED_CAUSAL",
+    }
+    base.update(overrides)
+    return AnalystDecision.model_validate(base)
+
+
+def _counter_assessment() -> tuple[Any, tuple[FakeInventoryItem, ...]]:
+    items = (
+        FakeInventoryItem(evidence_id="e1", evidence_role="DIRECT_PRIMARY"),
+        FakeInventoryItem(evidence_id="e2", evidence_role="DIRECT_PRIMARY"),
+        FakeInventoryItem(evidence_id="e3", evidence_role="INDEPENDENT_REPORT"),
+    )
+    assessment = normalize_decision(
+        _decision_with_counter(),
+        context_pack=FakeContextPack(
+            included_evidence_ids=("e1", "e2", "e3"),
+            evidence_inventory=items,
+            data_runtime_identity=_runtime_identity("1"),
+        ),
+        capability_registry=FakeRegistry(),
+        policy_version="norm:v1",
+        evidence_state_hash="e" * 64,
+    )
+    return assessment, items
+
+
+def _causal_claim(plan: Any) -> Any:
+    """Find the hypothesis-derived claim (any role) carrying counter evidence."""
+    return next(
+        claim
+        for claim in plan.claims
+        if claim.source_hypothesis_id is not None and claim.counter_evidence_ids
+    )
+
+
+def test_injected_support_evidence_fails_exact_binding() -> None:
+    assessment, inventory = _counter_assessment()
+    plan = _plan(assessment)
+    causal = _causal_claim(plan)
+    forged = plan.model_copy(
+        update={
+            "claims": tuple(
+                claim.model_copy(update={"support_evidence_ids": ("e1", "e9")})
+                if claim.claim_id == causal.claim_id
+                else claim
+                for claim in plan.claims
+            )
+        }
+    )
+    with pytest.raises(IntegritySystemFailure):
+        validate_claim_plan(
+            forged,
+            assessment,
+            runtime_identity=_runtime_identity("1"),
+            temporal_identity=_temporal(),
+            evidence_inventory=inventory,
+        )
+
+
+def test_omitted_counterevidence_fails_exact_binding() -> None:
+    assessment, inventory = _counter_assessment()
+    plan = _plan(assessment)
+    causal = _causal_claim(plan)
+    assert causal.counter_evidence_ids == ("e2",)
+    forged = plan.model_copy(
+        update={
+            "claims": tuple(
+                claim.model_copy(update={"counter_evidence_ids": ()})
+                if claim.claim_id == causal.claim_id
+                else claim
+                for claim in plan.claims
+            )
+        }
+    )
+    with pytest.raises(IntegritySystemFailure):
+        validate_claim_plan(
+            forged,
+            assessment,
+            runtime_identity=_runtime_identity("1"),
+            temporal_identity=_temporal(),
+            evidence_inventory=inventory,
+        )
+
+
+def test_conflict_bindings_must_be_exact() -> None:
+    assessment, inventory = _counter_assessment()
+    plan = _plan(assessment)
+    causal = _causal_claim(plan)
+    forged = plan.model_copy(
+        update={
+            "claims": tuple(
+                claim.model_copy(update={"conflict_refs": ("c9",)})
+                if claim.claim_id == causal.claim_id
+                else claim
+                for claim in plan.claims
+            )
+        }
+    )
+    with pytest.raises(IntegritySystemFailure):
+        validate_claim_plan(
+            forged,
+            assessment,
+            runtime_identity=_runtime_identity("1"),
+            temporal_identity=_temporal(),
+            evidence_inventory=inventory,
+        )
+
+
+def test_runtime_identity_binding_is_unconditional() -> None:
+    assessment, inventory = _counter_assessment()
+    plan = _plan(assessment)
+    with pytest.raises(IntegritySystemFailure, match="runtime"):
+        validate_claim_plan(
+            plan,
+            assessment,
+            runtime_identity=_runtime_identity("other"),
+            temporal_identity=_temporal(),
+            evidence_inventory=inventory,
+        )
+
+
+def test_temporal_eligibility_checks_all_claim_refs_not_only_citations() -> None:
+    late = _utc("2026-01-16T00:00:00Z")
+    items = (
+        FakeInventoryItem(evidence_id="e1", evidence_role="DIRECT_PRIMARY"),
+        FakeInventoryItem(evidence_id="e2", evidence_role="DIRECT_PRIMARY", eligible_at=late),
+        FakeInventoryItem(evidence_id="e3", evidence_role="INDEPENDENT_REPORT"),
+    )
+    assessment = normalize_decision(
+        _decision_with_counter(),
+        context_pack=FakeContextPack(
+            included_evidence_ids=("e1", "e2", "e3"),
+            evidence_inventory=items,
+            data_runtime_identity=_runtime_identity("1"),
+        ),
+        capability_registry=FakeRegistry(),
+        policy_version="norm:v1",
+        evidence_state_hash="e" * 64,
+    )
+    plan = _plan(assessment)
+    causal = _causal_claim(plan)
+    # Forge the citation set to omit the counter ref: temporal eligibility must
+    # still be checked for every evidence ref that can affect the claim.
+    assert "e2" in causal.counter_evidence_ids
+    forged = plan.model_copy(
+        update={
+            "claims": tuple(
+                claim.model_copy(update={"citation_evidence_ids": ("e3",)})
+                if claim.claim_id == causal.claim_id
+                else claim
+                for claim in plan.claims
+            )
+        }
+    )
+    with pytest.raises(IntegritySystemFailure, match="post-cutoff"):
+        validate_claim_plan(
+            plan,
+            assessment,
+            runtime_identity=_runtime_identity("1"),
+            temporal_identity=_temporal(),
+            evidence_inventory=items,
+        )

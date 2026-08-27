@@ -160,9 +160,9 @@ def validate_claim_plan(
     if plan.evidence_state_hash != assessment.evidence_state_hash:
         raise _integrity("cross-run evidence identity: plan evidence_state_hash mismatch")
 
-    # 2. Runtime identity coherence (when the assessment carries it).
-    assessment_runtime = getattr(assessment, "data_runtime_identity", None)
-    if assessment_runtime is not None and assessment_runtime != runtime_identity:
+    # 2. Runtime identity binding is unconditional: the assessment carries the
+    #    typed DataRuntimeIdentity and must equal the injected runtime identity.
+    if assessment.data_runtime_identity != runtime_identity:
         raise _integrity("runtime identity mismatch between plan/assessment and runtime")
 
     inventory_by_id = {item.evidence_id: item for item in evidence_inventory}
@@ -191,32 +191,47 @@ def validate_claim_plan(
                     f"claim cites evidence missing from the inventory: {sorted(missing_inventory)}"
                 )
 
-    # 4. Support/counter refs must be exactly the typed bindings of the source
-    #    hypothesis in the normalized assessment (CLAIM-01: no inference).
+    # 4. Support/counter/conflict refs must EXACTLY equal the typed bindings of
+    #    the source hypothesis in the normalized assessment (CLAIM-01: no
+    #    inference). Omitted counter-evidence and injected evidence both fail.
     for claim in plan.claims:
         if claim.source_hypothesis_id is None:
             continue
         hypothesis = hypothesis_by_id.get(claim.source_hypothesis_id)
         if hypothesis is None:
             raise _integrity(f"claim references unknown source hypothesis {claim.source_hypothesis_id}")
-        if not set(claim.support_evidence_ids) <= set(hypothesis.supporting_evidence_ids):
+        if set(claim.support_evidence_ids) != set(hypothesis.supporting_evidence_ids):
             raise _integrity(
-                f"claim {claim.claim_id} support refs are not the typed bindings of {claim.source_hypothesis_id}"
+                f"claim {claim.claim_id} support refs are not EXACTLY the typed "
+                f"bindings of {claim.source_hypothesis_id}"
             )
-        if not set(claim.counter_evidence_ids) <= set(hypothesis.contradicting_evidence_ids):
+        if set(claim.counter_evidence_ids) != set(hypothesis.contradicting_evidence_ids):
             raise _integrity(
-                f"claim {claim.claim_id} counter refs are not the typed bindings of {claim.source_hypothesis_id}"
+                f"claim {claim.claim_id} counter refs are not EXACTLY the typed "
+                f"bindings of {claim.source_hypothesis_id}"
             )
+        if claim.role in (ClaimRole.PRIMARY, ClaimRole.SECONDARY):
+            if set(claim.conflict_refs) != set(assessment.normalized_conflicts):
+                raise _integrity(
+                    f"claim {claim.claim_id} conflict refs are not EXACTLY the "
+                    "assessment's normalized conflicts"
+                )
 
-    # 5. Temporal eligibility: every cited evidence must be eligible at cutoff.
+    # 5. Temporal eligibility: every evidence ref that can affect a claim
+    #    (support, counter, and citation) must be eligible at cutoff.
     if inventory_by_id:
         for claim in plan.claims:
-            for evidence_id in claim.citation_evidence_ids:
+            refs = (
+                set(claim.support_evidence_ids)
+                | set(claim.counter_evidence_ids)
+                | set(claim.citation_evidence_ids)
+            )
+            for evidence_id in refs:
                 item = inventory_by_id.get(evidence_id)
                 if item is not None and getattr(item, "eligible_at", None) is not None:
                     if item.eligible_at > temporal_identity.cutoff_at:
                         raise _integrity(
-                            f"post-cutoff citation {evidence_id} on claim {claim.claim_id}"
+                            f"post-cutoff evidence {evidence_id} on claim {claim.claim_id}"
                         )
 
     # 6. Materiality + source-role ceilings: causal claims need material support.

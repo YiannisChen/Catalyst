@@ -43,6 +43,7 @@ from catalyst_agents.retrieval.corrective import (
     sanitize_query_hints,
 )
 from catalyst_agents.retrieval.task import EvidenceNeed
+from catalyst_data.canonical.identity import DataRuntimeIdentity
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -156,6 +157,7 @@ class EvidenceAssessment(BaseModel):
     # Identity is required and validated; no synthetic defaults are accepted.
     run_id: str
     round: int
+    data_runtime_identity: DataRuntimeIdentity
     normalized_hypotheses: tuple[NormalizedHypothesis, ...] = ()
     normalized_evidence_decisions: tuple[NormalizedEvidenceDecision, ...] = ()
     normalized_conflicts: tuple[str, ...] = ()
@@ -638,6 +640,10 @@ def normalize_decision(
         raise AssessmentIdentityFailure(
             "context pack run_id is missing or placeholder; identity must be supplied"
         )
+    if getattr(context_pack, "data_runtime_identity", None) is None:
+        raise AssessmentIdentityFailure(
+            "context pack data_runtime_identity is missing; identity must be supplied"
+        )
     if evidence_state_hash is None or _SHA256_RE.fullmatch(evidence_state_hash) is None:
         raise AssessmentIdentityFailure(
             "evidence_state_hash must be supplied as a lowercase SHA-256 hex digest"
@@ -715,6 +721,7 @@ def normalize_decision(
                 normalization_policy_version=policy_version,
                 run_id=run_id,
                 round=round,
+                data_runtime_identity=context_pack.data_runtime_identity,
                 evidence_state_hash=resolved_evidence_state_hash,
                 assessment_hash=_sha256_hex(
                     {
@@ -822,6 +829,7 @@ def normalize_decision(
         final_attribution_type=final_type,
         normalization_diagnostics=tuple(diagnostics),
         evidence_state_hash=resolved_evidence_state_hash,
+        data_runtime_identity=context_pack.data_runtime_identity,
         assessment_hash=assessment_hash,
     )
 

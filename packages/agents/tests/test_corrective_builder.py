@@ -65,6 +65,22 @@ def _gap(**overrides: Any) -> MissingEvidence:
     return MissingEvidence(**base)
 
 
+def _runtime_identity():
+    import hashlib
+
+    from catalyst_data.canonical.identity import DataRuntimeIdentity
+
+    def h(part):
+        return hashlib.sha256(f"1:{part}".encode("utf-8")).hexdigest()
+
+    return DataRuntimeIdentity(
+        data_snapshot_id=h("snapshot"), corpus_manifest_id=h("corpus"),
+        fts_index_version="build:fts", dense_index_version=h("dense"),
+        embedding_model_revision="emb:1", reranker_revision="rr:1",
+        query_policy_version="qp:v1",
+    )
+
+
 def _assessment(*, gaps: tuple[MissingEvidence, ...], hints: tuple[tuple[str, ...], ...] = ()) -> EvidenceAssessment:
     return EvidenceAssessment(
         analyst_decision=AnalystDecision(
@@ -81,6 +97,7 @@ def _assessment(*, gaps: tuple[MissingEvidence, ...], hints: tuple[tuple[str, ..
         normalization_policy_version="n1",
         run_id="run:1",
         round=1,
+        data_runtime_identity=_runtime_identity(),
         evidence_state_hash="e" * 64,
         assessment_hash="f" * 64,
         research_decision="FOLLOW_UP",

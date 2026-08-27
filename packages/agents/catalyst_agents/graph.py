@@ -777,7 +777,7 @@ def run_v1_graph(
     validated = validate_claim_plan(
         plan,
         assessment,
-        runtime_identity=_artifact_hash(data_runtime_identity),
+        runtime_identity=data_runtime_identity,
         temporal_identity=temporal_identity,
         evidence_inventory=final_pack.evidence_inventory,
     )

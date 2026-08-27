@@ -103,11 +103,28 @@ def _assessment(**overrides: Any) -> dict[str, Any]:
         "normalization_policy_version": "n1",
         "run_id": "run:1",
         "round": 1,
+        "data_runtime_identity": _runtime(),
         "evidence_state_hash": "e" * 64,
         "assessment_hash": "f" * 64,
     }
     base.update(overrides)
     return base
+
+
+def _runtime():
+    import hashlib
+
+    from catalyst_data.canonical.identity import DataRuntimeIdentity
+
+    def h(part):
+        return hashlib.sha256(f"1:{part}".encode("utf-8")).hexdigest()
+
+    return DataRuntimeIdentity(
+        data_snapshot_id=h("snapshot"), corpus_manifest_id=h("corpus"),
+        fts_index_version="build:fts", dense_index_version=h("dense"),
+        embedding_model_revision="emb:1", reranker_revision="rr:1",
+        query_policy_version="qp:v1",
+    )
 
 
 def test_evidence_assessment_fields_and_hash_binding() -> None:

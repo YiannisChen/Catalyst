@@ -23,6 +23,23 @@ from catalyst_agents.attribution.assessment import (
 from catalyst_agents.retrieval.task import EvidenceNeed
 
 
+
+def _runtime_identity():
+    import hashlib
+
+    from catalyst_data.canonical.identity import DataRuntimeIdentity
+
+    def h(part):
+        return hashlib.sha256(f"1:{part}".encode("utf-8")).hexdigest()
+
+    return DataRuntimeIdentity(
+        data_snapshot_id=h("snapshot"), corpus_manifest_id=h("corpus"),
+        fts_index_version="build:fts", dense_index_version=h("dense"),
+        embedding_model_revision="emb:1", reranker_revision="rr:1",
+        query_policy_version="qp:v1",
+    )
+
+
 class FakeContextPack:
     def __init__(self, *, run_id: str = "run:1", round: int = 1,
                  included_evidence_ids: tuple[str, ...] = ("e1",),
@@ -33,7 +50,8 @@ class FakeContextPack:
                  capability_gaps: tuple[Any, ...] = (),
                  retrieval_degradations: tuple[Any, ...] = (),
                  context_pack_sha256: str = "a" * 64,
-                 rendered_messages_sha256: str = "b" * 64):
+                 rendered_messages_sha256: str = "b" * 64,
+                 data_runtime_identity: Any = None):
         self.run_id = run_id
         self.round = round
         self.included_evidence_ids = included_evidence_ids
@@ -45,6 +63,9 @@ class FakeContextPack:
         self.retrieval_degradations = retrieval_degradations
         self.context_pack_sha256 = context_pack_sha256
         self.rendered_messages_sha256 = rendered_messages_sha256
+        self.data_runtime_identity = (
+            data_runtime_identity if data_runtime_identity is not None else _runtime_identity()
+        )
 
 
 class FakeRegistry:
