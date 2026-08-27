@@ -253,3 +253,45 @@ def test_rw_schema_init_enables_wal_and_connection_settings(tmp_path: Path) -> N
     assert journal_mode.lower() == "wal"
     assert foreign_keys == 1
     assert busy_timeout == 5000
+
+
+def test_runs_has_owner_and_task_token_columns(tmp_path: Path) -> None:
+    conn = _rw_conn(tmp_path / "runtime.db")
+    columns = {
+        row[1]: row for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+    }
+    conn.close()
+    assert "owner" in columns
+    assert "task_token" in columns
+
+
+def test_owner_task_token_columns_added_to_existing_db(tmp_path: Path) -> None:
+    """Schema evolution is additive: an existing runs table gains columns."""
+    db_path = tmp_path / "legacy_runtime.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE runs (
+            run_id            TEXT PRIMARY KEY,
+            lifecycle_status  TEXT NOT NULL CHECK (lifecycle_status IN
+                ('ACCEPTED','RUNNING','CANCEL_REQUESTED','COMPLETED','FAILED','CANCELLED')),
+            idempotency_key   TEXT,
+            request_hash      TEXT NOT NULL,
+            run_manifest_id   TEXT NOT NULL,
+            manifest_hash     TEXT NOT NULL,
+            capacity_slot     INTEGER NOT NULL,
+            created_at        TEXT NOT NULL,
+            updated_at        TEXT NOT NULL,
+            failure_code      TEXT,
+            failure_message   TEXT
+        )
+        """
+    )
+    conn.commit()
+    init_runtime_db(conn)
+    columns = {
+        row[1]: row for row in conn.execute("PRAGMA table_info(runs)").fetchall()
+    }
+    conn.close()
+    assert "owner" in columns
+    assert "task_token" in columns

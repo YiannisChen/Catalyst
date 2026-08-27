@@ -40,7 +40,9 @@ CREATE TABLE IF NOT EXISTS runs (
     created_at        TEXT NOT NULL,
     updated_at        TEXT NOT NULL,
     failure_code      TEXT,
-    failure_message   TEXT
+    failure_message   TEXT,
+    owner             TEXT,
+    task_token        TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_idempotency_key
     ON runs(idempotency_key) WHERE idempotency_key IS NOT NULL;
@@ -104,7 +106,17 @@ def init_runtime_db(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
     conn.executescript(_DDL)
+    _migrate_runs_add_claim_columns(conn)
     conn.commit()
+
+
+def _migrate_runs_add_claim_columns(conn: sqlite3.Connection) -> None:
+    """Additive evolution: runs gains owner/task_token for atomic claims."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
+    if "owner" not in columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN owner TEXT")
+    if "task_token" not in columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN task_token TEXT")
 
 
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:
