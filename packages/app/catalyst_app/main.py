@@ -15,6 +15,7 @@ from fastapi import FastAPI
 
 from catalyst_app.dependencies import get_live_run_service, get_runtime_dependency_loader, get_workbench_store
 from catalyst_app.routers.live_runs import router as live_runs_router
+from catalyst_app.routers.stream import router as stream_router
 from catalyst_app.routers.workbench import router as workbench_router
 
 
@@ -47,6 +48,7 @@ def create_app(
     load_env_files()
     app = FastAPI(title="Catalyst Live Runtime API", version="0.1.0", lifespan=_lifespan)
     app.include_router(live_runs_router)
+    app.include_router(stream_router)
     app.include_router(workbench_router)
     app.state.admission_controller = admission_controller
 
