@@ -335,3 +335,90 @@ export interface CatalogProvider {
 export interface ModelCatalogResponse {
   providers: CatalogProvider[]
 }
+
+// ── V1.1 versioned public DTOs (Final TSD §17/§20.1/§21) ──
+
+export type RunLifecycleStatus =
+  | 'ACCEPTED'
+  | 'RUNNING'
+  | 'CANCEL_REQUESTED'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED'
+
+export type RunEventType =
+  | 'run.accepted'
+  | 'stage.started'
+  | 'evidence.retrieved'
+  | 'evidence.reranked'
+  | 'evidence.assessed'
+  | 'followup.started'
+  | 'answer.started'
+  | 'answer.delta'
+  | 'answer.completed'
+  | 'assurance.completed'
+  | 'run.completed'
+  | 'run.failed'
+  | 'run.cancelled'
+
+export interface ArtifactRefDTO {
+  artifact_id: string
+  artifact_type: string
+  schema_version: string
+  content_sha256: string
+  run_id: string
+}
+
+export interface PublicRunEvent {
+  schema_version: string
+  event_id?: string | null
+  run_id: string
+  sequence: number
+  event_type: RunEventType
+  emitted_at: string
+  stage?: string | null
+  payload: Record<string, unknown>
+  artifact_refs: ArtifactRefDTO[]
+}
+
+export interface RunAcceptedResponse {
+  run_id: string
+  status: 'ACCEPTED'
+  stream_url: string
+  request_hash_prefix: string
+  model_capability_label: string
+}
+
+export interface RunFailureDTO {
+  code: string
+  message?: string | null
+}
+
+export interface RunDTO {
+  run_id: string
+  lifecycle_status: RunLifecycleStatus
+  attribution_status?: string | null
+  attribution_type?: string | null
+  created_at: string
+  duration_ms?: number | null
+  failure?: RunFailureDTO | null
+  manifest_summary: Record<string, string>
+  terminal_artifact_refs: ArtifactRefDTO[]
+}
+
+export interface ArtifactRefPage {
+  items: Array<{
+    artifact_id: string
+    artifact_type: string
+    stage?: string | null
+    created_at?: string | null
+    ref: ArtifactRefDTO
+  }>
+  total: number
+  limit: number
+  offset: number
+}
+
+export type ArtifactDetail = ArtifactRefPage['items'][number] & {
+  payload?: Record<string, unknown> | null
+}

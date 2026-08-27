@@ -14,7 +14,8 @@ import type {
   TickersResponse,
 } from './types'
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '/api'
+const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env
+const API_BASE_URL = viteEnv?.VITE_API_BASE_URL ?? '/api'
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -160,4 +161,98 @@ export function getWorkspace(runId: string): Promise<import('./types').Workspace
 }
 export function getCatalog(): Promise<import('./types').ModelCatalogResponse> {
   return request<import('./types').ModelCatalogResponse>('/models/catalog')
+}
+
+// ── V1.1 SSE stream client (M6-10) ──
+
+import type { PublicRunEvent, RunEventType } from './types'
+
+export function buildStreamUrl(runId: string, lastAppliedSequence: number, apiBase = API_BASE_URL): string {
+  const base = `${apiBase}/live-runs/${encodeURIComponent(runId)}/stream`
+  if (lastAppliedSequence > 0) {
+    return `${base}?last_event_id=${encodeURIComponent(runId)}:${lastAppliedSequence}`
+  }
+  return base
+}
+
+export function parseSseFrame(frame: string): PublicRunEvent {
+  const dataLine = frame
+    .split('\n')
+    .find((line) => line.startsWith('data: '))
+  if (!dataLine) {
+    throw new Error('SSE frame missing data line')
+  }
+  const parsed = JSON.parse(dataLine.slice('data: '.length)) as PublicRunEvent
+  if (!parsed.run_id || typeof parsed.sequence !== 'number') {
+    throw new Error('SSE frame is not a public run event')
+  }
+  return parsed
+}
+
+const ALL_EVENT_TYPES: RunEventType[] = [
+  'run.accepted',
+  'stage.started',
+  'evidence.retrieved',
+  'evidence.reranked',
+  'evidence.assessed',
+  'followup.started',
+  'answer.started',
+  'answer.delta',
+  'answer.completed',
+  'assurance.completed',
+  'run.completed',
+  'run.failed',
+  'run.cancelled',
+]
+
+export interface SseStreamHandlers {
+  onEvent: (event: PublicRunEvent) => void
+  onError?: (error: Error) => void
+}
+
+/**
+ * Connect to the persisted replay + live tail. The native EventSource
+ * reconnects with Last-Event-ID after a browser disconnect, so the server
+ * replays from the last applied sequence; a browser disconnect never cancels
+ * a run (Final TSD §18.5).
+ */
+export function connectRunStream(
+  runId: string,
+  lastAppliedSequence: number,
+  handlers: SseStreamHandlers,
+): () => void {
+  const es = new EventSource(buildStreamUrl(runId, lastAppliedSequence))
+  const onMessage = (event: MessageEvent<string>) => {
+    try {
+      handlers.onEvent(parseSseFrame(event.data))
+    } catch (err) {
+      // Heartbeat comments and malformed frames are non-persisted transport.
+      handlers.onError?.(err instanceof Error ? err : new Error('invalid SSE frame'))
+    }
+  }
+  for (const eventType of ALL_EVENT_TYPES) {
+    es.addEventListener(eventType, onMessage)
+  }
+  es.onerror = () => {
+    handlers.onError?.(new Error('SSE stream error'))
+  }
+  return () => es.close()
+}
+
+export function getLiveRunV1(runId: string): Promise<import('./types').RunDTO> {
+  return request<import('./types').RunDTO>(`/live-runs/${encodeURIComponent(runId)}`)
+}
+
+export function getArtifactPage(
+  runId: string,
+  filters?: { limit?: number; offset?: number; artifact_type?: string },
+): Promise<import('./types').ArtifactRefPage> {
+  const query = new URLSearchParams()
+  if (filters?.limit !== undefined) query.set('limit', String(filters.limit))
+  if (filters?.offset !== undefined) query.set('offset', String(filters.offset))
+  if (filters?.artifact_type) query.set('artifact_type', filters.artifact_type)
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return request<import('./types').ArtifactRefPage>(
+    `/live-runs/${encodeURIComponent(runId)}/artifacts${suffix}`,
+  )
 }

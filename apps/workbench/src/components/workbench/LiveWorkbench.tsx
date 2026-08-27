@@ -4,21 +4,28 @@
  * Real API calls only. No runtime imports from mock/demoCases or workflow-state.
  * View-model stubs and workspace mapping are delegated to workspace-adapter.ts.
  */
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   getTickers,
   getOhlcv,
   createLiveRun,
-  getLiveRun,
-  getLiveRunArtifacts,
+  connectRunStream,
+  getLiveRunV1,
+  getArtifactPage,
   getWorkspace,
 } from '../../api/client';
+import {
+  createV1State,
+  reduceEvent,
+  reduceRunDto,
+  deriveDisplayState,
+} from '../../state/workbench-state';
+import type { PublicRunEvent } from '../../api/types';
 import type {
   ModelConfig,
   WorkspaceResponse,
   ArtifactResponse,
   OhlcvCandle,
-  RunSummaryResponse,
 } from '../../api/types';
 import {
   mapEvidence,
@@ -39,7 +46,7 @@ import './v4/workbench-v4.css';
 
 type RunPhase = 'idle' | 'loading_tickers' | 'creating' | 'running' | 'terminal' | 'error';
 
-const POLL_INTERVAL_MS = 2000;
+const TERMINAL_EVENT_TYPES = ['run.completed', 'run.failed', 'run.cancelled'];
 
 export default function LiveWorkbench() {
   const [modelConfig, setModelConfig] = useState<ModelConfig | null>(null);
@@ -52,6 +59,8 @@ export default function LiveWorkbench() {
   const [runId, setRunId] = useState<string | null>(null);
   const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactResponse[]>([]);
+  const [v1State, setV1State] = useState(() => createV1State());
+  const lastEventSeqRef = useRef(0);
   const [newsPreviewEvidence, setNewsPreviewEvidence] = useState<EvidenceItem[]>([]);
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsError, setNewsError] = useState<string | null>(null);
@@ -132,6 +141,8 @@ export default function LiveWorkbench() {
     [selectedTicker, candles],
   );
 
+  const v1Display = useMemo(() => deriveDisplayState(v1State), [v1State]);
+
   const cases = useMemo(() => makeCasesList(tickers), [tickers]);
 
   const canRun =
@@ -187,47 +198,50 @@ export default function LiveWorkbench() {
     }
   }, [canRun, selectedTicker, selectedDate, modelConfig]);
 
-  // Poll for run status, then fetch workspace
+  // V1.1 SSE live tail replaces the default 2-second polling loop. The
+  // browser EventSource reconnects with Last-Event-ID; a browser disconnect
+  // never cancels a run.
   useEffect(() => {
     if (phase !== 'running' || !runId) return;
+    let closed = false;
 
-    const poll = async () => {
-      try {
-        const summary: RunSummaryResponse = await getLiveRun(runId);
-        const terminal = [
-          'SUCCEEDED', 'PARTIAL', 'INSUFFICIENT',
-          'FAILED_SYSTEM', 'FAILED_REQUEST', 'CANCELLED',
-        ];
-        if (terminal.includes(summary.status)) {
+    const closeStream = connectRunStream(runId, lastEventSeqRef.current, {
+      onEvent: (event: PublicRunEvent) => {
+        if (closed) return;
+        lastEventSeqRef.current = Math.max(lastEventSeqRef.current, event.sequence);
+        setV1State((prev) => reduceEvent(prev, event));
+        if (TERMINAL_EVENT_TYPES.includes(event.event_type)) {
           setPhase('terminal');
-          try {
-            const ws = await getWorkspace(runId);
-            setWorkspace(ws);
-          } catch (err) {
-            setErrorMessage(
-              err instanceof Error
-                ? `Workspace fetch failed: ${err.message}`
-                : 'Failed to load workspace',
-            );
-          }
-          try {
-            const arts = await getLiveRunArtifacts(runId);
-            setArtifacts(arts);
-          } catch {
-            /* artifacts are optional */
-          }
-          return;
+          getLiveRunV1(runId)
+            .then((dto) => {
+              setV1State((prev) => reduceRunDto(prev, dto));
+              return getWorkspace(runId);
+            })
+            .then(setWorkspace)
+            .catch((err: Error) => {
+              setErrorMessage(
+                err instanceof Error
+                  ? `Workspace fetch failed: ${err.message}`
+                  : 'Failed to load workspace',
+              );
+            });
+          getArtifactPage(runId)
+            .then((page) => setArtifacts(page.items as unknown as ArtifactResponse[]))
+            .catch(() => {
+              /* artifacts are optional */
+            });
         }
-      } catch (err) {
+      },
+      onError: (err) => {
         setErrorMessage(
-          err instanceof Error ? `Polling error: ${err.message}` : 'Polling failed',
+          err instanceof Error ? `Stream error: ${err.message}` : 'Stream failed',
         );
-      }
+      },
+    });
+    return () => {
+      closed = true;
+      closeStream();
     };
-
-    poll();
-    const interval = setInterval(poll, POLL_INTERVAL_MS);
-    return () => clearInterval(interval);
   }, [phase, runId]);
 
   const handleTickerChange = useCallback((id: string) => {
@@ -240,7 +254,7 @@ export default function LiveWorkbench() {
 
   const showLoading = phase === 'loading_tickers';
   const showError = phase === 'error' && errorMessage !== null;
-  const showRunning = phase === 'running' || phase === 'creating';
+  const showRunning = phase === 'running' || phase === 'creating' || v1Display.lifecycleStatus === 'RUNNING';
 
   return (
     <div className="v4-page">
