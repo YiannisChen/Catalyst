@@ -44,3 +44,63 @@ def finalizer(state: AttributionState) -> dict:
         "ranked_hypotheses": ranked_payload,
         "phase": Phase.FINALIZER,
     }
+
+
+# ---------------------------------------------------------------------------
+# M5-8: thin terminal wrapper (V1.1). The legacy finalizer above is retained
+# as the sealed MCJ baseline instrument until M5-11 removes it.
+# ---------------------------------------------------------------------------
+
+PROVISIONAL_RENDERING = "PROVISIONAL_RENDERING"
+
+
+class AssuranceFailed(RuntimeError):
+    """Structural assurance failed: the provisional answer is invalidated and
+    the run fails closed; no retry is performed to obtain a preferred status."""
+
+
+def thin_finalizer(
+    state: dict,
+    *,
+    answer_text: str,
+    validated_plan: Any,
+    assurance_checks: list[Any],
+    sink: Any,
+    terminal_status: str = "COMPLETED",
+) -> dict:
+    """Persist only an assured terminal result envelope.
+
+    Never ranks, repairs, rewrites, or infers status. Assurance failure
+    invalidates the provisional output and fails closed.
+    """
+    if not assurance_checks or not all(
+        check.status == "pass" for check in assurance_checks
+    ):
+        sink.fail("ASSURANCE_FAILED")
+        raise AssuranceFailed(
+            "ASSURANCE_FAILED: structural assurance did not pass; the "
+            "provisional answer is invalidated"
+        )
+    import time as _time
+
+    envelope = {
+        "run_id": state.get("run_id"),
+        "answer_text": answer_text,
+        "answer_text_sha256": __import__("hashlib").sha256(
+            answer_text.encode("utf-8")
+        ).hexdigest(),
+        "final_status": validated_plan.status.value,
+        "attribution_type": validated_plan.attribution_type.value,
+        "provisional_label": PROVISIONAL_RENDERING,
+        "assured": True,
+        "terminal_status": terminal_status,
+        "completed_at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+    }
+    sink.commit_assured_envelope(
+        answer_id=f"answer:{state.get('run_id')}",
+        final_status=envelope["final_status"],
+        attribution_type=envelope["attribution_type"],
+        checks=tuple(check.check_name for check in assurance_checks),
+        completed_at=envelope["completed_at"],
+    )
+    return {"terminal_envelope": envelope, "assured": True}
