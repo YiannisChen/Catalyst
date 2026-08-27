@@ -48,6 +48,7 @@ class RunExecutor:
         admission_slots: int = DEFAULT_ADMISSION_SLOTS,
         max_workers: int = DEFAULT_MAX_WORKERS,
         run_adapter: RunAdapter,
+        failure_handler: Callable[[str, str], None] | None = None,
         shutdown_grace_seconds: float = DEFAULT_SHUTDOWN_GRACE_SECONDS,
     ) -> None:
         if not MIN_ADMISSION_SLOTS <= admission_slots <= MAX_ADMISSION_SLOTS:
@@ -65,6 +66,7 @@ class RunExecutor:
         self.max_workers = max_workers
         self.shutdown_grace_seconds = shutdown_grace_seconds
         self._run_adapter = run_adapter
+        self._failure_handler = failure_handler
         self._pool = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="catalyst-run"
         )
@@ -129,6 +131,15 @@ class RunExecutor:
             self._active += 1
         try:
             return self._run_adapter(run_id, timeout_seconds)
+        except BaseException:
+            # A crashed adapter must not leave the run stranded: terminalize
+            # FAILED so startup recovery is not required for ordinary faults.
+            if self._failure_handler is not None:
+                try:
+                    self._failure_handler(run_id, "SYSTEM_ERROR")
+                except Exception:
+                    pass  # recovery/terminal race; durable state is authoritative
+            raise
         finally:
             with self._lock:
                 self._active -= 1

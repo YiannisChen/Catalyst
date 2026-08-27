@@ -47,6 +47,43 @@ def _default_run_adapter(run_id: str, timeout_seconds: float) -> Any:
     )
 
 
+def _default_failure_handler(events: EventRepository):
+    """Terminalize a run as FAILED when the adapter crashes mid-run."""
+
+    def handler(run_id: str, code: str) -> None:
+        from catalyst_app.events import (
+            AssuranceCompletedPayload,
+            RunEventType,
+            RunFailedPayload,
+        )
+        from catalyst_app.lifecycle import RunLifecycleStatus
+        from catalyst_app.runtime.claim import RunClaimer
+
+        claimer = RunClaimer(db_path=events.db_path, events=events)
+        lifecycle = claimer.current_lifecycle(run_id)
+        if lifecycle is None or lifecycle not in (
+            RunLifecycleStatus.ACCEPTED,
+            RunLifecycleStatus.RUNNING,
+            RunLifecycleStatus.CANCEL_REQUESTED,
+        ):
+            return
+        events.append_terminal(
+            run_id=run_id,
+            assurance_payload=AssuranceCompletedPayload(
+                valid=False, violations=("executor_failure",)
+            ),
+            terminal_event_type=RunEventType.RUN_FAILED,
+            terminal_payload=RunFailedPayload(
+                failure_code=code,
+                stage="EXECUTION",
+                retryable=True,
+            ),
+            lifecycle_update=(lifecycle, RunLifecycleStatus.FAILED),
+        )
+
+    return handler
+
+
 def build_default_cancellation_controller() -> CancellationController:
     db_path = _db_path_from_env()
     events = EventRepository(db_path=db_path)
@@ -64,6 +101,7 @@ def build_default_admission_controller() -> AdmissionController:
         admission_slots=4,
         max_workers=2,
         run_adapter=_default_run_adapter,
+        failure_handler=_default_failure_handler(events),
     )
     controller = AdmissionController(
         db_path=db_path,

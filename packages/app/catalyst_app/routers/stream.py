@@ -42,7 +42,10 @@ def _default_db_path() -> Path:
 def _stream_config(request: Request) -> StreamConfig:
     config = getattr(request.app.state, "stream_config", None)
     if config is None:
-        config = StreamConfig(db_path=_default_db_path())
+        state_db = getattr(request.app.state, "db_path", None)
+        config = StreamConfig(
+            db_path=Path(state_db) if state_db is not None else _default_db_path()
+        )
         request.app.state.stream_config = config
     return config
 

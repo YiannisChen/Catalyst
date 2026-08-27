@@ -130,28 +130,73 @@ def _make_db(path):
     conn.close()
 
 
-def _client(store):
+def _client(store, db_path=None):
+    from catalyst_app.runtime.admission import AdmissionController
+    from catalyst_app.runtime.executor import RunExecutor
+    from catalyst_app.persistence.events import EventRepository
+    from v1_helpers import build_manifest
+
+    admission = None
+    if db_path is not None:
+        from catalyst_app.persistence.schema import init_runtime_db
+        from catalyst_app.persistence.connect import open_rw
+
+        with open_rw(db_path) as conn:
+            init_runtime_db(conn)
+            conn.commit()
+        repo = EventRepository(db_path=db_path)
+        executor = RunExecutor(
+            admission_slots=4, max_workers=1,
+            run_adapter=lambda run_id, t: {"ok": True},
+            shutdown_grace_seconds=0.1,
+        )
+        admission = AdmissionController(
+            db_path=db_path, executor=executor, events=repo, manifest_factory=build_manifest
+        )
     app = create_app(
         service_override=ContractService(),
         dependency_loader_override=ContractLoader(),
         workbench_store_override=store,
+        admission_controller=admission,
+        db_path=db_path,
     )
     return TestClient(app)
 
 
 def test_backend_api_contract_endpoints(tmp_path):
+    import json as _json
+
     db_path = tmp_path / "contract.db"
     _make_db(db_path)
-    client = _client(WorkbenchStore(db_path=db_path))
+    client = _client(WorkbenchStore(db_path=db_path), db_path=db_path)
 
     create_ok = client.post(
         "/api/live-runs",
-        json={"ticker": "AAPL", "trade_date": "2025-05-02", "query": "q", "model_id": "model-default"},
+        json={"ticker": "AAPL", "trade_date": "2025-05-02", "query": "q",
+              "model": {"provider": "openai", "model_id": "model-default", "api_key": "", "credential_source": "server_env"}},
     )
-    create_failed = client.post(
+    create_invalid = client.post(
         "/api/live-runs",
-        json={"ticker": "BAD", "trade_date": "2025-05-02", "query": "q", "model_id": "model-default"},
+        json={"ticker": "AAPL", "trade_date": "2025-05-02", "query": "q"},
     )
+    # V1.1 run: seed a completed row so the GET/artifacts contract is readable.
+    with __import__("catalyst_app.persistence.connect", fromlist=["open_rw"]).open_rw(db_path) as conn:
+        conn.execute(
+            "INSERT INTO runs (run_id, lifecycle_status, idempotency_key, request_hash,"
+            " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at)"
+            " VALUES ('run-1', 'COMPLETED', NULL, 'a'*64, 'm', 'b'*64, 0, 't', 't')"
+        )
+        conn.execute(
+            "INSERT INTO run_events (run_id, seq, occurred_at, event_type, stage, payload_json, schema_version)"
+            " VALUES ('run-1', 1, 't', 'run.completed', 'TERMINAL', '{}', 'v1')"
+        )
+        conn.execute(
+            "INSERT INTO run_artifacts (artifact_id, run_id, event_seq, artifact_type, payload_hash, payload_json, optional)"
+            " VALUES ('artifact:1', 'run-1', 1, 'state_snapshot', ?, ?, 0)",
+            ("a" * 64, _json.dumps({"state": {"phase": "miner"}})),
+        )
+        conn.commit()
+
     run_ok = client.get("/api/live-runs/run-1")
     run_missing = client.get("/api/live-runs/unknown")
     events = client.get("/api/live-runs/run-1/events")
@@ -164,21 +209,18 @@ def test_backend_api_contract_endpoints(tmp_path):
     range_local = client.get("/api/range-local")
 
     assert create_ok.status_code == 200
-    assert create_ok.json()["status"] == "QUEUED"
-    assert create_failed.status_code == 200
-    assert create_failed.json()["status"] == "FAILED_REQUEST"
+    assert create_ok.json()["status"] == "ACCEPTED"
+    assert create_invalid.status_code == 422
     assert run_ok.status_code == 200
     assert "current_node" not in run_ok.json()
-    assert "last_completed_node" in run_ok.json()
-    assert "predicted_next_node" in run_ok.json()
+    assert "last_completed_node" not in run_ok.json()
+    assert "predicted_next_node" not in run_ok.json()
+    assert run_ok.json()["lifecycle_status"] == "COMPLETED"
     assert run_missing.status_code == 404
     assert events.status_code == 200
-    event_statuses = [item["status_after"] for item in events.json()]
-    assert "SUFFICIENT" in event_statuses
-    assert "SYSTEM_ERROR" in event_statuses
     assert artifacts.status_code == 200
-    assert "payload" in artifacts.json()[0]
-    assert "payload_json" not in artifacts.json()[0]
+    assert artifacts.json()["items"][0]["artifact_type"] == "state_snapshot"
+    assert "payload" not in artifacts.json()["items"][0]
     assert retry_ok.status_code == 200
     assert retry_ok.json()["ok"] is True
     assert retry_missing.status_code == 200
