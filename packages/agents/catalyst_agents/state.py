@@ -131,6 +131,8 @@ class AttributionState(TypedDict):
 
 
 class FoundationStage(str, Enum):
+    RUN_ADMISSION = "run_admission"
+    QUERY_VALIDATION = "query_validation"
     OBSERVATION_BUILD = "observation_build"
     RESEARCH_POLICY = "research_policy"
     RESEARCH_EXECUTION = "research_execution"
@@ -138,6 +140,12 @@ class FoundationStage(str, Enum):
     COVERAGE_SUMMARY = "coverage_summary"
     CONTEXT_PACK_BUILD = "context_pack_build"
     ANALYST_BOUNDARY = "analyst_boundary"
+    CLAIM_PLAN_BUILD = "claim_plan_build"
+    CLAIM_VALIDATION = "claim_validation"
+    STREAMING_ANSWER_WRITER = "streaming_answer_writer"
+    POST_STREAM_ASSURANCE = "post_stream_assurance"
+    FINALIZER = "finalizer"
+    TERMINAL = "terminal"
 
 
 class FoundationGraphState(TypedDict, total=False):

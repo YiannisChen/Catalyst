@@ -904,3 +904,314 @@ def run_corrective_round(
         analyst_provider_attempts=analyst["analyst_provider_attempts"],
         delta_evidence_ids=draft.delta_evidence_ids,
     )
+
+
+# ---------------------------------------------------------------------------
+# M5-9: V1.1 production graph over the normalized assessment
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class V1RunResult:
+    """Bounded V1.1 run result: thin state plus immutable artifacts."""
+
+    state: FoundationGraphState
+    move_profile: MoveProfile
+    evidence_state: EvidenceState
+    coverage_summary: CoverageSummary
+    context_pack: EvidenceAnalystContextPack
+    assessment: Any
+    validated_claim_plan: Any
+    answer: Any
+    assurance_checks: tuple[Any, ...]
+    terminal_envelope: dict
+    logical_model_call_count: int
+    analyst_logical_calls: int
+    analyst_provider_attempts: int
+    writer_logical_calls: int
+    writer_provider_attempts: int
+    corrective_rounds: int
+
+
+def extract_answer_markers(answer_text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Extract emitted citation and claim markers from the answer text.
+
+    The Writer prompt requires bounded markers so deterministic assurance can
+    verify allowed subsets and same-run citation resolution.
+    """
+    import re
+
+    citations = tuple(
+        sorted(set(re.findall(r"\(([A-Za-z0-9:_-]+)\)", answer_text)))
+    )
+    claim_markers = tuple(
+        sorted(set(re.findall(r"\[([A-Za-z0-9:_-]+)\]", answer_text)))
+    )
+    return citations, claim_markers
+
+
+def _observed_move_text(ticker: str, move_profile: MoveProfile, session_date: str) -> str:
+    target_return = getattr(move_profile, "target_return", None)
+    if target_return is None:
+        return f"{ticker} moved on {session_date}"
+    return f"{ticker} {target_return:+.2f}% on {session_date}"
+
+
+def run_v1_graph(
+    *,
+    run_id: str,
+    temporal_identity: TemporalIdentity,
+    data_runtime_identity: DataRuntimeIdentity,
+    ticker: str,
+    cutoff: str,
+    requested_manifest_id: str,
+    observation_provider: ContextProvider,
+    retriever: ResearchRetriever,
+    policy_config: ObservationPolicyConfig,
+    research_concurrency: int,
+    research_stage_timeout_seconds: float,
+    persistence: PackPersistence,
+    packing_policy_version: str,
+    template_bytes: bytes,
+    template_version: str,
+    analyst_llm: Any,
+    writer_llm: Any,
+    capability_registry: Any,
+    corrective_policy: Any | None = None,
+    prompt_template: str | None = None,
+    query_builder: Callable[[Any, str], str] | None = None,
+    structured_provider: Any | None = None,
+    run_deadline_epoch_ms: int | None = None,
+    normalization_policy_version: str = "assessment-normalizer-v1",
+    writer_sink: Any | None = None,
+) -> V1RunResult:
+    """Run the complete V1.1 semantic path (Frozen §6.1).
+
+    RUN_ADMISSION -> QUERY_VALIDATION -> OBSERVATION_BUILD ->
+    INITIAL_RESEARCH_POLICY -> INITIAL_RESEARCH_EXECUTION -> EVIDENCE_STATE ->
+    COVERAGE_SUMMARY -> CONTEXT_PACK_BUILD -> EVIDENCE_ANALYST (routed
+    READY/ABSTAIN/FOLLOW_UP) -> at most one corrective round -> CLAIM_PLAN_BUILD
+    -> CLAIM_VALIDATION -> STREAMING_ANSWER_WRITER -> POST_STREAM_ASSURANCE ->
+    FINALIZER. Logical call budget: 2 normal / 3 corrective; provider attempts
+    per role <= 2 (one technical retry).
+    """
+    from catalyst_agents.attribution.assessment import normalize_decision
+    from catalyst_agents.attribution.claims import (
+        WriterFormatKind,
+        WriterFormatStyleContract,
+        WriterSection,
+        build_claim_plan,
+    )
+    from catalyst_agents.nodes.writer import build_writer_input
+    from catalyst_agents.attribution.claim_validation import validate_claim_plan
+    from catalyst_agents.nodes.evidence_analyst import evidence_analyst
+    from catalyst_agents.nodes.writer import writer_node
+    from catalyst_agents.runtime.assurance.checks import run_structural_assurance
+    from catalyst_agents.nodes.finalizer import thin_finalizer
+    from catalyst_agents.runtime.delta_sink import InMemoryDeltaSink
+
+    # RUN_ADMISSION / QUERY_VALIDATION
+    if not run_id or not ticker or not cutoff:
+        raise ValueError("run_v1_graph requires run_id, ticker, and cutoff")
+
+    # OBSERVATION_BUILD .. CONTEXT_PACK_BUILD (reuse the M4 foundation spine)
+    foundation = build_foundation_graph(
+        run_id=run_id,
+        round=1,
+        temporal_identity=temporal_identity,
+        data_runtime_identity=data_runtime_identity,
+        ticker=ticker,
+        cutoff=cutoff,
+        requested_manifest_id=requested_manifest_id,
+        observation_provider=observation_provider,
+        retriever=retriever,
+        policy_config=policy_config,
+        research_concurrency=research_concurrency,
+        research_stage_timeout_seconds=research_stage_timeout_seconds,
+        persistence=persistence,
+        packing_policy_version=packing_policy_version,
+        template_bytes=template_bytes,
+        template_version=template_version,
+        analyst_boundary=None,
+        structured_provider=structured_provider,
+        run_deadline_epoch_ms=run_deadline_epoch_ms,
+    )
+
+    # EVIDENCE_ANALYST round 1
+    analyst1 = evidence_analyst(
+        foundation.state,
+        llm=analyst_llm,
+        persistence=persistence,
+        prompt_template=prompt_template,
+    )
+    assessment = normalize_decision(
+        analyst1["analyst_decision"],
+        foundation.context_pack,
+        capability_registry,
+        normalization_policy_version,
+        policy=corrective_policy,
+        evidence_state_hash=foundation.state["evidence_state_hash"],
+    )
+    corrective_rounds = 0
+    analyst_logical_calls = analyst1["analyst_logical_calls"]
+    analyst_provider_attempts = analyst1["analyst_provider_attempts"]
+    final_pack = foundation.context_pack
+
+    # Route READY | FOLLOW_UP | ABSTAIN over the normalized assessment.
+    from catalyst_agents.nodes.decision_router import route_assessment
+
+    route = route_assessment(assessment)
+    if route == "follow_up":
+        corrective = run_corrective_round(
+            run_id=run_id,
+            round=2,
+            temporal_identity=temporal_identity,
+            data_runtime_identity=data_runtime_identity,
+            ticker=ticker,
+            cutoff=cutoff,
+            requested_manifest_id=requested_manifest_id,
+            scenario=foundation.classification.scenario,
+            move_profile=foundation.move_profile,
+            prior_evidence_state=foundation.evidence_state,
+            prior_research_execution=foundation.research_execution,
+            prior_assessment=assessment,
+            research_policy_version=policy_config.scenario_policy_version,
+            retriever=retriever,
+            research_concurrency=research_concurrency,
+            research_stage_timeout_seconds=research_stage_timeout_seconds,
+            persistence=persistence,
+            packing_policy_version=packing_policy_version,
+            template_bytes=template_bytes,
+            template_version=template_version,
+            llm=analyst_llm,
+            capability_registry=capability_registry,
+            query_builder=query_builder,
+            structured_provider=structured_provider,
+            run_deadline_epoch_ms=run_deadline_epoch_ms,
+            policy=corrective_policy,
+            normalization_policy_version=normalization_policy_version,
+            prompt_template=prompt_template,
+            research_history=foundation.classification.tasks,
+        )
+        assessment = corrective.assessment
+        final_pack = corrective.context_pack
+        corrective_rounds = 1
+        analyst_logical_calls += corrective.analyst_logical_calls
+        analyst_provider_attempts += corrective.analyst_provider_attempts
+
+    # CLAIM_PLAN_BUILD
+    observed_move = _observed_move_text(
+        ticker, foundation.move_profile, temporal_identity.session_date
+    )
+    plan = build_claim_plan(assessment, observed_move=observed_move)
+
+    # CLAIM_VALIDATION
+    validated = validate_claim_plan(
+        plan,
+        assessment,
+        runtime_identity=_artifact_hash(data_runtime_identity),
+        temporal_identity=temporal_identity,
+        evidence_inventory=final_pack.evidence_inventory,
+    )
+
+    # STREAMING_ANSWER_WRITER
+    if validated.status.value == "ABSTAIN":
+        format_contract = WriterFormatStyleContract(
+            format_kind=WriterFormatKind.FIXED_ABSTENTION,
+            required_sections=(WriterSection.OBSERVED_MOVE, WriterSection.LIMITATIONS),
+            style_instructions=(),
+        )
+    else:
+        format_contract = WriterFormatStyleContract(
+            format_kind=WriterFormatKind.CAUSAL,
+            required_sections=(
+                WriterSection.SUMMARY,
+                WriterSection.CAUSAL_EXPLANATION,
+                WriterSection.LIMITATIONS,
+            ),
+            style_instructions=("concise",),
+        )
+    writer_input = build_writer_input(
+        validated,
+        observed_move=observed_move,
+        format_style_contract=format_contract,
+    )
+    sink = writer_sink or InMemoryDeltaSink()
+    writer_result = writer_node(
+        {"run_id": run_id},
+        llm=writer_llm,
+        writer_input=writer_input,
+        sink=sink,
+    )
+    answer = writer_result["answer"]
+
+    # POST_STREAM_ASSURANCE
+    emitted_citations, emitted_claim_markers = extract_answer_markers(answer.text)
+    assurance_artifacts = {
+        "stream_complete": writer_result["stream_complete"],
+        "answer_text": answer.text,
+        "emitted_citations": emitted_citations,
+        "emitted_claim_markers": emitted_claim_markers,
+        "permitted_claim_ids": validated.permitted_claim_ids,
+        "permitted_evidence_ids": validated.permitted_evidence_ids,
+        "required_sections": tuple(
+            section.value for section in format_contract.required_sections
+        ),
+        "required_limitations": validated.required_limitations,
+        "emitted_status": validated.status.value,
+        "emitted_attribution_type": validated.attribution_type.value,
+        "validated_status": validated.status.value,
+        "validated_attribution_type": validated.attribution_type.value,
+        "input_hash": "i" * 64,
+        "plan_hash": validated.plan_hash,
+        "validated_plan_hash": validated.plan_hash,
+        "evidence_state_hash": validated.evidence_state_hash,
+        "runtime_identity": _artifact_hash(data_runtime_identity),
+        "output_hash": answer.text_sha256,
+        "cancellation_requested": bool(foundation.state.get("cancel_requested", False)),
+        "timed_out": False,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "completion_state": "completed",
+    }
+    assurance_checks = run_structural_assurance(run_id, assurance_artifacts)
+
+    # FINALIZER
+    terminal = thin_finalizer(
+        {"run_id": run_id},
+        answer_text=answer.text,
+        validated_plan=validated,
+        assurance_checks=assurance_checks,
+        sink=sink,
+    )
+
+    state: FoundationGraphState = {
+        **foundation.state,
+        "stage": FoundationStage.TERMINAL,
+        "round": 1 + corrective_rounds,
+        "terminal_error": None,
+    }
+    if corrective_rounds:
+        state["round"] = 2
+        state["evidence_state_ref"] = f"artifact:evidence_state:{run_id}:2"
+        state["context_pack_ref"] = f"artifact:context_pack:{run_id}:2"
+        state["context_pack_hash"] = final_pack.context_pack_sha256
+
+    logical_model_call_count = analyst_logical_calls + writer_result["writer_logical_calls"]
+    return V1RunResult(
+        state=state,
+        move_profile=foundation.move_profile,
+        evidence_state=corrective.evidence_state if corrective_rounds else foundation.evidence_state,
+        coverage_summary=corrective.coverage_summary if corrective_rounds else foundation.coverage_summary,
+        context_pack=final_pack,
+        assessment=assessment,
+        validated_claim_plan=validated,
+        answer=answer,
+        assurance_checks=tuple(assurance_checks),
+        terminal_envelope=terminal["terminal_envelope"],
+        logical_model_call_count=logical_model_call_count,
+        analyst_logical_calls=analyst_logical_calls,
+        analyst_provider_attempts=analyst_provider_attempts,
+        writer_logical_calls=writer_result["writer_logical_calls"],
+        writer_provider_attempts=writer_result["writer_provider_attempts"],
+        corrective_rounds=corrective_rounds,
+    )

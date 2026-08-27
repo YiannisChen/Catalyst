@@ -260,6 +260,8 @@ def validate_claim_plan(
         }
         unknown_lineage = any(
             getattr(item, "independence_status", None) == "UNKNOWN"
+            and getattr(item, "evidence_role", None)
+            not in {"DIRECT_PRIMARY", "PRIMARY_AUTHORITY"}
             for item in primary_support
         )
         if (not has_primary_grade and len(known_groups) < 2) or unknown_lineage:

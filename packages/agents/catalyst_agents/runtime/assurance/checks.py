@@ -90,8 +90,10 @@ def run_structural_assurance(run_id: str, artifacts: dict[str, Any]) -> list[Ass
     stream_complete = bool(artifacts.get("stream_complete"))
     answer_upper = answer_text.upper()
 
-    citation_ok = bool(emitted_citations) and emitted_citations.issubset(permitted_evidence)
-    claim_markers_ok = bool(emitted_claim_markers) and emitted_claim_markers.issubset(permitted_claims)
+    # Empty marker sets are valid (e.g. fixed abstention); any emitted marker
+    # must resolve within the same run's permitted surface.
+    citation_ok = emitted_citations.issubset(permitted_evidence)
+    claim_markers_ok = emitted_claim_markers.issubset(permitted_claims)
     sections_ok = all(section in answer_upper for section in required_sections)
     limitations_ok = all(limitation.lower() in answer_text.lower() for limitation in required_limitations)
     status_ok = emitted_status == validated_status and emitted_type == validated_type

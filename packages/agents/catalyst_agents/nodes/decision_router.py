@@ -86,3 +86,27 @@ def decision_router(state: AttributionState) -> dict:
 def route_after_decision_router(state: dict) -> str:
     """Return the next graph edge chosen by DecisionRouter."""
     return state.get("router_edge", "insufficient")
+
+
+# ---------------------------------------------------------------------------
+# M5-9: V1.1 routing over the normalized EvidenceAssessment. The legacy
+# decision_router above remains the sealed MCJ baseline instrument until M5-11.
+# ---------------------------------------------------------------------------
+
+def route_assessment(assessment: object) -> str:
+    """Route the normalized EvidenceAssessment to READY | FOLLOW_UP | ABSTAIN.
+
+    The normalized ``research_decision`` controls the workflow. A FOLLOW_UP
+    only routes to corrective execution when a code-owned executable batch
+    exists; otherwise normalization has already produced READY.
+    """
+    from catalyst_agents.attribution.analyst import ResearchDecision
+
+    decision = getattr(assessment, "research_decision", ResearchDecision.READY)
+    if decision is ResearchDecision.FOLLOW_UP:
+        if getattr(assessment, "corrective_batch", None) is not None:
+            return "follow_up"
+        return "ready"
+    if decision is ResearchDecision.ABSTAIN:
+        return "abstain"
+    return "ready"

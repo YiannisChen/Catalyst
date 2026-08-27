@@ -91,7 +91,7 @@ def _writer_messages(writer_input: WriterInput) -> list[dict]:
         )
     system_lines.append(f"Observed move: {writer_input.observed_move}")
     for claim in writer_input.validated_claim_plan.claims:
-        line = f"- [{claim.role.value}] {claim.statement}"
+        line = f"- [{claim.role.value}] (claim_id: {claim.claim_id}) {claim.statement}"
         if claim.mechanism:
             line += f" (mechanism: {claim.mechanism})"
         if claim.citation_evidence_ids:

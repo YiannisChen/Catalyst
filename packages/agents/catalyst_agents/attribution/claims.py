@@ -505,6 +505,7 @@ _ORDERING_POLICY_VERSION = "claim-ordering-v1"
 _LIMITATION_TEMPLATES = {
     "conflict": "Unresolved material conflict remains between evidence items.",
     "gap": "Coverage gap: {reason} for {need}.",
+    "abstain_default": "No causal explanation was established from the available evidence.",
 }
 
 
@@ -527,6 +528,8 @@ def _limitation_templates(assessment: Any) -> tuple[str, ...]:
                 reason=gap.reason_code.value, need=gap.evidence_need.value
             )
         )
+    if not limitations and assessment.final_status is AttributionStatus.ABSTAIN:
+        limitations.append(_LIMITATION_TEMPLATES["abstain_default"])
     return tuple(dict.fromkeys(limitations))
 
 

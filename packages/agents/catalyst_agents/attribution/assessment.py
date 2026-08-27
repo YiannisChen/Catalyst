@@ -461,10 +461,23 @@ def _compute_status_ceiling(
         if eid in inventory
     }
 
-    # Commentary-only/unknown-role/unknown-lineage support -> at most PARTIAL.
+    # Commentary-only/unknown-role support -> at most PARTIAL.
     if any(role in {"COMMENTARY_LEAD", "UNKNOWN"} for role in roles):
         return AttributionStatus.PARTIAL
-    if "UNKNOWN" in statuses:
+    # Unknown-lineage support caps to PARTIAL only when it is not primary-grade:
+    # direct primary/primary-authority evidence is authoritative regardless of
+    # lineage, while unknown-lineage news never counts as independent support.
+    non_primary_support = {
+        eid
+        for eid in support_ids
+        if eid in inventory
+        and getattr(inventory[eid], "evidence_role", None)
+        not in {"DIRECT_PRIMARY", "PRIMARY_AUTHORITY"}
+    }
+    if any(
+        getattr(inventory[eid], "independence_status", None) == "UNKNOWN"
+        for eid in non_primary_support
+    ):
         return AttributionStatus.PARTIAL
 
     known_news_groups = {
