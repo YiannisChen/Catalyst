@@ -31,6 +31,7 @@ from catalyst_agents.runtime.pack_persistence import (
 from catalyst_agents.runtime.provider_capability import (
     CAPABILITY_REVISION,
     ProviderCapability,
+    ProviderCapabilityError,
     ModelRoleCallError,
     ModelSchemaFailure,
     ModelTimeoutFailure,
@@ -85,15 +86,17 @@ def _decision_hash(decision: AnalystDecision) -> str:
     ).hexdigest()
 
 
-def _invoke_llm(llm: Any, messages: list[RenderMessage]) -> Any:
-    """Call the injected provider with LangChain-style message objects.
+def _invoke_llm(llm: Any, messages: list[RenderMessage] | list[dict]) -> Any:
+    """Call the injected provider with standard role/content dict messages.
 
     The provider may be a LangChain client (``invoke(messages)``) or a plain
-    callable. Messages are converted to role/content dicts so fakes and real
-    clients share the same contract.
+    callable. Accepts either RenderMessage objects or already-converted dicts
+    so the identical dictionary payload is used on every attempt.
     """
     dict_messages = [
-        {"role": message.role, "content": message.content}
+        dict(message)
+        if isinstance(message, dict)
+        else {"role": message.role, "content": message.content}
         for message in messages
     ]
     if callable(llm):
@@ -138,22 +141,45 @@ def _parse_decision(raw: Any, schema: type[AnalystDecision]) -> AnalystDecision:
 
 
 
-def _structured_output_surface(llm: Any, schema: type[AnalystDecision]) -> Any | None:
-    """Return the provider's admitted native structured-output surface.
+def render_messages_to_dicts(messages: tuple[RenderMessage, ...]) -> list[dict]:
+    """Convert RenderMessages to the standard role/content dictionary payload.
+
+    Matches LangChain's standard message dict conversion (role + content) and
+    is the exact payload passed to provider surfaces on every attempt.
+    """
+    return [
+        {"role": message.role, "content": message.content}
+        for message in messages
+    ]
+
+
+def _admit_structured_output_surface(llm: Any, schema: type[AnalystDecision]) -> Any | None:
+    """Admit the provider's native structured-output surface, fail closed.
 
     ``with_structured_output(schema)`` is a factory, not a model call. If the
-    provider does not expose it (or it is unusable), None is returned and the
-    strict invoke+parse fallback is used (fake-provider testability).
+    provider does not expose it, None is returned and the strict invoke+parse
+    fallback is used (fake-provider testability). If the provider ADMITS the
+    surface but the factory raises or returns an unusable surface, this fails
+    closed with a typed ProviderCapabilityError — never a silent raw-invoke
+    fallback.
     """
     with_structured = getattr(llm, "with_structured_output", None)
     if not callable(with_structured):
         return None
     try:
         surface = with_structured(schema)
-    except Exception:
-        return None
+    except Exception as exc:
+        raise ProviderCapabilityError(
+            provider=type(llm).__name__,
+            missing=["with_structured_output_surface"],
+            needed=ANALYST_REQUIRED_CAPABILITIES,
+        ) from exc
     if surface is None or not callable(getattr(surface, "invoke", None)):
-        return None
+        raise ProviderCapabilityError(
+            provider=type(llm).__name__,
+            missing=["with_structured_output_surface"],
+            needed=ANALYST_REQUIRED_CAPABILITIES,
+        )
     return surface
 
 
@@ -173,11 +199,15 @@ def evidence_analyst(
     §7): the Analyst inventory is derived ONLY from
     ``pair.pack.included_evidence_ids``. A caller-supplied ``pack_inventory_ids``
     override is rejected unless it is byte-for-byte equal to the persisted
-    inventory. Missing pack, omitted/empty inventory, or an enlarged override
-    fail closed before any provider call. When the admitted provider exposes a
-    native structured-output surface (``with_structured_output(schema)``), it is
-    invoked; otherwise the strict invoke+parse path is used. Reference-integrity
-    validation stays inside the bounded identical-input retry boundary.
+    inventory. Missing pack or an enlarged override fail closed before any
+    provider call; an empty inventory is valid and permits an evidence-free
+    ABSTAIN decision (any evidence reference enters the bounded schema retry
+    and exhausts as MODEL_SCHEMA_FAILURE). When the admitted provider exposes a
+    native structured-output surface (``with_structured_output(schema)``) it is
+    invoked with the identical dictionary message payload on every attempt; an
+    admitted-but-broken surface fails closed with a typed capability error
+    (no silent raw-invoke fallback). Reference-integrity validation stays
+    inside the bounded identical-input retry boundary.
     """
     run_id = state.get("run_id")
     if not run_id:
@@ -192,11 +222,6 @@ def evidence_analyst(
             "inventory cannot be derived and provider dispatch is prohibited"
         )
     persisted_inventory = tuple(pair.pack.included_evidence_ids)
-    if not persisted_inventory:
-        raise PackNotPersistedError(
-            f"run {run_id!r} persisted pack has an empty evidence inventory; "
-            "provider dispatch is prohibited"
-        )
     if pack_inventory_ids is not None and tuple(pack_inventory_ids) != persisted_inventory:
         raise PackNotPersistedError(
             "caller-supplied pack_inventory_ids does not byte-for-byte match "
@@ -219,14 +244,19 @@ def evidence_analyst(
         messages.append(RenderMessage(role="system", content=prompt))
     messages.extend(rendered_messages)
 
+    # Standard role/content dictionaries, built once and used identically on
+    # every provider attempt (both the native surface and the fallback path).
+    dict_messages = render_messages_to_dicts(tuple(messages))
+
     # Admitted native structured-output surface (built once; not a model call).
-    structured_surface = _structured_output_surface(llm, schema)
+    # An admitted-but-broken surface fails closed at admission.
+    structured_surface = _admit_structured_output_surface(llm, schema)
 
     def attempt() -> AnalystDecision:
         if structured_surface is not None:
-            raw = structured_surface.invoke(messages)
+            raw = structured_surface.invoke(dict_messages)
         else:
-            raw = _invoke_llm(llm, messages)
+            raw = _invoke_llm(llm, dict_messages)
         decision = _parse_decision(raw, schema)
         # Reference-integrity against the authoritative persisted inventory is
         # structured-output validation INSIDE the bounded technical retry

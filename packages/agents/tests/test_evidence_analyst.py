@@ -79,6 +79,16 @@ class FakeAnalystProvider:
         )
         return self.decision_factory()
 
+    def with_structured_output(self, schema):
+        """Real test structured-output surface: invoke receives dict messages."""
+        outer = self
+
+        class Surface:
+            def invoke(self, messages):
+                return outer.invoke(messages)
+
+        return Surface()
+
 
 def _rendered_messages() -> tuple[RenderMessage, ...]:
     return (
@@ -551,14 +561,41 @@ def test_missing_persisted_pack_fails_closed_before_provider_dispatch() -> None:
     assert llm.calls == 0
 
 
-def test_empty_persisted_inventory_fails_closed() -> None:
-    """An omitted/empty persisted inventory must fail closed before dispatch."""
+def _abstain_decision_dict() -> dict:
+    return {
+        "schema_version": "1.0",
+        "evidence_decisions": [],
+        "candidate_hypotheses": [],
+        "research_decision": "ABSTAIN",
+        "recommended_status": "ABSTAIN",
+        "proposed_attribution_type": "EVIDENCE_BACKED_CAUSAL",
+    }
+
+
+def test_empty_inventory_valid_abstain_succeeds_one_logical_call() -> None:
+    """An empty authoritative inventory is valid: an evidence-free ABSTAIN
+    AnalystDecision succeeds with exactly one logical call."""
+    store = InMemoryPackStore()
+    _persist_pair(store, pack=_build_pack(included=()))
+    llm = FakeAnalystProvider(_abstain_decision_dict)
+    result = evidence_analyst({"run_id": "run:1"}, llm=llm, persistence=store,
+                              prompt_template="t", schema=AnalystDecision)
+    assert llm.calls == 1
+    assert result["analyst_logical_calls"] == 1
+    assert result["analyst_provider_attempts"] == 1
+    assert result["analyst_decision"].research_decision.value == "ABSTAIN"
+
+
+def test_empty_inventory_evidence_ref_retries_once_then_model_schema_failure() -> None:
+    """Any evidence reference against an empty inventory enters the bounded
+    schema retry (max 2 provider attempts) and exhausts as MODEL_SCHEMA_FAILURE."""
     store = InMemoryPackStore()
     _persist_pair(store, pack=_build_pack(included=()))
     llm = FakeAnalystProvider(_valid_decision_dict)
-    with pytest.raises(PackNotPersistedError):
-        evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
-    assert llm.calls == 0
+    with pytest.raises(ModelRoleCallError, match="MODEL_SCHEMA_FAILURE"):
+        evidence_analyst({"run_id": "run:1"}, llm=llm, persistence=store,
+                         prompt_template="t", schema=AnalystDecision)
+    assert llm.calls == 2
 
 
 def test_caller_supplied_inventory_superset_fails_closed() -> None:
@@ -611,3 +648,113 @@ def test_native_structured_output_surface_invoked() -> None:
     assert llm.calls == 1
     assert result["analyst_logical_calls"] == 1
     assert result["analyst_provider_attempts"] == 1
+
+
+# ---------------------------------------------------------------------------
+# MERGE-BLOCKER: native structured-output dict messages + fail-closed admission
+# ---------------------------------------------------------------------------
+
+def test_native_surface_receives_dict_messages_not_render_objects() -> None:
+    """structured_surface.invoke must receive standard role/content dicts."""
+    store = InMemoryPackStore()
+    _persist_pair(store)
+
+    class DictOnlyProvider(FakeAnalystProvider):
+        def __init__(self, decision_factory):
+            super().__init__(decision_factory)
+            self.surface_calls = 0
+
+        def with_structured_output(self, schema):
+            outer = self
+
+            class Surface:
+                def invoke(self, messages):
+                    outer.surface_calls += 1
+                    outer.calls += 1
+                    assert all(
+                        isinstance(message, dict)
+                        and set(message) == {"role", "content"}
+                        for message in messages
+                    ), f"non-dict message passed to native surface: {messages!r}"
+                    return outer.decision_factory()
+
+            return Surface()
+
+    llm = DictOnlyProvider(_valid_decision_dict)
+    result = evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert llm.surface_calls == 1
+    assert llm.calls == 1
+    assert result["analyst_provider_attempts"] == 1
+
+
+def test_langchain_message_conversion_compatibility_offline() -> None:
+    """RenderMessage -> role/content dict conversion matches LangChain's
+    standard message dict conversion (offline; no network call)."""
+    from langchain_core.messages import SystemMessage
+
+    from catalyst_agents.nodes.evidence_analyst import render_messages_to_dicts
+
+    messages = (
+        RenderMessage(role="system", content="You are the Evidence Analyst."),
+        RenderMessage(role="system", content="observation={}"),
+    )
+    converted = render_messages_to_dicts(messages)
+    for message, expected in zip(
+        converted,
+        (
+            {"role": "system", "content": "You are the Evidence Analyst."},
+            {"role": "system", "content": "observation={}"},
+        ),
+    ):
+        assert message == expected
+        langchain_message = SystemMessage(content=message["content"])
+        assert {"role": langchain_message.type, "content": langchain_message.content} == message
+
+
+def test_native_factory_raise_fails_closed_typed() -> None:
+    """An admitted with_structured_output whose factory raises must fail closed
+    with a typed capability error; no silent fallback to raw invoke."""
+    store = InMemoryPackStore()
+    _persist_pair(store)
+
+    class BrokenNativeProvider(FakeAnalystProvider):
+        def with_structured_output(self, schema):
+            raise RuntimeError("factory exploded")
+
+    llm = BrokenNativeProvider(_valid_decision_dict)
+    with pytest.raises(ProviderCapabilityError):
+        evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert llm.calls == 0
+
+
+def test_native_invalid_surface_fails_closed_typed() -> None:
+    """An admitted with_structured_output returning an unusable surface must
+    fail closed with a typed capability error; no fallback."""
+    store = InMemoryPackStore()
+    _persist_pair(store)
+
+    class InvalidSurfaceProvider(FakeAnalystProvider):
+        def with_structured_output(self, schema):
+            return object()  # no invoke callable
+
+    llm = InvalidSurfaceProvider(_valid_decision_dict)
+    with pytest.raises(ProviderCapabilityError):
+        evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert llm.calls == 0
+
+
+def test_fallback_invoke_path_used_when_no_native_surface() -> None:
+    """Fakes without with_structured_output still use the strict invoke+parse
+    fallback (one logical call)."""
+    store = InMemoryPackStore()
+    _persist_pair(store)
+
+    class LegacyFake(FakeAnalystProvider):
+        def __init__(self, decision_factory):
+            super().__init__(decision_factory)
+            self.with_structured_output = None  # not admitted
+
+    llm = LegacyFake(_valid_decision_dict)
+    result = evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert llm.calls == 1
+    assert result["analyst_logical_calls"] == 1

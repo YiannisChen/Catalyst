@@ -158,6 +158,15 @@ class GraphAnalystProvider:
         self.calls += 1
         return self.decision_factory()
 
+    def with_structured_output(self, schema):
+        outer = self
+
+        class Surface:
+            def invoke(self, messages):
+                return outer.invoke(messages)
+
+        return Surface()
+
 
 class GraphWriterProvider:
     def __init__(self, text_or_factory):
