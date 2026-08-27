@@ -15,8 +15,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel
+
+_logger = logging.getLogger(__name__)
+
+
+def _mark_deprecated(response: Response, *, endpoint: str) -> None:
+    """Flag migration-window compat callers for the M8 audit (M6-12)."""
+    response.headers["Deprecation"] = "true"
+    _logger.info("deprecated compat endpoint called: %s", endpoint)
 
 from catalyst_app.api_dto import (
     ArtifactDTO,
@@ -442,9 +452,11 @@ def health(req: Request) -> HealthDTO:
 @router.get("/live-runs/{run_id}/events", response_model=list[RunEventResponse])
 def get_live_run_events(
     run_id: str,
+    response: Response,
     after_seq: int | None = Query(default=None, ge=0),
     service=Depends(get_live_run_service),
 ) -> list[RunEventResponse]:
+    _mark_deprecated(response, endpoint="events")
     rows = service.get_events(run_id, after_seq=after_seq)
     return [_as_run_event_response(row) for row in rows]
 
@@ -452,9 +464,11 @@ def get_live_run_events(
 @router.get("/live-runs/{run_id}/workspace", response_model=WorkspaceResponse)
 def get_workspace(
     run_id: str,
+    response: Response,
     service=Depends(get_live_run_service),
 ) -> WorkspaceResponse:
     """Legacy saved-artifact translation for the v4 workbench (M6 window)."""
+    _mark_deprecated(response, endpoint="workspace")
     summary = service.get_run(run_id)
     if summary is None:
         raise HTTPException(status_code=404, detail="run_not_found")
