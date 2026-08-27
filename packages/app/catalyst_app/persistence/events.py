@@ -316,6 +316,24 @@ class EventRepository:
                     f"cannot transition to {to_status.value}"
                 )
 
+        # A run.failed terminal event records its typed failure code on the
+        # runs row inside the same transaction (Final TSD §17 terminal commit).
+        if events and events[-1][0] is RunEventType.RUN_FAILED:
+            failed_payload = events[-1][2]
+            conn.execute(
+                """
+                UPDATE runs
+                SET failure_code = ?, failure_message = ?, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (
+                    getattr(failed_payload, "failure_code", None),
+                    getattr(failed_payload, "safe_message", None),
+                    occurred_at,
+                    run_id,
+                ),
+            )
+
         # Verify every artifact ref resolves and its stored hash matches.
         for artifact in artifact_payloads:
             row = conn.execute(

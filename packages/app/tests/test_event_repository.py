@@ -404,3 +404,37 @@ def test_append_can_run_inside_caller_transaction(tmp_path: Path) -> None:
             "SELECT COUNT(*) FROM run_events WHERE run_id='run:tx'"
         ).fetchone()[0]
         assert count == 1
+
+
+def test_run_failed_terminal_batch_writes_failure_code(tmp_path: Path) -> None:
+    """A run.failed terminal batch also records the failure code on runs."""
+    from catalyst_app.events import RunFailedPayload
+
+    db_path = tmp_path / "runtime.db"
+    _prepare_db(db_path)
+    repo = _repo(db_path)
+    repo.append(
+        run_id="run:1",
+        event_type=RunEventType.STAGE_STARTED,
+        payload=StageStartedPayload(stage="x"),
+        lifecycle_update=(RunLifecycleStatus.ACCEPTED, RunLifecycleStatus.RUNNING),
+    )
+
+    repo.append_terminal(
+        run_id="run:1",
+        assurance_payload=AssuranceCompletedPayload(
+            valid=False, violations=("submission_failure",)
+        ),
+        terminal_event_type=RunEventType.RUN_FAILED,
+        terminal_payload=RunFailedPayload(
+            failure_code="SUBMISSION_FAILURE", stage="ADMISSION", retryable=True
+        ),
+        lifecycle_update=(RunLifecycleStatus.RUNNING, RunLifecycleStatus.FAILED),
+    )
+
+    with open_rw(db_path) as conn:
+        row = conn.execute(
+            "SELECT lifecycle_status, failure_code FROM runs WHERE run_id='run:1'"
+        ).fetchone()
+    assert row["lifecycle_status"] == "FAILED"
+    assert row["failure_code"] == "SUBMISSION_FAILURE"
