@@ -533,6 +533,7 @@ def run_corrective_round(
         capability_registry,
         normalization_policy_version,
         policy=effective_policy,
+        evidence_state_hash=evidence_state.state_hash,
     )
 
     state: FoundationGraphState = {

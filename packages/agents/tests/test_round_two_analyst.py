@@ -282,6 +282,7 @@ def _round1_assessment(run_id: str):
         result.context_pack,
         _registry(),
         "norm:v1",
+        evidence_state_hash=result.state["evidence_state_hash"],
     )
     assert assessment.corrective_batch is not None
     return result, retriever, persistence, llm, assessment

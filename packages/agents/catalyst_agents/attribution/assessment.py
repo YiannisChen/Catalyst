@@ -55,6 +55,14 @@ _STATUS_RANK: dict[AttributionStatus, int] = {
 _NORMALIZATION_POLICY_VERSION = "assessment-normalizer-v1"
 
 
+class AssessmentIdentityFailure(Exception):
+    """Identity/integrity failure at normalization (integrity/system class).
+
+    Missing or malformed run/evidence/context identity fails the run closed;
+    it never becomes an epistemic ABSTAIN.
+    """
+
+
 class ContextPackSurface(Protocol):
     """The EvidenceAnalystContextPack fields the normalizer reads."""
 
@@ -145,8 +153,9 @@ class EvidenceAssessment(BaseModel):
     normalization_policy_version: str
 
     # --- M5-2 normalized surface -------------------------------------------
-    run_id: str = "run:unknown"
-    round: int = 1
+    # Identity is required and validated; no synthetic defaults are accepted.
+    run_id: str
+    round: int
     normalized_hypotheses: tuple[NormalizedHypothesis, ...] = ()
     normalized_evidence_decisions: tuple[NormalizedEvidenceDecision, ...] = ()
     normalized_conflicts: tuple[str, ...] = ()
@@ -155,8 +164,22 @@ class EvidenceAssessment(BaseModel):
     final_status: AttributionStatus = AttributionStatus.ABSTAIN
     final_attribution_type: AttributionType = AttributionType.EVIDENCE_BACKED_CAUSAL
     normalization_diagnostics: tuple[str, ...] = ()
-    evidence_state_hash: str = "0" * 64
-    assessment_hash: str = "0" * 64
+    evidence_state_hash: str
+    assessment_hash: str
+
+    @field_validator("run_id")
+    @classmethod
+    def _run_id(cls, value: str) -> str:
+        if not value or value == "run:unknown":
+            raise ValueError("run_id must be a real run identity, never 'run:unknown'")
+        return value
+
+    @field_validator("round")
+    @classmethod
+    def _round_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("round must be positive")
+        return value
 
     @field_validator(
         "decision_hash",
@@ -169,6 +192,8 @@ class EvidenceAssessment(BaseModel):
     def _sha256_hex(cls, value: str) -> str:
         if _SHA256_RE.fullmatch(value) is None:
             raise ValueError("must be a lowercase SHA-256 hex digest")
+        if value == "0" * 64:
+            raise ValueError("all-zero SHA-256 placeholder is not a valid identity")
         return value
 
     @model_validator(mode="after")
@@ -606,10 +631,17 @@ def normalize_decision(
             f"{unknown}"
         )
 
+    if not context_pack.run_id or context_pack.run_id == "run:unknown":
+        raise AssessmentIdentityFailure(
+            "context pack run_id is missing or placeholder; identity must be supplied"
+        )
+    if evidence_state_hash is None or _SHA256_RE.fullmatch(evidence_state_hash) is None:
+        raise AssessmentIdentityFailure(
+            "evidence_state_hash must be supplied as a lowercase SHA-256 hex digest"
+        )
+    resolved_evidence_state_hash = evidence_state_hash
+
     decision_hash = _sha256_hex(decision.model_dump(mode="json"))
-    resolved_evidence_state_hash = evidence_state_hash or getattr(
-        context_pack, "evidence_state_hash", "0" * 64
-    )
 
     # Step 3: deterministic runtime IDs from decision hash + stable ordinals.
     hypothesis_id_map: dict[str, str] = {}
@@ -678,6 +710,14 @@ def normalize_decision(
                 normalization_policy_version=policy_version,
                 run_id=run_id,
                 round=round,
+                evidence_state_hash=resolved_evidence_state_hash,
+                assessment_hash=_sha256_hex(
+                    {
+                        "interim": decision_hash,
+                        "run_id": run_id,
+                        "round": round,
+                    }
+                ),
                 normalized_corrective_intents=normalized_intents,
                 research_decision=decision.research_decision,
             ),
@@ -782,6 +822,7 @@ def normalize_decision(
 
 
 __all__ = [
+    "AssessmentIdentityFailure",
     "ContextPackSurface",
     "CapabilityRegistrySurface",
     "EvidenceAssessment",

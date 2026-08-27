@@ -183,6 +183,7 @@ def _normalize(decision: AnalystDecision, **pack_kwargs: Any) -> EvidenceAssessm
         context_pack=pack,
         capability_registry=registry,
         policy_version="norm:v1",
+        evidence_state_hash="e" * 64,
     )
 
 

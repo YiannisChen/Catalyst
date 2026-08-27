@@ -101,6 +101,10 @@ def _assessment(**overrides: Any) -> dict[str, Any]:
         "context_pack_sha256": "a" * 64,
         "rendered_messages_sha256": "b" * 64,
         "normalization_policy_version": "n1",
+        "run_id": "run:1",
+        "round": 1,
+        "evidence_state_hash": "e" * 64,
+        "assessment_hash": "f" * 64,
     }
     base.update(overrides)
     return base

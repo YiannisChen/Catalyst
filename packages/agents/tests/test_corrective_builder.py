@@ -79,6 +79,10 @@ def _assessment(*, gaps: tuple[MissingEvidence, ...], hints: tuple[tuple[str, ..
         context_pack_sha256="a" * 64,
         rendered_messages_sha256="b" * 64,
         normalization_policy_version="n1",
+        run_id="run:1",
+        round=1,
+        evidence_state_hash="e" * 64,
+        assessment_hash="f" * 64,
         research_decision="FOLLOW_UP",
         normalized_corrective_intents=tuple(
             {
