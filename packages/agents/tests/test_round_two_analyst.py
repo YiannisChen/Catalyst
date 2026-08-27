@@ -167,6 +167,16 @@ class FakeAnalystProvider:
         self.calls += 1
         return self.decision_factory()
 
+    def with_structured_output(self, schema):
+        """Real test structured-output surface: invoke receives dict messages."""
+        outer = self
+
+        class Surface:
+            def invoke(self, messages):
+                return outer.invoke(messages)
+
+        return Surface()
+
 
 def _registry() -> CorrectiveCapabilityRegistry:
     capabilities = {}
