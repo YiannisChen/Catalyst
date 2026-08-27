@@ -194,32 +194,50 @@ def test_gate_b_fails_on_different_valid_retrieval_cutoff(tmp_path) -> None:
         _gate(tmp_path, v1_runner=_mutated_runner(mutate))
 
 
-def test_gate_b_fixture_policy_is_independent_of_hidden_gold() -> None:
-    """Fixture-provider behavior must derive from public request facts, not
-    the hidden golden payload."""
+def test_gate_b_fixture_policy_ignores_source_set_and_golden(tmp_path) -> None:
+    """Gate B fixture behavior must NOT branch on golden, source_set, refusal
+    filenames, expected class, or case-ID prefix: blanking golden and renaming
+    source_set must produce the identical decision and gate outcome."""
     from dataclasses import replace
 
-    from catalyst_eval.baseline.gates import _FixtureAnalystProvider
+    from catalyst_eval.baseline.gates import (
+        _FixtureAnalystProvider,
+        semantic_ontology_regression_gate,
+        v1_fixture_run,
+    )
     from catalyst_eval.post_import.case_pack import build_smoke_case_pack
 
     cases = build_smoke_case_pack(GOLDEN_DIR)
-    answerable = next(c for c in cases if c.case_id == "g006")
-    refusal = next(c for c in cases if c.case_id == "h001")
+    # One deterministic policy for every case: decisions are identical when
+    # hidden gold is blanked and the public source_set is renamed.
+    for case in cases:
+        original = _FixtureAnalystProvider(case, f"chunk:{case.case_id}").invoke([])
+        blanked = _FixtureAnalystProvider(
+            replace(case, golden={}, source_set="renamed.json"),
+            f"chunk:{case.case_id}",
+        ).invoke([])
+        assert original == blanked
+        assert original["research_decision"] == "READY"
 
-    blank_answerable = replace(answerable, golden={})
-    blank_refusal = replace(refusal, golden={})
+    # The gate outcome is unchanged with renamed source sets and blanked gold.
+    def renamed_runner(case):
+        return v1_fixture_run(replace(case, golden={}, source_set="renamed.json"))
 
-    provider_answerable = _FixtureAnalystProvider(blank_answerable, f"chunk:{answerable.case_id}")
-    provider_refusal = _FixtureAnalystProvider(blank_refusal, f"chunk:{refusal.case_id}")
-
-    answer = provider_answerable.invoke([])
-    refusal_answer = provider_refusal.invoke([])
-    # Public request facts decide: answerable cases are READY+SUPPORT; refusal
-    # source-set cases are ABSTAIN — with hidden gold blanked.
-    assert answer["research_decision"] == "READY"
-    assert answer["candidate_hypotheses"]
-    assert refusal_answer["research_decision"] == "ABSTAIN"
-    assert refusal_answer["candidate_hypotheses"] == []
+    payload = semantic_ontology_regression_gate(
+        repo_root=REPO_ROOT,
+        golden_dir=GOLDEN_DIR,
+        out_path=tmp_path / "gate_b_renamed.json",
+        v1_runner=renamed_runner,
+    )
+    assert payload["exit_status"] == 0
+    assert payload["metric_parity"] == {
+        "ticker_cutoff_violations": 0,
+        "citation_resolution": 1.0,
+        "runtime_identity_binding": 1.0,
+        "context_pack_identity": 1.0,
+        "claim_lineage": 1.0,
+        "secret_leakage": 0,
+    }
 
 
 def test_gate_b_context_pack_identity_requires_exact_three_way_equality() -> None:

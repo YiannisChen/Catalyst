@@ -299,15 +299,11 @@ class _FixtureRetriever:
         return (self._evidence(self.evidence_id, 1),)
 
 
-# Predeclared fixture policy, independent of hidden gold: refusal fixture
-# cases are identified ONLY by the public ``source_set`` request fact.
-REFUSAL_SOURCE_SUFFIX = "h_refusal_cases.validated.json"
-
-
 class _FixtureAnalystProvider:
-    """Deterministic Analyst: READY+SUPPORT for answerable cases, ABSTAIN for
-    refusal cases. Behavior derives only from public request facts (the case
-    source set) via the predeclared fixture policy; hidden gold is never read."""
+    """Deterministic Analyst with ONE policy for every case, derived only from
+    ordinary public request inputs (the served evidence identity). It never
+    branches on golden, source_set, expected class, refusal filenames, or
+    case-ID prefix; hidden gold is never read and Gate B stays mechanical."""
 
     def __init__(self, case, evidence_id):
         self.case = case
@@ -323,15 +319,42 @@ class _FixtureAnalystProvider:
 
     def invoke(self, messages):
         self.calls += 1
-        if str(self.case.source_set).endswith(REFUSAL_SOURCE_SUFFIX):
-            return {
-                "schema_version": "1.0",
-                "evidence_decisions": [],
-                "candidate_hypotheses": [],
-                "research_decision": "ABSTAIN",
-                "recommended_status": "ABSTAIN",
-                "proposed_attribution_type": "EVIDENCE_BACKED_CAUSAL",
-            }
+        return self._decision()
+
+    def _decision(self):
+        return {
+            "schema_version": "1.0",
+            "evidence_decisions": [
+                {
+                    "evidence_id": self.evidence_id,
+                    "disposition": "SUPPORT",
+                    "supports_hypothesis_refs": ["h1"],
+                    "reason_code": "material_support",
+                }
+            ],
+            "candidate_hypotheses": [
+                {
+                    "hypothesis_ref": "h1",
+                    "cause_type": "COMPANY_SPECIFIC_CATALYST",
+                    "statement": "Deterministic fixture explanation.",
+                    "supporting_evidence_ids": [self.evidence_id],
+                    "magnitude_fit": "STRONG",
+                    "proposed_role": "PRIMARY",
+                }
+            ],
+            "research_decision": "READY",
+            "recommended_status": "SUFFICIENT",
+            "proposed_attribution_type": "EVIDENCE_BACKED_CAUSAL",
+        }
+
+    def with_structured_output(self, schema):
+        outer = self
+
+        class Surface:
+            def invoke(self, messages):
+                return outer.invoke(messages)
+
+        return Surface()
         return {
             "schema_version": "1.0",
             "evidence_decisions": [
