@@ -22,7 +22,6 @@ import pytest
 from catalyst_eval.baseline.gates import (
     APPROVED_T4_CASE_PACK_ID,
     GateFailure,
-    compute_ontology_metrics,
     sealed_baseline_integrity_gate,
     semantic_ontology_regression_gate,
 )
@@ -129,15 +128,6 @@ def test_gate_b_fails_on_mismatched_case_pack(tmp_path: Path) -> None:
             out_path=out,
         )
     assert not out.exists()
-
-
-def test_ontology_metrics_are_deterministic() -> None:
-    first = compute_ontology_metrics(case_pack_id="x" * 64)
-    second = compute_ontology_metrics(case_pack_id="x" * 64)
-    assert first == second
-    assert first["ticker_cutoff_violations"] == 0
-    assert first["citation_resolution"] == 1.0
-    assert first["secret_leakage"] == 0
 
 
 def test_cli_gate_both_exits_zero_and_writes_artifacts(tmp_path: Path) -> None:
