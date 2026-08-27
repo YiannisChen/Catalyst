@@ -242,3 +242,39 @@ def test_answer_persistence_mismatch_fails_closed() -> None:
 
     with pytest.raises(Exception, match="STREAM_PERSISTENCE_FAILURE"):
         verify_answer_equality("tampered", sink)
+
+
+def test_writer_node_surfaces_real_token_and_completion_metadata() -> None:
+    """C2: writer_node must pass real provider token/completion metadata to
+    structural assurance (no synthetic zero-fill)."""
+    sink = InMemoryDeltaSink()
+
+    class UsageReportingProvider(FakeStreamingProvider):
+        def stream(self, messages):
+            self.calls += 1
+            self.captured_messages.append(
+                [dict(m) if isinstance(m, dict) else {"role": m.role, "content": m.content} for m in messages]
+            )
+            total = len(self.chunks)
+            for index, chunk in enumerate(self.chunks):
+                if index == total - 1:
+                    yield {"content": chunk, "response_metadata": {"token_usage": {"prompt_tokens": 42, "completion_tokens": 7}}}
+                else:
+                    yield {"content": chunk, "response_metadata": {}}
+
+    llm = UsageReportingProvider(["AAPL rose ", "on record ", "guidance."])
+    result = writer_node(
+        {"run_id": "run:1", "cancel_requested": False, "timed_out": False},
+        llm=llm,
+        writer_input=_writer_input(),
+        sink=sink,
+    )
+    assert result["input_tokens"] == 42
+    assert result["output_tokens"] == 7
+    assert result["completion_state"] == "completed"
+    assert result["cancellation_requested"] is False
+    assert result["timed_out"] is False
+    from catalyst_agents.runtime.assurance.checks import derive_writer_input_hash
+
+    assert len(result["writer_input_hash"]) == 64
+    assert result["writer_input_hash"] == derive_writer_input_hash(_writer_input())

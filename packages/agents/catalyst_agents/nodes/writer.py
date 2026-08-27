@@ -22,6 +22,7 @@ from catalyst_agents.attribution.claims import (
     WriterInput,
     ValidatedClaimPlan,
 )
+from catalyst_agents.runtime.assurance.checks import derive_writer_input_hash
 from catalyst_agents.runtime.coalescer import Coalescer
 from catalyst_agents.runtime.delta_sink import DeltaSink
 from catalyst_agents.runtime.provider_capability import (
@@ -106,8 +107,13 @@ def _writer_messages(writer_input: WriterInput) -> list[dict]:
     return [{"role": "system", "content": "\n".join(system_lines)}]
 
 
-def _stream_texts(llm: Any, messages: list[dict]) -> Iterator[str]:
-    """Iterate accepted provider stream text (str or content-bearing chunks)."""
+def _stream_chunks(llm: Any, messages: list[dict]) -> Iterator[tuple[str | None, dict[str, int]]]:
+    """Iterate provider stream chunks with text and integer usage metadata.
+
+    Real provider chunks expose usage through ``response_metadata``
+    (e.g. ``token_usage``); fakes yield plain strings with empty usage. The
+    writer surfaces the ACTUAL token counts to structural assurance.
+    """
     stream = getattr(llm, "stream", None)
     if not callable(stream):
         raise ModelTransportFailure(
@@ -116,11 +122,29 @@ def _stream_texts(llm: Any, messages: list[dict]) -> Iterator[str]:
     for chunk in stream(messages):
         if isinstance(chunk, str):
             text = chunk
+            metadata: dict[str, Any] = {}
+        elif isinstance(chunk, dict):
+            text = chunk.get("content")
+            metadata = chunk.get("response_metadata") or {}
         else:
             text = getattr(chunk, "content", None)
-            if text is None and isinstance(chunk, dict):
-                text = chunk.get("content")
-        if isinstance(text, str) and text:
+            metadata = getattr(chunk, "response_metadata", None) or {}
+        usage: dict[str, int] = {}
+        if isinstance(metadata, dict):
+            token_usage = metadata.get("token_usage") or metadata.get("usage") or {}
+            if isinstance(token_usage, dict):
+                usage = {
+                    key: int(value)
+                    for key, value in token_usage.items()
+                    if isinstance(value, (int, float))
+                }
+        yield (text if isinstance(text, str) else None), usage
+
+
+def _stream_texts(llm: Any, messages: list[dict]) -> Iterator[str]:
+    """Iterate accepted provider stream text (str or content-bearing chunks)."""
+    for text, _usage in _stream_chunks(llm, messages):
+        if text:
             yield text
 
 
@@ -154,7 +178,11 @@ def writer_node(
         repr([writer_input.model_dump(mode="json"), messages]).encode("utf-8")
     ).hexdigest()
 
+    input_tokens_total = 0
+    output_tokens_total = 0
+
     def attempt():
+        nonlocal input_tokens_total, output_tokens_total
         sink.reset()
         coalescer = Coalescer(
             flush_interval_ms=flush_interval_ms,
@@ -163,8 +191,12 @@ def writer_node(
             stream_id=f"stream:{run_id}",
         )
         accepted_any = False
+        attempt_input = 0
+        attempt_output = 0
         try:
-            for text in _stream_texts(llm, messages):
+            for text, usage in _stream_chunks(llm, messages):
+                attempt_input += int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
+                attempt_output += int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
                 if text:
                     accepted_any = True
                     coalescer.accept(text)
@@ -182,6 +214,8 @@ def writer_node(
         if answer is None:
             raise ModelRoleCallError("WRITER_FAILURE: sink committed no Answer artifact")
         verify_answer_equality(answer.text, sink)
+        input_tokens_total = attempt_input
+        output_tokens_total = attempt_output
         return answer
 
     try:
@@ -198,6 +232,12 @@ def writer_node(
         "writer_deltas": tuple(sink.deltas()),
         "answer": answer,
         "stream_complete": True,
+        "writer_input_hash": derive_writer_input_hash(writer_input),
+        "input_tokens": input_tokens_total,
+        "output_tokens": output_tokens_total,
+        "completion_state": "completed",
+        "cancellation_requested": bool(state.get("cancel_requested", False)),
+        "timed_out": bool(state.get("timed_out", False)),
         "writer_logical_calls": bounded.counts.logical_calls,
         "writer_provider_attempts": bounded.counts.provider_attempts,
         "run_id": run_id,

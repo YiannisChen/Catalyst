@@ -64,25 +64,60 @@ def _validated_plan() -> ValidatedClaimPlan:
     )
 
 
+def _writer_input(plan: ValidatedClaimPlan) -> Any:
+    from catalyst_agents.attribution.claims import (
+        WriterFormatKind,
+        WriterFormatStyleContract,
+        WriterSection,
+    )
+    from catalyst_agents.nodes.writer import build_writer_input
+
+    return build_writer_input(
+        plan,
+        observed_move="AAPL +9.5% on 2026-01-15",
+        format_style_contract=WriterFormatStyleContract(
+            format_kind=WriterFormatKind.CAUSAL,
+            required_sections=(
+                WriterSection.SUMMARY,
+                WriterSection.CAUSAL_EXPLANATION,
+                WriterSection.LIMITATIONS,
+            ),
+            style_instructions=("concise",),
+        ),
+    )
+
+
 def _artifacts(**overrides: Any) -> dict[str, Any]:
+    from catalyst_agents.runtime.assurance.checks import (
+        derive_answer_output_hash,
+        derive_writer_input_hash,
+    )
+
+    plan = _validated_plan()
+    writer_input = _writer_input(plan)
+    answer_text = "SUMMARY\nAAPL rose on record guidance. [claim:1] (e1)\nCAUSAL_EXPLANATION\nGuidance raised revenue.\nLIMITATIONS\nNone."
     base: dict[str, Any] = {
         "stream_complete": True,
-        "answer_text": "SUMMARY\nAAPL rose on record guidance. [claim:1] (e1)\nCAUSAL_EXPLANATION\nGuidance raised revenue.\nLIMITATIONS\nNone.",
+        "answer_text": answer_text,
+        "answer_text_sha256": derive_answer_output_hash(answer_text),
         "emitted_citations": ("e1",),
         "emitted_claim_markers": ("claim:1",),
-        "permitted_claim_ids": ("claim:1",),
-        "permitted_evidence_ids": ("e1",),
+        "permitted_claim_ids": plan.permitted_claim_ids,
+        "permitted_evidence_ids": plan.permitted_evidence_ids,
         "required_sections": ("SUMMARY", "CAUSAL_EXPLANATION", "LIMITATIONS"),
-        "required_limitations": (),
-        "emitted_status": "SUFFICIENT",
-        "emitted_attribution_type": "EVIDENCE_BACKED_CAUSAL",
-        "validated_status": "SUFFICIENT",
-        "validated_attribution_type": "EVIDENCE_BACKED_CAUSAL",
-        "input_hash": "i" * 64,
-        "plan_hash": "f" * 64,
-        "evidence_state_hash": "e" * 64,
+        "required_limitations": plan.required_limitations,
+        "emitted_status": plan.status.value,
+        "emitted_attribution_type": plan.attribution_type.value,
+        "validated_status": plan.status.value,
+        "validated_attribution_type": plan.attribution_type.value,
+        "writer_input": writer_input,
+        "validated_plan": plan,
+        "input_hash": derive_writer_input_hash(writer_input),
+        "plan_hash": plan.plan_hash,
+        "evidence_state_hash": plan.evidence_state_hash,
         "runtime_identity": "runtime:1",
-        "output_hash": "o" * 64,
+        "bound_runtime_identity": "runtime:1",
+        "output_hash": derive_answer_output_hash(answer_text),
         "cancellation_requested": False,
         "timed_out": False,
         "input_tokens": 10,

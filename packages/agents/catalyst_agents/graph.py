@@ -812,11 +812,17 @@ def run_v1_graph(
     )
     answer = writer_result["answer"]
 
-    # POST_STREAM_ASSURANCE
+    # POST_STREAM_ASSURANCE: the Writer surfaces real input/output hashes and
+    # provider token/completion metadata; assurance recomputes and verifies
+    # every identity against the authoritative WriterInput/ValidatedClaimPlan.
     emitted_citations, emitted_claim_markers = extract_answer_markers(answer.text)
+    final_evidence_state = (
+        corrective.evidence_state if corrective_rounds else foundation.evidence_state
+    )
     assurance_artifacts = {
         "stream_complete": writer_result["stream_complete"],
         "answer_text": answer.text,
+        "answer_text_sha256": answer.text_sha256,
         "emitted_citations": emitted_citations,
         "emitted_claim_markers": emitted_claim_markers,
         "permitted_claim_ids": validated.permitted_claim_ids,
@@ -829,17 +835,21 @@ def run_v1_graph(
         "emitted_attribution_type": validated.attribution_type.value,
         "validated_status": validated.status.value,
         "validated_attribution_type": validated.attribution_type.value,
-        "input_hash": "i" * 64,
+        "writer_input": writer_input,
+        "validated_plan": validated,
+        "input_hash": writer_result["writer_input_hash"],
         "plan_hash": validated.plan_hash,
-        "validated_plan_hash": validated.plan_hash,
         "evidence_state_hash": validated.evidence_state_hash,
         "runtime_identity": _artifact_hash(data_runtime_identity),
+        "bound_runtime_identity": _artifact_hash(
+            final_evidence_state.data_runtime_identity
+        ),
         "output_hash": answer.text_sha256,
-        "cancellation_requested": bool(foundation.state.get("cancel_requested", False)),
-        "timed_out": False,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "completion_state": "completed",
+        "cancellation_requested": writer_result["cancellation_requested"],
+        "timed_out": writer_result["timed_out"],
+        "input_tokens": writer_result["input_tokens"],
+        "output_tokens": writer_result["output_tokens"],
+        "completion_state": writer_result["completion_state"],
     }
     assurance_checks = run_structural_assurance(run_id, assurance_artifacts)
 

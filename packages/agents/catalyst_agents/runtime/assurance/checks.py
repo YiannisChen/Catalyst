@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -60,17 +61,48 @@ def canonical_created_at() -> str:
 
 
 # ---------------------------------------------------------------------------
-# M5-8: structural assurance (Final TSD §13; Phase 4 TSD §31)
+# M5-8 / C2: structural assurance (Final TSD §13; Phase 4 TSD §31)
 # ---------------------------------------------------------------------------
 
+_HEX64_RE = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def derive_writer_input_hash(writer_input: Any) -> str:
+    """Canonical input hash for a WriterInput (locked canonical JSON rules)."""
+    import hashlib
+
+    from catalyst_agents.attribution.context_pack_builder import canonical_context_pack_json
+
+    return hashlib.sha256(
+        canonical_context_pack_json(writer_input.model_dump(mode="json"))
+    ).hexdigest()
+
+
+def derive_answer_output_hash(answer_text: str) -> str:
+    """Canonical output hash for the provisional Answer text.
+
+    Matches the delta-sink convention (SHA-256 of the UTF-8 answer bytes) so
+    assurance binds the persisted AnswerArtifact.text_sha256 exactly.
+    """
+    import hashlib
+
+    return hashlib.sha256(answer_text.encode("utf-8")).hexdigest()
+
+
+def _valid_hex64(value: Any) -> bool:
+    return isinstance(value, str) and _HEX64_RE.fullmatch(value) is not None
+
+
 def run_structural_assurance(run_id: str, artifacts: dict[str, Any]) -> list[AssuranceCheck]:
-    """Deterministic structural checks over a streamed answer + plan.
+    """Deterministic fail-closed structural checks over a streamed answer.
 
     Guarantees: valid stream completion; allowed claim/citation marker subsets
-    with same-run citation resolution; required sections/limitations;
-    status/type equality with the ValidatedClaimPlan; input/plan/evidence/
-    runtime/output hash coherence; cancellation/timeout/token/completion
-    metadata consistency. Never rewrites output and never calls a model.
+    with same-run citation resolution (markers REQUIRED when the plan carries
+    claims, with a preserved explicit ABSTAIN exemption); required
+    sections/limitations; status/type equality with the ValidatedClaimPlan;
+    recomputed canonical input/output hashes and bound plan/evidence/runtime
+    identity; cancellation/timeout/token/completion metadata consistency.
+    Never rewrites output and never calls a model.
     """
     from catalyst_agents.runtime.assurance.record import STRUCTURAL_CHECK_ORDER
 
@@ -86,47 +118,94 @@ def run_structural_assurance(run_id: str, artifacts: dict[str, Any]) -> list[Ass
     emitted_type = artifacts.get("emitted_attribution_type")
     validated_status = artifacts.get("validated_status")
     validated_type = artifacts.get("validated_attribution_type")
+    writer_input = artifacts.get("writer_input")
+    validated_plan = artifacts.get("validated_plan")
 
     stream_complete = bool(artifacts.get("stream_complete"))
     answer_upper = answer_text.upper()
 
-    # Empty marker sets are valid (e.g. fixed abstention); any emitted marker
-    # must resolve within the same run's permitted surface.
+    # Claim/citation markers: a plan that carries claims requires the answer to
+    # emit at least one claim marker and citation; a fixed ABSTAIN answer is
+    # explicitly exempt (no cause accepted -> no markers expected).
+    abstain = validated_status == "ABSTAIN"
+    plan_requires_markers = False
+    if validated_plan is not None:
+        plan_requires_markers = any(
+            claim.citation_evidence_ids or claim.support_evidence_ids
+            for claim in validated_plan.claims
+        )
+    markers_required = (not abstain) and plan_requires_markers
+
     citation_ok = emitted_citations.issubset(permitted_evidence)
     claim_markers_ok = emitted_claim_markers.issubset(permitted_claims)
+    if markers_required:
+        citation_ok = citation_ok and len(emitted_citations) >= 1
+        claim_markers_ok = claim_markers_ok and len(emitted_claim_markers) >= 1
+
     sections_ok = all(section in answer_upper for section in required_sections)
-    limitations_ok = all(limitation.lower() in answer_text.lower() for limitation in required_limitations)
+    limitations_ok = all(
+        limitation.lower() in answer_text.lower() for limitation in required_limitations
+    )
     status_ok = emitted_status == validated_status and emitted_type == validated_type
 
-    hashes_ok = all(
-        artifacts.get("input_hash")
-        and artifacts.get("plan_hash")
-        and artifacts.get("evidence_state_hash")
-        and artifacts.get("runtime_identity")
-        and artifacts.get("output_hash")
-    ) and artifacts.get("output_hash") != "different"
-    # Hash coherence: the plan/evidence/runtime hashes embedded in the answer
-    # artifact surface must be present and consistent with the validated plan.
-    if artifacts.get("plan_hash") and artifacts.get("validated_plan_hash"):
-        hashes_ok = hashes_ok and artifacts["plan_hash"] == artifacts["validated_plan_hash"]
+    # ---- canonical hash coherence (recomputed, never trusted as given) -----
+    input_hash = artifacts.get("input_hash")
+    plan_hash = artifacts.get("plan_hash")
+    evidence_state_hash = artifacts.get("evidence_state_hash")
+    runtime_identity = artifacts.get("runtime_identity")
+    bound_runtime_identity = artifacts.get("bound_runtime_identity")
+    output_hash = artifacts.get("output_hash")
+    answer_text_sha256 = artifacts.get("answer_text_sha256")
 
+    hashes_ok = True
+    for name, value in (
+        ("input_hash", input_hash),
+        ("plan_hash", plan_hash),
+        ("evidence_state_hash", evidence_state_hash),
+        ("output_hash", output_hash),
+    ):
+        if not _valid_hex64(value):
+            hashes_ok = False
+            break
+    if isinstance(runtime_identity, str) and isinstance(bound_runtime_identity, str):
+        if runtime_identity != bound_runtime_identity:
+            hashes_ok = False
+    else:
+        hashes_ok = False
+
+    if hashes_ok and writer_input is not None:
+        hashes_ok = input_hash == derive_writer_input_hash(writer_input)
+    if hashes_ok and validated_plan is not None:
+        hashes_ok = plan_hash == validated_plan.plan_hash
+        hashes_ok = hashes_ok and evidence_state_hash == validated_plan.evidence_state_hash
+    if hashes_ok:
+        hashes_ok = output_hash == derive_answer_output_hash(answer_text)
+    if hashes_ok and answer_text_sha256 is not None:
+        hashes_ok = output_hash == answer_text_sha256
+
+    # ---- metadata consistency ----------------------------------------------
     metadata_ok = True
-    if artifacts.get("cancellation_requested") and artifacts.get("completion_state") == "completed":
+    completion_state = artifacts.get("completion_state")
+    if stream_complete and completion_state != "completed":
         metadata_ok = False
-    if artifacts.get("timed_out") and artifacts.get("completion_state") == "completed":
+    if not stream_complete and completion_state == "completed":
+        metadata_ok = False
+    if artifacts.get("cancellation_requested") and completion_state == "completed":
+        metadata_ok = False
+    if artifacts.get("timed_out") and completion_state == "completed":
         metadata_ok = False
     tokens = [artifacts.get("input_tokens", 0), artifacts.get("output_tokens", 0)]
-    if any(isinstance(token, (int, float)) and token < 0 for token in tokens):
+    if any(not isinstance(token, int) or token < 0 for token in tokens):
         metadata_ok = False
 
     checks = {
         "stream_complete": _check("stream_complete", stream_complete, "provider stream reached a valid terminal completion", checked_at=checked_at),
-        "citation_resolution": _check("citation_resolution", citation_ok, "every emitted citation resolves to permitted same-run evidence", checked_at=checked_at),
-        "claim_markers_subset": _check("claim_markers_subset", claim_markers_ok, "emitted claim markers are a subset of permitted claims", checked_at=checked_at),
+        "citation_resolution": _check("citation_resolution", citation_ok, "every emitted citation resolves to permitted same-run evidence (and markers are present when claims require them)", checked_at=checked_at),
+        "claim_markers_subset": _check("claim_markers_subset", claim_markers_ok, "emitted claim markers are a subset of permitted claims (and present when claims require them)", checked_at=checked_at),
         "required_sections": _check("required_sections", sections_ok, "all required sections are present", checked_at=checked_at),
         "required_limitations": _check("required_limitations", limitations_ok, "all required limitations are present", checked_at=checked_at),
         "status_type_alignment": _check("status_type_alignment", status_ok, "emitted status/type equals the validated plan", checked_at=checked_at),
-        "hash_coherence": _check("hash_coherence", hashes_ok, "input/plan/evidence/runtime/output hashes cohere", checked_at=checked_at),
+        "hash_coherence": _check("hash_coherence", hashes_ok, "recomputed input/plan/evidence/runtime/output hashes cohere and bind the validated plan", checked_at=checked_at),
         "metadata_consistency": _check("metadata_consistency", metadata_ok, "cancellation/timeout/token/completion metadata is consistent", checked_at=checked_at),
     }
     return [checks[name] for name in STRUCTURAL_CHECK_ORDER]
