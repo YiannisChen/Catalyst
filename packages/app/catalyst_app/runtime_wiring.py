@@ -18,6 +18,8 @@ from catalyst_app.persistence.connect import open_rw
 from catalyst_app.persistence.events import EventRepository
 from catalyst_app.persistence.schema import init_runtime_db
 from catalyst_app.runtime.admission import AdmissionController, AdmissionRequest
+from catalyst_app.runtime.cancel import CancellationController
+from catalyst_app.runtime.claim import RunClaimer
 from catalyst_app.runtime.executor import RunExecutor
 from catalyst_agents.runtime.manifest import RunManifest
 
@@ -45,6 +47,16 @@ def _default_run_adapter(run_id: str, timeout_seconds: float) -> Any:
     )
 
 
+def build_default_cancellation_controller() -> CancellationController:
+    db_path = _db_path_from_env()
+    events = EventRepository(db_path=db_path)
+    return CancellationController(
+        db_path=db_path,
+        events=events,
+        claimer=RunClaimer(db_path=db_path, events=events),
+    )
+
+
 def build_default_admission_controller() -> AdmissionController:
     db_path = _db_path_from_env()
     events = EventRepository(db_path=db_path)
@@ -65,4 +77,4 @@ def build_default_admission_controller() -> AdmissionController:
     return controller
 
 
-__all__ = ["build_default_admission_controller"]
+__all__ = ["build_default_admission_controller", "build_default_cancellation_controller"]

@@ -79,6 +79,10 @@ class RunNotFoundError(RuntimeError):
     pass
 
 
+class TerminalRunError(ValueError):
+    """No events or artifacts may be appended after a terminal lifecycle."""
+
+
 class IllegalLifecycleTransitionError(ValueError):
     pass
 
@@ -248,10 +252,19 @@ class EventRepository:
         lifecycle_update: tuple[RunLifecycleStatus, RunLifecycleStatus] | None,
     ) -> tuple[int, ...]:
         run_row = conn.execute(
-            "SELECT run_id FROM runs WHERE run_id = ?", (run_id,)
+            "SELECT run_id, lifecycle_status FROM runs WHERE run_id = ?", (run_id,)
         ).fetchone()
         if run_row is None:
             raise RunNotFoundError(f"run not found: {run_id}")
+        if run_row["lifecycle_status"] in {
+            RunLifecycleStatus.COMPLETED.value,
+            RunLifecycleStatus.FAILED.value,
+            RunLifecycleStatus.CANCELLED.value,
+        }:
+            raise TerminalRunError(
+                f"run {run_id} is terminal ({run_row['lifecycle_status']}); "
+                "no events or artifacts may be appended"
+            )
 
         max_row = conn.execute(
             "SELECT COALESCE(MAX(seq), 0) FROM run_events WHERE run_id = ?",
@@ -361,6 +374,7 @@ __all__ = [
     "EventRepository",
     "IllegalLifecycleTransitionError",
     "RunNotFoundError",
+    "TerminalRunError",
     "canonical_json",
     "payload_sha256",
 ]

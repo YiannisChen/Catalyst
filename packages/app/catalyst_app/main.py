@@ -27,12 +27,17 @@ async def _lifespan(app: FastAPI):
     admission, waits one bounded grace period, and leaves unresolved rows for
     the same startup-recovery policy (Final TSD §11/§15).
     """
+    from catalyst_app.runtime_wiring import (
+        build_default_admission_controller,
+        build_default_cancellation_controller,
+    )
+
     controller = getattr(app.state, "admission_controller", None)
     if controller is None:
-        from catalyst_app.runtime_wiring import build_default_admission_controller
-
         controller = build_default_admission_controller()
         app.state.admission_controller = controller
+    if getattr(app.state, "cancellation_controller", None) is None:
+        app.state.cancellation_controller = build_default_cancellation_controller()
     controller.startup_recovery()
     yield
     controller.shutdown()

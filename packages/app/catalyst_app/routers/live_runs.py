@@ -4,8 +4,9 @@ import os
 import threading
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
+from catalyst_app.api_dto import CancelResponse
 from catalyst_app.dependencies import get_credential_store, get_live_run_service, get_runtime_dependency_loader
 from catalyst_app.env_loader import get_provider_env_key
 from catalyst_app.llm_factory import SUPPORTED_MODELS, DEFAULT_MODEL
@@ -202,8 +203,40 @@ def retry_live_run(
 
 
 @router.post("/live-runs/{run_id}/cancel")
-def cancel_live_run(run_id: str, service=Depends(get_live_run_service)) -> dict:
-    return service.cancel_run(run_id)
+def cancel_live_run(
+    run_id: str,
+    request: Request,
+    service=Depends(get_live_run_service),
+) -> CancelResponse:
+    """Cooperative cancellation (M6-8).
+
+    V1.1 runs in the app-owned ``runs`` table use the CancellationController
+    (control token + late-result discard); legacy agent_runs rows keep the
+    legacy immediate mutation for baseline reads only.
+    """
+    from catalyst_app.persistence.events import RunNotFoundError
+    from catalyst_app.runtime.cancel import CancellationController
+    from catalyst_app.runtime_wiring import build_default_cancellation_controller
+
+    controller = getattr(request.app.state, "cancellation_controller", None)
+    if controller is None:
+        controller = build_default_cancellation_controller()
+        request.app.state.cancellation_controller = controller
+    try:
+        outcome = controller.request_cancel(run_id)
+    except RunNotFoundError:
+        legacy = service.cancel_run(run_id)
+        if not legacy.get("ok", False):
+            if legacy.get("reason") == "not_found":
+                raise HTTPException(status_code=404, detail="run_not_found")
+            raise HTTPException(status_code=409, detail="cancel_rejected")
+        status = legacy.get("status") or "CANCELLED"
+        return CancelResponse(run_id=run_id, status=status, acknowledged=True)
+    return CancelResponse(
+        run_id=outcome.run_id,
+        status=outcome.status.value,
+        acknowledged=outcome.acknowledged,
+    )
 
 
 @router.post("/live-runs/cancel-all")
