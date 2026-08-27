@@ -317,6 +317,35 @@ def test_executor_zero_hits_is_valid_empty_success():
     assert all(r.structured_facts == () for r in execution.task_results)
 
 
+def test_executor_task_timestamps_survive_wall_clock_rollback(monkeypatch):
+    """Persisted timing stays coherent when UTC moves backwards mid-task."""
+    import catalyst_agents.retrieval.execution as execution_module
+
+    start = _utc("2026-01-15T10:00:01Z")
+    rolled_back = _utc("2026-01-15T10:00:00Z")
+    wall_times = iter((start, rolled_back))
+
+    class _RollbackDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            del tz
+            return next(wall_times)
+
+    monkeypatch.setattr(execution_module, "datetime", _RollbackDateTime)
+    task = _tasks()[0].model_copy(update={
+        "task_id": "research:1:9:market",
+        "priority": 9,
+        "evidence_need": EvidenceNeed.MARKET_STRUCTURE,
+        "task_fingerprint": "f" * 64,
+    })
+
+    result = _run(_executor(FixtureResearchRetriever()), tasks=(task,)).task_results[0]
+
+    assert result.started_at == start
+    assert result.ended_at >= result.started_at
+    assert result.latency_ms >= 0
+
+
 def test_executor_market_structure_emits_capability_gap_and_no_retrieval():
     from catalyst_agents.retrieval.task import ResearchTask
 

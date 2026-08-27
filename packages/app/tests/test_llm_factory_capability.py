@@ -7,7 +7,10 @@ build_llm (max_retries=2) must not be the V1.1 construction path.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import pytest
 
 from catalyst_agents.runtime.provider_capability import (
     require_capabilities,
@@ -83,3 +86,61 @@ def test_v1_path_does_not_reuse_legacy_build_llm_construction() -> None:
         call.kwargs["max_retries"] for call in chat_openai.call_args_list
     ]
     assert retries_by_call == [0, 2]
+
+
+@pytest.mark.parametrize(
+    "model, expected",
+    [
+        (
+            {
+                "model_id": "provider-specific-model",
+                "provider": "custom_openai_compatible",
+                "base_url": "https://example.invalid/v1",
+            },
+            {
+                "model_id": "provider-specific-model",
+                "provider": "custom_openai_compatible",
+                "base_url": "https://example.invalid/v1",
+            },
+        ),
+        ("provider-specific-model", {"model_id": "provider-specific-model"}),
+    ],
+)
+def test_production_graph_factory_uses_admitted_v1_client(
+    monkeypatch, model, expected
+) -> None:
+    import catalyst_app.dependencies as app_dependencies
+
+    admitted_client = object()
+    captured: dict[str, object] = {}
+
+    class _Loader:
+        def get_dependencies(self):
+            return SimpleNamespace(
+                retriever="retriever",
+                requested_manifest_id="manifest-id",
+            )
+
+    def _build_v1_llm(model_id=None, **kwargs):
+        captured["factory"] = {"model_id": model_id, **kwargs}
+        return admitted_client
+
+    def _adapter(**kwargs):
+        captured["adapter"] = kwargs
+        return kwargs
+
+    assert "build_llm" not in app_dependencies.__dict__
+    monkeypatch.setattr(
+        app_dependencies, "get_runtime_dependency_loader", lambda: _Loader()
+    )
+    monkeypatch.setattr(
+        app_dependencies, "build_v1_llm", _build_v1_llm, raising=False
+    )
+    monkeypatch.setattr(app_dependencies, "build_v1_graph_adapter", _adapter)
+
+    graph = app_dependencies._graph_factory(model, api_key="runtime-key")
+
+    assert captured["factory"] == {**expected, "api_key": "runtime-key"}
+    assert graph["model"] is admitted_client
+    assert graph["retriever"] == "retriever"
+    assert graph["requested_manifest_id"] == "manifest-id"

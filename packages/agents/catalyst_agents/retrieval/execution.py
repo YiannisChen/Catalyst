@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import threading
 import time
 from typing import Callable, Protocol
@@ -359,7 +359,8 @@ class ResearchExecutor:
         degradation_reasons: tuple[str, ...] = (),
         error_code: str | None = None,
     ) -> ResearchTaskResult:
-        ended = datetime.now(timezone.utc)
+        elapsed_seconds = max(0.0, time.monotonic() - started_mono)
+        ended = started + timedelta(seconds=elapsed_seconds)
         return ResearchTaskResult(
             task_id=task.task_id,
             task_fingerprint=task.task_fingerprint,
@@ -367,7 +368,7 @@ class ResearchExecutor:
             status=status,
             started_at=started,
             ended_at=ended,
-            latency_ms=int((time.monotonic() - started_mono) * 1000),
+            latency_ms=int(elapsed_seconds * 1000),
             deadline_exhausted=False,
             evidence_items=evidence_items,
             structured_facts=structured_facts,

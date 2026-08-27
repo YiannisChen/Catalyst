@@ -8,7 +8,7 @@ from catalyst_agents.graph import build_v1_graph_adapter
 from catalyst_agents.runtime.dependencies import RuntimeDependencyLoader
 from catalyst_agents.runtime.query_embedding import ProductionBgeM3QueryEmbeddingFactory
 from catalyst_agents.runtime.service import LiveRunService
-from catalyst_app.llm_factory import build_llm
+from catalyst_app.llm_factory import build_v1_llm
 from catalyst_app.runtime_credential_store import RuntimeCredentialStore
 from catalyst_app.workbench_store import WorkbenchStore
 
@@ -70,20 +70,20 @@ def _graph_factory(model: dict | str | None = None, *, api_key: str | None = Non
     deps = get_runtime_dependency_loader().get_dependencies()
 
     if isinstance(model, dict):
-        llm = build_llm(
+        llm = build_v1_llm(
             model_id=model.get("model_id"),
             provider=model.get("provider", "openai"),
             api_key=api_key,  # from RuntimeCredentialStore, NOT from persisted config
             base_url=model.get("base_url"),
         )
     else:
-        llm = build_llm(model)  # legacy string path
+        llm = build_v1_llm(model, api_key=api_key)
 
     # M5-11: the V1.1 graph is the only production graph. M5 owns the agents
     # V1.1 path (run_v1_graph) and its FAST in-memory sinks; the production app
     # wiring (temporal identity, persistence envelope, SSE) lands in M6.
     return build_v1_graph_adapter(
-        model=model,
+        model=llm,
         retriever=deps.retriever,
         requested_manifest_id=deps.requested_manifest_id,
     )
