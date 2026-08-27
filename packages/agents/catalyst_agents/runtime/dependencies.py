@@ -257,14 +257,12 @@ class RuntimeDependencyLoader:
         data_runtime_identity: DataRuntimeIdentity | None = None
         if self.requested_manifest_id and self.index_manifest_id:
             # Connection-per-operation (Final TSD §16; FIX 3A): the loader
-            # supplies a read-only factory; each retrieval operation opens and
-            # closes its own connection. No sqlite3.Connection is cached.
-            def _readonly_factory() -> sqlite3.Connection:
-                return sqlite3.connect(
-                    f"file:{self.sqlite_db_path}?mode=ro",
-                    uri=True,
-                    check_same_thread=False,
-                )
+            # supplies the data-core read-only factory; each retrieval
+            # operation opens and closes its own connection. No
+            # sqlite3.Connection is cached on the loader or dependencies.
+            from catalyst_data.storage.connect import make_readonly_factory
+
+            _readonly_factory = make_readonly_factory(self.sqlite_db_path)
 
             probe = _readonly_factory()
             try:
