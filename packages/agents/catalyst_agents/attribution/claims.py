@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 from catalyst_agents.attribution.analyst import (
     AttributionStatus,
     AttributionType,
+    HypothesisRole,
     MagnitudeFit,
 )
 
@@ -491,5 +492,246 @@ __all__ = [
     "WriterFormatKind",
     "WriterSection",
     "WriterInput",
+    "is_fixed_abstention",
+]
+
+
+# ---------------------------------------------------------------------------
+# M5-5: deterministic ClaimPlan construction (Phase 4 TSD §§23-24)
+# ---------------------------------------------------------------------------
+
+_ORDERING_POLICY_VERSION = "claim-ordering-v1"
+
+_LIMITATION_TEMPLATES = {
+    "conflict": "Unresolved material conflict remains between evidence items.",
+    "gap": "Coverage gap: {reason} for {need}.",
+}
+
+
+def _claim_id(*, run_id: str, round: int, hypothesis_id: str | None, role: ClaimRole, ordinal: int) -> str:
+    import hashlib as _hashlib
+
+    seed = "|".join(
+        part or "" for part in (run_id, str(round), hypothesis_id or "", role.value, str(ordinal))
+    )
+    return f"claim:{_hashlib.sha256(seed.encode('utf-8')).hexdigest()[:16]}"
+
+
+def _limitation_templates(assessment: Any) -> tuple[str, ...]:
+    limitations: list[str] = []
+    if assessment.normalized_conflicts:
+        limitations.append(_LIMITATION_TEMPLATES["conflict"])
+    for gap in assessment.validated_missing_evidence:
+        limitations.append(
+            _LIMITATION_TEMPLATES["gap"].format(
+                reason=gap.reason_code.value, need=gap.evidence_need.value
+            )
+        )
+    return tuple(dict.fromkeys(limitations))
+
+
+def _evidence_bindings_for_hypothesis(
+    assessment: Any,
+    hypothesis: Any,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Exactly the typed bindings from the normalized assessment (no inference).
+
+    Support = hypothesis supporting ids that the Analyst marked SUPPORT;
+    counter = hypothesis contradicting ids that the Analyst marked CONTRADICT.
+    """
+    support_ids: set[str] = set()
+    counter_ids: set[str] = set()
+    weak_present = False
+    for decision in assessment.normalized_evidence_decisions:
+        if decision.supports_hypothesis_ids and hypothesis.hypothesis_id in decision.supports_hypothesis_ids:
+            if decision.disposition.value in {"SUPPORT", "WEAK"}:
+                support_ids.add(decision.evidence_id)
+                if decision.disposition.value == "WEAK":
+                    weak_present = True
+        if decision.contradicts_hypothesis_ids and hypothesis.hypothesis_id in decision.contradicts_hypothesis_ids:
+            if decision.disposition.value == "CONTRADICT":
+                counter_ids.add(decision.evidence_id)
+    return tuple(sorted(support_ids)), tuple(sorted(counter_ids)), weak_present
+
+
+def build_claim_plan(
+    assessment: Any,
+    observed_move: str,
+    *,
+    ordering_policy_version: str = _ORDERING_POLICY_VERSION,
+) -> ClaimPlan:
+    """Deterministically build the pre-validation ClaimPlan (Phase 4 §24).
+
+    Copies only Analyst-approved semantics: accepted supported hypotheses,
+    exact statements/mechanisms, typed evidence bindings, conflict refs, and
+    fixed limitation templates. At most one PRIMARY claim; no confidence; no
+    asserted_direction/time-scope prose parsing (CLAIM-01). ABSTAIN plans
+    carry no PRIMARY/SECONDARY causal claims.
+    """
+    if not observed_move or len(observed_move) > 4_000:
+        raise ValueError("observed_move must be non-empty and length-bounded")
+
+    inventory = {
+        item.evidence_id: item for item in getattr(assessment, "evidence_inventory", ())
+    }
+
+    accepted = [
+        hypothesis
+        for hypothesis in assessment.normalized_hypotheses
+        if hypothesis.normalized_role is not HypothesisRole.REJECTED
+    ]
+
+    abstain = assessment.final_status is AttributionStatus.ABSTAIN
+
+    claims: list[Claim] = []
+    primary_seen = False
+    for hypothesis in accepted:
+        support_ids, counter_ids, weak_present = _evidence_bindings_for_hypothesis(
+            assessment, hypothesis
+        )
+        if not support_ids and not counter_ids:
+            continue
+        # WEAK evidence may only support CONTEXT, never causal sufficiency.
+        if weak_present:
+            role = ClaimRole.CONTEXT
+        else:
+            role = _role_from_proposal(hypothesis.normalized_role)
+            if abstain and role in (ClaimRole.PRIMARY, ClaimRole.SECONDARY):
+                role = ClaimRole.CONTEXT
+            if role is ClaimRole.PRIMARY and primary_seen:
+                role = ClaimRole.SECONDARY
+            if role is ClaimRole.PRIMARY:
+                primary_seen = True
+
+        limitations = ()
+        claims.append(
+            Claim(
+                claim_id=_claim_id(
+                    run_id=assessment.run_id,
+                    round=assessment.round,
+                    hypothesis_id=hypothesis.hypothesis_id,
+                    role=role,
+                    ordinal=len(claims),
+                ),
+                role=role,
+                statement=hypothesis.statement,
+                mechanism=hypothesis.mechanism,
+                support_evidence_ids=support_ids,
+                counter_evidence_ids=counter_ids,
+                limitations=limitations,
+                source_hypothesis_id=hypothesis.hypothesis_id,
+                magnitude_fit=hypothesis.magnitude_fit
+                if role in (ClaimRole.PRIMARY, ClaimRole.SECONDARY)
+                else None,
+                conflict_refs=tuple(assessment.normalized_conflicts)
+                if role in (ClaimRole.PRIMARY, ClaimRole.SECONDARY)
+                else (),
+                citation_evidence_ids=tuple(sorted(set(support_ids) | set(counter_ids))),
+                order_index=len(claims),
+            )
+        )
+
+    # Fixed limitation templates become LIMITATION claims and the plan-level
+    # required limitations surface.
+    required_limitations = _limitation_templates(assessment)
+    for template in required_limitations:
+        claims.append(
+            Claim(
+                claim_id=_claim_id(
+                    run_id=assessment.run_id,
+                    round=assessment.round,
+                    hypothesis_id=None,
+                    role=ClaimRole.LIMITATION,
+                    ordinal=len(claims),
+                ),
+                role=ClaimRole.LIMITATION,
+                statement=template,
+                mechanism=None,
+                support_evidence_ids=(),
+                counter_evidence_ids=(),
+                limitations=(),
+                source_hypothesis_id=None,
+                magnitude_fit=None,
+                conflict_refs=(),
+                citation_evidence_ids=(),
+                order_index=len(claims),
+            )
+        )
+
+    plan_hash = _plan_hash(
+        status=assessment.final_status,
+        attribution_type=assessment.final_attribution_type,
+        claims=claims,
+        assessment_hash=assessment.assessment_hash,
+        context_pack_sha256=assessment.context_pack_sha256,
+        evidence_state_hash=assessment.evidence_state_hash,
+        required_limitations=required_limitations,
+        ordering_policy_version=ordering_policy_version,
+    )
+    return ClaimPlan(
+        status=assessment.final_status,
+        attribution_type=assessment.final_attribution_type,
+        claims=tuple(claims),
+        assessment_hash=assessment.assessment_hash,
+        context_pack_sha256=assessment.context_pack_sha256,
+        evidence_state_hash=assessment.evidence_state_hash,
+        required_limitations=required_limitations,
+        ordering_policy_version=ordering_policy_version,
+        plan_hash=plan_hash,
+    )
+
+
+def _role_from_proposal(role: HypothesisRole) -> ClaimRole:
+    mapping = {
+        HypothesisRole.PRIMARY: ClaimRole.PRIMARY,
+        HypothesisRole.SECONDARY: ClaimRole.SECONDARY,
+        HypothesisRole.CONTEXT: ClaimRole.CONTEXT,
+        HypothesisRole.REJECTED: ClaimRole.CONTEXT,
+    }
+    return mapping.get(role, ClaimRole.CONTEXT)
+
+
+def _plan_hash(
+    *,
+    status: AttributionStatus,
+    attribution_type: AttributionType,
+    claims: list[Claim],
+    assessment_hash: str,
+    context_pack_sha256: str,
+    evidence_state_hash: str,
+    required_limitations: tuple[str, ...],
+    ordering_policy_version: str,
+) -> str:
+    import hashlib as _hashlib
+    import json as _json
+
+    payload = {
+        "status": status.value,
+        "attribution_type": attribution_type.value,
+        "claims": [claim.model_dump(mode="json") for claim in claims],
+        "assessment_hash": assessment_hash,
+        "context_pack_sha256": context_pack_sha256,
+        "evidence_state_hash": evidence_state_hash,
+        "required_limitations": sorted(required_limitations),
+        "ordering_policy_version": ordering_policy_version,
+    }
+    return _hashlib.sha256(
+        _json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+__all__ = [
+    "Claim",
+    "ClaimPlan",
+    "ClaimRole",
+    "CitationMapEntry",
+    "SourceRoleIndependenceSummary",
+    "SupportingSnippet",
+    "ValidatedClaimPlan",
+    "WriterFormatStyleContract",
+    "WriterFormatKind",
+    "WriterSection",
+    "WriterInput",
+    "build_claim_plan",
     "is_fixed_abstention",
 ]

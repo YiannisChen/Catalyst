@@ -155,9 +155,16 @@ class EvidenceAssessment(BaseModel):
     final_status: AttributionStatus = AttributionStatus.ABSTAIN
     final_attribution_type: AttributionType = AttributionType.EVIDENCE_BACKED_CAUSAL
     normalization_diagnostics: tuple[str, ...] = ()
+    evidence_state_hash: str = "0" * 64
     assessment_hash: str = "0" * 64
 
-    @field_validator("decision_hash", "context_pack_sha256", "rendered_messages_sha256", "assessment_hash")
+    @field_validator(
+        "decision_hash",
+        "context_pack_sha256",
+        "rendered_messages_sha256",
+        "evidence_state_hash",
+        "assessment_hash",
+    )
     @classmethod
     def _sha256_hex(cls, value: str) -> str:
         if _SHA256_RE.fullmatch(value) is None:
@@ -563,6 +570,7 @@ def normalize_decision(
     policy_version: str,
     *,
     policy: CorrectivePolicy | None = None,
+    evidence_state_hash: str | None = None,
 ) -> EvidenceAssessment:
     """Deterministically normalize an AnalystDecision into an EvidenceAssessment.
 
@@ -586,6 +594,9 @@ def normalize_decision(
         )
 
     decision_hash = _sha256_hex(decision.model_dump(mode="json"))
+    resolved_evidence_state_hash = evidence_state_hash or getattr(
+        context_pack, "evidence_state_hash", "0" * 64
+    )
 
     # Step 3: deterministic runtime IDs from decision hash + stable ordinals.
     hypothesis_id_map: dict[str, str] = {}
@@ -752,6 +763,7 @@ def normalize_decision(
         final_status=final_status,
         final_attribution_type=final_type,
         normalization_diagnostics=tuple(diagnostics),
+        evidence_state_hash=resolved_evidence_state_hash,
         assessment_hash=assessment_hash,
     )
 
