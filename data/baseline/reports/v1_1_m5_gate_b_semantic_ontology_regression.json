@@ -1,0 +1,30 @@
+{
+  "case_pack": {
+    "approved_case_pack_id": "579844605892bd2a99b4287fb469c8800d48a9ec552300504ebde9c548b9076d",
+    "case_count": 10,
+    "matched": true,
+    "ordered_case_ids": [
+      "g006",
+      "g013",
+      "g017",
+      "g024",
+      "g041",
+      "g007",
+      "h001",
+      "h004",
+      "h005",
+      "h007"
+    ]
+  },
+  "comparability_declared": false,
+  "exit_status": 0,
+  "metric_parity": {
+    "citation_resolution": 1.0,
+    "claim_lineage": 1.0,
+    "context_pack_identity": 1.0,
+    "runtime_identity_binding": 1.0,
+    "secret_leakage": 0,
+    "ticker_cutoff_violations": 0
+  },
+  "schema_version": "v1_1_m5_gate_b_v1"
+}
