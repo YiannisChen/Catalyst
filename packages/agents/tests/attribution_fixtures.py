@@ -41,6 +41,10 @@ class FixtureContextInputs:
     sector_ticker: str | None
     sector_return_pct: float | None
     peer_returns_by_ticker: Mapping[str, float | None]
+    target_open: float | None = None
+    previous_2_target_close: float | None = None
+    scheduled_macro_flags: tuple[Any, ...] = ()
+    macro_source_available: bool = False
 
 
 class FixtureContextProvider:
@@ -48,7 +52,14 @@ class FixtureContextProvider:
         self._rows = dict(rows)
         self.calls: list[tuple[str, str, str]] = []
 
-    def load_context_inputs(self, *, ticker: str, session_date: str, cutoff: str) -> FixtureContextInputs:
+    def load_context_inputs(
+        self,
+        *,
+        ticker: str,
+        session_date: str,
+        cutoff: str,
+        information_window_start_at: str | None = None,
+    ) -> FixtureContextInputs:
         key = (ticker, session_date, cutoff)
         self.calls.append(key)
         if key not in self._rows:
@@ -68,6 +79,10 @@ class FixtureContextProvider:
             sector_ticker=row.sector_ticker,
             sector_return_pct=row.sector_return_pct,
             peer_returns_by_ticker=MappingProxyType(dict(row.peer_returns_by_ticker)),
+            target_open=row.target_open,
+            previous_2_target_close=row.previous_2_target_close,
+            scheduled_macro_flags=tuple(row.scheduled_macro_flags),
+            macro_source_available=row.macro_source_available,
         )
 
 

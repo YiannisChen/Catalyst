@@ -47,18 +47,38 @@ class ObservationPolicyConfig(BaseModel):
 
 
 class RuntimeConfiguration(BaseModel):
-    """Typed run runtime configuration (Phase 3 §6/§14).
+    """Typed run runtime configuration (Phase 3 §6/§14; M4-2 amendment §3).
 
     Carries policy/budget values only; never an identity-bearing free-form
     dict and never a duplicate DataRuntimeIdentity. The context budget is the
     canonical agents-owned ContextBudget type so pack and manifest budgets
-    cannot diverge.
+    cannot diverge. Research limits are typed and positive: the stage timeout
+    is strictly below the absolute 60-second run deadline and the initial
+    concurrency is capped at the maximum initial task count (3).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     observation_policy: ObservationPolicyConfig
     context_budget: ContextBudget
+    research_stage_timeout_seconds: int = 30
+    max_initial_research_concurrency: int = 2
+
+    @model_validator(mode="after")
+    def _research_limits_bounded(self) -> "RuntimeConfiguration":
+        if self.research_stage_timeout_seconds < 1:
+            raise ValueError("research_stage_timeout_seconds must be positive")
+        if self.research_stage_timeout_seconds >= INITIAL_RUN_TIMEOUT_SECONDS:
+            raise ValueError(
+                "research_stage_timeout_seconds must be strictly below the "
+                f"absolute {INITIAL_RUN_TIMEOUT_SECONDS}-second run deadline"
+            )
+        if not 1 <= self.max_initial_research_concurrency <= 3:
+            raise ValueError(
+                "max_initial_research_concurrency must be between 1 and the "
+                "maximum initial task count (3)"
+            )
+        return self
 
 
 class RunManifest(BaseModel):

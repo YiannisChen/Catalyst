@@ -22,10 +22,20 @@ from pydantic import (
     model_validator,
 )
 
+from typing import Literal
+
 from catalyst_data.canonical.identity import DataRuntimeIdentity
 from catalyst_data.canonical._immutable import NoUncheckedCopyUpdates
-from catalyst_data.canonical.model import ContentState, SourceClass
+from catalyst_data.canonical.model import AssetType, ContentState, SourceClass, source_role_for
 from catalyst_data.canonical.temporal import TemporalIdentity
+
+MaterialCapability = Literal["MATERIAL_CAPABLE", "LEAD_ONLY", "NOT_CAPABLE"]
+
+_MATERIAL_CAPABILITY_BY_STATE: dict[str, MaterialCapability] = {
+    "FULL_TEXT": "MATERIAL_CAPABLE",
+    "TITLE_ONLY": "LEAD_ONLY",
+    "METADATA_ONLY": "NOT_CAPABLE",
+}
 
 
 class StageScore(NoUncheckedCopyUpdates, BaseModel):
@@ -64,7 +74,11 @@ class RetrievalHit(NoUncheckedCopyUpdates, BaseModel):
     Frozen §5.4: every hit carries per-stage nullable scores/ranks, evidence
     identity and excerpt, provider/publisher/source class, timestamps,
     content/materiality state, dedup/parse metadata, retrieval policy, and the
-    TemporalIdentity/DataRuntimeIdentity it was served under.
+    TemporalIdentity/DataRuntimeIdentity it was served under. M4-0 extends the
+    contract with the complete data-owned metadata required to construct
+    EvidenceState without querying data-core tables again (section identity,
+    ordinal, asset type, content hash, material capability, serving status,
+    temporal precision, independence group, canonical URL, evidence role).
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -89,6 +103,17 @@ class RetrievalHit(NoUncheckedCopyUpdates, BaseModel):
     retrieval_policy_version: str
     temporal_identity: TemporalIdentity
     data_runtime_identity: DataRuntimeIdentity
+    # M4-0 data-owned metadata (amendment §1.3)
+    section_key: str | None = None
+    chunk_ordinal: int | None = None
+    asset_type: AssetType
+    content_hash: str | None = None
+    material_capability: MaterialCapability
+    serving_status: str
+    temporal_precision: str
+    independence_group_id: str | None = None
+    canonical_url: str | None = None
+    evidence_role: str
 
     @field_validator("scores", mode="before")
     @classmethod
@@ -138,6 +163,13 @@ class RetrievalHit(NoUncheckedCopyUpdates, BaseModel):
     def _serialize_ranks(self, ranks: tuple[StageRank, ...]) -> dict[str, int | None]:
         return {entry.stage: entry.value for entry in ranks}
 
+    @field_validator("chunk_ordinal")
+    @classmethod
+    def _non_negative_ordinal(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("chunk_ordinal must be non-negative")
+        return value
+
     @model_validator(mode="after")
     def _evidence_identity(self) -> "RetrievalHit":
         if (self.chunk_id is None) == (self.fact_id is None):
@@ -146,6 +178,28 @@ class RetrievalHit(NoUncheckedCopyUpdates, BaseModel):
             raise ValueError("text hit evidence_id must equal chunk_id")
         if self.fact_id is not None and self.evidence_id != self.fact_id:
             raise ValueError("structured hit evidence_id must equal fact_id")
+        if not self.evidence_role:
+            raise ValueError("evidence_role must not be empty")
+        if not self.serving_status:
+            raise ValueError("serving_status must not be empty")
+        if not self.temporal_precision:
+            raise ValueError("temporal_precision must not be empty")
+        expected_role = source_role_for(self.source_class).value
+        if self.evidence_role != expected_role:
+            raise ValueError(
+                "evidence_role must be the frozen source-role ceiling for "
+                f"source_class {self.source_class.value!r}"
+            )
+        expected_capability = _MATERIAL_CAPABILITY_BY_STATE.get(self.content_state)
+        if expected_capability is None:
+            raise ValueError(
+                "EMPTY/FAILED content must never be served as a retrieval hit"
+            )
+        if self.material_capability != expected_capability:
+            raise ValueError(
+                "material_capability must derive exactly from content_state: "
+                f"{self.content_state} -> {expected_capability}"
+            )
         return self
 
 
@@ -189,4 +243,4 @@ class RetrievalResultSet(NoUncheckedCopyUpdates, BaseModel):
         return self
 
 
-__all__ = ["RetrievalHit", "RetrievalResultSet", "StageRank", "StageScore"]
+__all__ = ["MaterialCapability", "RetrievalHit", "RetrievalResultSet", "StageRank", "StageScore"]

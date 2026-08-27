@@ -337,3 +337,309 @@ def build_attribution_graph(
     graph.add_edge("finalizer", END)
     compiled = graph.compile()
     return _TracedCompiledGraph(compiled, config_name="mcj_full" if use_critic else "baseline")
+
+
+# ---------------------------------------------------------------------------
+# M4-8: authoritative V1.1 foundation graph (fixture mode)
+# ---------------------------------------------------------------------------
+# The foundation path wires observation_build -> research_policy ->
+# research_execution -> evidence_state -> coverage_summary ->
+# context_pack_build -> fixture Analyst boundary. It never runs
+# Miner/Critic/Judge. The sealed MCJ graph above is BASELINE_ONLY and stays
+# readable/compilable until the M5 comparison gate; nothing is deleted.
+
+from dataclasses import dataclass
+import hashlib
+import time
+from typing import Any, Callable
+
+from catalyst_agents.attribution.context_pack import EvidenceAnalystContextPack
+from catalyst_agents.attribution.context_pack_builder import (
+    ContextPackBuilder,
+    ContextPackFinalizer,
+    PackedContextDraft,
+    RenderMessage,
+    canonical_context_pack_json,
+)
+from catalyst_agents.attribution.coverage import CoverageSummary
+from catalyst_agents.attribution.coverage_builder import build_coverage_summary
+from catalyst_agents.attribution.evidence_state import EvidenceState
+from catalyst_agents.attribution.evidence_state_builder import (
+    EvidenceStateBuildContext,
+    build_evidence_state,
+)
+from catalyst_agents.attribution.context_builder import ObservationBuilder
+from catalyst_agents.attribution.move_profile import MoveProfile
+from catalyst_agents.attribution.provider import ContextProvider
+from catalyst_agents.retrieval.execution import (
+    ResearchDeadlineError,
+    ResearchExecution,
+    ResearchExecutor,
+    ResearchRetriever,
+)
+from catalyst_agents.retrieval.policy import InitialResearchPolicy, ScenarioClassification
+from catalyst_agents.runtime.manifest import ObservationPolicyConfig
+from catalyst_agents.runtime.pack_persistence import (
+    PackPersistence,
+    PersistedPackPair,
+    replay_asserts_pair,
+)
+from catalyst_agents.runtime.token_budget import UTF8ByteUpperBoundCounter
+from catalyst_agents.state import FoundationGraphState, FoundationStage
+from catalyst_data.canonical.identity import DataRuntimeIdentity
+from catalyst_data.canonical.temporal import TemporalIdentity
+
+
+def _foundation_renderer(draft: PackedContextDraft) -> tuple[RenderMessage, ...]:
+    """Deterministic fixture renderer; never includes context_pack_sha256."""
+    return (
+        RenderMessage(
+            role="system",
+            content="observation="
+            + canonical_context_pack_json(
+                draft.observation.model_dump(mode="json")
+            ).decode("utf-8"),
+        ),
+        RenderMessage(
+            role="system",
+            content="inventory="
+            + ",".join(item.evidence_id for item in draft.evidence_inventory),
+        ),
+        RenderMessage(
+            role="system",
+            content="coverage="
+            + canonical_context_pack_json(
+                draft.coverage_summary.model_dump(mode="json")
+            ).decode("utf-8"),
+        ),
+    )
+
+
+def _artifact_hash(value: Any) -> str:
+    return hashlib.sha256(
+        canonical_context_pack_json(value.model_dump(mode="json"))
+    ).hexdigest()
+
+
+@dataclass(frozen=True)
+class FoundationRunResult:
+    """Bounded fixture run result: thin state plus the immutable artifacts."""
+
+    state: FoundationGraphState
+    move_profile: MoveProfile
+    classification: ScenarioClassification
+    research_execution: ResearchExecution
+    evidence_state: EvidenceState
+    coverage_summary: CoverageSummary
+    context_pack: EvidenceAnalystContextPack
+    persisted_pair: PersistedPackPair | None
+    analyst_result: Any | None
+
+
+def build_foundation_graph(
+    *,
+    run_id: str,
+    round: int,
+    temporal_identity: TemporalIdentity,
+    data_runtime_identity: DataRuntimeIdentity,
+    ticker: str,
+    cutoff: str,
+    requested_manifest_id: str,
+    observation_provider: ContextProvider,
+    retriever: ResearchRetriever,
+    policy_config: ObservationPolicyConfig,
+    research_concurrency: int,
+    research_stage_timeout_seconds: float,
+    persistence: PackPersistence,
+    packing_policy_version: str,
+    template_bytes: bytes,
+    template_version: str,
+    analyst_boundary: Callable[[EvidenceAnalystContextPack], Any] | None = None,
+    structured_provider: Any | None = None,
+    run_deadline_epoch_ms: int | None = None,
+) -> FoundationRunResult:
+    """Run the V1.1 foundation pipeline in fixture mode (no Miner/Critic/Judge).
+
+    The Analyst boundary is a fixture stub in M4; M5 replaces it with the
+    production EvidenceAnalyst. ``run_deadline_epoch_ms`` is the absolute Unix
+    epoch-millisecond run deadline from the runtime/manifest authority; the
+    stage deadline may shorten but never extend it.
+    """
+    # Absolute deadlines are computed once, before the pipeline, in Unix epoch
+    # ms (never time.monotonic(); FIX 3C). The effective stage deadline is the
+    # minimum of the configured stage deadline and the injected run deadline:
+    # the stage may shorten but never extend the run deadline, and a stage
+    # timeout that exceeds the remaining run time is not an error in itself.
+    now_epoch_ms = int(time.time() * 1000)
+    configured_stage_deadline = now_epoch_ms + int(
+        research_stage_timeout_seconds * 1000
+    )
+    if run_deadline_epoch_ms is not None:
+        effective_deadline = min(configured_stage_deadline, run_deadline_epoch_ms)
+    else:
+        effective_deadline = configured_stage_deadline
+
+    # 1. observation_build (TemporalIdentity-authoritative window)
+    observation_builder = ObservationBuilder(
+        provider=observation_provider, policy=policy_config
+    )
+    move_profile = observation_builder.build(
+        ticker=ticker,
+        session_date=temporal_identity.session_date,
+        cutoff=temporal_identity.cutoff_at.isoformat(),
+        temporal_identity=temporal_identity,
+    )
+
+    # 2. research_policy
+    policy = InitialResearchPolicy(policy_config)
+    classification = policy.classify(move_profile)
+
+    # 3. research_execution. The executor still uses monotonic time internally,
+    # but the stage budget is the remaining wall time up to effective_deadline
+    # (never extends the persisted run deadline).
+    current_epoch_ms = int(time.time() * 1000)
+    remaining_seconds = (effective_deadline - current_epoch_ms) / 1000
+    if remaining_seconds <= 0:
+        raise ResearchDeadlineError(
+            "research stage deadline expired before research execution"
+        )
+    executor = ResearchExecutor(
+        retriever=retriever,
+        concurrency=research_concurrency,
+        stage_timeout_seconds=remaining_seconds,
+        structured_provider=structured_provider,
+    )
+    execution = executor.execute(
+        tasks=classification.tasks,
+        run_id=run_id,
+        round=round,
+        temporal_identity=temporal_identity,
+        data_runtime_identity=data_runtime_identity,
+        research_policy_version=policy_config.scenario_policy_version,
+        ticker=ticker,
+        cutoff=cutoff,
+        requested_manifest_id=requested_manifest_id,
+    )
+
+    # 4. evidence_state
+    evidence_state = build_evidence_state(
+        EvidenceStateBuildContext(
+            run_id=run_id,
+            round=round,
+            temporal_identity=temporal_identity,
+            data_runtime_identity=data_runtime_identity,
+            research_policy_version=policy_config.scenario_policy_version,
+            task_results=execution.task_results,
+        )
+    )
+
+    # 5. coverage_summary
+    coverage = build_coverage_summary(
+        evidence_state,
+        move_profile,
+        execution.degradations,
+        execution.capability_gaps,
+    )
+
+    # 6. context_pack_build
+    counter = UTF8ByteUpperBoundCounter(provider="catalyst", model_id="analyst-default")
+    builder = ContextPackBuilder(
+        packing_policy_version=packing_policy_version,
+        budget=_foundation_budget(),
+        token_counter=counter,
+    )
+    draft = builder.build_draft(
+        run_id=run_id,
+        round=round,
+        temporal_identity=temporal_identity,
+        data_runtime_identity=data_runtime_identity,
+        evidence_state=evidence_state,
+        move_profile=move_profile,
+        coverage_summary=coverage,
+        research_history=classification.tasks,
+    )
+    finalizer = ContextPackFinalizer(
+        template_bytes=template_bytes,
+        template_version=template_version,
+        renderer=_foundation_renderer,
+        token_counter=counter,
+    )
+    pack = finalizer.finalize(draft)
+
+    # 7. persistence + replay assertion (provider dispatch gate)
+    messages = _foundation_renderer(draft)
+    refs = persistence.persist_pack_and_render(
+        run_id=run_id,
+        pack=pack,
+        pack_sha256=pack.context_pack_sha256,
+        rendered_messages=messages,
+        rendered_messages_sha256=pack.rendered_messages_sha256,
+        prompt_template_version=template_version,
+        prompt_template_sha256=pack.prompt_template_sha256,
+    )
+    persisted_pair = persistence.load_pair(run_id=run_id)
+    replay_asserts_pair(
+        refs,
+        pack_sha256=pack.context_pack_sha256,
+        rendered_messages=messages,
+        rendered_messages_sha256=pack.rendered_messages_sha256,
+        prompt_template_sha256=pack.prompt_template_sha256,
+    )
+
+    # 8. fixture Analyst boundary (M5 replaces this stub)
+    analyst_result = analyst_boundary(pack) if analyst_boundary is not None else None
+
+    state: FoundationGraphState = {
+        "run_id": run_id,
+        "stage": FoundationStage.ANALYST_BOUNDARY,
+        "round": round,
+        "attempt": 1,
+        "deadline_epoch_ms": effective_deadline,
+        "cancel_requested": False,
+        "terminal_error": None,
+        "observation_ref": f"artifact:observation:{run_id}:{round}",
+        "observation_hash": _artifact_hash(move_profile),
+        "research_tasks_ref": f"artifact:research_tasks:{run_id}:{round}",
+        "research_results_ref": f"artifact:research_results:{run_id}:{round}",
+        "evidence_state_ref": f"artifact:evidence_state:{run_id}:{round}",
+        "evidence_state_hash": evidence_state.state_hash,
+        "coverage_summary_ref": f"artifact:coverage_summary:{run_id}:{round}",
+        "coverage_summary_hash": _artifact_hash(coverage),
+        "context_pack_ref": refs.pack_artifact_id,
+        "context_pack_hash": pack.context_pack_sha256,
+        "rendered_messages_ref": refs.rendered_messages_artifact_id,
+        "rendered_messages_hash": pack.rendered_messages_sha256,
+        "prompt_template_version": template_version,
+        "prompt_template_sha256": pack.prompt_template_sha256,
+        "policy_version": policy_config.scenario_policy_version,
+    }
+    return FoundationRunResult(
+        state=state,
+        move_profile=move_profile,
+        classification=classification,
+        research_execution=execution,
+        evidence_state=evidence_state,
+        coverage_summary=coverage,
+        context_pack=pack,
+        persisted_pair=persisted_pair,
+        analyst_result=analyst_result,
+    )
+
+
+def _foundation_budget():
+    from catalyst_agents.attribution.context_pack import ContextBudget
+
+    return ContextBudget(
+        model_context_limit=8_000,
+        reserved_output_tokens=300,
+        reserved_system_instruction_tokens=200,
+        observation_tokens=200,
+        coverage_summary_tokens=200,
+        research_history_tokens=100,
+        inventory_tokens=200,
+        evidence_payload_tokens=2_000,
+        per_news_item_max_tokens=200,
+        per_sec_chunk_max_tokens=250,
+        lead_only_tokens=80,
+        safety_margin_tokens=100,
+    )

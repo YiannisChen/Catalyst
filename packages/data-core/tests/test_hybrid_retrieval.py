@@ -58,6 +58,65 @@ def _run(monkeypatch, *, mode, reranker=None, db=None):
     )
 
 
+def _temporal_identity(session_date: str = "2026-01-15", cutoff: str = "2026-01-15T21:00:00Z"):
+    from datetime import datetime, timezone
+
+    from catalyst_data.canonical.temporal import TemporalIdentity
+
+    def utc(iso):
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).replace(tzinfo=timezone.utc)
+
+    return TemporalIdentity(
+        session_date=session_date,
+        market_timezone="America/New_York",
+        session_open_at=utc("2026-01-15T14:30:00Z"),
+        session_close_at=utc("2026-01-15T21:00:00Z"),
+        information_window_start_at=utc("2026-01-14T21:00:00Z"),
+        cutoff_at=utc(cutoff),
+    )
+
+
+def _runtime_identity(corpus_manifest_id: str = MANIFEST_A):
+    from catalyst_data.canonical.identity import DataRuntimeIdentity
+
+    return DataRuntimeIdentity(
+        data_snapshot_id="s" * 64,
+        corpus_manifest_id=corpus_manifest_id,
+        fts_index_version="build:fts",
+        dense_index_version="1" * 64,
+        embedding_model_revision="emb:1",
+        reranker_revision="rr:1",
+        query_policy_version="qp:v1",
+    )
+
+
+def _canonical_meta(chunk_id: str) -> dict[str, object]:
+    """Minimal data-owned metadata used by the V1 conversion in tests that do
+    not exercise the canonical lookup itself (covered by M4-0 contract tests)."""
+    return {
+        "canonical_asset_id": f"asset:{chunk_id}",
+        "content_version_id": f"version:{chunk_id}",
+        "corpus_document_id": f"doc:{chunk_id}",
+        "document_id": f"doc:{chunk_id}",
+        "section_key": "body",
+        "chunk_ordinal": 1,
+        "content_hash": "c" * 64,
+        "source_class": "reported_news",
+        "content_state": "FULL_TEXT",
+        "eligible_at": "2026-01-15T00:00:00Z",
+        "dedup_cluster_id": None,
+        "independence_group_id": "g:1",
+        "parse_quality": "not_applicable",
+        "provider": "polygon",
+        "publisher": None,
+        "canonical_url": "https://example.test/a",
+        "asset_type": "NEWS",
+        "temporal_precision": "publication_time",
+        "serving_status": "body_candidate",
+        "ticker_scope": ("AAPL",),
+    }
+
+
 def test_hybrid_orchestrates_all_arms(monkeypatch):
     result = _run(monkeypatch, mode="hybrid", reranker=RecordingReranker())
     assert result.mode_requested == "hybrid"
@@ -68,10 +127,11 @@ def test_hybrid_orchestrates_all_arms(monkeypatch):
 
 
 def test_production_hybrid_reranker_busy_is_bounded(monkeypatch):
+    """The single-flight gate bounds reranker concurrency to one outstanding
+    inference; a busy/timeout request degrades to the hybrid order."""
     import time
 
     import catalyst_data.retrieval.hybrid as hybrid_module
-    from catalyst_data.retrieval.hybrid import ProductionHybridRetriever
 
     lexical, dense = _arms()
     monkeypatch.setattr(hybrid_module, "retrieve_lexical", lambda *args, **kwargs: lexical)
@@ -82,30 +142,47 @@ def test_production_hybrid_reranker_busy_is_bounded(monkeypatch):
             time.sleep(0.2)
             return [1.0 for _ in candidates]
 
-    retriever = ProductionHybridRetriever(
-        db=_FakeManifestDb(),
-        lancedb_table=object(),
-        embedding_fn=lambda query: np.ones(1024, dtype=np.float32),
-        reranker=SlowReranker(),
+    gate = hybrid_module.RerankerGate()
+    common = dict(
+        query="q",
+        ticker="AAPL",
+        cutoff="2026-01-15T21:00:00Z",
+        mode="reranked",
+        query_embedding=np.ones(1024, dtype=np.float32),
+        requested_manifest_id=MANIFEST_A,
         index_manifest_id="1" * 64,
+        lancedb_table=object(),
         reranker_timeout_seconds=0.01,
+        reranker_gate=gate,
     )
-    first = retriever.retrieve(
-        "q", ticker="AAPL", cutoff="2026-01-15T21:00:00Z",
-        requested_manifest_id=MANIFEST_A,
-    )
-    second = retriever.retrieve(
-        "q", ticker="AAPL", cutoff="2026-01-15T21:00:00Z",
-        requested_manifest_id=MANIFEST_A,
-    )
-    assert len(first) == 6
-    assert len(second) == 6
-    assert retriever._reranker_gate.live_worker_count == 1
+    first = hybrid_module.retrieve_hybrid(_FakeManifestDb(), reranker=SlowReranker(), **common)
+    assert first.mode_served == "hybrid"
+    assert "reranker_timeout" in first.degradation_reasons
+    second = hybrid_module.retrieve_hybrid(_FakeManifestDb(), reranker=SlowReranker(), **common)
+    assert second.mode_served == "hybrid"
+    assert "reranker_busy" in second.degradation_reasons
+    assert gate.live_worker_count == 1
+    time.sleep(0.3)
+    assert gate.live_worker_count == 0
 
 def test_hybrid_mode_reranked(monkeypatch):
-    result = _run(monkeypatch, mode="reranked", reranker=RecordingReranker())
-    assert result.mode_served == "reranked"
-    assert result.reranker_results is not None
+    """The sealed legacy reranked shape remains available via return_v1=False
+    (M1/M3 four-arm compatibility)."""
+    import catalyst_data.retrieval.hybrid as hybrid_module
+
+    lexical, dense = _arms()
+    monkeypatch.setattr(hybrid_module, "retrieve_lexical", lambda *a, **k: lexical)
+    monkeypatch.setattr(hybrid_module, "retrieve_dense", lambda *a, **k: dense)
+    legacy = hybrid_module.retrieve_hybrid(
+        _FakeManifestDb(), query="AAPL earnings", ticker="AAPL",
+        cutoff="2026-01-15T21:00:00Z", mode="reranked",
+        query_embedding=np.ones(1024, dtype=np.float32),
+        requested_manifest_id=MANIFEST_A, index_manifest_id="1" * 64,
+        lancedb_table=object(), reranker=RecordingReranker(),
+        return_v1=False,
+    )
+    assert legacy.mode_served == "reranked"
+    assert legacy.reranker_results is not None
 
 
 def test_reranker_failure_serves_exact_hybrid_order(monkeypatch):
@@ -434,28 +511,45 @@ def test_hybrid_persists_temporal_conflict_without_include_trace(monkeypatch):
         assert item.query_date_decision == "structured_ignore_query"
 
 
-def test_production_hybrid_retriever_stamps_temporal_on_evidence_results(monkeypatch):
+def test_production_hybrid_retriever_passes_temporal_identity_unchanged(monkeypatch):
+    """ProductionHybridRetriever returns the V1.1 set with the exact injected
+    TemporalIdentity/DataRuntimeIdentity (M4-0); it never reconstructs them."""
     import catalyst_data.retrieval.hybrid as hybrid_module
     from catalyst_data.retrieval.hybrid import ProductionHybridRetriever
+    from catalyst_data.retrieval.v1_result import RetrievalResultSet as V1RetrievalResultSet
     import numpy as np
 
     lexical, dense = _arms()
     monkeypatch.setattr(hybrid_module, "retrieve_lexical", lambda *a, **k: lexical)
     monkeypatch.setattr(hybrid_module, "retrieve_dense", lambda *a, **k: dense)
+    monkeypatch.setattr(
+        hybrid_module, "_lookup_canonical_chunk",
+        lambda db, chunk_id, *, requested_manifest_id: _canonical_meta(chunk_id),
+    )
+    runtime = _runtime_identity()
     retriever = ProductionHybridRetriever(
         db=_FakeManifestDb(),
         lancedb_table=object(),
         embedding_fn=lambda q: np.ones(1024, dtype=np.float32),
-        reranker=None,
+        reranker=RecordingReranker(),
         index_manifest_id="1" * 64,
+        data_runtime_identity=runtime,
     )
+    temporal = _temporal_identity()
     results = retriever.retrieve(
         "Why did AAPL move on 2025-07-24?",
         ticker="AAPL",
         cutoff="2026-01-15T21:00:00Z",
         requested_manifest_id=MANIFEST_A,
+        temporal_identity=temporal,
     )
-    assert results
-    assert results[0].temporal_center_date == "2026-01-15"
-    assert results[0].query_date_conflict is True
-    assert results[0].query_date_decision == "structured_ignore_query"
+    assert isinstance(results, V1RetrievalResultSet)
+    assert results.hits
+    assert results.temporal_identity == temporal
+    assert results.data_runtime_identity == runtime
+    assert results.temporal_identity.session_date == "2026-01-15"
+    assert results.temporal_identity.session_close_at == results.temporal_identity.cutoff_at
+    assert results.temporal_identity.session_open_at != results.temporal_identity.cutoff_at
+    for hit in results.hits:
+        assert hit.temporal_identity == temporal
+        assert hit.data_runtime_identity == runtime
