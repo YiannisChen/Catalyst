@@ -259,29 +259,91 @@ def test_foundation_graph_legacy_mcj_still_compiles():
 
 
 # ---------------------------------------------------------------------------
-# Corrective pass FIX 3C: epoch-based injected run deadline
+# Final corrective pass: minimum remaining run/stage deadline
 # ---------------------------------------------------------------------------
 
 
 def test_foundation_graph_deadline_is_epoch_and_injected():
-    """deadline_epoch_ms must be Unix epoch milliseconds from the
-    runtime/manifest authority, never time.monotonic()."""
+    """deadline_epoch_ms must be Unix epoch milliseconds; when the stage
+    timeout is shorter than the run deadline the effective stage deadline is
+    the binding deadline (never time.monotonic())."""
     import time as _time
 
     run_deadline = int((_time.time() + 60.0) * 1000)
     assert run_deadline > 1_600_000_000_000  # sane epoch ms
-    result = build_foundation_graph(**_run_kwargs(run_deadline_epoch_ms=run_deadline))
-    assert result.state["deadline_epoch_ms"] == run_deadline
+    stage_timeout = 5.0
+    result = build_foundation_graph(
+        **_run_kwargs(
+            run_deadline_epoch_ms=run_deadline,
+            research_stage_timeout_seconds=stage_timeout,
+        )
+    )
+    deadline = result.state["deadline_epoch_ms"]
+    assert deadline > 1_600_000_000_000  # epoch ms, not monotonic
+    assert deadline < run_deadline
 
 
-def test_foundation_graph_stage_deadline_never_extends_run_deadline():
+def test_foundation_graph_stage_timeout_shorter_than_run_deadline_wins():
+    """Stage timeout shorter than the run deadline remains the effective
+    deadline (min semantics): deadline ~= now + stage_timeout_ms."""
     import time as _time
 
-    run_deadline = int((_time.time() + 0.001) * 1000)
-    with pytest.raises(ValueError):
+    run_deadline = int((_time.time() + 60.0) * 1000)
+    stage_timeout = 5.0
+    result = build_foundation_graph(
+        **_run_kwargs(
+            run_deadline_epoch_ms=run_deadline,
+            research_stage_timeout_seconds=stage_timeout,
+        )
+    )
+    now_ms = int(_time.time() * 1000)
+    deadline = result.state["deadline_epoch_ms"]
+    assert deadline < run_deadline
+    assert abs(deadline - (now_ms + int(stage_timeout * 1000))) <= 2000
+
+
+def test_foundation_graph_uses_shorter_run_deadline_without_value_error():
+    """Stage timeout 5s with a run deadline ~1s away: the pipeline uses the
+    shorter deadline instead of raising ValueError, and succeeds within it."""
+    import time as _time
+
+    run_deadline = int((_time.time() + 1.0) * 1000)
+    result = build_foundation_graph(
+        **_run_kwargs(
+            run_deadline_epoch_ms=run_deadline,
+            research_stage_timeout_seconds=5.0,
+        )
+    )
+    assert result.state["deadline_epoch_ms"] == run_deadline
+    assert result.state["deadline_epoch_ms"] <= run_deadline
+
+
+def test_foundation_graph_already_expired_run_deadline_fails_technically():
+    """An already-expired run deadline produces the technical deadline failure
+    (ResearchDeadlineError), never ValueError or ABSTAIN."""
+    import time as _time
+
+    from catalyst_agents.retrieval.execution import ResearchDeadlineError
+
+    run_deadline = int((_time.time() - 1000.0) * 1000)
+    with pytest.raises(ResearchDeadlineError):
         build_foundation_graph(
             **_run_kwargs(
                 run_deadline_epoch_ms=run_deadline,
                 research_stage_timeout_seconds=5.0,
             )
         )
+
+
+def test_foundation_graph_state_deadline_never_exceeds_run_deadline():
+    """The persisted state deadline is always <= the supplied run deadline."""
+    import time as _time
+
+    run_deadline = int((_time.time() + 2.0) * 1000)
+    result = build_foundation_graph(
+        **_run_kwargs(
+            run_deadline_epoch_ms=run_deadline,
+            research_stage_timeout_seconds=5.0,
+        )
+    )
+    assert result.state["deadline_epoch_ms"] <= run_deadline

@@ -372,6 +372,7 @@ from catalyst_agents.attribution.context_builder import ObservationBuilder
 from catalyst_agents.attribution.move_profile import MoveProfile
 from catalyst_agents.attribution.provider import ContextProvider
 from catalyst_agents.retrieval.execution import (
+    ResearchDeadlineError,
     ResearchExecution,
     ResearchExecutor,
     ResearchRetriever,
@@ -464,17 +465,19 @@ def build_foundation_graph(
     epoch-millisecond run deadline from the runtime/manifest authority; the
     stage deadline may shorten but never extend it.
     """
-    # Deadline is computed once, before the pipeline, in Unix epoch ms
-    # (never time.monotonic(); FIX 3C).
-    stage_deadline_epoch_ms = int((time.time() + research_stage_timeout_seconds) * 1000)
+    # Absolute deadlines are computed once, before the pipeline, in Unix epoch
+    # ms (never time.monotonic(); FIX 3C). The effective stage deadline is the
+    # minimum of the configured stage deadline and the injected run deadline:
+    # the stage may shorten but never extend the run deadline, and a stage
+    # timeout that exceeds the remaining run time is not an error in itself.
+    now_epoch_ms = int(time.time() * 1000)
+    configured_stage_deadline = now_epoch_ms + int(
+        research_stage_timeout_seconds * 1000
+    )
     if run_deadline_epoch_ms is not None:
-        if stage_deadline_epoch_ms > run_deadline_epoch_ms:
-            raise ValueError(
-                "research stage deadline must not extend the run deadline"
-            )
-        deadline_epoch_ms = run_deadline_epoch_ms
+        effective_deadline = min(configured_stage_deadline, run_deadline_epoch_ms)
     else:
-        deadline_epoch_ms = stage_deadline_epoch_ms
+        effective_deadline = configured_stage_deadline
 
     # 1. observation_build (TemporalIdentity-authoritative window)
     observation_builder = ObservationBuilder(
@@ -491,11 +494,19 @@ def build_foundation_graph(
     policy = InitialResearchPolicy(policy_config)
     classification = policy.classify(move_profile)
 
-    # 3. research_execution
+    # 3. research_execution. The executor still uses monotonic time internally,
+    # but the stage budget is the remaining wall time up to effective_deadline
+    # (never extends the persisted run deadline).
+    current_epoch_ms = int(time.time() * 1000)
+    remaining_seconds = (effective_deadline - current_epoch_ms) / 1000
+    if remaining_seconds <= 0:
+        raise ResearchDeadlineError(
+            "research stage deadline expired before research execution"
+        )
     executor = ResearchExecutor(
         retriever=retriever,
         concurrency=research_concurrency,
-        stage_timeout_seconds=research_stage_timeout_seconds,
+        stage_timeout_seconds=remaining_seconds,
         structured_provider=structured_provider,
     )
     execution = executor.execute(
@@ -583,7 +594,7 @@ def build_foundation_graph(
         "stage": FoundationStage.ANALYST_BOUNDARY,
         "round": round,
         "attempt": 1,
-        "deadline_epoch_ms": deadline_epoch_ms,
+        "deadline_epoch_ms": effective_deadline,
         "cancel_requested": False,
         "terminal_error": None,
         "observation_ref": f"artifact:observation:{run_id}:{round}",

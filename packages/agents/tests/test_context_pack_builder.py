@@ -627,3 +627,226 @@ def test_exact_duplicate_news_within_group_still_collapses():
         if action == "EXCLUDED_DUPLICATE"
     ]
     assert len(duplicated) == 1
+
+
+# ---------------------------------------------------------------------------
+# Final corrective pass: strip payload from every excluded inventory item and
+# scope filing chunk dedup to the filing identity
+# ---------------------------------------------------------------------------
+
+
+_EXCLUSION_CASES = [
+    (
+        "late",
+        "EXCLUDED_INELIGIBLE",
+        "MARKER-LATE-BODY",
+        lambda: _empty_state().upsert(
+            _item("late", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+                  eligible_at="2026-01-16T10:00:00Z", excerpt="MARKER-LATE-BODY")
+        ),
+    ),
+    (
+        "empty",
+        "EXCLUDED_MATERIALITY",
+        "MARKER-EMPTY-BODY",
+        lambda: _empty_state().upsert(
+            _item("empty", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+                  content_state="EMPTY", material_capability="NOT_CAPABLE",
+                  excerpt="MARKER-EMPTY-BODY")
+        ),
+    ),
+    (
+        "failed",
+        "EXCLUDED_MATERIALITY",
+        "MARKER-FAILED-BODY",
+        lambda: _empty_state().upsert(
+            _item("failed", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+                  content_state="FAILED", material_capability="NOT_CAPABLE",
+                  excerpt="MARKER-FAILED-BODY")
+        ),
+    ),
+    (
+        "dup:group",
+        "EXCLUDED_DUPLICATE",
+        "MARKER-DUP-GROUP-BODY",
+        lambda: _empty_state()
+        .upsert(
+            _item("aaa:group:rep", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+                  independence_group_id="g:marker", excerpt="representative wire body")
+        )
+        .upsert(
+            _item("dup:group", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+                  independence_group_id="g:marker", excerpt="MARKER-DUP-GROUP-BODY")
+        ),
+    ),
+    (
+        "filing:z:dup",
+        "EXCLUDED_DUPLICATE",
+        "MARKER-DUP-FILING-BODY",
+        lambda: _empty_state()
+        .upsert(
+            _filing_item("filing:a:rep", section_key="item_1.01", ordinal=1,
+                         content_hash="c" * 64, excerpt="representative section")
+        )
+        .upsert(
+            _filing_item("filing:z:dup", section_key="item_1.01", ordinal=1,
+                         content_hash="c" * 64, excerpt="MARKER-DUP-FILING-BODY")
+        ),
+    ),
+    (
+        "dup:document",
+        "EXCLUDED_DUPLICATE",
+        "MARKER-DUP-DOC-BODY",
+        lambda: _empty_state()
+        .upsert(
+            _item("aaa:doc:rep", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+                  corpus_document_id="doc:same", content_hash="c" * 64, excerpt="representative body")
+        )
+        .upsert(
+            _item("dup:document", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+                  corpus_document_id="doc:same", content_hash="c" * 64, excerpt="MARKER-DUP-DOC-BODY")
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("excluded_id", "action", "marker", "make_state"),
+    _EXCLUSION_CASES,
+)
+def test_excluded_item_marker_never_serialized(excluded_id, action, marker, make_state):
+    """Every excluded inventory class must retain identity/source/eligibility/
+    content-state/role metadata but strip body payload: the secret marker must
+    appear nowhere in canonical draft or final pack bytes."""
+    state = make_state()
+    draft = _draft(state)
+    assert excluded_id in draft.excluded_evidence_ids
+    assert excluded_id not in draft.included_evidence_ids
+    actions = {
+        record.evidence_id: record.action for record in draft.truncation_metadata
+    }
+    assert actions[excluded_id] == action
+    inventory = {item.evidence_id: item for item in draft.evidence_inventory}
+    excluded_item = inventory[excluded_id]
+    assert excluded_item.excerpt_text is None
+    assert excluded_item.source_start_offset is None
+    assert excluded_item.source_end_offset is None
+    assert excluded_item.tokenizer_identity is None
+    # Identity/source/eligibility/state/role metadata is retained.
+    assert excluded_item.canonical_asset_id
+    assert excluded_item.corpus_document_id
+    assert excluded_item.eligible_at is not None
+    assert excluded_item.content_state is not None
+    assert excluded_item.evidence_role
+    draft_bytes = canonical_context_pack_json(
+        draft.model_dump(mode="json")
+    ).decode("utf-8")
+    assert marker not in draft_bytes
+    pack = _finalizer().finalize(draft)
+    pack_bytes = canonical_context_pack_json(
+        pack.model_dump(mode="json")
+    ).decode("utf-8")
+    assert marker not in pack_bytes
+
+
+def test_budget_excluded_item_marker_never_serialized():
+    """Budget-excluded records are identity-only inventory entries; their
+    body/excerpt must not remain serialized inside the draft or pack."""
+    marker = "MARKER-BUDGET-BODY"
+    state = _empty_state()
+    state = state.upsert(
+        _item("budget:1", source_class="reported_news", evidence_role="INDEPENDENT_REPORT",
+              excerpt=marker + " " + "padding " * 60)
+    )
+    builder = _builder(budget=_budget(evidence_payload_tokens=2))
+    draft = builder.build_draft(
+        run_id="run:1",
+        round=1,
+        temporal_identity=_temporal(),
+        data_runtime_identity=_runtime(),
+        evidence_state=state,
+        move_profile=_profile(),
+        coverage_summary=_coverage(state),
+    )
+    assert "budget:1" in draft.excluded_evidence_ids
+    assert "budget:1" not in draft.included_evidence_ids
+    actions = {
+        record.evidence_id: record.action for record in draft.truncation_metadata
+    }
+    assert actions["budget:1"] == "EXCLUDED_BUDGET"
+    inventory = {item.evidence_id: item for item in draft.evidence_inventory}
+    assert inventory["budget:1"].excerpt_text is None
+    assert inventory["budget:1"].source_start_offset is None
+    assert inventory["budget:1"].source_end_offset is None
+    assert inventory["budget:1"].tokenizer_identity is None
+    assert marker not in canonical_context_pack_json(
+        draft.model_dump(mode="json")
+    ).decode("utf-8")
+    pack = _finalizer().finalize(draft)
+    assert marker not in canonical_context_pack_json(
+        pack.model_dump(mode="json")
+    ).decode("utf-8")
+
+
+def test_cross_filing_chunks_identical_section_ordinal_hash_both_survive():
+    """Two different filings (distinct canonical_asset_id and
+    corpus_document_id) with identical section/ordinal/content_hash must both
+    be included: filing chunk dedup is filing-scoped."""
+    state = _empty_state()
+    state = state.upsert(
+        _filing_item("filing:a:chunk", section_key="item_1.01", ordinal=1,
+                     content_hash="c" * 64, excerpt="filing a section text",
+                     canonical_asset_id="asset:filing:a",
+                     corpus_document_id="doc:filing:a")
+    )
+    state = state.upsert(
+        _filing_item("filing:b:chunk", section_key="item_1.01", ordinal=1,
+                     content_hash="c" * 64, excerpt="filing b section text",
+                     canonical_asset_id="asset:filing:b",
+                     corpus_document_id="doc:filing:b")
+    )
+    draft = _draft(state)
+    assert {item.evidence_id for item in draft.evidence_inventory} == {
+        "filing:a:chunk", "filing:b:chunk"
+    }
+    assert set(draft.included_evidence_ids) == {
+        "filing:a:chunk", "filing:b:chunk"
+    }
+    actions = {
+        record.evidence_id: record.action for record in draft.truncation_metadata
+    }
+    assert actions.get("filing:a:chunk") != "EXCLUDED_DUPLICATE"
+    assert actions.get("filing:b:chunk") != "EXCLUDED_DUPLICATE"
+    assert {item.evidence_id for item in draft.direct_primary_evidence} == {
+        "filing:a:chunk", "filing:b:chunk"
+    }
+
+
+def test_true_duplicate_within_same_filing_section_chunk_collapses():
+    """A true duplicate inside the same filing/section/chunk identity collapses
+    to one included representative; the duplicate stays inventoried as
+    identity-only."""
+    state = _empty_state()
+    state = state.upsert(
+        _filing_item("filing:a:rep", section_key="item_1.01", ordinal=1,
+                     content_hash="c" * 64, excerpt="representative chunk")
+    )
+    state = state.upsert(
+        _filing_item("filing:z:dup", section_key="item_1.01", ordinal=1,
+                     content_hash="c" * 64, excerpt="exact duplicate chunk")
+    )
+    draft = _draft(state)
+    assert {item.evidence_id for item in draft.evidence_inventory} == {
+        "filing:a:rep", "filing:z:dup"
+    }
+    assert "filing:z:dup" in draft.excluded_evidence_ids
+    assert "filing:a:rep" in draft.included_evidence_ids
+    actions = {
+        record.evidence_id: record.action for record in draft.truncation_metadata
+    }
+    assert actions.get("filing:z:dup") == "EXCLUDED_DUPLICATE"
+    inventory = {item.evidence_id: item for item in draft.evidence_inventory}
+    assert inventory["filing:z:dup"].excerpt_text is None
+    assert "exact duplicate chunk" not in canonical_context_pack_json(
+        draft.model_dump(mode="json")
+    ).decode("utf-8")

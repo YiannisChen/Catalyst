@@ -217,7 +217,6 @@ class ContextPackBuilder:
 
         records: dict[str, TruncationRecord] = {}
         excluded: set[str] = set()
-        metadata_only: set[str] = set()
         for item, payload in ordered:
             if payload.eligible_at > temporal_identity.cutoff_at:
                 records[payload.evidence_id] = self._record(
@@ -237,19 +236,17 @@ class ContextPackBuilder:
                     payload, "METADATA_ONLY", "metadata_only_never_body", 0
                 )
                 excluded.add(payload.evidence_id)
-                metadata_only.add(payload.evidence_id)
 
-        # Novelty pass (FIX 1C): filing selection is keyed initially by
-        # (canonical_asset_id, section_key); distinct filing sections survive
-        # even when they share corpus_document_id/content_hash. Within one
-        # section only exact chunk-identity duplicates (section_key, ordinal,
-        # content_hash) collapse; distinct ordinals remain eligible within
-        # budget. News known-independence-group compression is unchanged and
-        # exact duplicate body documents still collapse.
+        # Novelty pass: filing dedup is filing-scoped. Distinct filing
+        # sections survive even when they share corpus_document_id/content_hash.
+        # Within one filing/section only exact chunk-identity duplicates
+        # (canonical_asset_id, corpus_document_id, section_key, chunk_ordinal,
+        # content_hash) collapse; distinct filings or distinct ordinals remain
+        # eligible within budget. News known-independence-group compression is
+        # unchanged and exact duplicate body documents still collapse.
         seen_group: dict[str, str] = {}
         seen_document: dict[str, str] = {}
-        seen_filing_sections: dict[tuple[str, str], str] = {}
-        seen_filing_chunks: set[tuple[str, int | None, str | None]] = set()
+        seen_filing_chunks: set[tuple[str, str, str, int | None, str | None]] = set()
         for item, payload in ordered:
             if payload.evidence_id in excluded:
                 continue
@@ -273,8 +270,9 @@ class ContextPackBuilder:
                 and payload.section_key not in (None, "", "body")
             )
             if is_filing:
-                filing_section_key = (payload.canonical_asset_id, payload.section_key)
                 chunk_identity = (
+                    payload.canonical_asset_id,
+                    payload.corpus_document_id,
                     payload.section_key,
                     payload.chunk_ordinal,
                     payload.content_hash,
@@ -287,9 +285,6 @@ class ContextPackBuilder:
                     excluded.add(payload.evidence_id)
                     continue
                 seen_filing_chunks.add(chunk_identity)
-                seen_filing_sections.setdefault(
-                    filing_section_key, payload.evidence_id
-                )
                 continue
             document_key = (payload.corpus_document_id, payload.content_hash)
             if document_key in seen_document and payload.fact_id is None:
@@ -309,19 +304,10 @@ class ContextPackBuilder:
         payload_budget_remaining = self.budget.evidence_payload_tokens
         for item, payload in ordered:
             if payload.evidence_id in excluded:
-                if payload.evidence_id in metadata_only:
-                    # Identity-only inventory: no body, no offsets, no
-                    # tokenizer metadata may remain serialized.
-                    final_payloads[payload.evidence_id] = payload.model_copy(
-                        update={
-                            "excerpt_text": None,
-                            "source_start_offset": None,
-                            "source_end_offset": None,
-                            "tokenizer_identity": None,
-                        }
-                    )
-                else:
-                    final_payloads[payload.evidence_id] = payload
+                # Excluded items are identity-only inventory entries: the body
+                # representation (excerpt text, source offsets, tokenizer
+                # metadata) must never remain serialized in the draft/pack.
+                final_payloads[payload.evidence_id] = self._identity_only(payload)
                 continue
             per_item_cap = self._per_item_cap(payload)
             truncated, original, included_count = self.token_counter.truncate_with_offsets(
@@ -332,7 +318,7 @@ class ContextPackBuilder:
                     payload, "EXCLUDED_BUDGET", "payload_budget_exhausted", included_count
                 )
                 excluded.add(payload.evidence_id)
-                final_payloads[payload.evidence_id] = payload
+                final_payloads[payload.evidence_id] = self._identity_only(payload)
                 continue
             payload_budget_remaining -= included_count
             included.append(payload.evidence_id)
@@ -484,6 +470,19 @@ class ContextPackBuilder:
 
     def _truncate_to_zero(self, payload: EvidencePayloadItem) -> int:
         return 0
+
+    def _identity_only(self, payload: EvidencePayloadItem) -> EvidencePayloadItem:
+        """Excluded/identity-only inventory representation: identity metadata
+        is retained, but no body, no source offsets, and no tokenizer
+        metadata may remain serialized."""
+        return payload.model_copy(
+            update={
+                "excerpt_text": None,
+                "source_start_offset": None,
+                "source_end_offset": None,
+                "tokenizer_identity": None,
+            }
+        )
 
     def _role_views(
         self,
