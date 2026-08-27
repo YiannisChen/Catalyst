@@ -25,14 +25,22 @@ _TERMINAL_STATUSES = {
     "FAILED_REQUEST",
     "CANCELLED",
 }
+# V1.1 graph stage order (Frozen §6.1); no legacy MCJ transitions remain.
 _NEXT_NODE = {
-    "miner": "critic",
-    "critic": "decision_router",
-    "decision_router": "judge",
-    "judge": "validator",
-    "validator": "finalizer",
-    "baseline_prepare_evidence": "judge",
-    "expand_macro": "miner",
+    "run_admission": "query_validation",
+    "query_validation": "observation_build",
+    "observation_build": "research_policy",
+    "research_policy": "research_execution",
+    "research_execution": "evidence_state",
+    "evidence_state": "coverage_summary",
+    "coverage_summary": "context_pack_build",
+    "context_pack_build": "evidence_analyst",
+    "evidence_analyst": "claim_plan_build",
+    "claim_plan_build": "claim_validation",
+    "claim_validation": "streaming_answer_writer",
+    "streaming_answer_writer": "post_stream_assurance",
+    "post_stream_assurance": "finalizer",
+    "finalizer": "terminal",
 }
 
 
@@ -63,7 +71,7 @@ class LiveRunService:
         trade_date: str,
         query: Any = None,
         model: str | None = None,
-        config: str = "mcj_full",
+        config: str = "v1.1",
     ) -> dict[str, Any]:
         conn = self._connect()
         validation = validate_live_run_request(conn, ticker=ticker, trade_date=trade_date, query=query)
@@ -190,7 +198,7 @@ class LiveRunService:
             "sub_reason": normalized["sub_reason"],
             "failure": failure,
             "last_completed_node": last_node,
-            "predicted_next_node": None if normalized["status"] in _TERMINAL_STATUSES else _NEXT_NODE.get(last_node, "miner"),
+            "predicted_next_node": None if normalized["status"] in _TERMINAL_STATUSES else _NEXT_NODE.get(last_node, "run_admission"),
         }
 
     def get_events(self, run_id: str, *, after_seq: int | None = None) -> list[dict[str, Any]]:
@@ -272,7 +280,7 @@ class LiveRunService:
             trade_date=row["trade_date"],
             query=config.get("query"),
             model=resolved_model,
-            config=config.get("config") or "mcj_full",
+            config=config.get("config") or "v1.1",
         )
         if created.get("status") == "QUEUED":
             conn = self._connect()

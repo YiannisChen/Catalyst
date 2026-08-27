@@ -99,6 +99,12 @@ _DEFAULT_SUPPORTED_INITIAL_NEEDS: frozenset[EvidenceNeed] = frozenset(
     {EvidenceNeed.COMPANY_PRIMARY, EvidenceNeed.COMPANY_NEWS}
 )
 
+
+
+def source_classes_for_need(need: EvidenceNeed) -> tuple[SourceClass, ...]:
+    """Public mapping from EvidenceNeed to eligible source classes (Frozen §6.2)."""
+    return _SOURCE_CLASSES_BY_NEED.get(need, ())
+
 _SOURCE_CLASSES_BY_NEED: dict[EvidenceNeed, tuple[SourceClass, ...]] = {
     EvidenceNeed.COMPANY_PRIMARY: (
         SourceClass.ISSUER_DISCLOSURE,
@@ -410,4 +416,5 @@ __all__ = [
     "ScenarioClassification",
     "check_sufficiency",
     "retrieve",
+    "source_classes_for_need",
 ]

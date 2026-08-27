@@ -108,3 +108,66 @@ def build_llm(
         max_retries=2,
         timeout=90,
     )
+
+
+def build_v1_llm(
+    model_id: str | None = None,
+    *,
+    provider: str = "openai",
+    api_key: str | None = None,
+    base_url: str | None = None,
+) -> ChatOpenAI:
+    """Create the V1.1 ChatOpenAI client (Final Migration TSD §15; M5-0).
+
+    Provider-internal retries are neutralized (``max_retries=0``) so the V1.1
+    policy layer owns the single technical retry per logical role
+    (``runtime.provider_capability``). Temperature is pinned to 0.0 for
+    deterministic structured output, and true streaming declares usage/token
+    accounting. Capability metadata is attached to the returned client and
+    consumed by ``provider_capability_for`` at admission.
+    """
+    resolved_model = (
+        model_id if model_id and model_id != "runtime-default" else DEFAULT_MODEL
+    )
+
+    if base_url:
+        resolved_base_url = base_url
+    elif provider in _PROVIDER_DEFAULTS:
+        resolved_base_url = _PROVIDER_DEFAULTS[provider]
+    else:
+        raise ValueError(
+            f"Unknown provider '{provider}'. Provide a base_url for custom endpoints "
+            f"(use provider='custom_openai_compatible' with a base_url)."
+        )
+
+    resolved_api_key = api_key
+    if not resolved_api_key:
+        resolved_api_key = _get_api_key()
+    if not resolved_api_key:
+        raise ValueError(
+            "No API key available. Provide an api_key or set AIHUBMIX_API_KEY."
+        )
+
+    client = ChatOpenAI(
+        model=resolved_model,
+        api_key=resolved_api_key,
+        base_url=resolved_base_url,
+        temperature=0.0,
+        max_retries=0,
+        timeout=90,
+        stream_usage=True,
+    )
+    # Pydantic models reject undeclared attribute assignment; attach the
+    # capability metadata through the base object machinery.
+    object.__setattr__(
+        client,
+        "capability_metadata",
+        {
+            "supports_structured_output": True,
+            "supports_true_streaming": True,
+            "declares_token_accounting": True,
+            "normalizes_timeout_errors": True,
+            "capability_revision": "v1.1-capability-1",
+        },
+    )
+    return client

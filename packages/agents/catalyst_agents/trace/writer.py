@@ -47,7 +47,7 @@ class TraceWriter:
         db_path: Path | str | None = None,
         ticker: str | None = None,
         trade_date: str | None = None,
-        config: str = "mcj_full",
+        config: str = "v1.1",
     ) -> None:
         self.run_id = run_id or uuid4().hex
         self.trace_id = trace_id or uuid4().hex

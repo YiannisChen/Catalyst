@@ -1845,30 +1845,3 @@ class _StubCutoffPolicy:
     def compute_cutoff(self, *, ticker, session_date, mode) -> str:
         self.calls.append((ticker, session_date, mode))
         return "2026-01-15T21:00:00Z"
-
-
-def test_miner_approved_ten_case_pack_not_short_circuited():
-    """Every manager-approved Wave 2 case query must keep the structured ticker
-    consistent or fail-open through the provenance-aware miner — none may be
-    wrongly hard-rejected as a foreign ticker mismatch."""
-    from catalyst_agents.nodes.miner import miner
-
-    cases = _full_cases()
-    assert len(cases) == 10
-    for case in cases:
-        retriever = _StubRetriever()
-        cutoff_policy = _StubCutoffPolicy()
-        state = {
-            "ticker": case.ticker,
-            "trade_date": case.session_date,
-            "query": case.query,
-            "price_move_pct": None,
-            "corpus_manifest_id": "corpus-fixture-v1",
-        }
-        out = miner(state, retriever=retriever, cutoff_policy=cutoff_policy)
-        assert out.get("ticker_consistent") is not False, (case.case_id, case.query, out)
-        assert retriever.calls, case.case_id
-        if out.get("ticker_consistent") is True:
-            assert out.get("query_ticker_raw") == case.ticker.upper(), case.case_id
-        else:
-            assert out.get("query_ticker_raw") is None, case.case_id

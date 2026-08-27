@@ -81,6 +81,11 @@ class LiveRunRunner:
         return conn
 
     def _load_state(self, run_id: str) -> dict[str, Any]:
+        """Load the thin V1.1 orchestration state (M5-11).
+
+        Legacy semantic fields were archived; only run/request identity and
+        orchestration refs are loaded for the V1.1 graph path.
+        """
         conn = self._connect()
         row = conn.execute("SELECT ticker, trade_date, config FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
         conn.close()
@@ -88,52 +93,20 @@ class LiveRunRunner:
             raise ValueError(f"run not found: {run_id}")
         config = json.loads(row["config"] or "{}")
         return {
+            "run_id": run_id,
             "ticker": row["ticker"],
             "trade_date": row["trade_date"],
             "query": config.get("query"),
-            "price_move_pct": None,
-            "query_ticker_raw": None,
-            "ticker_consistent": None,
-            "market_session_valid": True,
-            "magnitude_plausible": None,
-            "retrieved_chunks": [],
-            "reranked_chunks": [],
-            "graded_evidence": [],
-            "all_graded_chunks": [],
-            "critic_reasoning": "",
-            "critic_decision": None,
-            "error_type": None,
-            "causes": [],
-            "summary_md": "",
-            "grounding_rate": None,
-            "output_status": None,
-            "validation_error": None,
-            "validator_attempts": 0,
-            "phase": None,
-            "router_edge": None,
-            "router_reason": None,
-            "expansions_used": 0,
-            "max_expansions": 2,
-            "current_layer": None,
-            "retrieval_metadata": None,
-            "context_artifact": None,
-            "context_artifact_sha256": None,
             "cutoff": None,
-            "corpus_manifest_id": None,
-            "index_manifest_id": None,
-            "hypothesis_drafts": [],
-            "hypotheses": [],
-            "source_support_flags": {},
-            "cost_breakdown": [],
-            "total_cost_usd": 0.0,
-            "cost_status": "known",
-            "total_tokens": 0,
-            "retry_count": 0,
-            "repair_count": 0,
+            "round": 1,
+            "attempt": 1,
+            "deadline_epoch_ms": None,
+            "cancel_requested": False,
+            "terminal_error": None,
             # model holds full metadata dict (BYOK) or legacy string
             "model": config.get("model"),
             "model_id": _resolve_model_id(config.get("model")),
-            "config": config.get("config") or "mcj_full",
+            "config": config.get("config") or "v1.1",
         }
 
     def _invoke_graph(self, state: dict[str, Any], run_id: str, timed_out: threading.Event) -> Any:

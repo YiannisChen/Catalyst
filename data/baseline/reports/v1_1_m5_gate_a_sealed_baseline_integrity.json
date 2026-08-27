@@ -1,0 +1,22 @@
+{
+  "exit_status": 0,
+  "q002_non_comparable": {
+    "promoted_env_reason": "q_002_promoted_environment_tuple_unrecovered",
+    "promoted_env_recovered": false
+  },
+  "report_path": "/Users/yiannischen/Projects/Catalyst-v1.1-m5/data/baseline/reports/v1_1_baseline_621375bc_corrective_seal.json",
+  "report_schema": "baseline_v1",
+  "report_sha256": "862192eba92048ad9859260d082a027a29ffec5c836bd72768ec60ac041af0c7",
+  "run_tokens": {
+    "four_arm": {
+      "success_token_sha256": "83cdd03a41b39f5664ae9323b4734a872f3e90640c0c38cf0ae3b7ce95526254",
+      "token": "FOUR_ARM_E2E_OK"
+    },
+    "user_smoke": {
+      "success_token_sha256": "feb7a30ea41d17ad5fd932e1494990550c070ebdc47041fde93b07331fed25ea",
+      "token": "USER_SMOKE_OK"
+    }
+  },
+  "schema_version": "v1_1_m5_gate_a_v1",
+  "tag_verified": true
+}

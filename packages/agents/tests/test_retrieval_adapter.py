@@ -87,39 +87,6 @@ def test_agent_adapter_preserves_temporal_identity():
     assert evidence[0].temporal_center_date == "2026-01-06"
 
 
-def test_miner_evidence_persists_temporal_conflict_fields():
-    """Miner chunk evidence must include temporal conflict identity for Wave 2/3."""
-    from catalyst_agents.attribution.provider import RetrievedEvidence
-    from catalyst_agents.nodes.miner import _evidence_to_chunk, miner
-    from attribution_fixtures import FixtureRetriever, RecordingCutoffPolicy
-
-    item = RetrievedEvidence(
-        chunk_id="c1", document_id="d1", content_text="evidence",
-        available_at="2026-01-15T18:00:00Z", source_class="issuer_disclosure",
-        ticker_associations=("AAPL",), dedup_cluster_id=None,
-        cluster_first_available_at="2026-01-15T18:00:00Z",
-        representative_document_id="d1", is_novel=False,
-        lexical_raw_score=-2.0, lexical_rank=1,
-        corpus_manifest_id="corpus-fixture-v1", index_manifest_id="index-fixture-v1",
-        mode_requested="reranked", mode_served="reranked", is_degraded=False,
-        fallback_reason=None, fusion_score=0.05,
-        reranker_score=0.97, reranker_rank=1,
-        temporal_center_date="2026-01-15",
-        query_date="2025-07-24",
-        query_date_conflict=True,
-        query_date_decision="structured_ignore_query",
-    )
-    chunk = _evidence_to_chunk(item)
-    assert chunk["temporal_center_date"] == "2026-01-15"
-    assert chunk["query_date"] == "2025-07-24"
-    assert chunk["query_date_conflict"] is True
-    assert chunk["query_date_decision"] == "structured_ignore_query"
-
-
-# ---------------------------------------------------------------------------
-# M4-0: adapter consumes the V1.1 RetrievalHit contract
-# ---------------------------------------------------------------------------
-
 
 def _v1_hit(**overrides):
     from datetime import datetime, timezone
@@ -178,7 +145,6 @@ def _v1_hit(**overrides):
     )
     base.update(overrides)
     return RetrievalHit(**base)
-
 
 def test_adapter_consumes_v1_hits_with_full_metadata():
     """AgentRetrieverAdapter consumes the V1.1 hit contract and emits evidence

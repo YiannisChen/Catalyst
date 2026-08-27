@@ -4,11 +4,10 @@ from catalyst_agents.runtime.status import (
     is_retryable,
     normalize_run_status,
 )
-from catalyst_agents.state import OutputStatus
 
 
 def test_normalize_run_status_maps_internal_outputs_to_frontend_statuses():
-    assert normalize_run_status(OutputStatus.SUFFICIENT) == {
+    assert normalize_run_status("SUFFICIENT") == {
         "status": "SUCCEEDED",
         "sub_reason": None,
     }
