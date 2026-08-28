@@ -630,3 +630,57 @@ def test_adapter_timeout_discards_late_success(tmp_path: Path) -> None:
     assert row["lifecycle_status"] == "FAILED"
     assert row["failure_code"] == "TIMEOUT"
     assert terminal is None
+
+
+def test_server_env_credential_uses_provider_env_key_not_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding I: server_env resolves the provider-specific env key through
+    get_provider_env_key(provider), never the generic AIHUBMIX_API_KEY
+    fallback; the resolved key is registered before the worker may start."""
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-provider-specific-123")
+    monkeypatch.setenv("AIHUBMIX_API_KEY", "sk-aihubmix-fallback-must-not-leak")
+
+    store = RuntimeCredentialStore()
+    composition = build_runtime_composition(
+        db_path=tmp_path / "runtime.db",
+        dependency_loader=FakeRuntimeDependencyLoader(),
+        credential_store=store,
+        graph_resolver=FakeGraphResolver(),
+        max_workers=2,
+        shutdown_grace_seconds=0.2,
+    )
+    app = create_app(runtime_composition=composition)
+    body = {
+        "ticker": "AAPL",
+        "trade_date": "2026-01-15",
+        "query": "Why did AAPL move?",
+        "model": {
+            "provider": "openai",
+            "model_id": "gpt-4.1-mini",
+            "api_key": "",
+            "credential_source": "server_env",
+        },
+    }
+    with TestClient(app) as client:
+        created = client.post("/api/live-runs", json=body)
+        assert created.status_code == 200, created.text
+        run_id = created.json()["run_id"]
+        # Registration happened synchronously before submission returned.
+        credential = store.get(run_id)
+        assert credential is not None
+        assert credential.api_key == "sk-openai-provider-specific-123"
+        assert "sk-aihubmix-fallback-must-not-leak" not in created.text
+        assert "sk-openai-provider-specific-123" not in created.text
+        with open_rw(tmp_path / "runtime.db") as conn:
+            blob = " ".join(
+                str(dict(row))
+                for table in ("runs", "run_events", "run_artifacts")
+                for row in conn.execute(f"SELECT * FROM {table}").fetchall()
+            )
+        assert "sk-openai-provider-specific-123" not in blob
+        assert "sk-aihubmix-fallback-must-not-leak" not in blob
