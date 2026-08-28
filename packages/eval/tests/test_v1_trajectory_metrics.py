@@ -116,3 +116,43 @@ def test_below_minimum_denominator_blocks_promotion():
     )
     assert below_minimum_denominator(experiment, ("v1f-008",)) is True
     assert below_minimum_denominator(experiment, tuple(experiment.ordered_eligible_ids * 8)) is False
+
+
+def test_useful_corrective_rate_uses_required_and_recoverable_denominator():
+    """Batch-B amendment: useful-corrective rate denominator is the
+    predeclared human-labelled corrective_required=true AND
+    corrective_recoverable=true eligible subset, not not-required cases."""
+    gold_cases = _gold_rows()
+    eligible = [
+        g
+        for g in gold_cases
+        if g.expected_research_behavior.corrective_required
+        and g.expected_research_behavior.corrective_recoverable
+    ]
+    assert eligible, "fixture must include a required+recoverable corrective case"
+    # Every eligible corrective fires and corrects -> useful for all eligible.
+    facts = [
+        _facts(
+            g,
+            corrective_triggered=g in eligible,
+            corrected=g in eligible,
+        )
+        for g in gold_cases
+    ]
+    metrics = compute_trajectory_metrics(facts, gold_cases)
+    assert metrics.useful_corrective_rate.denominator == len(eligible)
+    assert metrics.useful_corrective_rate.numerator == len(eligible)
+    assert metrics.useful_corrective_rate.value == pytest.approx(1.0)
+    # A corrective that fires on the eligible subset but does not correct is
+    # NOT useful and must reduce the numerator, not the denominator.
+    facts_bad = [
+        _facts(
+            g,
+            corrective_triggered=g in eligible,
+            corrected=False,
+        )
+        for g in gold_cases
+    ]
+    metrics_bad = compute_trajectory_metrics(facts_bad, gold_cases)
+    assert metrics_bad.useful_corrective_rate.denominator == len(eligible)
+    assert metrics_bad.useful_corrective_rate.numerator == 0

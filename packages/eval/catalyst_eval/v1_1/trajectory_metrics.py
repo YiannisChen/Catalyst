@@ -3,8 +3,10 @@
 Trajectory ground truth is ``GoldenCase.expected_research_behavior``;
 execution facts come from RunManifest, research-task artifacts, corrective
 artifacts, and trace events. Corrective trigger precision/recall, gap/action
-match, stop correctness, useful/unnecessary corrective rates (denominator =
-not-required cases), zero-new-structure rate, and paired attribution delta
+match, stop correctness, useful-corrective rate (denominator = predeclared
+human-labelled corrective_required=true AND corrective_recoverable=true eligible
+subset), unnecessary-corrective rate (denominator = not-required cases),
+zero-new-structure rate, and paired attribution delta
 (no-corrective vs one-action) on the A3 eligible subset. A3/A4 subsets are
 bound with minimum eligible denominators before outcomes; below-minimum runs
 report diagnostics only and cannot satisfy retention/promotion.
@@ -134,6 +136,15 @@ def compute_trajectory_metrics(
         for case_id, gold in gold_by_case.items()
         if not gold.expected_research_behavior.corrective_required
     ]
+    # Batch-B amendment: the useful-corrective rate denominator is the
+    # predeclared human-labelled corrective_required=true AND
+    # corrective_recoverable=true eligible subset, not the not-required cases.
+    useful_eligible_ids = {
+        case_id
+        for case_id, gold in gold_by_case.items()
+        if gold.expected_research_behavior.corrective_required
+        and gold.expected_research_behavior.corrective_recoverable
+    }
 
     trigger_required = 0
     trigger_triggered = 0
@@ -155,16 +166,15 @@ def compute_trajectory_metrics(
         if fact.corrective_triggered:
             trigger_triggered += 1
             trigger_triggered_cases.append(case_id)
-            if case_id in required_cases:
-                trigger_triggered_correct += 0  # counted above
-            else:
-                if fact.corrected or not behavior.corrective_recoverable:
-                    # A corrective on a not-required case is useful only when
-                    # it improved the outcome; otherwise it is unnecessary.
-                    if fact.corrected:
-                        useful += 1
-                    else:
-                        unnecessary += 1
+        # Useful corrective: fired AND corrected on the predeclared
+        # required+recoverable eligible subset.
+        if case_id in useful_eligible_ids:
+            if fact.corrective_triggered and fact.corrected:
+                useful += 1
+        elif fact.corrective_triggered and not fact.corrected:
+            # A corrective on a not-required case that did not improve the
+            # outcome is unnecessary (denominator = not-required cases).
+            unnecessary += 1
         # Gap/action match: expected gap codes and acceptable corrective
         # actions align with the observed facts for required cases.
         expected_gaps = set(behavior.expected_gap_reason_codes)
@@ -185,7 +195,7 @@ def compute_trajectory_metrics(
     recall_value = trigger_triggered_correct / trigger_required if trigger_required else None
     gap_value = gap_match / total
     stop_value = stop_ok / total
-    useful_value = useful / len(not_required_cases) if not_required_cases else None
+    useful_value = useful / len(useful_eligible_ids) if useful_eligible_ids else None
     unnecessary_value = (
         unnecessary / len(not_required_cases) if not_required_cases else None
     )
@@ -216,9 +226,9 @@ def compute_trajectory_metrics(
         ),
         useful_corrective_rate=_metric(
             "useful_corrective_rate", numerator=useful,
-            denominator=len(not_required_cases), eligible=len(not_required_cases),
-            non_scorable=total - len(not_required_cases), value=useful_value,
-            case_ids=not_required_cases,
+            denominator=len(useful_eligible_ids), eligible=len(useful_eligible_ids),
+            non_scorable=total - len(useful_eligible_ids), value=useful_value,
+            case_ids=sorted(useful_eligible_ids),
         ),
         unnecessary_corrective_rate=_metric(
             "unnecessary_corrective_rate", numerator=unnecessary,
