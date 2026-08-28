@@ -1303,6 +1303,9 @@ def run_user_smoke(
         total_cost = 0.0
         cost_known = True
         degraded = False
+        # M7-9: bind each user-smoke case to its authoritative M6 RunManifest
+        # identity from the V1.1 RunDTO manifest_summary.
+        v1_manifest_bindings: dict[str, dict[str, str | None]] = {}
 
         for item in selected:
             case = item.case
@@ -1385,6 +1388,12 @@ def run_user_smoke(
                     or poll_payload.get("lifecycle_status")
                     or "UNKNOWN"
                 )
+
+            manifest_summary = poll_payload.get("manifest_summary") or {}
+            v1_manifest_bindings[case.case_id] = {
+                "run_manifest_id": manifest_summary.get("run_manifest_id"),
+                "manifest_hash": manifest_summary.get("manifest_hash"),
+            }
 
             events_resp = http.get(f"/api/live-runs/{created_run_id}/events")
             if events_resp.status_code != 200:
@@ -1602,6 +1611,10 @@ def run_user_smoke(
             "model_pricing_output_usd_per_million": _model_pricing_rate(model_id, "output"),
             "selected_case_ids": list(USER_SMOKE_CASE_IDS),
             "expected_classes": dict(USER_SMOKE_EXPECTED_CLASSES),
+            "v1_1_identity": {
+                "recorded": True,
+                "run_manifest_bindings": v1_manifest_bindings,
+            },
             "started_at": started_at,
             "completed_at": completed_at,
             "total_cost_usd": total_cost if cost_known else None,

@@ -2128,3 +2128,18 @@ class _StubCutoffPolicy:
     def compute_cutoff(self, *, ticker, session_date, mode) -> str:
         self.calls.append((ticker, session_date, mode))
         return "2026-01-15T21:00:00Z"
+
+
+def test_run_user_smoke_records_v1_1_run_manifest_identity(tmp_path):
+    """M7-9: user-smoke meta records the V1.1 run-manifest bindings."""
+    _runtime_db, _frozen_db, _resolved, kwargs = _happy_run(tmp_path)
+    summary = run_user_smoke(**kwargs)
+    assert summary.token_written is True
+    meta = json.loads((tmp_path / "reports" / "usmoke_test" / "meta.json").read_text())
+    v1_identity = meta["v1_1_identity"]
+    assert v1_identity["recorded"] is True
+    bindings = v1_identity["run_manifest_bindings"]
+    assert set(bindings) == set(USER_SMOKE_CASE_IDS)
+    for case_id, binding in bindings.items():
+        assert binding["run_manifest_id"]
+        assert len(binding["manifest_hash"]) == 64
