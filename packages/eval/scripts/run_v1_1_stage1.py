@@ -67,6 +67,7 @@ from catalyst_eval.v1_1.report import (
     render_report_markdown,
     scan_report_for_secrets,
     write_report_json,
+    write_report_markdown,
 )
 from catalyst_eval.v1_1.runner import (
     CaseRunOutcome,
@@ -585,9 +586,7 @@ def _report(
         )
     write_report_json(json_out, payload)
     write_report_json(manifest_out, eval_manifest.model_dump(mode="json"))
-    write_report_json(
-        markdown_out, {"markdown": render_report_markdown(payload)}
-    )
+    write_report_markdown(markdown_out, render_report_markdown(payload))
     print(f"report sealed: {json_out}")
     if payload.get("gates_passed") is not True:
         raise Stage1GateFailure(

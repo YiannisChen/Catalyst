@@ -627,6 +627,38 @@ def test_cli_report_publishes_real_gates_and_non_comparable(cli_env):
     assert payload["comparability"] == "NON-COMPARABLE"
     assert payload["eval_id"] == eval_id
 
+    assert (cli_env["tmp_path"] / "r.md").read_text(encoding="utf-8").startswith(
+        "# v1_1_stage1_report_v1"
+    )
+
+
+def test_cli_report_rejects_duplicate_completed_case_rows(cli_env):
+    module = _load_cli()
+    out_dir = cli_env["tmp_path"] / "out"
+    code, eval_id = _run_prepare(module, cli_env, out_dir)
+    assert code == 0
+    factory, _ = _make_adapter_factory(cli_env)
+    assert module.main(
+        [
+            "execute", "--output-dir", str(out_dir),
+            "--max-provider-calls", "100", "--max-cost-usd", "10.0",
+        ],
+        runner_adapter_factory=factory,
+    ) == 0
+    ledger_path = out_dir / "execution_ledger.jsonl"
+    ledger = ExecutionLedger.load(ledger_path, expected_eval_id=eval_id)
+    ExecutionLedger(rows=(*ledger.rows, ledger.rows[0])).write(ledger_path)
+    audit_path = _valid_audit(cli_env, eval_id=eval_id)
+    exit_code = module.main(
+        [
+            "report", "--output-dir", str(out_dir), "--audit", str(audit_path),
+            "--manifest-out", str(cli_env["tmp_path"] / "m.json"),
+            "--json-out", str(cli_env["tmp_path"] / "r.json"),
+            "--markdown-out", str(cli_env["tmp_path"] / "r.md"),
+        ]
+    )
+    assert exit_code == 2
+
 
 def test_cli_all_orchestrates_full_pipeline(cli_env):
     """all = prepare -> execute -> audit -> report with injected adapter."""

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -68,14 +69,26 @@ def build_report_payload(
         for case_id in ordered_ids
     }
 
-    rows = {
-        row.case_id: row
+    completed_rows = [
+        row
         for row in ledger.rows
         if row.eval_id == eval_id
         and row.terminal_status == "COMPLETED"
         and row.identity_valid
         and row.run_facts is not None
-    }
+    ]
+    completed_ids = [row.case_id for row in completed_rows]
+    duplicate_ids = sorted(
+        case_id
+        for case_id in set(completed_ids)
+        if completed_ids.count(case_id) > 1
+    )
+    if duplicate_ids:
+        raise ValueError(
+            "report requires exactly one authoritative COMPLETED row per case; "
+            f"duplicates {duplicate_ids}"
+        )
+    rows = {row.case_id: row for row in completed_rows}
     if set(rows) != set(ordered_ids):
         missing = sorted(set(ordered_ids) - set(rows))
         raise ValueError(
@@ -169,14 +182,14 @@ def build_report_payload(
     retrieval = compute_retrieval_metrics(retrieval_results, gold_cases, top_k=8)
 
     gates: dict[str, bool | None] = {}
-    gates.update({key: bool(value) for key, value in attribution.gates.items()})
-    gates.update({key: bool(value) for key, value in retrieval.gates.items()})
+    gates.update(attribution.gates)
+    gates.update(retrieval.gates)
     # Trajectory useful/unnecessary rates are development signals, not hard
     # gates; they never decide the passing seal.
-    hard_gates = {
-        key: value for key, value in gates.items() if value is not None
-    }
-    passed = all(value is True for value in hard_gates.values()) if hard_gates else False
+    hard_gates = dict(gates)
+    passed = bool(hard_gates) and all(
+        value is True for value in hard_gates.values()
+    )
 
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
@@ -213,9 +226,13 @@ def report_bytes(payload: Mapping[str, Any]) -> bytes:
 
 def write_report_json(path: str | Path, payload: Mapping[str, Any]) -> None:
     """Write-once canonical JSON publication with conflict detection."""
+    _write_once_bytes(Path(path), report_bytes(payload))
+
+
+def _write_once_bytes(path: Path, data: bytes) -> None:
+    """Publish bytes without ever replacing a concurrently-created target."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    data = report_bytes(payload)
     if path.exists():
         existing = path.read_bytes()
         if existing == data:
@@ -223,9 +240,44 @@ def write_report_json(path: str | Path, payload: Mapping[str, Any]) -> None:
         raise ReportConflictError(
             f"refusing to overwrite existing report {path} with differing bytes"
         )
-    tmp = path.with_suffix(path.suffix + f".tmp{os.getpid()}")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+    fd, temp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temp_path, path)
+        except FileExistsError:
+            if path.read_bytes() == data:
+                return
+            raise ReportConflictError(
+                f"refusing to overwrite existing report {path} with differing bytes"
+            ) from None
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except BaseException:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def write_report_markdown(path: str | Path, markdown: str) -> None:
+    """Write deterministic Markdown through the same write-once primitive."""
+    _write_once_bytes(Path(path), markdown.encode("utf-8"))
 
 
 def render_report_markdown(payload: Mapping[str, Any]) -> str:
@@ -289,4 +341,5 @@ __all__ = [
     "report_bytes",
     "scan_report_for_secrets",
     "write_report_json",
+    "write_report_markdown",
 ]

@@ -16,6 +16,7 @@ from catalyst_eval.v1_1.report import (
     render_report_markdown,
     scan_report_for_secrets,
     write_report_json,
+    write_report_markdown,
 )
 
 
@@ -56,6 +57,26 @@ def test_write_report_json_conflicts_without_overwrite(tmp_path):
     assert data["eval_id"] == "eval:stage1:v1"
 
 
+def test_write_report_json_loses_race_without_overwriting_winner(
+    tmp_path, monkeypatch
+):
+    """A competing publisher that wins after the pre-check is immutable."""
+    from pathlib import Path
+    from catalyst_eval.v1_1 import report as report_module
+
+    path = tmp_path / "report.json"
+    winner = b'{"winner":true}'
+
+    def competing_link(_source, target):
+        Path(target).write_bytes(winner)
+        raise FileExistsError
+
+    monkeypatch.setattr(report_module.os, "link", competing_link)
+    with pytest.raises(ReportConflictError):
+        write_report_json(path, _payload())
+    assert path.read_bytes() == winner
+
+
 def test_markdown_is_deterministic_rendering_of_json(tmp_path):
     payload = _payload()
     md_a = render_report_markdown(payload)
@@ -64,6 +85,16 @@ def test_markdown_is_deterministic_rendering_of_json(tmp_path):
     # Markdown cannot introduce facts absent from the JSON payload.
     assert "not-a-real-fact" not in md_a
     assert "eval:stage1:v1" in md_a
+
+
+def test_write_report_markdown_writes_plain_markdown_idempotently(tmp_path):
+    path = tmp_path / "report.md"
+    markdown = render_report_markdown(_payload())
+    write_report_markdown(path, markdown)
+    assert path.read_text(encoding="utf-8") == markdown
+    assert path.read_bytes().startswith(b"# v1_1_stage1_report_v1")
+    write_report_markdown(path, markdown)
+    assert path.read_text(encoding="utf-8") == markdown
 
 
 def test_secret_scan_flags_planted_secret():
