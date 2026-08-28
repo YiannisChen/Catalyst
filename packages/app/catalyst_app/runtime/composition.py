@@ -384,7 +384,7 @@ class ProductionGraphRuntimeResolver(GraphRuntimeResolver):
             retriever=retriever,
             analyst_llm=analyst_llm,
             writer_llm=writer_llm,
-            capability_registry=_production_capability_registry(),
+            capability_registry=_production_capability_registry(deps),
             data_runtime_identity=data_runtime_identity,
             corrective_policy=None,
             prompt_template=analyst_prompt,
@@ -393,7 +393,13 @@ class ProductionGraphRuntimeResolver(GraphRuntimeResolver):
         )
 
 
-def _production_capability_registry() -> Any:
+def _production_capability_registry(deps: Any) -> Any:
+    """Corrective backend registry derived from the real runtime capabilities.
+
+    Every corrective EvidenceNeed is served by the retrieval stack (sqlite +
+    lancedb + embedding + retriever); backend health is computed from the
+    loader's runtime health rather than declared HEALTHY unconditionally.
+    """
     from catalyst_agents.retrieval.corrective import (
         BackendCapability,
         BackendHealth,
@@ -401,13 +407,31 @@ def _production_capability_registry() -> Any:
     )
     from catalyst_agents.retrieval.task import EvidenceNeed
 
+    health = getattr(deps, "health", None) or {}
+    def _component_status(name: str) -> str:
+        component = health.get(name)
+        if isinstance(component, dict):
+            return str(component.get("status", ""))
+        return str(component or "")
+
+    ready = (
+        health.get("status") == "ready"
+        and _component_status("retrieval") == "ready"
+        and _component_status("sqlite") == "ready"
+        and _component_status("lancedb") == "ready"
+        and _component_status("embedding") == "ready"
+        and getattr(deps, "retriever", None) is not None
+    )
+    backend_health = (
+        BackendHealth.HEALTHY if ready else BackendHealth.UNAVAILABLE
+    )
     capabilities = {}
     for name in (
         "COMPANY_PRIMARY", "COMPANY_NEWS", "SECTOR_NEWS", "MACRO_EVENT",
         "MACRO_SERIES", "FUNDAMENTALS",
     ):
         capabilities[EvidenceNeed(name)] = BackendCapability(
-            backend=f"backend:{name.lower()}", health=BackendHealth.HEALTHY
+            backend=f"backend:{name.lower()}", health=backend_health
         )
     return CorrectiveCapabilityRegistry(capabilities)
 
@@ -445,12 +469,68 @@ class RunArtifactsPackPersistence:
             RenderMessage,
             canonical_context_pack_json,
         )
+        import hashlib
 
-        ordinal = self._next_ordinal(run_id)
-        pack_artifact_id = f"pack:{run_id}:{ordinal}"
-        render_artifact_id = f"render:{run_id}:{ordinal}"
+        # Canonical verification before commit (M6 corrective): the declared
+        # hashes must match the exact serialized pack/render contract and the
+        # prompt-template identity must match the pack; run_id must match the
+        # store's run_id. Mismatches are rejected before anything is visible.
+        if run_id != self.run_id:
+            raise ValueError(
+                f"persist run_id {run_id!r} does not match store run_id "
+                f"{self.run_id!r}"
+            )
+        if pack is not None:
+            if pack.run_id != self.run_id:
+                raise ValueError(
+                    f"pack run_id {pack.run_id!r} does not match store run_id "
+                    f"{self.run_id!r}"
+                )
+            expected_pack_sha256 = hashlib.sha256(
+                canonical_context_pack_json(
+                    pack.model_dump(mode="json", exclude={"context_pack_sha256"})
+                )
+            ).hexdigest()
+            if pack_sha256 != expected_pack_sha256:
+                raise ValueError(
+                    "declared pack_sha256 does not match the canonical pack contract"
+                )
+            if pack.context_pack_sha256 != expected_pack_sha256:
+                raise ValueError(
+                    "pack.context_pack_sha256 does not match its canonical "
+                    "serialization"
+                )
+            if prompt_template_version != pack.prompt_template_version:
+                raise ValueError(
+                    "prompt-template version does not match the pack identity"
+                )
+            if prompt_template_sha256 != pack.prompt_template_sha256:
+                raise ValueError(
+                    "prompt-template hash does not match the pack identity"
+                )
+        expected_render_sha256 = hashlib.sha256(
+            canonical_context_pack_json(
+                [
+                    RenderMessage.model_validate(message).model_dump(mode="json")
+                    if not isinstance(message, RenderMessage)
+                    else message.model_dump(mode="json")
+                    for message in rendered_messages
+                ]
+            )
+        ).hexdigest()
+        if rendered_messages_sha256 != expected_render_sha256:
+            raise ValueError(
+                "rendered_messages_sha256 does not match the exact normalized "
+                "rendered messages"
+            )
+
+        # Persist round 1 and round 2 using the actual pack round so the
+        # artifact identity is stable and never derived from event_seq.
+        round_no = pack.round if pack is not None else 1
+        pack_artifact_id = f"pack:{run_id}:{round_no}"
+        render_artifact_id = f"render:{run_id}:{round_no}"
         pack_payload = (
-            pack.model_dump(mode="json") if pack is not None else {"round": ordinal}
+            pack.model_dump(mode="json") if pack is not None else {"round": round_no}
         )
         messages_payload = [
             {"role": message.role, "content": message.content}
@@ -461,7 +541,7 @@ class RunArtifactsPackPersistence:
             event_type=RunEventType.STAGE_STARTED,
             stage="CONTEXT_PACK_BUILD",
             payload=StageStartedPayload(
-                stage="context_pack_build", round=ordinal
+                stage="context_pack_build", round=round_no
             ),
             artifact_payloads=[
                 ArtifactPayload(
@@ -531,16 +611,6 @@ class RunArtifactsPackPersistence:
             rendered_messages=messages,
             refs=refs,
         )
-
-    def _next_ordinal(self, run_id: str) -> int:
-        with open_rw(self.db_path) as conn:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(event_seq), 0) FROM run_artifacts"
-                " WHERE run_id = ? AND artifact_type IN ('context_pack','rendered_messages')",
-                (run_id,),
-            ).fetchone()
-        return int(row[0]) + 1
-
 
 # ---------------------------------------------------------------------------
 # Production run adapter (invokes run_v1_graph)
