@@ -282,6 +282,43 @@ export interface WorkspaceResponse {
   failure?: WorkspaceFailure | null
 }
 
+export interface WorkbenchProjectionDTO {
+  run_id: string
+  lifecycle_status: RunLifecycleStatus
+  attribution_status?: string | null
+  attribution_type?: string | null
+  claims: Array<{
+    claim_id: string
+    role: string
+    statement: string
+    mechanism?: string | null
+    support_evidence_ids: string[]
+    counter_evidence_ids: string[]
+    limitations: string[]
+    citation_evidence_ids: string[]
+    validation_status: string
+    validation_codes: string[]
+  }>
+  evidence: Array<{
+    evidence_id: string
+    canonical_asset_id: string
+    content_version_id: string
+    chunk_id?: string | null
+    fact_id?: string | null
+    excerpt: string
+    source_class: string
+    content_state: string
+    eligible_at: string
+    ticker_scope: string[]
+    provider: string
+    publisher?: string | null
+    dedup_cluster_id?: string | null
+  }>
+  answer?: string | null
+  limitations: string[]
+  artifact_refs: ArtifactRefDTO[]
+}
+
 // ── BYOK Credential Source ──
 
 export type CredentialSource = 'server_env' | 'browser_key';

@@ -12,7 +12,7 @@ import {
   connectRunStream,
   getLiveRunV1,
   getArtifactPage,
-  getWorkspace,
+  getWorkspaceV1,
 } from '../../api/client';
 import {
   createV1State,
@@ -23,17 +23,17 @@ import {
 import type { PublicRunEvent } from '../../api/types';
 import type {
   ModelConfig,
-  WorkspaceResponse,
+  WorkbenchProjectionDTO,
   ArtifactResponse,
   OhlcvCandle,
 } from '../../api/types';
 import {
-  mapEvidence,
-  mapResult,
-  mapSteps,
   mapNewsToEvidence,
   buildDemoCaseStub,
   makeCasesList,
+  mapProjectionEvidence,
+  mapProjectionResult,
+  mapProjectionSteps,
 } from './workspace-adapter';
 import { getNews } from '../../api/client';
 import type { EvidenceItem } from './workspace-adapter';
@@ -57,7 +57,7 @@ export default function LiveWorkbench() {
   const [phase, setPhase] = useState<RunPhase>('loading_tickers');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
-  const [workspace, setWorkspace] = useState<WorkspaceResponse | null>(null);
+  const [workspace, setWorkspace] = useState<WorkbenchProjectionDTO | null>(null);
   const [artifacts, setArtifacts] = useState<ArtifactResponse[]>([]);
   const [v1State, setV1State] = useState(() => createV1State());
   const lastEventSeqRef = useRef(0);
@@ -151,10 +151,10 @@ export default function LiveWorkbench() {
     modelConfig !== null &&
     phase === 'idle';
 
-  // Map workspace to v4 shapes
-  const v4Result = useMemo(() => (workspace ? mapResult(workspace) : null), [workspace]);
+  // Map the authoritative V1 projection to v4 display shapes (Finding G).
+  const v4Result = useMemo(() => (workspace ? mapProjectionResult(workspace) : null), [workspace]);
   const v4Evidence = useMemo(
-    () => (workspace ? mapEvidence(workspace.evidence ?? []) : []),
+    () => (workspace ? mapProjectionEvidence(workspace) : []),
     [workspace],
   );
 
@@ -166,12 +166,17 @@ export default function LiveWorkbench() {
   }, [hasWorkspaceResult, v4Evidence, newsPreviewEvidence]);
   const displayMode: 'preview' | 'retrieved' = hasWorkspaceResult ? 'retrieved' : 'preview';
   const v4Steps = useMemo(
-    () => (workspace ? mapSteps(workspace.stages ?? []) : []),
+    () => (workspace ? mapProjectionSteps(workspace) : []),
     [workspace],
   );
   const referencedIds = useMemo(
     () =>
-      new Set((workspace?.result?.causes ?? []).flatMap((c) => c.evidence_ids ?? [])),
+      new Set(
+        (workspace?.claims ?? []).flatMap((c) => [
+          ...(c.support_evidence_ids ?? []),
+          ...(c.counter_evidence_ids ?? []),
+        ]),
+      ),
     [workspace],
   );
 
@@ -215,7 +220,7 @@ export default function LiveWorkbench() {
           getLiveRunV1(runId)
             .then((dto) => {
               setV1State((prev) => reduceRunDto(prev, dto));
-              return getWorkspace(runId);
+              return getWorkspaceV1(runId);
             })
             .then(setWorkspace)
             .catch((err: Error) => {
@@ -314,7 +319,7 @@ export default function LiveWorkbench() {
         phase={showRunning ? 'running' : phase === 'terminal' ? 'completed' : 'idle'}
         errorMessage={errorMessage}
         artifacts={artifacts}
-        runtimeMs={workspace?.runtime_ms ?? undefined}
+        runtimeMs={undefined}
         attributionStatus={v1Display.attributionStatus}
         attributionType={v1Display.attributionType}
         limitations={v1Display.limitations}

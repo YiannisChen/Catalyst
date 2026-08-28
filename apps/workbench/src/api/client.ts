@@ -157,7 +157,15 @@ export function validateModel(
 }
 
 export function getWorkspace(runId: string): Promise<import('./types').WorkspaceResponse> {
+  // Legacy saved-artifact translation only (migration window); the default
+  // live path uses getWorkspaceV1 (Finding G).
   return request<import('./types').WorkspaceResponse>(`/live-runs/${encodeURIComponent(runId)}/workspace`)
+}
+
+export function getWorkspaceV1(runId: string): Promise<import('./types').WorkbenchProjectionDTO> {
+  // V1.1 authoritative projection over the V1 runs/run_events/run_artifacts
+  // tables; never the legacy LiveRunService workspace projection.
+  return request<import('./types').WorkbenchProjectionDTO>(`/live-runs/${encodeURIComponent(runId)}/workspace-v1`)
 }
 export function getCatalog(): Promise<import('./types').ModelCatalogResponse> {
   return request<import('./types').ModelCatalogResponse>('/models/catalog')
@@ -175,6 +183,25 @@ export function buildStreamUrl(runId: string, lastAppliedSequence: number, apiBa
   return base
 }
 
+/**
+ * Parse the JSON payload delivered by a native EventSource message.
+ *
+ * The browser EventSource already parses the SSE framing: `MessageEvent.data`
+ * is the JSON string from the `data:` line, never a raw `data: ...` frame
+ * (Finding B). The listener must parse that JSON directly.
+ */
+export function parseEventData(data: string): PublicRunEvent {
+  const parsed = JSON.parse(data) as PublicRunEvent
+  if (!parsed.run_id || typeof parsed.sequence !== 'number') {
+    throw new Error('SSE event is not a public run event')
+  }
+  return parsed
+}
+
+/**
+ * Parse one raw SSE frame text. Only tests/utilities need this; the browser
+ * listener must use `parseEventData` on the native EventSource `.data`.
+ */
 export function parseSseFrame(frame: string): PublicRunEvent {
   const dataLine = frame
     .split('\n')
@@ -182,11 +209,7 @@ export function parseSseFrame(frame: string): PublicRunEvent {
   if (!dataLine) {
     throw new Error('SSE frame missing data line')
   }
-  const parsed = JSON.parse(dataLine.slice('data: '.length)) as PublicRunEvent
-  if (!parsed.run_id || typeof parsed.sequence !== 'number') {
-    throw new Error('SSE frame is not a public run event')
-  }
-  return parsed
+  return parseEventData(dataLine.slice('data: '.length))
 }
 
 const ALL_EVENT_TYPES: RunEventType[] = [
@@ -224,7 +247,8 @@ export function connectRunStream(
   const es = new EventSource(buildStreamUrl(runId, lastAppliedSequence))
   const onMessage = (event: MessageEvent<string>) => {
     try {
-      handlers.onEvent(parseSseFrame(event.data))
+      // Native EventSource already parses the frame: .data is the JSON string.
+      handlers.onEvent(parseEventData(event.data))
     } catch (err) {
       // Heartbeat comments and malformed frames are non-persisted transport.
       handlers.onError?.(err instanceof Error ? err : new Error('invalid SSE frame'))

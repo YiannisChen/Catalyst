@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { createV1State, reduceEvent, reduceEventBatch, deriveDisplayState } from './workbench-state.ts'
-import { buildStreamUrl, parseSseFrame } from '../api/client.ts'
+import { buildStreamUrl, parseEventData, parseSseFrame } from '../api/client.ts'
 import type { PublicRunEvent } from '../api/types.ts'
 
 function event(seq: number, eventType: PublicRunEvent['event_type'], payload: Record<string, unknown> = {}): PublicRunEvent {
@@ -54,4 +54,24 @@ test('replay from cursor 0 equals live tail across a fake persisted producer', (
   for (const e of persisted) live = reduceEvent(live, e)
   assert.deepEqual(deriveDisplayState(replayed), deriveDisplayState(live))
   assert.equal(deriveDisplayState(replayed).answerText, 'AB')
+})
+
+test('browser listener parses native EventSource.data as JSON and reduces', () => {
+  const pub = event(3, 'answer.delta', { delta_text: 'hi' })
+  // The native EventSource already parses the SSE frame: MessageEvent.data is
+  // the JSON string, never a raw `data: ...` frame.
+  const data = JSON.stringify(pub)
+  const parsed = parseEventData(data)
+  assert.equal(parsed.sequence, 3)
+  assert.equal(parsed.payload.delta_text, 'hi')
+  const state = reduceEvent(createV1State(), parsed)
+  assert.equal(deriveDisplayState(state).answerText, 'hi')
+})
+
+test('browser listener rejects raw SSE frames as MessageEvent.data', () => {
+  const pub = event(4, 'run.accepted')
+  const frame = `id: run:1:4\nevent: run.accepted\ndata: ${JSON.stringify(pub)}\n\n`
+  // A native EventSource never delivers the raw frame text in .data; the
+  // browser parser must only accept the parsed JSON payload.
+  assert.throws(() => parseEventData(frame))
 })
