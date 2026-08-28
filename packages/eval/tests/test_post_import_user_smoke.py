@@ -23,6 +23,7 @@ prove behavior, not snapshots:
 
 from __future__ import annotations
 
+from datetime import datetime
 import hashlib
 import json
 import sqlite3
@@ -35,9 +36,29 @@ from catalyst_agents.runtime.service import LiveRunService
 from catalyst_agents.trace.artifacts import write_node_artifact
 from catalyst_agents.trace.schema import init_trace_db
 from catalyst_agents.trace.writer import TraceWriter
+from catalyst_app.events import (
+    AssuranceCompletedPayload,
+    RunCompletedPayload,
+    RunEventType,
+    RunFailedPayload,
+    StageStartedPayload,
+)
+from catalyst_app.lifecycle import RunLifecycleStatus
 from catalyst_app.main import create_app
+from catalyst_app.persistence.connect import open_rw
+from catalyst_app.persistence.events import ArtifactPayload, EventRepository
+from catalyst_app.runtime.admission import AdmissionController
+from catalyst_app.runtime.claim import RunClaimer
+from catalyst_app.runtime.executor import RunExecutor
 from catalyst_app.runtime_credential_store import RuntimeCredentialStore
 from catalyst_app.workbench_store import WorkbenchStore
+from catalyst_agents.attribution.context_pack import ContextBudget
+from catalyst_agents.runtime.manifest import (
+    ObservationPolicyConfig,
+    RunManifest,
+    RuntimeConfiguration,
+)
+from catalyst_data.canonical.temporal import TemporalIdentity
 
 from catalyst_eval.post_import.case_pack import (
     CasePackCase,
@@ -660,6 +681,248 @@ class _FakeGraphByTicker:
         return FakeGraph(self.db_path, outcome=outcome).invoke(state, run_id=run_id)
 
 
+def _utc(iso: str) -> datetime:
+    return datetime.fromisoformat(iso.replace("Z", "+00:00"))
+
+
+def _build_smoke_manifest(request, run_id: str, request_hash: str) -> RunManifest:
+    """Fixture RunManifest bound to the M6 admission request (no real runtime)."""
+    return RunManifest(
+        run_id=run_id,
+        request_hash=request_hash,
+        temporal_identity=TemporalIdentity(
+            session_date="2026-01-06",
+            market_timezone="America/New_York",
+            session_open_at=_utc("2026-01-06T14:30:00Z"),
+            session_close_at=_utc("2026-01-06T21:00:00Z"),
+            information_window_start_at=_utc("2026-01-05T21:00:00Z"),
+            cutoff_at=_utc("2026-01-06T21:00:00Z"),
+        ),
+        data_runtime_identity_ref="runtime-id:test",
+        data_runtime_identity_hash="f" * 64,
+        code_revision="m6-test",
+        workflow_version=request.workflow_version,
+        policy_version="p1",
+        analyst_model_id=request.model_id,
+        analyst_prompt_hash="a" * 64,
+        writer_model_id=request.model_id,
+        writer_prompt_hash="b" * 64,
+        context_pack_schema_version="v1",
+        packing_policy_version="p1",
+        context_token_budget=4000,
+        tokenizer_policy="registered-bge-m3",
+        hypothesis_schema_version="v1",
+        claim_schema_version="v1",
+        max_corrective_rounds=1,
+        max_actions_per_batch=1,
+        run_timeout_seconds=60,
+        provider_capability_revision="cap:v1",
+        runtime_configuration=RuntimeConfiguration(
+            observation_policy=ObservationPolicyConfig(
+                material_target_return_pct=2.0,
+                material_prior_return_pct=1.5,
+                quiet_target_return_pct=0.5,
+                flat_reference_return_pct=0.25,
+                aligned_residual_pct=1.0,
+                volume_elevated_ratio=1.5,
+                volume_extreme_ratio=3.0,
+                minimum_peer_count=3,
+                require_sector_and_peer_for_broad_sector=True,
+                scenario_policy_version="sp:v1",
+            ),
+            context_budget=ContextBudget(
+                model_context_limit=128_000,
+                reserved_output_tokens=2_000,
+                reserved_system_instruction_tokens=1_000,
+                observation_tokens=300,
+                coverage_summary_tokens=200,
+                research_history_tokens=100,
+                inventory_tokens=500,
+                evidence_payload_tokens=60_000,
+                per_news_item_max_tokens=800,
+                per_sec_chunk_max_tokens=1_200,
+                lead_only_tokens=1_000,
+                safety_margin_tokens=2_000,
+            ),
+        ),
+    )
+
+
+def _v1_terminal_check(claimer: RunClaimer):
+    def check(run_id: str) -> bool:
+        lifecycle = claimer.current_lifecycle(run_id)
+        return lifecycle is not None and lifecycle in {
+            RunLifecycleStatus.COMPLETED,
+            RunLifecycleStatus.FAILED,
+            RunLifecycleStatus.CANCELLED,
+        }
+
+    return check
+
+
+def _v1_failure_handler(events: EventRepository, claimer: RunClaimer):
+    def handler(run_id: str, code: str) -> None:
+        lifecycle = claimer.current_lifecycle(run_id)
+        if lifecycle is None or lifecycle not in (
+            RunLifecycleStatus.ACCEPTED,
+            RunLifecycleStatus.RUNNING,
+            RunLifecycleStatus.CANCEL_REQUESTED,
+        ):
+            return
+        events.append_terminal(
+            run_id=run_id,
+            assurance_payload=AssuranceCompletedPayload(
+                valid=False, violations=("executor_failure",)
+            ),
+            terminal_event_type=RunEventType.RUN_FAILED,
+            terminal_payload=RunFailedPayload(
+                failure_code=code, stage="EXECUTION", retryable=True
+            ),
+            lifecycle_update=(lifecycle, RunLifecycleStatus.FAILED),
+        )
+
+    return handler
+
+
+def _v1_claim_artifact(run_id: str, citations: list[str]) -> ArtifactPayload:
+    return ArtifactPayload(
+        artifact_id=f"claim:{run_id}:claim-1",
+        artifact_type="claim_detail",
+        payload={
+            "claim_id": f"claim:{run_id}:claim-1",
+            "role": "PRIMARY",
+            "statement": "cause text",
+            "mechanism": "",
+            "support_evidence_ids": citations,
+            "counter_evidence_ids": [],
+            "limitations": [],
+            "citation_evidence_ids": citations,
+            "validation_status": "validated",
+            "validation_codes": [],
+        },
+    )
+
+
+def _read_fake_citations(db_path: Path, run_id: str) -> list[str]:
+    """Read citations persisted by the fake graph's validator artifact."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            "SELECT payload_json FROM node_artifacts"
+            " WHERE run_id = ? AND artifact_type = 'judge_causes'",
+            (run_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    cited: list[str] = []
+    for row in rows:
+        payload = json.loads(row["payload_json"])
+        for cause in payload.get("causes") or []:
+            cited.extend(cause.get("evidence_ids") or [])
+    return cited
+
+
+def _v1_smoke_adapter(db_path: Path, graph_factory, *, claimer: RunClaimer, events: EventRepository):
+    """M6 run adapter over the fake graph seam.
+
+    The M6 AdmissionController/executor own the durable lifecycle; this
+    adapter keeps `/api/live-runs` on the production route while the graph and
+    provider are mocked at the adapter boundary. Query-validation failure
+    paths (unsupported ticker/date) terminalize before any provider call.
+    """
+
+    def _fail(run_id: str, code: str) -> dict:
+        claimer.terminalize(
+            run_id=run_id,
+            assurance_payload=AssuranceCompletedPayload(
+                valid=False, violations=(code,)
+            ),
+            terminal_event_type=RunEventType.RUN_FAILED,
+            terminal_payload=RunFailedPayload(
+                failure_code=code, stage="QUERY_VALIDATION", retryable=False
+            ),
+            lifecycle_update=(RunLifecycleStatus.ACCEPTED, RunLifecycleStatus.FAILED),
+        )
+        return {"run_id": run_id, "status": "FAILED", "failure_code": code}
+
+    def adapter(run_id: str, timeout_seconds: float) -> dict:
+        with open_rw(db_path) as conn:
+            row = conn.execute(
+                "SELECT ticker FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise RuntimeError(f"run {run_id} has no persisted admission row")
+            accepted = conn.execute(
+                "SELECT payload_json FROM run_events"
+                " WHERE run_id = ? AND event_type = 'run.accepted'"
+                " ORDER BY seq ASC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+        ticker = str(row["ticker"])
+        # The M6 runs row stores ticker but not trade_date; the authoritative
+        # request fact lives in the run.accepted event payload.
+        if accepted is None:
+            raise RuntimeError(f"run {run_id} has no run.accepted event")
+        trade_date = str(json.loads(accepted["payload_json"]).get("trade_date") or "")
+        if ticker == "ZZZZ":
+            return _fail(run_id, "unsupported_ticker")
+        if trade_date == "2099-01-01":
+            return _fail(run_id, "invalid_trade_date")
+        if not claimer.claim_run(run_id, owner="executor", task_token=uuid.uuid4().hex):
+            return {"run_id": run_id, "status": "NOT_CLAIMED"}
+        graph = graph_factory()
+        final_state = graph.invoke(
+            {"ticker": ticker, "trade_date": trade_date}, run_id=run_id
+        )
+        output_status = final_state.get("output_status") or "SYSTEM_ERROR"
+        citations = _read_fake_citations(db_path, run_id)
+        events.append(
+            run_id=run_id,
+            event_type=RunEventType.STAGE_STARTED,
+            stage="CLAIM_VALIDATION",
+            payload=StageStartedPayload(stage="claim_validation", round=1),
+            artifact_payloads=[_v1_claim_artifact(run_id, citations)],
+        )
+        claimer.terminalize(
+            run_id=run_id,
+            assurance_payload=AssuranceCompletedPayload(
+                valid=True, final_result_status=output_status
+            ),
+            terminal_event_type=RunEventType.RUN_COMPLETED,
+            terminal_payload=RunCompletedPayload(
+                result_status=output_status,
+                final_output_artifact_ref=f"answer:stream:{run_id}",
+                total_latency_ms=0,
+                total_tokens=None,
+                cost=None,
+                runtime_identity_ref="runtime-id:test",
+            ),
+            required_artifact_payloads=[
+                ArtifactPayload(
+                    artifact_id=f"attribution:{run_id}",
+                    artifact_type="attribution_result",
+                    payload={
+                        "attribution_status": output_status,
+                        "attribution_type": "EVIDENCE_BACKED_CAUSAL",
+                    },
+                ),
+                ArtifactPayload(
+                    artifact_id=f"assurance:{run_id}",
+                    artifact_type="assurance",
+                    payload={"valid": True, "final_result_status": output_status},
+                ),
+            ],
+            lifecycle_update=(
+                RunLifecycleStatus.RUNNING,
+                RunLifecycleStatus.COMPLETED,
+            ),
+        )
+        return {"run_id": run_id, "status": "COMPLETED"}
+
+    return adapter
+
+
 def _make_app(db_path: Path, graph_factory, *, provider_counter: RecordingCounter | None = None):
     def factory(model=None, api_key=None):
         if provider_counter is not None:
@@ -672,10 +935,30 @@ def _make_app(db_path: Path, graph_factory, *, provider_counter: RecordingCounte
         credential_store=RuntimeCredentialStore(),
         timeout_seconds=60.0,
     )
+    events = EventRepository(db_path=db_path)
+    claimer = RunClaimer(db_path=db_path, events=events)
+    executor = RunExecutor(
+        admission_slots=4,
+        max_workers=2,
+        run_adapter=_v1_smoke_adapter(
+            db_path, factory, claimer=claimer, events=events
+        ),
+        failure_handler=_v1_failure_handler(events, claimer),
+        terminal_check=_v1_terminal_check(claimer),
+        shutdown_grace_seconds=0.1,
+    )
+    controller = AdmissionController(
+        db_path=db_path,
+        executor=executor,
+        events=events,
+        manifest_factory=_build_smoke_manifest,
+    )
     app = create_app(
+        admission_controller=controller,
         service_override=service,
         dependency_loader_override=FakeLoader(),
         workbench_store_override=WorkbenchStore(db_path=db_path),
+        db_path=db_path,
     )
     return app, service
 
