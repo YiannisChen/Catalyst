@@ -806,3 +806,116 @@ def test_process_local_reservation_reconciles_with_durable_rows(tmp_path: Path) 
     assert executor.reserved_count == 4
     assert executor.try_reserve_slot("run:5") is False
     executor.shutdown(grace_seconds=0)
+
+
+class _SyncExecutor:
+    """Deterministic admission executor: submit runs the adapter synchronously.
+
+    Mirrors the RunExecutor capacity surface (admission_slots,
+    try_reserve_slot, reserved_count, release_slot, submit) so admission
+    ordering is testable without thread scheduling.
+    """
+
+    def __init__(self, adapter, *, admission_slots: int = 4, fail: bool = False) -> None:
+        self.adapter = adapter
+        self.admission_slots = admission_slots
+        self.fail = fail
+        self._reserved: set[str] = set()
+        self.submitted: list[str] = []
+
+    def try_reserve_slot(self, run_id: str | None = None) -> bool:
+        key = run_id or "__anon__:sync"
+        if key in self._reserved:
+            return True
+        if len(self._reserved) >= self.admission_slots:
+            return False
+        self._reserved.add(key)
+        return True
+
+    @property
+    def reserved_count(self) -> int:
+        return len(self._reserved)
+
+    def release_slot(self, run_id: str | None = None) -> bool:
+        if run_id is not None:
+            return run_id in self._reserved and self._reserved.discard(run_id) or False
+        return False
+
+    def submit(self, run_id: str, timeout_seconds: float) -> dict[str, object]:
+        self.submitted.append(run_id)
+        if self.fail:
+            raise RuntimeError("synchronous submission failure")
+        return self.adapter(run_id, timeout_seconds)
+
+
+def test_pre_submit_credential_visible_to_synchronous_submit(tmp_path: Path) -> None:
+    """Finding I deterministic race test: the volatile credential is
+    registered after run_id allocation and before executor submission; with a
+    synchronous submit the adapter observes it inline — no sleep/poll."""
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+
+    db_path = tmp_path / "runtime.db"
+    _fixture_db(db_path)
+    repo = _events(db_path)
+    store = RuntimeCredentialStore()
+    SECRET = "sk-byok-race-0123456789abcdef"
+    observed: dict[str, object] = {}
+
+    def adapter(run_id: str, timeout_seconds: float) -> dict[str, object]:
+        credential = store.get(run_id)
+        observed["run_id"] = run_id
+        observed["api_key"] = credential.api_key if credential is not None else None
+        return {"run_id": run_id, "status": "OK"}
+
+    executor = _SyncExecutor(adapter)
+    controller = AdmissionController(
+        db_path=db_path,
+        executor=executor,
+        events=repo,
+        manifest_factory=_manifest,
+        credential_store=store,
+    )
+    outcome = controller.admit(
+        _request(credential_source_identifier="browser_key"),
+        pre_submit=lambda run_id: store.register(run_id, api_key=SECRET),
+    )
+
+    assert outcome.kind == "accepted"
+    assert executor.submitted == [outcome.run_id]
+    # submit ran synchronously inside admit; the adapter already saw it.
+    assert observed["run_id"] == outcome.run_id
+    assert observed["api_key"] == SECRET
+    assert store.get(outcome.run_id) is not None
+
+
+def test_pre_submit_credential_removed_on_submission_failure(tmp_path: Path) -> None:
+    """Finding I: submission failure cleans up the registered credential."""
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+
+    db_path = tmp_path / "runtime.db"
+    _fixture_db(db_path)
+    repo = _events(db_path)
+    store = RuntimeCredentialStore()
+    SECRET = "sk-byok-submission-failure-0123456789ab"
+    executor = _SyncExecutor(adapter=lambda run_id, t: {"ok": True}, fail=True)
+    controller = AdmissionController(
+        db_path=db_path,
+        executor=executor,
+        events=repo,
+        manifest_factory=_manifest,
+        credential_store=store,
+    )
+
+    with pytest.raises(RuntimeError, match="synchronous submission failure"):
+        controller.admit(
+            _request(),
+            pre_submit=lambda run_id: store.register(run_id, api_key=SECRET),
+        )
+
+    # The failed run was terminalized FAILED and its volatile key removed.
+    assert store.active_count == 0
+    with open_rw(db_path) as conn:
+        row = conn.execute(
+            "SELECT lifecycle_status FROM runs ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+    assert row["lifecycle_status"] == "FAILED"

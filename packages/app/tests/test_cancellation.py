@@ -583,3 +583,111 @@ def _wait_terminal_cancel(client, run_id: str, timeout_seconds: float = 12.0) ->
             return summary
         time.sleep(0.02)
     return client.get(f"/api/live-runs/{run_id}").json()
+
+
+def test_cancel_during_retrieval_prevents_writer_dispatch(tmp_path: Path) -> None:
+    """Finding D: cancellation observed after retrieval (before the Analyst /
+    Writer) prevents Writer dispatch; the run reaches CANCELLED."""
+    from fastapi.testclient import TestClient
+
+    from catalyst_app.main import create_app
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+
+    class CancelAfterRetrievalResolver(_CancelResolver):
+        def __init__(self, tokens) -> None:
+            super().__init__(tokens)
+            self.resolver = None
+            self.writer_llm = None
+
+        def resolve(self, manifest, boundary):
+            from catalyst_agents.retrieval.corrective import (
+                BackendCapability,
+                BackendHealth,
+                CorrectiveCapabilityRegistry,
+            )
+            from catalyst_agents.retrieval.task import EvidenceNeed
+            from catalyst_app.runtime.composition import ResolvedGraphRuntime
+            from test_default_runtime_composition import (
+                FakeAnalystProvider,
+                FakeObservationProvider,
+                FakeRetriever,
+                FakeWriterProvider,
+                _runtime,
+            )
+
+            capabilities = {
+                EvidenceNeed(name): BackendCapability(
+                    backend=f"backend:{name.lower()}", health=BackendHealth.HEALTHY
+                )
+                for name in (
+                    "COMPANY_PRIMARY", "COMPANY_NEWS", "SECTOR_NEWS",
+                    "MACRO_EVENT", "MACRO_SERIES", "FUNDAMENTALS",
+                )
+            }
+
+            class CancellingRetriever(FakeRetriever):
+                def __init__(self, tokens) -> None:
+                    super().__init__()
+                    self.tokens = tokens
+
+                def retrieve(self, query, *, ticker, cutoff, requested_manifest_id,
+                             temporal_identity=None, top_k=8, candidate_depth=20):
+                    result = super().retrieve(
+                        query, ticker=ticker, cutoff=cutoff,
+                        requested_manifest_id=requested_manifest_id,
+                        temporal_identity=temporal_identity,
+                        top_k=top_k, candidate_depth=candidate_depth,
+                    )
+                    # Cancellation wins right after retrieval, before Analyst.
+                    self.tokens.request(manifest.run_id)
+                    return result
+
+            class CountingWriter(FakeWriterProvider):
+                def __init__(self) -> None:
+                    super().__init__()
+                    self.writer_calls = 0
+
+                def stream(self, messages):
+                    self.writer_calls += 1
+                    return super().stream(messages)
+
+            writer = CountingWriter()
+            self.writer_llm = writer
+            self.resolver = ResolvedGraphRuntime(
+                observation_provider=FakeObservationProvider(),
+                retriever=CancellingRetriever(self.tokens),
+                analyst_llm=FakeAnalystProvider(),
+                writer_llm=writer,
+                capability_registry=CorrectiveCapabilityRegistry(capabilities),
+                data_runtime_identity=_runtime(),
+                corrective_policy=None,
+                prompt_template="You are the Evidence Analyst. Emit the strict schema.",
+                query_builder=None,
+                structured_provider=None,
+            )
+            return self.resolver
+
+    composition = build_runtime_composition(
+        db_path=tmp_path / "runtime.db",
+        dependency_loader=_CancelAwareLoader(),
+        credential_store=RuntimeCredentialStore(),
+        graph_resolver=None,
+        max_workers=2,
+        shutdown_grace_seconds=0.2,
+    )
+    cancel_resolver = CancelAfterRetrievalResolver(tokens=composition.tokens)
+    composition.run_adapter.graph_resolver = cancel_resolver
+    app = create_app(runtime_composition=composition)
+
+    with TestClient(app) as client:
+        created = client.post("/api/live-runs", json=_cancel_body())
+        run_id = created.json()["run_id"]
+        final = _wait_terminal_cancel(client, run_id)
+        assert final["lifecycle_status"] == "CANCELLED"
+        # The Writer was never dispatched.
+        assert cancel_resolver.writer_llm.writer_calls == 0
+        stream = client.get(f"/api/live-runs/{run_id}/stream").text
+        assert "event: run.cancelled" in stream
+        assert "event: run.completed" not in stream
+

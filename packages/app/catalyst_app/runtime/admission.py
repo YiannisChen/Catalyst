@@ -23,7 +23,7 @@ reopens.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import threading
 from typing import Any, Callable, Literal
@@ -109,6 +109,16 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _remaining_seconds(deadline_iso: str) -> float:
+    """Remaining wall seconds to an ISO-8601 UTC deadline (floor at zero)."""
+    if not deadline_iso:
+        return 0.0
+    deadline = datetime.fromisoformat(deadline_iso.replace("Z", "+00:00"))
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+    return max(0.0, (deadline - datetime.now(timezone.utc)).total_seconds())
+
+
 class AdmissionController:
     def __init__(
         self,
@@ -119,6 +129,7 @@ class AdmissionController:
         manifest_factory: ManifestFactory,
         admission_lock: threading.Lock | None = None,
         cancellation: Any | None = None,
+        credential_store: Any | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.executor = executor
@@ -126,11 +137,21 @@ class AdmissionController:
         self._manifest_factory = manifest_factory
         self._admission_lock = admission_lock or threading.Lock()
         self._cancellation = cancellation
+        self._credential_store = credential_store
         self._closed = False
 
     # -- admission ---------------------------------------------------------
 
-    def admit(self, request: AdmissionRequest) -> AdmissionOutcome:
+    def admit(
+        self,
+        request: AdmissionRequest,
+        *,
+        pre_submit: Callable[[str], None] | None = None,
+    ) -> AdmissionOutcome:
+        """Admit one run; ``pre_submit`` (if any) runs after the ACCEPTED
+        transaction commits and before the executor task is submitted so a
+        volatile credential is visible to the worker before it may start.
+        The hook never receives or persists the credential itself."""
         normalized = self._validate_request(request)
         request_hash = compute_request_hash(
             ticker=normalized["ticker"],
@@ -180,13 +201,20 @@ class AdmissionController:
                     manifest_json = manifest.model_dump(mode="json")
                     manifest_hash = payload_sha256(manifest_json)
                     now = _utc_now()
+                    # One absolute deadline derived once at admission
+                    # (deadline_at = created_at + run_timeout_seconds); queue
+                    # delay and recovery reuse it and never reset the budget.
+                    deadline_at = (
+                        datetime.fromisoformat(now)
+                        + timedelta(seconds=manifest.run_timeout_seconds)
+                    ).isoformat()
                     conn.execute(
                         """
                         INSERT INTO runs
                             (run_id, lifecycle_status, idempotency_key, request_hash,
                              run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at,
-                             ticker, provider, base_url)
-                        VALUES (?, 'ACCEPTED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             ticker, provider, base_url, deadline_at)
+                        VALUES (?, 'ACCEPTED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             run_id,
@@ -200,6 +228,7 @@ class AdmissionController:
                             normalized["ticker"],
                             normalized["provider"],
                             normalized["base_url"],
+                            deadline_at,
                         ),
                     )
                     stream_url = f"/api/live-runs/{run_id}/stream"
@@ -230,11 +259,23 @@ class AdmissionController:
                     self.executor.release_slot(run_id)
                     raise
 
+            # Pre-submit hook: register the volatile credential (resolved by
+            # the caller, never carried on AdmissionRequest/manifest/rows) after
+            # run_id allocation and before the executor task may start.
+            if pre_submit is not None:
+                pre_submit(run_id)
+
             # Submission exactly once; slot releases after terminal commit.
+            # The submitted budget is the remaining time to the persisted
+            # deadline so queue delay reduces it and never resets it.
             try:
-                self.executor.submit(run_id, manifest.run_timeout_seconds)
+                self.executor.submit(
+                    run_id, _remaining_seconds(deadline_at)
+                )
             except BaseException:
                 self._terminalize_submission_failure(run_id)
+                if self._credential_store is not None:
+                    self._credential_store.remove(run_id)
                 self.executor.release_slot(run_id)
                 raise
 
@@ -286,9 +327,15 @@ class AdmissionController:
                     failed.append(run_id)
                     continue
                 try:
-                    self.executor.submit(run_id, manifest.run_timeout_seconds)
+                    # Recovery reuses the original persisted deadline; the
+                    # submitted budget is the remaining time to it.
+                    self.executor.submit(
+                        run_id, self._remaining_seconds_for_run(run_id, manifest)
+                    )
                 except BaseException:
                     self._terminalize_submission_failure(run_id)
+                    if self._credential_store is not None:
+                        self._credential_store.remove(run_id)
                     failed.append(run_id)
                 else:
                     resubmitted.append(run_id)
@@ -479,6 +526,39 @@ class AdmissionController:
             "SELECT lifecycle_status FROM runs WHERE run_id = ?", (run_id,)
         ).fetchone()
         return row["lifecycle_status"] if row is not None else None
+
+    def _remaining_seconds_for_run(self, run_id: str, manifest: RunManifest) -> float:
+        """Remaining seconds to the persisted absolute deadline.
+
+        Prefers the admission-derived ``deadline_at``; legacy rows without it
+        fall back to the deterministic ``created_at + run_timeout_seconds``
+        formula so recovery never resets the 60-second budget.
+        """
+        with open_rw(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT deadline_at, created_at FROM runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return float(manifest.run_timeout_seconds)
+        if row["deadline_at"] is not None:
+            deadline_iso = row["deadline_at"]
+        elif row["created_at"] is not None:
+            try:
+                deadline_iso = (
+                    datetime.fromisoformat(row["created_at"])
+                    + timedelta(seconds=manifest.run_timeout_seconds)
+                ).isoformat()
+            except ValueError:
+                return float(manifest.run_timeout_seconds)
+        else:
+            return float(manifest.run_timeout_seconds)
+        try:
+            return _remaining_seconds(deadline_iso)
+        except ValueError:
+            # Legacy placeholder timestamps in tests/old rows: keep the full
+            # timeout so recovery still submits exactly once.
+            return float(manifest.run_timeout_seconds)
 
     def _load_manifest(self, run_id: str) -> RunManifest | None:
         with open_rw(self.db_path) as conn:

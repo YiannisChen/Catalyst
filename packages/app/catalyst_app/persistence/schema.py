@@ -111,8 +111,9 @@ def init_runtime_db(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_runs_add_claim_columns(conn: sqlite3.Connection) -> None:
-    """Additive evolution: runs gains owner/task_token for atomic claims and
-    the request identity columns needed to rebuild the graph boundary."""
+    """Additive evolution: runs gains owner/task_token for atomic claims, the
+    request identity columns needed to rebuild the graph boundary, and the
+    persisted absolute deadline (deadline_at) derived once at admission."""
     columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)").fetchall()}
     if "owner" not in columns:
         conn.execute("ALTER TABLE runs ADD COLUMN owner TEXT")
@@ -124,6 +125,8 @@ def _migrate_runs_add_claim_columns(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE runs ADD COLUMN provider TEXT")
     if "base_url" not in columns:
         conn.execute("ALTER TABLE runs ADD COLUMN base_url TEXT")
+    if "deadline_at" not in columns:
+        conn.execute("ALTER TABLE runs ADD COLUMN deadline_at TEXT")
 
 
 def table_exists(conn: sqlite3.Connection, table: str) -> bool:

@@ -485,8 +485,9 @@ def test_byok_credential_available_before_graph_and_never_persisted(tmp_path: Pa
 
 
 def test_adapter_timeout_discards_late_success(tmp_path: Path) -> None:
-    """Finding E: the absolute deadline is derived once at claim; a late
-    provider/graph success after timeout cannot commit COMPLETED/artifacts."""
+    """Finding E: the absolute deadline is derived once at admission and
+    persisted; a late provider/graph success after that deadline cannot commit
+    COMPLETED/artifacts."""
     import threading
 
     from catalyst_app.api_dto import compute_request_hash
@@ -552,16 +553,28 @@ def test_adapter_timeout_discards_late_success(tmp_path: Path) -> None:
     )
     manifest = composition.manifest_factory(req, run_id, request_hash)
     from catalyst_app.persistence.events import canonical_json
+    from datetime import datetime, timedelta, timezone
 
     manifest_json = canonical_json(manifest.model_dump(mode="json"))
+    created_at = datetime.now(timezone.utc)
+    # Persist the absolute deadline derived at admission (~0.3s out).
+    deadline_at = (created_at + timedelta(seconds=0.3)).isoformat()
     with open_rw(db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "INSERT INTO runs (run_id, lifecycle_status, idempotency_key, request_hash,"
             " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at,"
-            " ticker, provider, base_url)"
-            " VALUES (?, 'ACCEPTED', NULL, ?, ?, ?, 0, 't', 't', 'AAPL', 'openai', NULL)",
-            (run_id, request_hash, f"manifest:{run_id}", "x" * 64),
+            " ticker, provider, base_url, deadline_at)"
+            " VALUES (?, 'ACCEPTED', NULL, ?, ?, ?, 0, ?, ?, 'AAPL', 'openai', NULL, ?)",
+            (
+                run_id,
+                request_hash,
+                f"manifest:{run_id}",
+                "x" * 64,
+                created_at.isoformat(),
+                created_at.isoformat(),
+                deadline_at,
+            ),
         )
         conn.execute(
             "INSERT INTO run_events (run_id, seq, occurred_at, event_type, stage, payload_json, schema_version)"
