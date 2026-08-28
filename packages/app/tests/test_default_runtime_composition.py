@@ -370,6 +370,21 @@ def test_default_post_live_run_invokes_run_v1_graph_and_persists(tmp_path: Path)
         assert f"event: run.completed" in stream.text
         assert f"id: {run_id}:1" in stream.text
 
+        # total_latency_ms derives from real monotonic timing, never the
+        # fabricated constant 1.
+        import json as _json
+
+        from catalyst_app.persistence.connect import open_rw
+
+        with open_rw(tmp_path / "runtime.db") as conn:
+            completed = conn.execute(
+                "SELECT payload_json FROM run_events"
+                " WHERE run_id = ? AND event_type = 'run.completed'",
+                (run_id,),
+            ).fetchone()
+        assert completed is not None
+        assert _json.loads(completed["payload_json"])["total_latency_ms"] >= 1
+
 
 def test_health_not_ready_when_identity_readiness_fails(tmp_path: Path) -> None:
     """Finding J: /api/health must not report ready when the production
