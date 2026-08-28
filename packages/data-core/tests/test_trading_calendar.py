@@ -43,3 +43,49 @@ class TestCalendarYearsConstant:
     def test_years_span_2024_to_2027(self):
         assert CALENDAR_YEARS[0] == 2024
         assert CALENDAR_YEARS[1] == 2027
+
+
+class TestSessionOpenUtc:
+    """Authoritative 09:30 America/New_York session open (M6 corrective)."""
+
+    def test_regular_est_session_open(self):
+        from catalyst_data.trading_calendar import session_open_utc
+
+        # 2026-01-06 is EST (UTC-5): 09:30 ET == 14:30 UTC.
+        assert session_open_utc("2026-01-06") == "2026-01-06T14:30:00Z"
+
+    def test_regular_edt_session_open(self):
+        from catalyst_data.trading_calendar import session_open_utc
+
+        # 2026-07-15 is EDT (UTC-4): 09:30 ET == 13:30 UTC.
+        assert session_open_utc("2026-07-15") == "2026-07-15T13:30:00Z"
+
+    def test_early_close_session_open_keeps_0930_open(self):
+        from catalyst_data.trading_calendar import session_close_utc, session_open_utc
+
+        # 2026-11-27 early closes at 13:00 ET but still opens at 09:30 ET.
+        assert session_open_utc("2026-11-27") == "2026-11-27T14:30:00Z"
+        assert session_close_utc("2026-11-27") == "2026-11-27T18:00:00Z"
+
+    def test_holiday_session_open_rejected(self):
+        from catalyst_data.trading_calendar import session_open_utc
+
+        with pytest.raises(ValueError, match="not_a_trading_session"):
+            session_open_utc("2026-11-26")  # Thanksgiving
+
+    def test_weekend_session_open_rejected(self):
+        from catalyst_data.trading_calendar import session_open_utc
+
+        with pytest.raises(ValueError, match="not_a_trading_session"):
+            session_open_utc("2026-07-11")  # Saturday
+
+    def test_open_is_never_derived_from_close_duration(self):
+        """Open and close derive independently; an early close cannot shift open."""
+        from catalyst_data.trading_calendar import session_close_utc, session_open_utc
+
+        regular_open = session_open_utc("2026-07-15")
+        early_open = session_open_utc("2026-11-27")
+        # Both are regular 09:30 ET opens even though the close differs.
+        assert regular_open == "2026-07-15T13:30:00Z"
+        assert early_open == "2026-11-27T14:30:00Z"
+        assert session_close_utc("2026-07-15") != session_close_utc("2026-11-27")

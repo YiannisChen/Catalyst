@@ -37,6 +37,11 @@ from catalyst_agents.runtime.manifest import (
     RunManifest,
     RuntimeConfiguration,
 )
+from catalyst_agents.runtime.control import (
+    RunCancelledError,
+    RunDeadlineExceededError,
+    raise_if_control_expired,
+)
 from catalyst_agents.runtime.pack_persistence import (
     PersistedPackPair,
     PersistedPackRefs,
@@ -59,6 +64,8 @@ from catalyst_app.persistence.connect import open_rw
 from catalyst_app.persistence.events import (
     ArtifactPayload,
     EventRepository,
+    IllegalLifecycleTransitionError,
+    TerminalRunError,
     payload_sha256,
 )
 from catalyst_app.runtime.admission import (
@@ -99,16 +106,11 @@ _ANALYST_PROMPT_PATH = (
     / "agents" / "catalyst_agents" / "prompts" / "evidence_analyst.md"
 )
 
-# The Writer system instruction template is code-owned by
-# ``catalyst_agents.nodes.writer._writer_messages``; the manifest identity
-# hashes the canonical instruction text so it never drifts from the V1.1
-# writer contract.
-_PRODUCTION_WRITER_TEMPLATE = (
-    "You are writing the attribution report. Paraphrase, organize, and connect "
-    "only the validated claims below. Do not invent facts, mechanisms, or "
-    "causes; do not raise certainty; do not omit required limitations; and "
-    "never cite evidence outside the citation map."
-)
+# The Writer system instruction is code-owned by agents
+# (``catalyst_agents.nodes.writer.WRITER_STANDARD_INSTRUCTION``); the manifest
+# identity hashes the canonical instruction text so it never drifts from the
+# V1.1 writer contract and is never duplicated here.
+from catalyst_agents.nodes.writer import WRITER_STANDARD_INSTRUCTION as _PRODUCTION_WRITER_TEMPLATE
 
 
 @lru_cache(maxsize=1)
@@ -200,13 +202,18 @@ def build_temporal_identity(session_date: str) -> TemporalIdentity:
     from catalyst_data.trading_calendar import (
         latest_closed_trading_day_for_date,
         session_close_utc,
+        session_open_utc,
     )
 
     if not session_date:
         raise RuntimeUnavailableError("session_date is required for temporal identity")
-    close_iso = session_close_utc(session_date)
+    try:
+        open_iso = session_open_utc(session_date)
+        close_iso = session_close_utc(session_date)
+    except ValueError as exc:
+        raise RuntimeUnavailableError(str(exc)) from exc
+    open_at = datetime.fromisoformat(open_iso.replace("Z", "+00:00"))
     close_at = datetime.fromisoformat(close_iso.replace("Z", "+00:00"))
-    open_at = close_at - timedelta(hours=6, minutes=30)
     prior_day = latest_closed_trading_day_for_date(
         datetime.fromisoformat(session_date).date() - timedelta(days=1)
     )
@@ -539,6 +546,27 @@ class RunArtifactsPackPersistence:
 # Production run adapter (invokes run_v1_graph)
 # ---------------------------------------------------------------------------
 
+class _AdapterRunControl:
+    """App-owned concrete RunControl over the shared token + absolute deadline.
+
+    Implements the agents-owned ``RunControl`` protocol without importing
+    packages/app on the agents side.
+    """
+
+    def __init__(self, *, token: Any, deadline_epoch_ms: int | None) -> None:
+        self._token = token
+        self._deadline_epoch_ms = deadline_epoch_ms
+
+    def should_cancel(self) -> bool:
+        return bool(self._token.requested)
+
+    def deadline_epoch_ms(self) -> int | None:
+        return self._deadline_epoch_ms
+
+    def cancellation_reason(self) -> str | None:
+        return "user_cancelled"
+
+
 class ProductionRunAdapter:
     """One app-owned run adapter per run: claim -> resolve -> run_v1_graph ->
     persist artifacts -> atomic terminal commit -> release only after commit."""
@@ -562,26 +590,41 @@ class ProductionRunAdapter:
         self.credential_store = credential_store
         self.graph_resolver = graph_resolver
         self.last_deadline_epoch_ms: int | None = None
+        self._started_monotonic: float | None = None
 
     def __call__(self, run_id: str, timeout_seconds: float) -> dict[str, Any]:
+        if self._started_monotonic is None:
+            self._started_monotonic = time.monotonic()
         manifest = self._load_manifest(run_id)
         if manifest is None:
             raise RuntimeError(f"run {run_id} has no persisted immutable RunManifest")
         if not self.claimer.claim_run(run_id, owner="executor", task_token=uuid4().hex):
             return {"run_id": run_id, "status": "NOT_CLAIMED"}
-        self._append_stage_started(run_id, "research", round=1)
-        deadline_epoch_ms = int((time.time() + timeout_seconds) * 1000)
+        # The one absolute deadline was derived at admission (persisted
+        # deadline_at / created_at + run_timeout_seconds); execution reuses it
+        # so queue delay reduces the remaining budget and never resets it.
+        deadline_epoch_ms = self._absolute_deadline_epoch_ms(
+            run_id, manifest, timeout_seconds
+        )
         self.last_deadline_epoch_ms = deadline_epoch_ms
         token = self.tokens.token(run_id)
+        control = _AdapterRunControl(
+            token=token, deadline_epoch_ms=deadline_epoch_ms
+        )
+        # Fail fast before any stage event or provider dispatch when
+        # cancellation/deadline already won while the run was queued.
+        if token.requested or self._is_cancel_requested(run_id):
+            return self._acknowledge_cancelled(run_id)
+        if self._past_deadline(deadline_epoch_ms):
+            return self._terminalize_timeout(run_id)
+        self._append_stage_started(run_id, "research", round=1)
+        bridge = StreamBridge(db_path=self.db_path, events=self.events, run_id=run_id)
+        packs = RunArtifactsPackPersistence(
+            db_path=self.db_path, events=self.events, run_id=run_id
+        )
         try:
             boundary = self._load_boundary(run_id)
             resolved = self.graph_resolver.resolve(manifest, boundary)
-            if token.requested or self._is_cancel_requested(run_id):
-                return self._acknowledge_cancelled(run_id)
-            bridge = StreamBridge(db_path=self.db_path, events=self.events, run_id=run_id)
-            packs = RunArtifactsPackPersistence(
-                db_path=self.db_path, events=self.events, run_id=run_id
-            )
             result = run_v1_graph(
                 run_id=run_id,
                 temporal_identity=manifest.temporal_identity,
@@ -608,7 +651,18 @@ class ProductionRunAdapter:
                 run_deadline_epoch_ms=deadline_epoch_ms,
                 normalization_policy_version="assessment-normalizer-v1",
                 writer_sink=bridge,
+                control=control,
             )
+            # Cooperative boundary: observed before result-artifact
+            # persistence and immediately before the terminal commit.
+            raise_if_control_expired(control)
+            self._persist_result_artifacts(run_id, result, bridge)
+            raise_if_control_expired(control)
+            return self._terminalize_completed(run_id, result, bridge)
+        except RunCancelledError:
+            return self._acknowledge_cancelled(run_id)
+        except RunDeadlineExceededError:
+            return self._terminalize_timeout(run_id)
         except BaseException as exc:
             if token.requested or self._is_cancel_requested(run_id):
                 return self._acknowledge_cancelled(run_id)
@@ -617,13 +671,6 @@ class ProductionRunAdapter:
             raise
         finally:
             self.credential_store.remove(run_id)
-
-        if token.requested or self._is_cancel_requested(run_id):
-            return self._acknowledge_cancelled(run_id)
-        if self._past_deadline(deadline_epoch_ms):
-            return self._terminalize_timeout(run_id)
-        self._persist_result_artifacts(run_id, result, bridge)
-        return self._terminalize_completed(run_id, result, bridge)
 
     # -- internals ---------------------------------------------------------
 
@@ -680,11 +727,52 @@ class ProductionRunAdapter:
     def _past_deadline(self, deadline_epoch_ms: int) -> bool:
         return int(time.time() * 1000) >= deadline_epoch_ms
 
-    def _acknowledge_cancelled(self, run_id: str) -> dict[str, Any]:
+    def _elapsed_latency_ms(self) -> int:
+        """Real monotonic elapsed latency since this adapter instance started.
+
+        Falls back to 0 when the adapter was constructed without a start
+        timestamp (direct legacy invocations).
+        """
+        if self._started_monotonic is None:
+            return 0
+        return max(0, int((time.monotonic() - self._started_monotonic) * 1000))
+
+    def _absolute_deadline_epoch_ms(
+        self, run_id: str, manifest: Any, timeout_seconds: float
+    ) -> int:
+        """Absolute epoch-ms deadline: persisted deadline_at first, then the
+        deterministic created_at + run_timeout_seconds formula, then the
+        submitted remaining budget for legacy rows."""
         try:
-            self.cancellation.acknowledge_cancellation(run_id)
-        except Exception:
-            pass  # terminal race; durable state is authoritative
+            with open_rw(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT deadline_at, created_at FROM runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+            if row is not None and row["deadline_at"]:
+                deadline = datetime.fromisoformat(
+                    row["deadline_at"].replace("Z", "+00:00")
+                )
+                return int(deadline.timestamp() * 1000)
+            if row is not None and row["created_at"]:
+                created = datetime.fromisoformat(
+                    row["created_at"].replace("Z", "+00:00")
+                )
+                deadline = created + timedelta(
+                    seconds=manifest.run_timeout_seconds
+                )
+                return int(deadline.timestamp() * 1000)
+        except (TypeError, ValueError):
+            pass
+        # Legacy rows without a parseable creation time: the submitted
+        # remaining budget is the only bound available.
+        return int((time.time() + timeout_seconds) * 1000)
+
+    def _acknowledge_cancelled(self, run_id: str) -> dict[str, Any]:
+        # Never claim CANCELLED unless the durable terminalization succeeded;
+        # a durable failure propagates to the executor failure handler so the
+        # row terminalizes FAILED instead.
+        self.cancellation.acknowledge_cancellation(run_id)
         return {"run_id": run_id, "status": "CANCELLED"}
 
     def _terminalize_timeout(self, run_id: str) -> dict[str, Any]:
@@ -813,7 +901,7 @@ class ProductionRunAdapter:
                 terminal_payload=RunCompletedPayload(
                     result_status=final_status,
                     final_output_artifact_ref=f"answer:stream:{run_id}",
-                    total_latency_ms=1,
+                    total_latency_ms=self._elapsed_latency_ms(),
                     total_tokens=None,
                     runtime_identity_ref=self._load_manifest(run_id).data_runtime_identity_ref,
                 ),
@@ -823,10 +911,18 @@ class ProductionRunAdapter:
                     RunLifecycleStatus.COMPLETED,
                 ),
             )
-        except Exception:
-            # Cancellation won the race: the late completion lost the
-            # conditional update and is discarded.
-            return self._acknowledge_cancelled(run_id)
+        except (IllegalLifecycleTransitionError, TerminalRunError):
+            # Only the exact conditional lifecycle race is handled here:
+            # cancellation or a prior terminal (timeout) won the conditional
+            # update. Any other SQLite/artifact/validation/hash error is
+            # re-raised so the executor failure handler terminalizes FAILED.
+            lifecycle = self.claimer.current_lifecycle(run_id)
+            if lifecycle in (
+                RunLifecycleStatus.CANCEL_REQUESTED,
+                RunLifecycleStatus.CANCELLED,
+            ):
+                return self._acknowledge_cancelled(run_id)
+            raise
         return {"run_id": run_id, "status": "COMPLETED"}
 
 
@@ -961,6 +1057,7 @@ def build_runtime_composition(
         events=events,
         manifest_factory=manifest,
         cancellation=cancellation,
+        credential_store=store,
     )
     return RuntimeComposition(
         db_path=path,
