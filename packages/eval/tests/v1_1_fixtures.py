@@ -333,3 +333,57 @@ __all__ = [
     "make_stratification",
     "utc",
 ]
+
+
+def build_fixture_eval_manifest() -> "EvalManifest":
+    """Synthetic pre-execution EvalManifest for runner/CLI fixture tests."""
+    from catalyst_eval.v1_1.case import GoldenCase
+    from catalyst_eval.v1_1.manifest import (
+        AgentPolicyIdentity,
+        CodeProviderIdentity,
+        DataRuntimeIdentityReference,
+        EvalManifest,
+        MetricContract,
+        RetrievalPolicyIdentity,
+    )
+    from catalyst_eval.v1_1.manifest_builder import (
+        Stage1DatasetInput,
+        build_eval_manifest,
+    )
+
+    rows = make_stage1_cases()
+    cases = tuple(GoldenCase.model_validate(row) for row in rows)
+    return build_eval_manifest(
+        dataset=Stage1DatasetInput(
+            dataset_id="v1_1_stage1_fixture",
+            dataset_version="1.1.0",
+            cases=cases,
+        ),
+        stage="stage1",
+        split="dev",
+        code_identity=CodeProviderIdentity(
+            code_git_sha="3037ff8", harness_revision="h:v1", random_seed=7
+        ),
+        data_runtime_identity=DataRuntimeIdentityReference(
+            data_runtime_identity_ref="runtime-id:7a004",
+            data_runtime_identity_hash="d" * 64,
+        ),
+        agent_policy=AgentPolicyIdentity(
+            observation_policy_version="move_profile_v1",
+            context_pack_policy_version="evidence_context_pack_v1",
+            analyst_policy_version="bounded_competition_v1",
+            writer_policy_version="writer_v1",
+            a1_policy_version="a1:v1", a2_policy_version="a2:v1",
+            a3_policy_version="a3:v1", a4_policy_version="a4:v1",
+            a5_policy_version="a5:v1",
+        ),
+        retrieval_policy=RetrievalPolicyIdentity(
+            arm_names=("fts5", "dense", "hybrid", "reranked"),
+            arm_order=("fts5", "dense", "hybrid", "reranked"),
+            top_k=8, candidate_pool_id="pool:stage1",
+            dedup_policy_version="dedup:v1", independence_policy_version="ind:v1",
+            reranker_policy_version="rr:v1",
+        ),
+        metric_spec=MetricContract(metric_spec_version="ms:v1", definitions=()),
+        eligible_experiments=(),
+    )
