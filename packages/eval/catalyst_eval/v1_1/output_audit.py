@@ -13,12 +13,45 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from catalyst_eval.v1_1.case import GoldenCase
 
 OUTPUT_AUDIT_SCHEMA_VERSION = "v1_1_stage1_output_audit_v1"
 _SHA256_RE = __import__("re").compile(r"[0-9a-f]{64}\Z")
+
+# Typed human vocabularies: the sealed audit may only use these values
+# (Batch-B corrective). LLM judges remain separate diagnostics.
+AuditDecisionV1 = Literal["SUPPORT", "PARTIAL_SUPPORT", "UNSUPPORTED"]
+AuditReasonCodeV1 = Literal[
+    "citations_resolve",
+    "partial_citation_support",
+    "no_causal_support",
+    "citation_mismatch",
+    "contradicted_by_evidence",
+    "mechanism_unsubstantiated",
+]
+
+
+def supported_citation_ids_for(
+    decision: "AuditClaimDecision",
+) -> tuple[str, ...]:
+    """The supported citation units for one audited claim.
+
+    ``supported_citation_ids`` is the explicit human record when present;
+    SUPPORT derives all citation units as supported and UNSUPPORTED derives
+    none. Citation correctness counts units, never claims.
+    """
+    if decision.supported_citation_ids:
+        return decision.supported_citation_ids
+    if decision.decision == "SUPPORT":
+        return decision.citation_ids
+    if decision.decision == "PARTIAL_SUPPORT":
+        # Human must record which units actually resolve; empty means none.
+        return ()
+    return ()
 
 
 class AuditClaimDecision(BaseModel):
@@ -29,8 +62,23 @@ class AuditClaimDecision(BaseModel):
     claim_id: str
     material: bool
     citation_ids: tuple[str, ...] = ()
-    decision: str
-    reason_code: str
+    supported_citation_ids: tuple[str, ...] = ()
+    decision: AuditDecisionV1
+    reason_code: AuditReasonCodeV1
+
+    @model_validator(mode="after")
+    def _citation_units_are_bounded(self) -> "AuditClaimDecision":
+        if set(self.supported_citation_ids) - set(self.citation_ids):
+            raise ValueError(
+                "supported_citation_ids must reference only cited units"
+            )
+        if self.decision == "SUPPORT" and self.supported_citation_ids:
+            # A SUPPORT decision supports every cited unit by definition.
+            if set(self.supported_citation_ids) != set(self.citation_ids):
+                raise ValueError(
+                    "SUPPORT requires every cited unit supported"
+                )
+        return self
 
 
 class Stage1OutputAudit(BaseModel):
@@ -67,9 +115,122 @@ class Stage1OutputAudit(BaseModel):
         return value
 
 
+
+def validate_audit_against_ledger(
+    audits: Sequence[Stage1OutputAudit],
+    *,
+    eval_manifest: Any,
+    gold_cases: Sequence[GoldenCase],
+    ledger: Any,
+    stratification: Mapping[str, Any] | None = None,
+) -> bool:
+    """Full CLI audit validation against the ledger/run artifacts.
+
+    Every audit row must match a sealed identity-valid COMPLETED ledger row
+    (run_manifest id/hash and result artifact id/hash) and every run claim
+    (material and cited units) must be audited. Raises ValueError on any
+    mismatch; never authors human decisions.
+    """
+    eval_id = eval_manifest.evaluation_identity.eval_id
+    ordered_ids = list(eval_manifest.evaluation_identity.ordered_case_ids)
+    gold_by_case = {case.case_id: case for case in gold_cases}
+    if set(ordered_ids) != set(gold_by_case):
+        raise ValueError("gold cases must cover the eval manifest case ids")
+    audit_by_case = {audit.case_id: audit for audit in audits}
+    if set(audit_by_case) != set(ordered_ids):
+        missing = sorted(set(ordered_ids) - set(audit_by_case))
+        extra = sorted(set(audit_by_case) - set(ordered_ids))
+        raise ValueError(
+            "audit rows must cover the ordered cases one-to-one "
+            f"(missing={missing} extra={extra})"
+        )
+
+    rows_by_case: dict[str, Any] = {}
+    for row in ledger.rows:
+        if row.eval_id != eval_id:
+            continue
+        if row.case_id not in rows_by_case:
+            rows_by_case[row.case_id] = row
+    for case_id in ordered_ids:
+        row = rows_by_case.get(case_id)
+        if row is None or row.terminal_status != "COMPLETED" or not row.identity_valid:
+            raise ValueError(
+                f"audit requires an identity-valid COMPLETED ledger row for "
+                f"{case_id!r}"
+            )
+        audit = audit_by_case[case_id]
+        gold = gold_by_case[case_id]
+        if audit.eval_id != eval_id:
+            raise ValueError(
+                f"audit eval_id mismatch for {case_id!r}: audit={audit.eval_id} "
+                f"expected={eval_id}"
+            )
+        if audit.run_manifest_id != row.run_manifest_id:
+            raise ValueError(
+                f"audit run_manifest_id mismatch for {case_id!r}: "
+                f"audit={audit.run_manifest_id} ledger={row.run_manifest_id}"
+            )
+        if audit.run_manifest_hash != row.run_manifest_hash:
+            raise ValueError(
+                f"audit run_manifest_hash mismatch for {case_id!r}"
+            )
+        if audit.result_artifact_id != row.result_artifact_id:
+            raise ValueError(
+                f"audit result_artifact_id mismatch for {case_id!r}"
+            )
+        if audit.result_artifact_hash != row.result_artifact_hash:
+            raise ValueError(
+                f"audit result_artifact_hash mismatch for {case_id!r}"
+            )
+        run_output = _run_output_from_ledger_row(row, gold)
+        validate_output_audit(
+            audit,
+            run_output,
+            gold,
+            eval_id=eval_id,
+            run_manifest_id=row.run_manifest_id,
+            run_manifest_hash=row.run_manifest_hash,
+            result_artifact_id=row.result_artifact_id,
+            result_artifact_hash=row.result_artifact_hash,
+        )
+    return True
+
+
+def _run_output_from_ledger_row(row: Any, gold: GoldenCase) -> Any:
+    """Rebuild the immutable run output from the sealed ledger run facts."""
+    from catalyst_eval.v1_1.attribution_metrics import (
+        RunAttributionOutput,
+        RunClaimOutput,
+    )
+
+    facts = row.run_facts or {}
+    claims = tuple(
+        RunClaimOutput(
+            claim_id=str(claim["claim_id"]),
+            material=bool(claim.get("material", True)),
+            citation_ids=tuple(claim.get("citation_ids") or ()),
+            role=str(claim.get("role") or "PRIMARY"),
+            statement=claim.get("statement"),
+        )
+        for claim in facts.get("claims") or ()
+    )
+    return RunAttributionOutput(
+        case_id=gold.case_id,
+        output_status=str(facts.get("output_status") or "UNKNOWN"),
+        attribution_type=facts.get("attribution_type"),
+        refusal_reason=facts.get("refusal_reason"),
+        claims=claims,
+        sanity_tasks_completed=tuple(facts.get("sanity_tasks_completed") or ()),
+        latency_ms=facts.get("latency_ms"),
+        tokens=facts.get("tokens"),
+        cost_usd=facts.get("cost_usd"),
+        coverage_limited=False,
+    )
+
 def load_output_audit(path: str | Path) -> list[Stage1OutputAudit]:
     """Load a JSONL human audit file (one sealed row per case)."""
     audits: list[Stage1OutputAudit] = []
+    seen_cases: set[str] = set()
     with Path(path).open("r", encoding="utf-8") as handle:
         for line_no, line in enumerate(handle, start=1):
             line = line.strip()
@@ -79,7 +240,20 @@ def load_output_audit(path: str | Path) -> list[Stage1OutputAudit]:
                 row = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise ValueError(f"{path}:{line_no}: invalid JSON: {exc}") from exc
-            audits.append(Stage1OutputAudit.model_validate(row))
+            audit = Stage1OutputAudit.model_validate(row)
+            if audit.case_id in seen_cases:
+                raise ValueError(
+                    f"{path}:{line_no}: duplicate audit row for case "
+                    f"{audit.case_id!r}"
+                )
+            seen_cases.add(audit.case_id)
+            claim_ids = [decision.claim_id for decision in audit.claims]
+            if len(claim_ids) != len(set(claim_ids)):
+                raise ValueError(
+                    f"{path}:{line_no}: duplicate claim ids in audit for case "
+                    f"{audit.case_id!r}"
+                )
+            audits.append(audit)
     if not audits:
         raise ValueError(f"{path}: audit file contains no rows")
     return audits
@@ -127,22 +301,37 @@ def validate_output_audit(
         raise ValueError("audit result_artifact_hash does not match the sealed run")
 
     audited_ids = {decision.claim_id for decision in audit.claims}
+    run_claims_by_id = {claim.claim_id: claim for claim in run_output.claims}
     for claim in run_output.claims:
-        if claim.material and claim.claim_id not in audited_ids:
+        if claim.claim_id not in audited_ids:
+            kind = "material claim" if claim.material else "claim"
             raise ValueError(
-                f"material claim {claim.claim_id!r} is missing from the human audit"
+                f"{kind} {claim.claim_id!r} is missing from the human audit"
             )
     for decision in audit.claims:
-        if decision.claim_id not in {claim.claim_id for claim in run_output.claims}:
+        claim = run_claims_by_id.get(decision.claim_id)
+        if claim is None:
             raise ValueError(
                 f"audited claim {decision.claim_id!r} is not in the run output"
+            )
+        # Audit material/citation identities must exactly match the immutable
+        # run output (Batch-B corrective): every cited unit is audited.
+        if set(decision.citation_ids) != set(claim.citation_ids):
+            raise ValueError(
+                f"audit citation ids for claim {decision.claim_id!r} must "
+                f"exactly match the run output: audit="
+                f"{sorted(decision.citation_ids)} run={sorted(claim.citation_ids)}"
             )
     return True
 
 
 __all__ = [
+    "validate_audit_against_ledger",
     "AuditClaimDecision",
+    "AuditDecisionV1",
+    "AuditReasonCodeV1",
     "OUTPUT_AUDIT_SCHEMA_VERSION",
+    "supported_citation_ids_for",
     "Stage1OutputAudit",
     "load_output_audit",
     "validate_output_audit",

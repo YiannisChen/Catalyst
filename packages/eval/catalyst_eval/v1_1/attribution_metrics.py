@@ -19,7 +19,11 @@ from dataclasses import dataclass
 from typing import Sequence
 
 from catalyst_eval.v1_1.case import GoldenCase
-from catalyst_eval.v1_1.output_audit import AuditClaimDecision, Stage1OutputAudit
+from catalyst_eval.v1_1.output_audit import (
+    AuditClaimDecision,
+    Stage1OutputAudit,
+    supported_citation_ids_for,
+)
 from catalyst_eval.v1_1.retrieval_metrics import MetricResult
 
 UNSUPPORTED_MATERIAL_CLAIMS_MAX = 0.05
@@ -216,15 +220,15 @@ def compute_attribution_metrics(
             decision = audit_decisions.get(claim.claim_id)
             if decision is None:
                 continue
-            # Citation correctness: every audited citation resolves.
+            # Citation correctness counts supported resolved citation UNITS
+            # divided by all resolved citation units (Batch-B corrective),
+            # never one count per claim.
             if decision.citation_ids:
-                citation_denominator += 1
-                if decision.decision == "SUPPORT":
-                    citation_numerator += 1
+                supported_units = supported_citation_ids_for(decision)
+                citation_denominator += len(decision.citation_ids)
+                citation_numerator += len(supported_units)
                 citation_cases.append(case_id)
-                evidence_supported += sum(
-                    1 for _ in decision.citation_ids if decision.decision == "SUPPORT"
-                )
+                evidence_supported += len(supported_units)
                 evidence_total += len(decision.citation_ids)
             if decision.decision == "SUPPORT":
                 causal_relevant += 1
