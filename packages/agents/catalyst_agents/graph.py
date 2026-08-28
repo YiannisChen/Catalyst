@@ -91,6 +91,36 @@ def _foundation_renderer(draft: PackedContextDraft) -> tuple[RenderMessage, ...]
     )
 
 
+def _critic_prefix_renderer(draft: PackedContextDraft) -> tuple[RenderMessage, ...]:
+    """A1 raw critic-prefix block: one bounded 600-char prefix per included
+    evidence unit (``critic_prefix_600chars_v1``). The Analyst sees a raw
+    prefix block instead of the structured ContextPack render."""
+    blocks: list[str] = []
+    for item in draft.evidence_inventory:
+        if item.evidence_id not in draft.included_evidence_ids:
+            continue
+        excerpt = item.excerpt_text or ""
+        prefix = excerpt[:600]
+        blocks.append(f"evidence:{item.evidence_id}:{prefix}")
+    content = "critic_prefix=" + "|".join(blocks)
+    return (RenderMessage(role="system", content=content),)
+
+
+def _renderer_for_packing(
+    draft: PackedContextDraft,
+) -> Callable[[PackedContextDraft], tuple[RenderMessage, ...]]:
+    """A1 behavioral seam: select the renderer for the draft's packing policy.
+
+    ``evidence_context_pack_v1`` (the M6 production default) and every other
+    version keep the full ContextPack render; ``critic_prefix_600chars_v1``
+    renders the raw critic-prefix block. ``None`` never reaches this function
+    because the draft always carries an explicit packing policy version.
+    """
+    if draft.packing_policy_version == "critic_prefix_600chars_v1":
+        return _critic_prefix_renderer
+    return _foundation_renderer
+
+
 def _artifact_hash(value: Any) -> str:
     return hashlib.sha256(
         canonical_context_pack_json(value.model_dump(mode="json"))
@@ -165,6 +195,7 @@ def build_foundation_graph(
         session_date=temporal_identity.session_date,
         cutoff=temporal_identity.cutoff_at.isoformat(),
         temporal_identity=temporal_identity,
+        observation_policy_version=observation_policy_version,
     )
 
     # 2. research_policy
@@ -235,16 +266,17 @@ def build_foundation_graph(
         coverage_summary=coverage,
         research_history=classification.tasks,
     )
+    renderer = _renderer_for_packing(draft)
     finalizer = ContextPackFinalizer(
         template_bytes=template_bytes,
         template_version=template_version,
-        renderer=_foundation_renderer,
+        renderer=renderer,
         token_counter=counter,
     )
     pack = finalizer.finalize(draft)
 
     # 7. persistence + replay assertion (provider dispatch gate)
-    messages = _foundation_renderer(draft)
+    messages = renderer(draft)
     refs = persistence.persist_pack_and_render(
         run_id=run_id,
         pack=pack,
@@ -378,6 +410,7 @@ def run_corrective_round(
     prompt_template: str | None = None,
     research_history: tuple[Any, ...] = (),
     control: Any | None = None,
+    hypothesis_policy_version: str | None = None,
 ) -> CorrectiveRoundResult:
     """Execute one corrective round over cumulative evidence (Frozen §6.4).
 
@@ -508,15 +541,16 @@ def run_corrective_round(
         research_history=full_research_history,
         prior_assessment_context=prior_assessment_context,
     )
+    renderer = _renderer_for_packing(draft)
     finalizer = ContextPackFinalizer(
         template_bytes=template_bytes,
         template_version=template_version,
-        renderer=_foundation_renderer,
+        renderer=renderer,
         token_counter=counter,
     )
     pack = finalizer.finalize(draft)
 
-    messages = _foundation_renderer(draft)
+    messages = renderer(draft)
     refs = persistence.persist_pack_and_render(
         run_id=run_id,
         pack=pack,
@@ -542,6 +576,7 @@ def run_corrective_round(
         persistence=persistence,
         prompt_template=prompt_template,
         pack_inventory_ids=pack.included_evidence_ids,
+        hypothesis_policy_version=hypothesis_policy_version,
     )
     raise_if_control_expired(control)
     assessment = normalize_decision(
@@ -815,6 +850,7 @@ def run_v1_graph(
             prompt_template=prompt_template,
             research_history=foundation.classification.tasks,
             control=control,
+            hypothesis_policy_version=analyst_hypothesis_version,
         )
         raise_if_control_expired(control)
         assessment = corrective.assessment

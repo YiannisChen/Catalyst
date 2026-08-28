@@ -183,6 +183,30 @@ def _admit_structured_output_surface(llm: Any, schema: type[AnalystDecision]) ->
     return surface
 
 
+def _validate_hypothesis_policy(
+    decision: "AnalystDecision", hypothesis_policy_version: str | None
+) -> None:
+    """A2 behavioral seam: enforce the hypothesis competition bound.
+
+    ``bounded_competition_v1`` (the M6 production default) accepts the schema-
+    bounded competition set; ``legacy_single_candidate_v1`` accepts exactly one
+    candidate hypothesis. ``None`` applies no extra bound and preserves the M6
+    production behavior byte-for-byte.
+    """
+    if hypothesis_policy_version is None or hypothesis_policy_version == "bounded_competition_v1":
+        return
+    if hypothesis_policy_version == "legacy_single_candidate_v1":
+        if len(decision.candidate_hypotheses) != 1:
+            raise ValueError(
+                "legacy_single_candidate_v1 permits a single candidate "
+                f"hypothesis, got {len(decision.candidate_hypotheses)}"
+            )
+        return
+    raise ValueError(
+        f"unknown hypothesis policy version {hypothesis_policy_version!r}"
+    )
+
+
 def evidence_analyst(
     state: dict,
     *,
@@ -261,6 +285,7 @@ def evidence_analyst(
         else:
             raw = _invoke_llm(llm, dict_messages)
         decision = _parse_decision(raw, schema)
+        _validate_hypothesis_policy(decision, hypothesis_policy_version)
         # Reference-integrity against the authoritative persisted inventory is
         # structured-output validation INSIDE the bounded technical retry
         # boundary: an unknown/pack-external evidence ref is a
@@ -308,6 +333,7 @@ def evidence_analyst(
 
 __all__ = [
     "ANALYST_ROLE",
+    "_validate_hypothesis_policy",
     "ANALYST_REQUIRED_CAPABILITIES",
     "evidence_analyst",
 ]
