@@ -68,9 +68,14 @@ def test_no_mcj_defaults_or_legacy_fallback_routes_in_production() -> None:
     assert '"mcj_full"' not in schema_source, "app schema still defaults config to mcj_full"
 
 
-def test_v1_graph_adapter_fails_closed_until_m6_wiring() -> None:
-    """C7: the app graph factory must fail closed (M6-not-wired) rather than
-    silently fall back to the archived legacy graph."""
+def test_legacy_graph_adapter_surface_fails_closed() -> None:
+    """C7 (M6 corrective): the legacy dependency-loader adapter surface fails
+    closed rather than silently falling back to the archived legacy graph.
+
+    The production path is ``run_v1_graph`` invoked by the app-owned runtime
+    composition (``catalyst_app.runtime.composition.ProductionRunAdapter``);
+    this adapter exists only for LiveRunService compatibility reads.
+    """
     import pytest
 
     from catalyst_agents.graph import V1AppRuntimeNotWired, build_v1_graph_adapter

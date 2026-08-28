@@ -31,12 +31,14 @@ def _mark_deprecated(response: Response, *, endpoint: str) -> None:
 from catalyst_app.api_dto import (
     ArtifactDTO,
     ArtifactRefDTO,
+    CancelResponse,
     ClaimDetailDTO,
     EvidenceDetailDTO,
     HealthDTO,
     RunAcceptedResponse,
     RunDTO,
     RunFailureDTO,
+    WorkbenchProjectionDTO,
 )
 from catalyst_app.dependencies import get_credential_store, get_live_run_service, get_runtime_dependency_loader
 from catalyst_app.env_loader import get_provider_env_key
@@ -67,7 +69,8 @@ from catalyst_app.runtime.admission import (
     AdmissionRequest,
     AdmissionValidationError,
 )
-from catalyst_app.workspace_projection import project_workspace
+from catalyst_app.runtime.composition import RuntimeUnavailableError
+from catalyst_app.workspace_projection import project_workspace, project_workspace_v1
 from catalyst_data.storage.connect import open_readonly
 
 router = APIRouter(prefix="/api", tags=["live-runs"])
@@ -92,6 +95,16 @@ def _admission_controller(request: Request) -> AdmissionController:
 
         controller = build_default_admission_controller()
         request.app.state.admission_controller = controller
+    return controller
+
+
+def _cancellation_controller(request: Request):
+    controller = getattr(request.app.state, "cancellation_controller", None)
+    if controller is None:
+        from catalyst_app.runtime_wiring import build_default_cancellation_controller
+
+        controller = build_default_cancellation_controller()
+        request.app.state.cancellation_controller = controller
     return controller
 
 
@@ -138,6 +151,8 @@ def create_live_run(
         outcome = controller.admit(admission_request)
     except AdmissionValidationError as exc:
         raise HTTPException(status_code=400, detail=f"invalid_request: {exc}") from exc
+    except RuntimeUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=f"runtime_unavailable: {exc}") from exc
 
     if outcome.kind == "accepted":
         # BYOK credentials stay in memory only, never persisted.
@@ -174,6 +189,24 @@ def get_live_run(run_id: str, req: Request) -> RunDTO:
     if dto is None:
         raise HTTPException(status_code=404, detail="run_not_found")
     return dto
+
+
+@router.post("/live-runs/{run_id}/cancel", response_model=CancelResponse)
+def cancel_live_run(run_id: str, req: Request) -> CancelResponse:
+    """Idempotent cooperative cancellation (Final Migration TSD §20.1).
+
+    ACCEPTED cancellation is terminal; RUNNING persists CANCEL_REQUESTED and
+    signals the shared control token; CANCELLED is reached only when work
+    stops or late output is safely discarded. Repeated cancels return an
+    acknowledgement. No cancel-all surface.
+    """
+    controller = _cancellation_controller(req)
+    outcome = controller.request_cancel(run_id)
+    return CancelResponse(
+        run_id=outcome.run_id,
+        status=outcome.status,
+        acknowledged=outcome.acknowledged,
+    )
 
 
 def _read_run_dto(db_path: Path, run_id: str) -> RunDTO | None:
@@ -433,8 +466,28 @@ def health(req: Request) -> HealthDTO:
     executor_status: str = "ready"
     if controller is not None and controller.executor.is_closed:
         executor_status = "degraded"
+
+    # Runtime readiness: the production graph/dependency composition must be
+    # wired and identity readiness must pass (Finding J). A composition whose
+    # dependency loader is not ready must never report the runtime ready.
+    runtime_ready = True
+    composition = getattr(req.app.state, "runtime_composition", None)
+    if composition is not None:
+        try:
+            runtime_ready = (
+                getattr(composition.dependency_loader, "health", lambda: {"status": "failed"})()
+                .get("status")
+                == "ready"
+            )
+        except Exception:
+            runtime_ready = False
+    elif controller is None:
+        runtime_ready = False
+
     status = "ready"
     if "failed" in (runtime_db, event_store):
+        status = "failed"
+    elif not runtime_ready:
         status = "failed"
     elif "degraded" in (executor_status,):
         status = "degraded"
@@ -476,6 +529,22 @@ def get_workspace(
     artifacts = service.get_artifacts(run_id)
     projection = project_workspace(summary, events, artifacts)
     return WorkspaceResponse.model_validate(projection)
+
+
+@router.get("/live-runs/{run_id}/workspace-v1", response_model=WorkbenchProjectionDTO)
+def get_workspace_v1(run_id: str, req: Request) -> WorkbenchProjectionDTO:
+    """V1.1 authoritative workspace projection over the V1 tables (Finding G).
+
+    The default LiveWorkbench path consumes this projection; legacy
+    ``/workspace`` remains only for legacy saved runs during the migration
+    window.
+    """
+    db_path = _db_path(req)
+    try:
+        projection = project_workspace_v1(db_path, run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="run_not_found")
+    return WorkbenchProjectionDTO.model_validate(projection)
 
 
 @router.post("/live-runs/{run_id}/retry", response_model=RetryRunResponse)

@@ -79,9 +79,9 @@ def _graph_factory(model: dict | str | None = None, *, api_key: str | None = Non
     else:
         llm = build_v1_llm(model, api_key=api_key)
 
-    # M5-11: the V1.1 graph is the only production graph. M5 owns the agents
-    # V1.1 path (run_v1_graph) and its FAST in-memory sinks; the production app
-    # wiring (temporal identity, persistence envelope, SSE) lands in M6.
+    # M6 corrective: the production app runtime invokes run_v1_graph directly
+    # through the app-owned composition; this legacy loader surface exists only
+    # for LiveRunService compatibility reads and fails closed on invoke.
     return build_v1_graph_adapter(
         model=llm,
         retriever=deps.retriever,

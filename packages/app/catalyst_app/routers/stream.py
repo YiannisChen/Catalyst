@@ -51,6 +51,12 @@ def _stream_config(request: Request) -> StreamConfig:
 
 
 def _registry(request: Request) -> ConditionRegistry:
+    """Resolve the single app-owned ConditionRegistry (Finding C).
+
+    The lifespan creates the registry on the running event loop and wires its
+    notifier into the production EventRepository; the stream router reuses the
+    same instance so worker-thread commits wake attached streams immediately.
+    """
     registry = getattr(request.app.state, "condition_registry", None)
     if registry is None:
         registry = ConditionRegistry(loop=asyncio.get_running_loop())

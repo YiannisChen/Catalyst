@@ -103,6 +103,14 @@ class EventRepository:
         self._notifier = notifier
         self._open = open_fn or open_rw
 
+    @property
+    def notifier(self) -> AfterCommitNotifier | None:
+        return self._notifier
+
+    def set_notifier(self, notifier: AfterCommitNotifier | None) -> None:
+        """Replace the after-commit notifier (lifespan wiring)."""
+        self._notifier = notifier
+
     # -- public API --------------------------------------------------------
 
     def append(
@@ -294,6 +302,12 @@ class EventRepository:
                 ),
             )
 
+        # Artifact envelope rows reference the event they belong to. For a
+        # terminal batch (assurance.completed + terminal event) the required
+        # terminal artifacts attach to the terminal event sequence so they are
+        # discoverable as RunDTO.terminal_artifact_refs at the final seq
+        # (Finding H; Final TSD §17).
+        artifact_seq = seqs[-1] if seqs else start_seq
         for artifact in artifact_payloads:
             conn.execute(
                 """
@@ -305,7 +319,7 @@ class EventRepository:
                 (
                     artifact.artifact_id,
                     run_id,
-                    seqs[0],
+                    artifact_seq,
                     artifact.artifact_type,
                     payload_sha256(artifact.payload),
                     canonical_json(artifact.payload),

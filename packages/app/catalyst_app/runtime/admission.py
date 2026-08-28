@@ -118,12 +118,14 @@ class AdmissionController:
         events: EventRepository,
         manifest_factory: ManifestFactory,
         admission_lock: threading.Lock | None = None,
+        cancellation: Any | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.executor = executor
         self.events = events
         self._manifest_factory = manifest_factory
         self._admission_lock = admission_lock or threading.Lock()
+        self._cancellation = cancellation
         self._closed = False
 
     # -- admission ---------------------------------------------------------
@@ -167,12 +169,13 @@ class AdmissionController:
                         return AdmissionOutcome(
                             kind="capacity_exceeded", failure_code="CAPACITY_EXCEEDED"
                         )
-                    if not self.executor.try_reserve_slot():
+
+                    run_id = uuid4().hex
+                    if not self.executor.try_reserve_slot(run_id):
                         return AdmissionOutcome(
                             kind="capacity_exceeded", failure_code="CAPACITY_EXCEEDED"
                         )
 
-                    run_id = uuid4().hex
                     manifest = self._manifest_factory(request, run_id, request_hash)
                     manifest_json = manifest.model_dump(mode="json")
                     manifest_hash = payload_sha256(manifest_json)
@@ -181,8 +184,9 @@ class AdmissionController:
                         """
                         INSERT INTO runs
                             (run_id, lifecycle_status, idempotency_key, request_hash,
-                             run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at)
-                        VALUES (?, 'ACCEPTED', ?, ?, ?, ?, ?, ?, ?)
+                             run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at,
+                             ticker, provider, base_url)
+                        VALUES (?, 'ACCEPTED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             run_id,
@@ -193,6 +197,9 @@ class AdmissionController:
                             self.executor.reserved_count - 1,
                             now,
                             now,
+                            normalized["ticker"],
+                            normalized["provider"],
+                            normalized["base_url"],
                         ),
                     )
                     stream_url = f"/api/live-runs/{run_id}/stream"
@@ -220,7 +227,7 @@ class AdmissionController:
                     conn.commit()
                 except BaseException:
                     conn.rollback()
-                    self.executor.release_slot()
+                    self.executor.release_slot(run_id)
                     raise
 
             # Submission exactly once; slot releases after terminal commit.
@@ -228,7 +235,7 @@ class AdmissionController:
                 self.executor.submit(run_id, manifest.run_timeout_seconds)
             except BaseException:
                 self._terminalize_submission_failure(run_id)
-                self.executor.release_slot()
+                self.executor.release_slot(run_id)
                 raise
 
         return AdmissionOutcome(
@@ -266,7 +273,8 @@ class AdmissionController:
                 conn.commit()
 
             durable = self._count_capacity_bearing()
-            self.executor.reconcile_slots(durable)
+            durable_ids = self._capacity_bearing_run_ids()
+            self.executor.reconcile_slots(durable_ids)
 
             # Re-submit accepted rows only under reserved capacity; beyond it,
             # fail with the same typed process-recovery code.
@@ -289,15 +297,33 @@ class AdmissionController:
                 failed.append(run_id)
 
             # Reconcile again: terminalizations above changed the durable count.
-            self.executor.reconcile_slots(self._count_capacity_bearing())
+            self.executor.reconcile_slots(self._capacity_bearing_run_ids())
             return RecoverySummary(
                 resubmitted=tuple(resubmitted), failed=tuple(failed)
             )
 
     def shutdown(self) -> None:
+        """Stop new admission, request cooperative cancellation for active
+        runs, cancel queued work, and wait one bounded grace period.
+
+        Queued ACCEPTED rows stay in a durable recoverable state that startup
+        recovery terminalizes/reconciles (Final TSD §11/§15; Finding E).
+        """
         with self._admission_lock:
             self._closed = True
+        if self._cancellation is not None:
+            # Only active (claimed) runs receive cooperative cancellation;
+            # queued ACCEPTED rows stay in a durable recoverable state that
+            # startup recovery terminalizes/reconciles (Finding E).
+            for run_id in self._active_run_ids():
+                try:
+                    self._cancellation.request_cancel(run_id)
+                except Exception:
+                    pass  # terminal race; durable state is authoritative
         self.executor.shutdown()
+        # Reconcile process-local reservations with the durable capacity rows
+        # that remain explicitly recoverable after shutdown.
+        self.executor.reconcile_slots(self._capacity_bearing_run_ids())
 
     # -- internals ---------------------------------------------------------
 
@@ -355,6 +381,21 @@ class AdmissionController:
         if row is not None:
             return ("duplicate", row["run_id"])
         return None
+
+    def _capacity_bearing_run_ids(self) -> list[str]:
+        with open_rw(self.db_path) as conn:
+            rows = conn.execute(
+                f"SELECT run_id FROM runs WHERE lifecycle_status IN {_ACTIVE_SQL}"
+            ).fetchall()
+        return [str(row["run_id"]) for row in rows]
+
+    def _active_run_ids(self) -> list[str]:
+        with open_rw(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT run_id FROM runs WHERE lifecycle_status IN "
+                "('RUNNING','CANCEL_REQUESTED')"
+            ).fetchall()
+        return [str(row["run_id"]) for row in rows]
 
     def _count_capacity_bearing(self, conn: Any | None = None) -> int:
         if conn is not None:

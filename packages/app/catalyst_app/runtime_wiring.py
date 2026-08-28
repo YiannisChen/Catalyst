@@ -1,11 +1,12 @@
-"""Default M6 app runtime wiring.
+"""Default M6 app runtime wiring (M6 corrective).
 
-The M6 runtime machinery (admission, executor, event repository, SSE) is
-wired here. The production RunManifest factory and the agents run adapter that
-invokes ``run_v1_graph`` with real temporal identity / observation provider /
-persistence envelope are intentionally NOT fabricated in M6: ``V1GraphAdapter``
-still raises ``V1AppRuntimeNotWired`` (M5/M6 boundary). The default wiring
-fails closed with the same typed error; M6 tests inject fake adapters.
+The app owns one runtime composition: one EventRepository (with the SSE
+after-commit notifier when a ConditionRegistry is supplied), one RunClaimer,
+one CancellationTokenRegistry/CancellationController, one bounded RunExecutor,
+one AdmissionController, the production RunManifest factory, and the
+production run adapter that invokes the repository-owned ``run_v1_graph``
+(Final Migration TSD §11/§15/§17/§18). There is no second runtime, scheduler,
+or graph implementation, and no ``V1AppRuntimeNotWired`` default path.
 """
 from __future__ import annotations
 
@@ -13,15 +14,9 @@ from pathlib import Path
 import os
 from typing import Any
 
-from catalyst_agents.graph import V1AppRuntimeNotWired
-from catalyst_app.persistence.connect import open_rw
-from catalyst_app.persistence.events import EventRepository
-from catalyst_app.persistence.schema import init_runtime_db
-from catalyst_app.runtime.admission import AdmissionController, AdmissionRequest
+from catalyst_app.runtime.admission import AdmissionController
 from catalyst_app.runtime.cancel import CancellationController
-from catalyst_app.runtime.claim import RunClaimer
-from catalyst_app.runtime.executor import RunExecutor
-from catalyst_agents.runtime.manifest import RunManifest
+from catalyst_app.runtime.composition import build_runtime_composition
 
 
 def _db_path_from_env() -> Path:
@@ -31,88 +26,21 @@ def _db_path_from_env() -> Path:
     return Path(".local/live_runtime.db")
 
 
-def _default_manifest_factory(
-    request: AdmissionRequest, run_id: str, request_hash: str
-) -> RunManifest:
-    raise V1AppRuntimeNotWired(
-        "production RunManifest factory wiring (temporal identity, data "
-        "runtime identity, prompt hashes) lands with the V1 graph invocation"
-    )
-
-
-def _default_run_adapter(run_id: str, timeout_seconds: float) -> Any:
-    raise V1AppRuntimeNotWired(
-        "production agents run adapter wiring lands with the V1 graph "
-        "invocation; M6 tests inject fake adapters"
-    )
-
-
-def _default_failure_handler(events: EventRepository):
-    """Terminalize a run as FAILED when the adapter crashes mid-run."""
-
-    def handler(run_id: str, code: str) -> None:
-        from catalyst_app.events import (
-            AssuranceCompletedPayload,
-            RunEventType,
-            RunFailedPayload,
-        )
-        from catalyst_app.lifecycle import RunLifecycleStatus
-        from catalyst_app.runtime.claim import RunClaimer
-
-        claimer = RunClaimer(db_path=events.db_path, events=events)
-        lifecycle = claimer.current_lifecycle(run_id)
-        if lifecycle is None or lifecycle not in (
-            RunLifecycleStatus.ACCEPTED,
-            RunLifecycleStatus.RUNNING,
-            RunLifecycleStatus.CANCEL_REQUESTED,
-        ):
-            return
-        events.append_terminal(
-            run_id=run_id,
-            assurance_payload=AssuranceCompletedPayload(
-                valid=False, violations=("executor_failure",)
-            ),
-            terminal_event_type=RunEventType.RUN_FAILED,
-            terminal_payload=RunFailedPayload(
-                failure_code=code,
-                stage="EXECUTION",
-                retryable=True,
-            ),
-            lifecycle_update=(lifecycle, RunLifecycleStatus.FAILED),
-        )
-
-    return handler
-
-
-def build_default_cancellation_controller() -> CancellationController:
-    db_path = _db_path_from_env()
-    events = EventRepository(db_path=db_path)
-    return CancellationController(
-        db_path=db_path,
-        events=events,
-        claimer=RunClaimer(db_path=db_path, events=events),
-    )
+def build_default_composition() -> Any:
+    """Build the production runtime composition (no injected boundaries)."""
+    return build_runtime_composition(db_path=_db_path_from_env())
 
 
 def build_default_admission_controller() -> AdmissionController:
-    db_path = _db_path_from_env()
-    events = EventRepository(db_path=db_path)
-    executor = RunExecutor(
-        admission_slots=4,
-        max_workers=2,
-        run_adapter=_default_run_adapter,
-        failure_handler=_default_failure_handler(events),
-    )
-    controller = AdmissionController(
-        db_path=db_path,
-        executor=executor,
-        events=events,
-        manifest_factory=_default_manifest_factory,
-    )
-    # Ensure the runtime schema exists so health/startup work on a fresh DB.
-    with open_rw(db_path) as conn:
-        init_runtime_db(conn)
-    return controller
+    return build_default_composition().admission
 
 
-__all__ = ["build_default_admission_controller", "build_default_cancellation_controller"]
+def build_default_cancellation_controller() -> CancellationController:
+    return build_default_composition().cancellation
+
+
+__all__ = [
+    "build_default_admission_controller",
+    "build_default_cancellation_controller",
+    "build_default_composition",
+]

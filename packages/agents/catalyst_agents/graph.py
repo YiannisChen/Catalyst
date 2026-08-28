@@ -899,24 +899,28 @@ def run_v1_graph(
 
 
 # ---------------------------------------------------------------------------
-# M5-11: app graph-factory adapter (M5/M6 boundary)
+# M6 corrective: the app runtime composition invokes run_v1_graph directly;
+# the legacy dependency-loader adapter below fails closed (retired surface).
 # ---------------------------------------------------------------------------
 
 class V1AppRuntimeNotWired(RuntimeError):
-    """The V1.1 app runtime wiring (run admission, persistence, SSE) is M6.
+    """Retired adapter surface (M6 corrective).
 
-    M5 owns the agents V1.1 graph and its FAST in-memory sinks; the production
-    app factory that invokes ``run_v1_graph`` with real temporal identity,
-    observation provider, persistence envelope, and LLM clients lands in M6.
+    The production app runtime invokes ``run_v1_graph`` directly through the
+    app-owned composition (``catalyst_app.runtime.composition``); this typed
+    error remains only for the legacy dependency-loader adapter surface so it
+    can never silently fall back to an archived graph.
     """
 
 
 class V1GraphAdapter:
-    """Graph-factory surface returned by the app dependency loader in M5.
+    """Legacy dependency-loader surface (M6 corrective).
 
-    ``invoke`` raises until the M6 app runtime wires the V1.1 dependencies;
-    the adapter keeps the dependency loader free of the archived legacy graph
-    while the V1.1 production wiring lands in M6.
+    The production path is ``run_v1_graph`` invoked by the app runtime
+    composition with real temporal identity, observation provider, persistence
+    envelope, and LLM clients. This adapter is retained only for the legacy
+    ``LiveRunService`` compatibility surface; ``invoke`` fails closed rather
+    than executing a second graph path.
     """
 
     def __init__(self, *, model: Any = None, retriever: Any = None,
@@ -928,8 +932,8 @@ class V1GraphAdapter:
     def invoke(self, state: dict, run_id: str | None = None) -> dict:
         del state, run_id
         raise V1AppRuntimeNotWired(
-            "V1.1 app runtime wiring lands in M6; the agents V1.1 graph is "
-            "run_v1_graph (FAST tests use in-memory sinks)"
+            "legacy V1GraphAdapter invoke is retired; production runs through "
+            "run_v1_graph via the app runtime composition"
         )
 
 
@@ -939,7 +943,7 @@ def build_v1_graph_adapter(
     retriever: Any = None,
     requested_manifest_id: str | None = None,
 ) -> V1GraphAdapter:
-    """Return the M5 app-factory surface for the V1.1 graph (M6 wires invoke)."""
+    """Return the legacy dependency-loader surface (M6 corrective)."""
     return V1GraphAdapter(
         model=model,
         retriever=retriever,
