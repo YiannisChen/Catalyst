@@ -34,10 +34,15 @@ def cli_env(tmp_path) -> dict:
     )
     manifest_path = tmp_path / "dataset_manifest.json"
     manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    strat_path = tmp_path / "stratification.json"
+    strat_path.write_text(
+        json.dumps(make_stratification(rows), sort_keys=True), encoding="utf-8"
+    )
     return {
         "tmp_path": tmp_path,
         "dataset_path": dataset_path,
         "manifest_path": manifest_path,
+        "strat_path": strat_path,
         "eval_manifest": builder_manifest_cli,
     }
 
@@ -60,12 +65,15 @@ def test_cli_prepare_makes_no_provider_calls(cli_env, monkeypatch):
         calls.append(case_id)
         raise AssertionError("prepare must never call a provider")
 
-    monkeypatch.setattr(module, "_default_runner_adapter", boom_adapter)
+    monkeypatch.setattr(module, "_default_runner_adapter_factory", boom_adapter)
     out_dir = cli_env["tmp_path"] / "out"
     exit_code = module.main([
         "prepare",
         "--dataset-manifest", str(cli_env["manifest_path"]),
+        "--stratification", str(cli_env["strat_path"]),
         "--output-dir", str(out_dir),
+        "--max-provider-calls", "100",
+        "--max-cost-usd", "10.0",
     ])
     assert exit_code == 0
     assert calls == []
