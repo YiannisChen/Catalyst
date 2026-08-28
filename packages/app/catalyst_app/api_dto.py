@@ -113,6 +113,12 @@ class ArtifactRefDTO(BaseModel):
 
 
 class ArtifactDTO(BaseModel):
+    """Artifact metadata with version/hash/same-run metadata (Phase 5 §18.2).
+
+    ``payload`` is the safe same-run projection body returned only by the
+    single-artifact endpoint (Final TSD §20.1); refs pages omit it.
+    """
+
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     artifact_id: str
@@ -120,6 +126,7 @@ class ArtifactDTO(BaseModel):
     stage: str | None = None
     created_at: datetime | None = None
     ref: ArtifactRefDTO
+    payload: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def _matches_reference(self) -> "ArtifactDTO":

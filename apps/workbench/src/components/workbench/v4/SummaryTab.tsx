@@ -1,5 +1,6 @@
 import type { AttributionResult } from '../../../mock/demoCases';
 import type { WorkflowPhase } from '../workflow-state';
+import { abstainCopy, shouldShowAttributionBadge } from './abstain-ux';
 import StatusBadge from '../StatusBadge';
 
 interface Props {
@@ -8,6 +9,9 @@ interface Props {
   errorMessage: string | null;
   acceptedCount?: number;
   citedCount?: number;
+  attributionStatus?: string | null;
+  attributionType?: string | null;
+  limitations?: string[];
 }
 
 export default function SummaryTab({
@@ -16,6 +20,9 @@ export default function SummaryTab({
   errorMessage,
   acceptedCount = 0,
   citedCount = 0,
+  attributionStatus = null,
+  attributionType = null,
+  limitations = [],
 }: Props) {
   if (!result) {
     return (
@@ -45,14 +52,25 @@ export default function SummaryTab({
 
   return (
     <div className="v4-summary">
-      {/* Top bar: label + status badge */}
+      {/* Top bar: label + status badge. ABSTAIN never shows attribution_type
+          as a causal/no-material badge (AGENT-01 UI rule). */}
       <div className="v4-summary-head">
         <div>
           <span className="v4-kicker">Attribution Summary</span>
           <h3>{result.label}</h3>
+          {shouldShowAttributionBadge(attributionStatus) && attributionType && (
+            <span className="v4-attribution-type-badge">{attributionType}</span>
+          )}
         </div>
         <StatusBadge status={result.status} compact />
       </div>
+
+      {abstainCopy(attributionStatus, limitations) && (
+        <div className="v4-summary-abstain" role="status">
+          <strong>No accepted cause</strong>
+          <p>{abstainCopy(attributionStatus, limitations)}</p>
+        </div>
+      )}
 
       {/* Paired column headers */}
       <div className="v4-summary-cols-head">

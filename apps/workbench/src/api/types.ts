@@ -282,6 +282,43 @@ export interface WorkspaceResponse {
   failure?: WorkspaceFailure | null
 }
 
+export interface WorkbenchProjectionDTO {
+  run_id: string
+  lifecycle_status: RunLifecycleStatus
+  attribution_status?: string | null
+  attribution_type?: string | null
+  claims: Array<{
+    claim_id: string
+    role: string
+    statement: string
+    mechanism?: string | null
+    support_evidence_ids: string[]
+    counter_evidence_ids: string[]
+    limitations: string[]
+    citation_evidence_ids: string[]
+    validation_status: string
+    validation_codes: string[]
+  }>
+  evidence: Array<{
+    evidence_id: string
+    canonical_asset_id: string
+    content_version_id: string
+    chunk_id?: string | null
+    fact_id?: string | null
+    excerpt: string
+    source_class: string
+    content_state: string
+    eligible_at: string
+    ticker_scope: string[]
+    provider: string
+    publisher?: string | null
+    dedup_cluster_id?: string | null
+  }>
+  answer?: string | null
+  limitations: string[]
+  artifact_refs: ArtifactRefDTO[]
+}
+
 // ── BYOK Credential Source ──
 
 export type CredentialSource = 'server_env' | 'browser_key';
@@ -334,4 +371,91 @@ export interface CatalogProvider {
 
 export interface ModelCatalogResponse {
   providers: CatalogProvider[]
+}
+
+// ── V1.1 versioned public DTOs (Final TSD §17/§20.1/§21) ──
+
+export type RunLifecycleStatus =
+  | 'ACCEPTED'
+  | 'RUNNING'
+  | 'CANCEL_REQUESTED'
+  | 'COMPLETED'
+  | 'FAILED'
+  | 'CANCELLED'
+
+export type RunEventType =
+  | 'run.accepted'
+  | 'stage.started'
+  | 'evidence.retrieved'
+  | 'evidence.reranked'
+  | 'evidence.assessed'
+  | 'followup.started'
+  | 'answer.started'
+  | 'answer.delta'
+  | 'answer.completed'
+  | 'assurance.completed'
+  | 'run.completed'
+  | 'run.failed'
+  | 'run.cancelled'
+
+export interface ArtifactRefDTO {
+  artifact_id: string
+  artifact_type: string
+  schema_version: string
+  content_sha256: string
+  run_id: string
+}
+
+export interface PublicRunEvent {
+  schema_version: string
+  event_id?: string | null
+  run_id: string
+  sequence: number
+  event_type: RunEventType
+  emitted_at: string
+  stage?: string | null
+  payload: Record<string, unknown>
+  artifact_refs: ArtifactRefDTO[]
+}
+
+export interface RunAcceptedResponse {
+  run_id: string
+  status: 'ACCEPTED'
+  stream_url: string
+  request_hash_prefix: string
+  model_capability_label: string
+}
+
+export interface RunFailureDTO {
+  code: string
+  message?: string | null
+}
+
+export interface RunDTO {
+  run_id: string
+  lifecycle_status: RunLifecycleStatus
+  attribution_status?: string | null
+  attribution_type?: string | null
+  created_at: string
+  duration_ms?: number | null
+  failure?: RunFailureDTO | null
+  manifest_summary: Record<string, string>
+  terminal_artifact_refs: ArtifactRefDTO[]
+}
+
+export interface ArtifactRefPage {
+  items: Array<{
+    artifact_id: string
+    artifact_type: string
+    stage?: string | null
+    created_at?: string | null
+    ref: ArtifactRefDTO
+  }>
+  total: number
+  limit: number
+  offset: number
+}
+
+export type ArtifactDetail = ArtifactRefPage['items'][number] & {
+  payload?: Record<string, unknown> | null
 }

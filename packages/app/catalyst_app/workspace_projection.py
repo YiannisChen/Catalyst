@@ -10,6 +10,7 @@ Does not fabricate metrics.  Preserves original cause confidence values.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 
@@ -423,3 +424,118 @@ def _build_failure(run_summary: dict[str, Any]) -> dict[str, Any] | None:
         "source": failure.get("source"),
         "node": failure.get("node"),
     }
+
+
+# ── V1.1 authoritative projection (M6-11) ───────────────────────────────────
+# Derives display state only from persisted public events/artifacts and the
+# RunDTO boundary; never from raw graph state (Final TSD §21). The legacy
+# ``project_workspace`` above remains the migration-window adapter for saved
+# legacy artifacts only.
+
+
+def project_workspace_v1(db_path: Path, run_id: str) -> dict[str, Any]:
+    """Project one V1.1 run from persisted public events/artifacts."""
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.persistence.schema import init_runtime_db
+
+    with open_rw(db_path) as conn:
+        init_runtime_db(conn)
+        run = conn.execute(
+            "SELECT run_id, lifecycle_status, failure_code, failure_message"
+            " FROM runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        if run is None:
+            raise KeyError(f"run not found: {run_id}")
+        events = conn.execute(
+            "SELECT seq, event_type, stage, payload_json FROM run_events"
+            " WHERE run_id = ? ORDER BY seq ASC",
+            (run_id,),
+        ).fetchall()
+        artifacts = conn.execute(
+            "SELECT artifact_id, artifact_type, event_seq, payload_hash, payload_json, optional"
+            " FROM run_artifacts WHERE run_id = ? ORDER BY event_seq ASC, artifact_id ASC",
+            (run_id,),
+        ).fetchall()
+
+    answer_parts: list[str] = []
+    limitations: list[str] = []
+    claims: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = []
+    artifact_refs: list[dict[str, Any]] = []
+    provisional_invalidated = False
+    final_result_status: str | None = None
+    attribution_status: str | None = None
+    attribution_type: str | None = None
+    terminal_event_type: str | None = None
+
+    for artifact in artifacts:
+        try:
+            payload = json.loads(artifact["payload_json"])
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        artifact_refs.append(
+            {
+                "artifact_id": artifact["artifact_id"],
+                "artifact_type": artifact["artifact_type"],
+                "schema_version": "v1",
+                "content_sha256": artifact["payload_hash"],
+                "run_id": run_id,
+            }
+        )
+        if artifact["artifact_type"] == "claim_detail":
+            claims.append(payload)
+        elif artifact["artifact_type"] == "evidence_detail":
+            evidence.append(payload)
+        elif artifact["artifact_type"] == "answer" and not artifact["optional"]:
+            text = payload.get("text")
+            if isinstance(text, str):
+                answer_parts.append(text)
+        elif artifact["artifact_type"] == "attribution_result":
+            attribution_status = payload.get("attribution_status")
+            attribution_type = payload.get("attribution_type")
+
+    for event in events:
+        event_type = event["event_type"]
+        try:
+            payload = json.loads(event["payload_json"])
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        if event_type == "answer.delta":
+            text = payload.get("delta_text")
+            if isinstance(text, str):
+                answer_parts.append(text)
+        elif event_type == "assurance.completed":
+            if payload.get("provisional_invalidated") is True or payload.get("valid") is False:
+                provisional_invalidated = True
+            if isinstance(payload.get("final_result_status"), str):
+                final_result_status = payload["final_result_status"]
+        elif event_type == "run.completed":
+            terminal_event_type = event_type
+            if isinstance(payload.get("result_status"), str):
+                final_result_status = payload["result_status"]
+        elif event_type in ("run.failed", "run.cancelled"):
+            terminal_event_type = event_type
+        elif event_type == "evidence.assessed":
+            gap_ids = payload.get("gap_ids") or ()
+            for gap in gap_ids:
+                limitations.append(f"Evidence gap: {gap}")
+
+    from catalyst_app.api_dto import WorkbenchProjectionDTO
+
+    answer_text = "".join(answer_parts)
+    return WorkbenchProjectionDTO(
+        run_id=run_id,
+        lifecycle_status=run["lifecycle_status"],
+        attribution_status=attribution_status,
+        attribution_type=attribution_type,
+        claims=tuple(claims),
+        evidence=tuple(evidence),
+        answer=answer_text or None,
+        limitations=tuple(limitations),
+        artifact_refs=tuple(artifact_refs),
+    ).model_dump()

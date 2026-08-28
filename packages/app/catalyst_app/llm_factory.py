@@ -116,6 +116,7 @@ def build_v1_llm(
     provider: str = "openai",
     api_key: str | None = None,
     base_url: str | None = None,
+    timeout_seconds: float | None = None,
 ) -> ChatOpenAI:
     """Create the V1.1 ChatOpenAI client (Final Migration TSD §15; M5-0).
 
@@ -125,6 +126,12 @@ def build_v1_llm(
     deterministic structured output, and true streaming declares usage/token
     accounting. Capability metadata is attached to the returned client and
     consumed by ``provider_capability_for`` at admission.
+
+    Credential identity is strict: the V1.1 path never falls back to the
+    legacy generic ``AIHUBMIX_API_KEY``; an explicit V1 credential must be
+    supplied. ``timeout_seconds`` is the remaining persisted absolute run
+    deadline (never a fixed 90-second provider timeout); when omitted the
+    client is created without a hardcoded timeout.
     """
     resolved_model = (
         model_id if model_id and model_id != "runtime-default" else DEFAULT_MODEL
@@ -140,23 +147,23 @@ def build_v1_llm(
             f"(use provider='custom_openai_compatible' with a base_url)."
         )
 
-    resolved_api_key = api_key
-    if not resolved_api_key:
-        resolved_api_key = _get_api_key()
-    if not resolved_api_key:
+    if not api_key:
         raise ValueError(
-            "No API key available. Provide an api_key or set AIHUBMIX_API_KEY."
+            "No API key available for the V1.1 runtime; an explicit "
+            "credential must be resolved before a worker may start."
         )
 
-    client = ChatOpenAI(
-        model=resolved_model,
-        api_key=resolved_api_key,
-        base_url=resolved_base_url,
-        temperature=0.0,
-        max_retries=0,
-        timeout=90,
-        stream_usage=True,
-    )
+    client_kwargs: dict[str, object] = {
+        "model": resolved_model,
+        "api_key": api_key,
+        "base_url": resolved_base_url,
+        "temperature": 0.0,
+        "max_retries": 0,
+        "stream_usage": True,
+    }
+    if timeout_seconds is not None:
+        client_kwargs["timeout"] = timeout_seconds
+    client = ChatOpenAI(**client_kwargs)
     # Pydantic models reject undeclared attribute assignment; attach the
     # capability metadata through the base object machinery.
     object.__setattr__(

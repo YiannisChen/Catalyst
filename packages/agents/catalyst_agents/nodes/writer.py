@@ -24,6 +24,7 @@ from catalyst_agents.attribution.claims import (
 )
 from catalyst_agents.runtime.assurance.checks import derive_writer_input_hash
 from catalyst_agents.runtime.coalescer import Coalescer
+from catalyst_agents.runtime.control import control_expired
 from catalyst_agents.runtime.delta_sink import DeltaSink
 from catalyst_agents.runtime.provider_capability import (
     CAPABILITY_REVISION,
@@ -35,6 +36,16 @@ from catalyst_agents.runtime.provider_capability import (
 )
 
 WRITER_ROLE = "streaming_writer"
+
+# Code-owned static Writer system instruction (non-abstention path). The app
+# hashes this exact string into the RunManifest writer_prompt_hash so prompt
+# identity can never drift from the agents-owned writer contract.
+WRITER_STANDARD_INSTRUCTION = (
+    "You are writing the attribution report. Paraphrase, organize, and "
+    "connect only the validated claims below. Do not invent facts, "
+    "mechanisms, or causes; do not raise certainty; do not omit required "
+    "limitations; and never cite evidence outside the citation map."
+)
 
 WRITER_REQUIRED_CAPABILITIES = ProviderCapability(
     supports_structured_output=False,
@@ -84,12 +95,7 @@ def _writer_messages(writer_input: WriterInput) -> list[dict]:
             "language."
         )
     else:
-        system_lines.append(
-            "You are writing the attribution report. Paraphrase, organize, and "
-            "connect only the validated claims below. Do not invent facts, "
-            "mechanisms, or causes; do not raise certainty; do not omit required "
-            "limitations; and never cite evidence outside the citation map."
-        )
+        system_lines.append(WRITER_STANDARD_INSTRUCTION)
     system_lines.append(f"Observed move: {writer_input.observed_move}")
     for claim in writer_input.validated_claim_plan.claims:
         line = f"- [{claim.role.value}] (claim_id: {claim.claim_id}) {claim.statement}"
@@ -166,8 +172,15 @@ def writer_node(
     sink: DeltaSink,
     flush_interval_ms: int = 50,
     flush_chars: int = 2048,
+    control: Any | None = None,
 ) -> dict:
-    """Run one streaming Writer logical call and commit deltas + Answer."""
+    """Run one streaming Writer logical call and commit deltas + Answer.
+
+    ``control`` is the agents-owned cooperative boundary: between provider
+    stream chunks the Writer checks it and stops accepting deltas once
+    cancellation or the absolute deadline wins (no provisional Answer is
+    committed in that case).
+    """
     run_id = state.get("run_id")
     if not run_id:
         raise ValueError("writer_node requires run_id in state")
@@ -180,9 +193,11 @@ def writer_node(
 
     input_tokens_total = 0
     output_tokens_total = 0
+    cancelled = False
+    timed_out = False
 
     def attempt():
-        nonlocal input_tokens_total, output_tokens_total
+        nonlocal input_tokens_total, output_tokens_total, cancelled, timed_out
         sink.reset()
         coalescer = Coalescer(
             flush_interval_ms=flush_interval_ms,
@@ -195,6 +210,12 @@ def writer_node(
         attempt_output = 0
         try:
             for text, usage in _stream_chunks(llm, messages):
+                if control is not None and control_expired(control):
+                    # Cancellation/deadline won between chunks: stop accepting
+                    # deltas and never commit a provisional Answer.
+                    cancelled = bool(control.should_cancel())
+                    timed_out = not cancelled
+                    break
                 attempt_input += int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
                 attempt_output += int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
                 if text:
@@ -209,6 +230,11 @@ def writer_node(
                     f"WRITER_FAILURE after accepted delta: {exc!r}"
                 ) from exc
             raise ModelTransportFailure(f"WRITER_FAILURE before first delta: {exc!r}") from exc
+        if cancelled or timed_out:
+            # No provisional Answer is committed; partial accepted deltas are
+            # invalidated by the terminal cancellation path.
+            sink.fail("WRITER_CANCELLED" if cancelled else "WRITER_TIMEOUT")
+            return None
         coalescer.complete()
         answer = sink.answer()
         if answer is None:
@@ -217,6 +243,24 @@ def writer_node(
         input_tokens_total = attempt_input
         output_tokens_total = attempt_output
         return answer
+
+    if cancelled or timed_out:
+        # Cancellation/deadline won before the first provider attempt: report
+        # the control outcome without dispatching the provider.
+        return {
+            "writer_deltas": (),
+            "answer": None,
+            "stream_complete": False,
+            "writer_input_hash": derive_writer_input_hash(writer_input),
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "completion_state": "cancelled" if cancelled else "timed_out",
+            "cancellation_requested": cancelled,
+            "timed_out": timed_out,
+            "writer_logical_calls": 0,
+            "writer_provider_attempts": 0,
+            "run_id": run_id,
+        }
 
     try:
         bounded = invoke_with_bounded_retry(
@@ -228,6 +272,24 @@ def writer_node(
         sink.fail("WRITER_FAILURE")
         raise
     answer = bounded.result
+    if cancelled or timed_out:
+        # Cancellation/deadline won mid-stream: no provisional Answer is
+        # committed and the graph raises the typed control winner before
+        # consuming the output.
+        return {
+            "writer_deltas": tuple(sink.deltas()),
+            "answer": None,
+            "stream_complete": False,
+            "writer_input_hash": derive_writer_input_hash(writer_input),
+            "input_tokens": input_tokens_total,
+            "output_tokens": output_tokens_total,
+            "completion_state": "cancelled" if cancelled else "timed_out",
+            "cancellation_requested": cancelled,
+            "timed_out": timed_out,
+            "writer_logical_calls": bounded.counts.logical_calls,
+            "writer_provider_attempts": bounded.counts.provider_attempts,
+            "run_id": run_id,
+        }
     return {
         "writer_deltas": tuple(sink.deltas()),
         "answer": answer,
@@ -247,6 +309,7 @@ def writer_node(
 __all__ = [
     "WRITER_REQUIRED_CAPABILITIES",
     "WRITER_ROLE",
+    "WRITER_STANDARD_INSTRUCTION",
     "StreamPersistenceFailure",
     "build_writer_input",
     "verify_answer_equality",

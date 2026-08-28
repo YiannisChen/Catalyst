@@ -20,6 +20,9 @@ interface Props {
   onTabFocused?: () => void;
   artifacts?: ArtifactResponse[];
   runtimeMs?: number;
+  attributionStatus?: string | null;
+  attributionType?: string | null;
+  limitations?: string[];
 }
 
 const TAB_DEFS: { id: TabId; label: string }[] = [
@@ -34,6 +37,9 @@ export default function ResultWorkspaceTabs({
   focusTab, onTabFocused,
   artifacts = [],
   runtimeMs,
+  attributionStatus = null,
+  attributionType = null,
+  limitations = [],
 }: Props) {
   const [activeTab, setActiveTab] = useState<TabId>('summary');
   const tabRefs = useRef<Map<string, HTMLButtonElement>>(new Map());
@@ -103,7 +109,16 @@ export default function ResultWorkspaceTabs({
 
         <div id={panelId} className="v4-tab-content" role="tabpanel" aria-labelledby={`v4-tab-${activeTab}`}>
           {activeTab === 'summary' && (
-            <SummaryTab result={result} phase={phase} errorMessage={errorMessage} acceptedCount={acceptedCount} citedCount={referencedIds.size} />
+            <SummaryTab
+              result={result}
+              phase={phase}
+              errorMessage={errorMessage}
+              acceptedCount={acceptedCount}
+              citedCount={referencedIds.size}
+              attributionStatus={attributionStatus}
+              attributionType={attributionType}
+              limitations={limitations}
+            />
           )}
           {activeTab === 'trace' && (
             <TraceTab steps={steps} phase={phase} result={result} evidence={evidence} artifacts={artifacts} />

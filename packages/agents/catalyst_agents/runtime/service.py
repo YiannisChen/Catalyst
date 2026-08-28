@@ -128,24 +128,6 @@ class LiveRunService:
         conn.close()
         return {"run_id": run_id, "status": "QUEUED", "failure": None}
 
-    def run_next(self) -> dict[str, Any] | None:
-        conn = self._connect()
-        # P2 assumption: single runner process polls queue; this selection is not an atomic multi-worker claim.
-        row = conn.execute(
-            "SELECT run_id FROM agent_runs WHERE status = 'QUEUED' ORDER BY queued_at ASC LIMIT 1"
-        ).fetchone()
-        conn.close()
-        if row is None:
-            return None
-        runner = LiveRunRunner(
-            db_path=self.db_path,
-            graph_factory=self.graph_factory,
-            credential_store=self.credential_store,
-            timeout_seconds=self.timeout_seconds,
-            max_workers=self.max_workers,
-        )
-        return runner.run(row["run_id"])
-
     def run_one(self, run_id: str) -> dict[str, Any]:
         conn = self._connect()
         row = conn.execute("SELECT run_id, status FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()

@@ -144,3 +144,64 @@ def test_production_graph_factory_uses_admitted_v1_client(
     assert graph["model"] is admitted_client
     assert graph["retriever"] == "retriever"
     assert graph["requested_manifest_id"] == "manifest-id"
+
+
+def test_build_v1_llm_never_falls_back_to_generic_aihubmix_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The V1.1 factory must fail when no explicit credential is supplied,
+    even when the legacy generic AIHUBMIX_API_KEY is present."""
+    monkeypatch.setenv("AIHUBMIX_API_KEY", "sk-aihubmix-generic")
+    with pytest.raises(ValueError, match="API key"):
+        build_v1_llm(
+            "provider-specific-model",
+            provider="openai",
+            api_key=None,
+            base_url="https://example.invalid/v1",
+        )
+
+
+def test_build_v1_llm_uses_explicit_key_not_generic_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIHUBMIX_API_KEY", "sk-aihubmix-generic")
+    with patch("catalyst_app.llm_factory.ChatOpenAI") as chat_openai:
+        build_v1_llm(
+            "provider-specific-model",
+            provider="openai",
+            api_key="sk-explicit-v1",
+            base_url="https://example.invalid/v1",
+        )
+    assert chat_openai.call_args.kwargs["api_key"] == "sk-explicit-v1"
+
+
+def test_build_v1_llm_timeout_bounded_by_remaining_budget() -> None:
+    """The provider request timeout is the caller-provided remaining run
+    budget; the fixed 90-second effective timeout is gone from the V1.1 path
+    and max_retries=0 is preserved."""
+    with patch("catalyst_app.llm_factory.ChatOpenAI") as chat_openai:
+        build_v1_llm(
+            "provider-specific-model",
+            provider="openai",
+            api_key="sk-explicit-v1",
+            base_url="https://example.invalid/v1",
+            timeout_seconds=3.5,
+        )
+    kwargs = chat_openai.call_args.kwargs
+    assert kwargs["timeout"] == 3.5
+    assert kwargs["max_retries"] == 0
+    assert kwargs["timeout"] != 90
+
+
+def test_build_v1_llm_omits_fixed_timeout_when_not_supplied() -> None:
+    """Without a remaining-budget timeout the client must not receive a
+    hardcoded 90-second timeout."""
+    with patch("catalyst_app.llm_factory.ChatOpenAI") as chat_openai:
+        build_v1_llm(
+            "provider-specific-model",
+            provider="openai",
+            api_key="sk-explicit-v1",
+            base_url="https://example.invalid/v1",
+        )
+    kwargs = chat_openai.call_args.kwargs
+    assert kwargs.get("timeout") != 90

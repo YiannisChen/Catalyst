@@ -176,3 +176,19 @@ def session_close_utc(session_date: str) -> str:
     close_et = datetime.combine(d, close_time, tzinfo=ET)
     close_utc = close_et.astimezone(UTC)
     return close_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def session_open_utc(session_date: str) -> str:
+    """Return the canonical UTC session-open timestamp (09:30 America/New_York).
+
+    The market session opens at 09:30 ET on every trading day, including
+    early-close sessions; DST is handled by the America/New_York zone so the
+    UTC instant differs between EST and EDT. Fails closed on non-sessions.
+    """
+    if not is_trading_day(session_date):
+        raise ValueError(f"not_a_trading_session: {session_date}")
+
+    d = date.fromisoformat(session_date)
+    open_et = datetime.combine(d, time(9, 30), tzinfo=ET)
+    open_utc = open_et.astimezone(UTC)
+    return open_utc.strftime("%Y-%m-%dT%H:%M:%SZ")

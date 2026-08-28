@@ -147,7 +147,7 @@ def test_runner_executes_fake_graph_with_precreated_run_id(tmp_path):
     service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph)
     created = service.create_run(ticker="AAPL", trade_date="2026-01-15", query="explain")
 
-    result = service.run_next()
+    result = service.run_one(created["run_id"])
 
     assert result["run_id"] == created["run_id"]
     assert graph.calls[0]["run_id"] == created["run_id"]
@@ -165,7 +165,7 @@ def test_event_and_artifact_polling_after_fake_graph_completion(tmp_path):
     graph = RecordingGraph(db_path)
     service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph)
     created = service.create_run(ticker="AAPL", trade_date="2026-01-15", query=None)
-    service.run_next()
+    service.run_one(created["run_id"])
 
     all_events = service.get_events(created["run_id"])
     later_events = service.get_events(created["run_id"], after_seq=1)
@@ -213,7 +213,7 @@ def test_timeout_marks_run_failed_system_timeout(tmp_path):
     service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph, timeout_seconds=0.01)
     created = service.create_run(ticker="AAPL", trade_date="2026-01-15", query=None)
 
-    result = service.run_next()
+    result = service.run_one(created["run_id"])
     run = service.get_run(created["run_id"])
 
     assert result["status"] == "FAILED_SYSTEM"
@@ -227,7 +227,7 @@ def test_timeout_late_success_does_not_override_terminal_timeout(tmp_path):
     service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph, timeout_seconds=0.01)
     created = service.create_run(ticker="AAPL", trade_date="2026-01-15", query=None)
 
-    service.run_next()
+    service.run_one(created["run_id"])
     time.sleep(0.25)
     run = service.get_run(created["run_id"])
 
@@ -241,7 +241,7 @@ def test_graph_exception_marks_failed_system_and_does_not_leave_queued(tmp_path)
     service = LiveRunService(db_path=db_path, graph_factory=lambda **_: graph)
     created = service.create_run(ticker="AAPL", trade_date="2026-01-15", query=None)
 
-    result = service.run_next()
+    result = service.run_one(created["run_id"])
     run = service.get_run(created["run_id"])
 
     assert result["status"] == "FAILED_SYSTEM"

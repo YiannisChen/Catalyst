@@ -3,7 +3,8 @@
  * Tests pure functions and API payload shapes — no DOM rendering or network calls.
  */
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { describe, it, test } from 'node:test';
 
 // ── API payload shape tests ──
 
@@ -61,7 +62,7 @@ describe('RetryRunRequest', () => {
   });
 });
 
-// ── getWorkspace API base ──
+// ── getWorkspace API base (Finding G) ──
 
 describe('getWorkspace API', () => {
   it('constructs path using /live-runs/{id}/workspace', () => {
@@ -73,6 +74,12 @@ describe('getWorkspace API', () => {
   it('encodes special characters in runId', () => {
     const path = `/live-runs/${encodeURIComponent('run/id')}/workspace`;
     assert.equal(path, '/live-runs/run%2Fid/workspace');
+  });
+
+  it('never uses the removed /workspace-v1 split endpoint', () => {
+    const runId = 'abc123';
+    const path = `/live-runs/${encodeURIComponent(runId)}/workspace`;
+    assert.ok(!path.includes('workspace-v1'));
   });
 });
 
@@ -703,3 +710,23 @@ describe('No generic container eyebrow labels', () => {
   });
 });
 
+
+// ── M6 corrective: V1 workspace projection (Finding G) ──
+
+test('LiveWorkbench terminal path uses the locked /workspace endpoint', () => {
+  const liveSource = readFileSync(new URL('./LiveWorkbench.tsx', import.meta.url), 'utf8');
+  assert.match(liveSource, /getWorkspace/);
+  assert.doesNotMatch(liveSource, /getWorkspaceV1/);
+  assert.doesNotMatch(liveSource, /workspace-v1/);
+});
+
+test('getWorkspace builds the locked /workspace endpoint', async () => {
+  const mod = await import('../../api/client.ts');
+  const fn = (mod as unknown as { getWorkspace?: (runId: string) => Promise<unknown> }).getWorkspace;
+  assert.equal(typeof fn, 'function');
+  assert.equal((mod as any).getWorkspaceV1, undefined);
+  // The client must call /workspace, never the removed workspace-v1 route.
+  const source = readFileSync(new URL('../../api/client.ts', import.meta.url), 'utf8');
+  assert.match(source, /\/live-runs\/\$\{encodeURIComponent\(runId\)\}\/workspace/);
+  assert.doesNotMatch(source, /workspace-v1/);
+});

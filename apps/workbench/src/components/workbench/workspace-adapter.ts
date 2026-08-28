@@ -6,7 +6,7 @@
  * This adapter builds structurally compatible objects from live API data so the
  * components render correctly without demoCase imports in the LiveWorkbench path.
  */
-import type { WorkspaceResponse, WorkspaceCause, WorkspaceEvidenceItem, WorkspaceStage } from '../../api/types';
+import type { WorkbenchProjectionDTO, WorkspaceResponse, WorkspaceCause, WorkspaceEvidenceItem, WorkspaceStage } from '../../api/types';
 import type { NewsItem } from '../../api/client';
 import type {
   AttributionResult,
@@ -15,6 +15,8 @@ import type {
   PipelineStepId,
   EvidenceDecision,
 } from '../../mock/demoCases';
+
+export type { EvidenceItem };
 
 // ── Evidence mapping ──
 
@@ -73,8 +75,10 @@ export function mapResult(ws: WorkspaceResponse): AttributionResult | null {
 function mapStatus(status: string): AttributionResult['status'] {
   switch (status) {
     case 'SUCCEEDED': return 'SUFFICIENT';
+    case 'SUFFICIENT': return 'SUFFICIENT';
     case 'PARTIAL': return 'PARTIAL';
     case 'INSUFFICIENT': return 'INSUFFICIENT';
+    case 'ABSTAIN': return 'INSUFFICIENT';
     default: return 'INSUFFICIENT';
   }
 }
@@ -220,4 +224,60 @@ export function buildDemoCaseStub(ticker: string, candles: OhlcvCandle[]): LiveD
 
 export function makeCasesList(tickers: string[]): LiveDemoCaseStub[] {
   return tickers.map((t) => buildDemoCaseStub(t, []));
+}
+
+
+// ── V1.1 projection display mapping (Finding G) ──
+// The default live path consumes the authoritative WorkbenchProjectionDTO
+// (V1 runs/run_events/run_artifacts). These helpers only map already-validated
+// public claims/evidence to v4 display shapes; they never infer semantics.
+
+export function mapProjectionResult(projection: WorkbenchProjectionDTO): AttributionResult | null {
+  const causes = projection.claims.map((claim) => ({
+    title: claim.statement,
+    direction: 'neutral' as const,
+    role: 'primary_driver' as const,
+    supportLevel: 'strong' as const,
+    confidence: 0,
+    rationale: '',
+    evidenceIds: claim.support_evidence_ids,
+  }));
+  return {
+    status: mapStatus(projection.attribution_status ?? projection.lifecycle_status),
+    label: projection.attribution_status ?? projection.lifecycle_status,
+    statusReason: '',
+    headline: causes[0]?.title ?? 'Attribution complete',
+    summary: projection.answer ?? '',
+    groundingRate: 0,
+    refused: projection.lifecycle_status === 'FAILED' || projection.lifecycle_status === 'CANCELLED',
+    causes,
+  };
+}
+
+export function mapProjectionEvidence(projection: WorkbenchProjectionDTO): EvidenceItem[] {
+  return projection.evidence.map((e) => ({
+    id: e.evidence_id,
+    title: e.excerpt.slice(0, 120) || e.evidence_id,
+    snippet: e.excerpt,
+    source: e.provider,
+    sourceType: e.source_class === 'reported_news' ? 'news' : e.source_class === 'issuer_disclosure' ? 'filing' : 'news',
+    publishedAt: e.eligible_at,
+    quality: 'medium' as const,
+    temporalStatus: 'same-day' as const,
+    relevanceScore: 0,
+    criticDecision: 'ungraded' as const,
+  }));
+}
+
+export function mapProjectionSteps(projection: WorkbenchProjectionDTO): PipelineStep[] {
+  const terminal =
+    projection.lifecycle_status === 'COMPLETED' ||
+    projection.lifecycle_status === 'FAILED' ||
+    projection.lifecycle_status === 'CANCELLED';
+  return STEP_ORDER.map((id, idx) => ({
+    id,
+    label: STEP_LABELS[id] ?? id,
+    status: terminal ? 'complete' : idx === 0 ? 'active' : 'pending',
+    note: '',
+  }));
 }
