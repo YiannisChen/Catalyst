@@ -12,7 +12,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 
 from catalyst_eval.v1_1.loader import canonical_bytes
 
@@ -33,6 +33,10 @@ class LedgerRow:
     cost_usd: float | None
     checksum: str
     identity_valid: bool = True
+    run_facts: Mapping[str, Any] | None = None
+    context_pack_ref: Mapping[str, Any] | None = None
+    claim_plan_ref: Mapping[str, Any] | None = None
+    assurance_ref: Mapping[str, Any] | None = None
 
     def compute_checksum(self) -> str:
         payload = {
@@ -46,6 +50,10 @@ class LedgerRow:
             "attempts": self.attempts,
             "provider_calls": self.provider_calls,
             "cost_usd": self.cost_usd,
+            "run_facts": self.run_facts,
+            "context_pack_ref": self.context_pack_ref,
+            "claim_plan_ref": self.claim_plan_ref,
+            "assurance_ref": self.assurance_ref,
         }
         return hashlib.sha256(canonical_bytes(payload)).hexdigest()
 
@@ -84,6 +92,10 @@ class ExecutionLedger:
                         "attempts": row.attempts,
                         "provider_calls": row.provider_calls,
                         "cost_usd": row.cost_usd,
+                        "run_facts": row.run_facts,
+                        "context_pack_ref": row.context_pack_ref,
+                        "claim_plan_ref": row.claim_plan_ref,
+                        "assurance_ref": row.assurance_ref,
                         "checksum": row.compute_checksum(),
                     },
                 },

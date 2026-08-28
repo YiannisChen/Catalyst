@@ -31,14 +31,35 @@ def builder_manifest() -> EvalManifest:
     return build_fixture_eval_manifest()
 
 
+def _real_hash(payload) -> str:
+    import hashlib
+
+    from catalyst_eval.v1_1.loader import canonical_bytes
+
+    return hashlib.sha256(canonical_bytes(payload)).hexdigest()
+
+
 def _outcome(case_id: str) -> CaseRunOutcome:
+    run_manifest_payload = {"run_id": f"manifest:{case_id}", "case_id": case_id}
+    result_artifact_payload = {"result": case_id}
     return CaseRunOutcome(
         case_id=case_id,
         run_manifest_id=f"manifest:{case_id}",
-        run_manifest_hash="b" * 64,
+        run_manifest_hash=_real_hash(run_manifest_payload),
         result_artifact_id=f"result:{case_id}",
-        result_artifact_hash="c" * 64,
+        result_artifact_hash=_real_hash(result_artifact_payload),
         terminal_status="COMPLETED",
+        run_manifest_payload=run_manifest_payload,
+        result_artifact_payload=result_artifact_payload,
+        context_pack_ref={
+            "artifact_id": f"pack:{case_id}", "artifact_hash": "b" * 64,
+        },
+        claim_plan_ref={
+            "artifact_id": f"claimplan:{case_id}", "artifact_hash": "c" * 64,
+        },
+        assurance_ref={
+            "artifact_id": f"assurance:{case_id}", "artifact_hash": "b" * 64,
+        },
         provider_calls=2,
         cost_usd=0.01,
         latency_ms=100,

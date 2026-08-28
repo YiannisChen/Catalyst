@@ -306,6 +306,30 @@ class EvalOutcome(BaseModel):
             raise ValueError("per_case_result_refs case_ids must be unique")
         return self
 
+    @model_validator(mode="after")
+    def _bindings_match_refs_one_to_one(self) -> "EvalOutcome":
+        """Ordered per-case refs must bind one-to-one to the observed
+        RunManifest id+hash; missing, duplicate, reordered, extra, or
+        mismatched bindings fail closed (M7 execution lock, Batch-B)."""
+        refs = list(self.per_case_result_refs)
+        bindings = list(self.observed_run_artifact_identity.run_manifest_bindings)
+        if len(refs) != len(bindings):
+            raise ValueError(
+                "observed RunManifest bindings must match per_case_result_refs "
+                f"one-to-one (refs={len(refs)} bindings={len(bindings)})"
+            )
+        for index, (ref, binding) in enumerate(zip(refs, bindings)):
+            if (
+                ref.run_manifest_id != binding.run_manifest_id
+                or ref.run_manifest_hash != binding.run_manifest_hash
+            ):
+                raise ValueError(
+                    f"binding at index {index} does not match ref {ref.case_id!r}: "
+                    f"ref=({ref.run_manifest_id},{ref.run_manifest_hash}) "
+                    f"binding=({binding.run_manifest_id},{binding.run_manifest_hash})"
+                )
+        return self
+
 
 class EvalManifest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")

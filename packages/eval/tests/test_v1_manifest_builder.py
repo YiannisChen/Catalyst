@@ -271,12 +271,11 @@ def test_append_outcome_requires_one_to_one_ordered_bindings():
         manifest.append_outcome(
             _outcome(manifest, per_case_result_refs=(_outcome(manifest).per_case_result_refs[0],))
         )
-    # Reordered binding.
+    # Reordered binding fails closed at outcome validation (Batch-B): the
+    # per-case refs must bind one-to-one to the observed RunManifest id+hash.
     refs = list(_outcome(manifest).per_case_result_refs)
-    with pytest.raises(ValueError, match="one-to-one"):
-        manifest.append_outcome(
-            _outcome(manifest, per_case_result_refs=(refs[1], refs[0]))
-        )
+    with pytest.raises(ValueError, match="does not match ref"):
+        _outcome(manifest, per_case_result_refs=(refs[1], refs[0]))
     # Extra binding.
     extra = CaseResultRef(
         case_id="v1f-003",
