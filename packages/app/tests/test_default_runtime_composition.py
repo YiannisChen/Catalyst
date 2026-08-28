@@ -642,7 +642,9 @@ def test_server_env_credential_uses_provider_env_key_not_fallback(
     from catalyst_app.runtime.composition import build_runtime_composition
     from catalyst_app.runtime_credential_store import RuntimeCredentialStore
 
+    monkeypatch.delenv("openai_api_key", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-provider-specific-123")
+    monkeypatch.setenv("openai_api_key", "sk-openai-provider-specific-123")
     monkeypatch.setenv("AIHUBMIX_API_KEY", "sk-aihubmix-fallback-must-not-leak")
 
     store = RuntimeCredentialStore()

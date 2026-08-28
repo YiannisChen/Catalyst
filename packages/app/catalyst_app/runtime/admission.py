@@ -261,9 +261,19 @@ class AdmissionController:
 
             # Pre-submit hook: register the volatile credential (resolved by
             # the caller, never carried on AdmissionRequest/manifest/rows) after
-            # run_id allocation and before the executor task may start.
+            # run_id allocation and before the executor task may start. A hook
+            # failure gets the same durable guarantees as submission failure:
+            # the committed run terminalizes FAILED, any volatile credential is
+            # removed, this run's slot is released, and the error re-raises.
             if pre_submit is not None:
-                pre_submit(run_id)
+                try:
+                    pre_submit(run_id)
+                except BaseException:
+                    self._terminalize_submission_failure(run_id)
+                    if self._credential_store is not None:
+                        self._credential_store.remove(run_id)
+                    self.executor.release_slot(run_id)
+                    raise
 
             # Submission exactly once; slot releases after terminal commit.
             # The submitted budget is the remaining time to the persisted

@@ -123,7 +123,9 @@ def _utc_parse(value: str | None) -> datetime | None:
 def _resolve_runtime_credential(request: CreateRunRequest) -> str | None:
     """Resolve the volatile BYOK credential value (browser_key or server_env).
 
-    Returns None when no credential is supplied; never logs or persists it.
+    server_env resolves only ``get_provider_env_key(provider)``; a missing or
+    empty provider-specific env key fails closed before any ACCEPTED run,
+    event, or slot is created. Never logs or persists the value.
     """
     model = request.model
     if model is None:
@@ -133,8 +135,11 @@ def _resolve_runtime_credential(request: CreateRunRequest) -> str | None:
     if model.credential_source == CredentialSource.SERVER_ENV:
         env_key_name = get_provider_env_key(model.provider)
         if not env_key_name:
-            return None
-        return os.environ.get(env_key_name, "") or None
+            raise HTTPException(status_code=400, detail="env_key_missing")
+        value = os.environ.get(env_key_name, "").strip()
+        if not value:
+            raise HTTPException(status_code=400, detail="env_key_missing")
+        return value
     return None
 
 
