@@ -120,6 +120,24 @@ def _utc_parse(value: str | None) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _resolve_runtime_credential(request: CreateRunRequest) -> str | None:
+    """Resolve the volatile BYOK credential value (browser_key or server_env).
+
+    Returns None when no credential is supplied; never logs or persists it.
+    """
+    model = request.model
+    if model is None:
+        return None
+    if model.credential_source == CredentialSource.BROWSER_KEY:
+        return model.api_key or None
+    if model.credential_source == CredentialSource.SERVER_ENV:
+        env_key_name = get_provider_env_key(model.provider)
+        if not env_key_name:
+            return None
+        return os.environ.get(env_key_name, "") or None
+    return None
+
+
 # ── V1.1 run lifecycle ──────────────────────────────────────────────────────
 
 @router.post("/live-runs", response_model=RunAcceptedResponse | RunDTO)
@@ -147,21 +165,25 @@ def create_live_run(
         config_version=request.config,
         idempotency_key=req.headers.get("idempotency-key"),
     )
+    # Resolve the volatile credential before admission: browser keys come from
+    # the request body; server_env keys come from the provider-specific env
+    # var (never the generic AIHUBMIX_API_KEY fallback). The value is passed
+    # to the pre-submit hook only, never placed on AdmissionRequest, manifest,
+    # SQLite rows, events, artifacts, logs, responses, or exceptions.
+    resolved_key = _resolve_runtime_credential(request)
+    pre_submit = (
+        (lambda run_id: credential_store.register(run_id, api_key=resolved_key))
+        if resolved_key is not None
+        else None
+    )
     try:
-        outcome = controller.admit(admission_request)
+        outcome = controller.admit(admission_request, pre_submit=pre_submit)
     except AdmissionValidationError as exc:
         raise HTTPException(status_code=400, detail=f"invalid_request: {exc}") from exc
     except RuntimeUnavailableError as exc:
         raise HTTPException(status_code=503, detail=f"runtime_unavailable: {exc}") from exc
 
     if outcome.kind == "accepted":
-        # BYOK credentials stay in memory only, never persisted.
-        if (
-            request.model
-            and request.model.credential_source == CredentialSource.BROWSER_KEY
-            and request.model.api_key
-        ):
-            credential_store.register(outcome.run_id, api_key=request.model.api_key)
         return RunAcceptedResponse(
             run_id=outcome.run_id or "",
             status="ACCEPTED",
