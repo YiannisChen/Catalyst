@@ -536,13 +536,30 @@ def get_live_run_events(
     return [_as_run_event_response(row) for row in rows]
 
 
-@router.get("/live-runs/{run_id}/workspace", response_model=WorkspaceResponse)
+@router.get(
+    "/live-runs/{run_id}/workspace",
+    response_model=WorkbenchProjectionDTO | WorkspaceResponse,
+)
 def get_workspace(
     run_id: str,
+    req: Request,
     response: Response,
     service=Depends(get_live_run_service),
-) -> WorkspaceResponse:
-    """Legacy saved-artifact translation for the v4 workbench (M6 window)."""
+) -> WorkbenchProjectionDTO | WorkspaceResponse:
+    """Authoritative V1.1 workspace projection over the V1 tables (Finding G).
+
+    V1 runs return the typed ``WorkbenchProjectionDTO`` from
+    ``project_workspace_v1``. Legacy saved runs fall through to the bounded
+    migration adapter (``project_workspace`` -> ``WorkspaceResponse``) through
+    the same endpoint; only that legacy translation is marked deprecated.
+    """
+    db_path = _db_path(req)
+    try:
+        projection = project_workspace_v1(db_path, run_id)
+    except KeyError:
+        pass  # not a V1 run; try the legacy saved-artifact translation
+    else:
+        return WorkbenchProjectionDTO.model_validate(projection)
     _mark_deprecated(response, endpoint="workspace")
     summary = service.get_run(run_id)
     if summary is None:
@@ -551,22 +568,6 @@ def get_workspace(
     artifacts = service.get_artifacts(run_id)
     projection = project_workspace(summary, events, artifacts)
     return WorkspaceResponse.model_validate(projection)
-
-
-@router.get("/live-runs/{run_id}/workspace-v1", response_model=WorkbenchProjectionDTO)
-def get_workspace_v1(run_id: str, req: Request) -> WorkbenchProjectionDTO:
-    """V1.1 authoritative workspace projection over the V1 tables (Finding G).
-
-    The default LiveWorkbench path consumes this projection; legacy
-    ``/workspace`` remains only for legacy saved runs during the migration
-    window.
-    """
-    db_path = _db_path(req)
-    try:
-        projection = project_workspace_v1(db_path, run_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail="run_not_found")
-    return WorkbenchProjectionDTO.model_validate(projection)
 
 
 @router.post("/live-runs/{run_id}/retry", response_model=RetryRunResponse)

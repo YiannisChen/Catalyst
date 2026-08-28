@@ -356,7 +356,7 @@ def test_default_post_live_run_invokes_run_v1_graph_and_persists(tmp_path: Path)
                 "evidence_detail", "claim_detail", "attribution_result"} <= types
 
         # V1 workspace projection reads the V1 tables (not legacy storage).
-        ws = client.get(f"/api/live-runs/{run_id}/workspace-v1")
+        ws = client.get(f"/api/live-runs/{run_id}/workspace")
         assert ws.status_code == 200, ws.text
         projection = ws.json()
         assert projection["lifecycle_status"] == "COMPLETED"
@@ -471,7 +471,7 @@ def test_byok_credential_available_before_graph_and_never_persisted(tmp_path: Pa
         assert SECRET not in client.get(f"/api/live-runs/{run_id}").text
         assert SECRET not in client.get(f"/api/live-runs/{run_id}/stream").text
         assert SECRET not in client.get(f"/api/live-runs/{run_id}/artifacts").text
-        assert SECRET not in client.get(f"/api/live-runs/{run_id}/workspace-v1").text
+        assert SECRET not in client.get(f"/api/live-runs/{run_id}/workspace").text
         with open_rw(tmp_path / "runtime.db") as conn:
             for table in ("runs", "run_events", "run_artifacts"):
                 rows = conn.execute(f"SELECT * FROM {table}").fetchall()

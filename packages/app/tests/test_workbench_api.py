@@ -154,3 +154,28 @@ def test_missing_table_returns_clear_error(tmp_path):
 
     assert response.status_code == 503
     assert response.json()["detail"] == "Missing required table: ohlcv"
+
+
+def test_workspace_route_falls_back_to_legacy_translation(tmp_path):
+    """GET /api/live-runs/{run_id}/workspace routes non-V1 legacy runs through
+    the bounded migration adapter and marks the legacy translation
+    deprecated (same endpoint, versioned translation)."""
+    db_path = tmp_path / "workbench.db"
+    _build_test_db(db_path)
+    app = create_app(
+        service_override=FakeService(),
+        dependency_loader_override=FakeLoader(),
+        workbench_store_override=WorkbenchStore(db_path=db_path),
+    )
+    client = TestClient(app)
+
+    # No V1 run row exists: the legacy adapter must answer through /workspace.
+    response = client.get("/api/live-runs/legacy:1/workspace")
+
+    assert response.status_code == 200
+    payload = response.json()
+    # Legacy WorkspaceResponse shape: status field, no lifecycle_status/claims.
+    assert payload["run_id"] == "legacy:1"
+    assert payload["status"] == "RUNNING"
+    assert "lifecycle_status" not in payload
+    assert response.headers.get("deprecation") == "true"

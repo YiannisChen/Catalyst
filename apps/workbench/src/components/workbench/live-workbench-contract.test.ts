@@ -62,18 +62,24 @@ describe('RetryRunRequest', () => {
   });
 });
 
-// ── getWorkspaceV1 API base (Finding G) ──
+// ── getWorkspace API base (Finding G) ──
 
-describe('getWorkspaceV1 API', () => {
-  it('constructs path using /live-runs/{id}/workspace-v1', () => {
+describe('getWorkspace API', () => {
+  it('constructs path using /live-runs/{id}/workspace', () => {
     const runId = 'abc123';
-    const path = `/live-runs/${encodeURIComponent(runId)}/workspace-v1`;
-    assert.equal(path, '/live-runs/abc123/workspace-v1');
+    const path = `/live-runs/${encodeURIComponent(runId)}/workspace`;
+    assert.equal(path, '/live-runs/abc123/workspace');
   });
 
   it('encodes special characters in runId', () => {
-    const path = `/live-runs/${encodeURIComponent('run/id')}/workspace-v1`;
-    assert.equal(path, '/live-runs/run%2Fid/workspace-v1');
+    const path = `/live-runs/${encodeURIComponent('run/id')}/workspace`;
+    assert.equal(path, '/live-runs/run%2Fid/workspace');
+  });
+
+  it('never uses the removed /workspace-v1 split endpoint', () => {
+    const runId = 'abc123';
+    const path = `/live-runs/${encodeURIComponent(runId)}/workspace`;
+    assert.ok(!path.includes('workspace-v1'));
   });
 });
 
@@ -707,18 +713,20 @@ describe('No generic container eyebrow labels', () => {
 
 // ── M6 corrective: V1 workspace projection (Finding G) ──
 
-test('LiveWorkbench terminal path uses the V1 workspace projection, not legacy storage', () => {
+test('LiveWorkbench terminal path uses the locked /workspace endpoint', () => {
   const liveSource = readFileSync(new URL('./LiveWorkbench.tsx', import.meta.url), 'utf8');
-  assert.match(liveSource, /getWorkspaceV1/);
-  assert.doesNotMatch(liveSource, /getWorkspace\b/);
+  assert.match(liveSource, /getWorkspace/);
+  assert.doesNotMatch(liveSource, /getWorkspaceV1/);
+  assert.doesNotMatch(liveSource, /workspace-v1/);
 });
 
-test('getWorkspaceV1 builds the V1 workspace endpoint', async () => {
+test('getWorkspace builds the locked /workspace endpoint', async () => {
   const mod = await import('../../api/client.ts');
-  const fn = (mod as unknown as { getWorkspaceV1?: (runId: string) => Promise<unknown> }).getWorkspaceV1;
+  const fn = (mod as unknown as { getWorkspace?: (runId: string) => Promise<unknown> }).getWorkspace;
   assert.equal(typeof fn, 'function');
-  // Endpoint contract is exercised by the backend integration test; here we
-  // pin the URL shape so the default live path can never silently regress to
-  // the legacy LiveRunService projection.
-  assert.equal(mod.getWorkspaceV1 !== undefined, true);
+  assert.equal((mod as any).getWorkspaceV1, undefined);
+  // The client must call /workspace, never the removed workspace-v1 route.
+  const source = readFileSync(new URL('../../api/client.ts', import.meta.url), 'utf8');
+  assert.match(source, /\/live-runs\/\$\{encodeURIComponent\(runId\)\}\/workspace/);
+  assert.doesNotMatch(source, /workspace-v1/);
 });

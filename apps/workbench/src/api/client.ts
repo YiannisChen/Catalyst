@@ -156,16 +156,12 @@ export function validateModel(
   })
 }
 
-export function getWorkspace(runId: string): Promise<import('./types').WorkspaceResponse> {
-  // Legacy saved-artifact translation only (migration window); the default
-  // live path uses getWorkspaceV1 (Finding G).
-  return request<import('./types').WorkspaceResponse>(`/live-runs/${encodeURIComponent(runId)}/workspace`)
-}
-
-export function getWorkspaceV1(runId: string): Promise<import('./types').WorkbenchProjectionDTO> {
-  // V1.1 authoritative projection over the V1 runs/run_events/run_artifacts
-  // tables; never the legacy LiveRunService workspace projection.
-  return request<import('./types').WorkbenchProjectionDTO>(`/live-runs/${encodeURIComponent(runId)}/workspace-v1`)
+export function getWorkspace(runId: string): Promise<import('./types').WorkbenchProjectionDTO> {
+  // Locked workspace surface: GET /live-runs/{id}/workspace. V1 runs return
+  // the authoritative WorkbenchProjectionDTO; legacy saved runs are
+  // translated by the backend through the same endpoint (Finding G). The
+  // frontend consumes the V1 projection shape.
+  return request<import('./types').WorkbenchProjectionDTO>(`/live-runs/${encodeURIComponent(runId)}/workspace`)
 }
 export function getCatalog(): Promise<import('./types').ModelCatalogResponse> {
   return request<import('./types').ModelCatalogResponse>('/models/catalog')

@@ -12,7 +12,7 @@ import {
   connectRunStream,
   getLiveRunV1,
   getArtifactPage,
-  getWorkspaceV1,
+  getWorkspace,
 } from '../../api/client';
 import {
   createV1State,
@@ -220,7 +220,7 @@ export default function LiveWorkbench() {
           getLiveRunV1(runId)
             .then((dto) => {
               setV1State((prev) => reduceRunDto(prev, dto));
-              return getWorkspaceV1(runId);
+              return getWorkspace(runId);
             })
             .then(setWorkspace)
             .catch((err: Error) => {

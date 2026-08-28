@@ -722,3 +722,46 @@ def test_health_not_ready_when_default_runtime_identity_fails(tmp_path: Path) ->
         response = client.get("/api/health")
     assert response.status_code == 200
     assert response.json()["status"] != "ready"
+
+
+# ── M6 corrective: locked workspace endpoint (Finding G) ────────────────────
+
+def test_workspace_route_returns_v1_projection_for_v1_run(tmp_path: Path) -> None:
+    """GET /api/live-runs/{run_id}/workspace returns the V1.1
+    WorkbenchProjectionDTO for a V1 run (no workspace-v1 split endpoint)."""
+    db_path = tmp_path / "runtime.db"
+    _fixture_db(db_path)
+    _seed_completed_run(db_path, run_id="run:ws", attribution_status="PARTIAL")
+    app = _app_with_admission(db_path)
+
+    with TestClient(app) as client:
+        response = client.get("/api/live-runs/run:ws/workspace")
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        # V1 projection shape (WorkbenchProjectionDTO), not the legacy shape.
+        assert payload["run_id"] == "run:ws"
+        assert payload["lifecycle_status"] == "COMPLETED"
+        assert "claims" in payload and "evidence" in payload and "artifact_refs" in payload
+        assert payload["attribution_status"] == "PARTIAL"
+
+
+def test_workspace_v1_route_is_removed(tmp_path: Path) -> None:
+    """No second public /workspace-v1 endpoint exists."""
+    db_path = tmp_path / "runtime.db"
+    _fixture_db(db_path)
+    _seed_completed_run(db_path, run_id="run:ws2")
+    app = _app_with_admission(db_path)
+
+    with TestClient(app) as client:
+        response = client.get("/api/live-runs/run:ws2/workspace-v1")
+        assert response.status_code == 404
+
+
+def test_workspace_missing_run_returns_404(tmp_path: Path) -> None:
+    db_path = tmp_path / "runtime.db"
+    _fixture_db(db_path)
+    app = _app_with_admission(db_path)
+
+    with TestClient(app) as client:
+        response = client.get("/api/live-runs/run:missing/workspace")
+        assert response.status_code == 404
