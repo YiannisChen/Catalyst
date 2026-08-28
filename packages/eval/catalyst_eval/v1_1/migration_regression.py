@@ -1,25 +1,35 @@
-"""T4/user-smoke + migration regression gate (M7-9).
+"""T4/user-smoke + migration regression gate (M7-9, Batch-B corrective).
 
 T4 and user-smoke remain identity-bound regression/smoke suites, not
-attribution quality evidence. Migration regression reads the sealed M1
-baseline and M5 Gate A/B artifacts through their existing adapters, then
-compares the M6 V1 app/SSE output on identical request facts. Only locked
-structural invariants are compared (request facts, runtime identity,
-ContextPack identity, claim lineage, status/refusal normalization,
-leakage); ``comparability_declared=false`` whenever data/model/environment
-identity differs. No direct quality/equality claim is ever made. Legacy eval
-remains a sealed baseline reader only.
+attribution quality evidence. Migration regression consumes the sealed M1
+baseline and M5 Gate A/B artifacts through the sealed-baseline adapter
+contract (``catalyst_eval.baseline.gates`` identity constants), then compares
+the M6 V1 app/SSE output on identical request facts. Only locked structural
+invariants are compared (request facts, runtime identity, ContextPack
+identity, claim lineage, status/refusal normalization, leakage);
+``comparability_declared=false`` is MANDATORY while Q-002 is unrecovered,
+even when every structural invariant matches. No direct quality/equality
+claim is ever made. Legacy eval remains a sealed baseline reader only.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+
+from catalyst_eval.baseline.gates import Q002_PROMOTED_ENV_REASON
+
+SEALED_BASELINE_SCHEMA = "baseline_v1"
+_MISSING_Q002 = (
+    "sealed baseline must preserve Q-002 NON-COMPARABLE: "
+    f"promoted_env_recovered=false with reason {Q002_PROMOTED_ENV_REASON!r}"
+)
 
 
 @dataclass(frozen=True)
 class BaselineFacts:
-    """Structural facts extracted from a sealed baseline artifact."""
+    """Structural facts extracted through the sealed-baseline adapter."""
 
     case_id: str
     request_facts: Mapping[str, Any]
@@ -30,6 +40,8 @@ class BaselineFacts:
     status_normalization: str | None
     refusal_normalization: str | None
     leakage_findings: tuple[str, ...]
+    q002_promoted_env_recovered: bool = False
+    q002_promoted_env_reason: str = Q002_PROMOTED_ENV_REASON
 
 
 @dataclass(frozen=True)
@@ -70,9 +82,19 @@ def _mismatch(label: str, baseline: Any, v1: Any) -> str | None:
 
 
 def compare_structural_invariants(
-    baseline: BaselineFacts, v1: V1Facts
+    baseline: BaselineFacts,
+    v1: V1Facts,
+    *,
+    q002_recovered: bool | None = None,
 ) -> MigrationRegressionResult:
-    """Compare only the locked structural invariants; never a quality claim."""
+    """Compare only the locked structural invariants; never a quality claim.
+
+    ``q002_recovered`` defaults to the baseline's sealed Q-002 marker; while
+    it is false the result MUST declare NON-COMPARABLE even when every
+    structural invariant matches (Batch-B corrective).
+    """
+    if q002_recovered is None:
+        q002_recovered = baseline.q002_promoted_env_recovered
     mismatches: list[str] = []
     if baseline.case_id != v1.case_id:
         mismatches.append(f"case_id differs: baseline={baseline.case_id} v1={v1.case_id}")
@@ -95,6 +117,11 @@ def compare_structural_invariants(
         label in " ".join(mismatches).lower()
         for label in ("runtime identity", "request facts")
     )
+    if not q002_recovered:
+        mismatches.append(
+            "Q-002 promoted-environment tuple is unrecovered; "
+            "comparability is MANDATORY NON-COMPARABLE"
+        )
     comparability = not mismatches and not identity_differ
     return MigrationRegressionResult(
         comparability_declared=comparability,
@@ -104,37 +131,119 @@ def compare_structural_invariants(
     )
 
 
-def read_baseline_facts(path: str | Path) -> BaselineFacts:
-    """Read sealed baseline facts through the sealed-baseline reader contract.
+def _sealed_comparability(payload: Mapping[str, Any]) -> tuple[bool, str]:
+    """Validate and return the sealed Q-002 comparability marker.
 
-    The baseline report is read-only; this function never rewrites it.
+    The sealed M1 baseline is NON-COMPARABLE by lock while Q-002 is
+    unrecovered; any other declaration is a sealed-artifact contradiction.
+    """
+    comparability = payload.get("comparability") or {}
+    recovered = comparability.get("promoted_env_recovered")
+    reason = comparability.get("promoted_env_reason")
+    if recovered is not False or reason != Q002_PROMOTED_ENV_REASON:
+        raise ValueError(_MISSING_Q002)
+    return bool(recovered), str(reason)
+
+
+def _runtime_identity_from(payload: Mapping[str, Any]) -> tuple[str, str]:
+    """Consume the runtime identity through the sealed adapter shape.
+
+    Prefers the typed ``runtime_identity`` dict used by the migration reader;
+    falls back to the sealed M1 baseline run rows' data identity fields
+    (corpus manifest ref + index manifest digest). The sealed baseline
+    ``identity`` tuple may carry null data fields; the authoritative run rows
+    carry the data identity that the sealed M1 adapter preserved.
+    """
+    runtime = payload.get("runtime_identity")
+    if isinstance(runtime, dict) and runtime.get("ref") and runtime.get("hash"):
+        return str(runtime["ref"]), str(runtime["hash"])
+    runs = payload.get("runs")
+    first_run: dict[str, Any] = {}
+    if isinstance(runs, list):
+        for run in runs:
+            if isinstance(run, dict) and run.get("corpus_manifest_id"):
+                first_run = run
+                break
+    identity = payload.get("identity") or {}
+    ref = (
+        first_run.get("corpus_manifest_id")
+        or identity.get("corpus_manifest_id")
+        or identity.get("runtime_identity_ref")
+        or identity.get("code_git_sha")
+    )
+    digest = (
+        first_run.get("index_manifest_id")
+        or identity.get("index_manifest_id")
+        or identity.get("data_runtime_identity_hash")
+        or identity.get("integration_commit_sha")
+    )
+    if ref and digest:
+        return str(ref), str(digest)
+    raise ValueError("baseline runtime_identity must contain ref and hash")
+
+
+def read_baseline_facts(path: str | Path) -> BaselineFacts:
+    """Read sealed baseline facts through the sealed-baseline adapter.
+
+    The baseline report is read-only; this function never rewrites it. A
+    non-sealed artifact (missing Q-002 NON-COMPARABLE marker) fails closed.
     """
     payload = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("baseline artifact must be a JSON object")
-    runtime = payload.get("runtime_identity")
-    if not isinstance(runtime, dict) or not runtime.get("ref") or not runtime.get("hash"):
-        raise ValueError("baseline runtime_identity must contain ref and hash")
+    if payload.get("schema_version") != SEALED_BASELINE_SCHEMA:
+        raise ValueError(
+            f"baseline artifact must use sealed schema {SEALED_BASELINE_SCHEMA!r}, "
+            f"got {payload.get('schema_version')!r}"
+        )
+    recovered, reason = _sealed_comparability(payload)
+    runtime_ref, runtime_hash = _runtime_identity_from(payload)
+    runs = payload.get("runs")
+    case_ids: list[str] = []
+    if isinstance(runs, list):
+        for run in runs:
+            if not isinstance(run, dict):
+                continue
+            case_id = run.get("case_id") or run.get("run_id")
+            if case_id:
+                case_ids.append(str(case_id))
     return BaselineFacts(
-        case_id=str(payload.get("case_id") or ""),
+        case_id=case_ids[0] if case_ids else "",
         request_facts=dict(payload.get("request_facts") or {}),
-        runtime_identity_ref=str(runtime["ref"]),
-        runtime_identity_hash=str(runtime["hash"]),
+        runtime_identity_ref=runtime_ref,
+        runtime_identity_hash=runtime_hash,
         context_pack_identity=str(payload.get("context_pack_identity") or ""),
         claim_lineage=tuple(payload.get("claim_lineage") or ()),
         status_normalization=payload.get("status_normalization"),
         refusal_normalization=payload.get("refusal_normalization"),
         leakage_findings=tuple(payload.get("leakage_findings") or ()),
+        q002_promoted_env_recovered=recovered,
+        q002_promoted_env_reason=reason,
     )
 
 
-def _import_json() -> Any:
-    import json
+def read_m5_gate_a_q002(path: str | Path) -> dict[str, Any]:
+    """Consume the sealed M5 Gate A artifact's Q-002 marker.
 
-    return json
+    Gate A re-verifies the sealed baseline artifact chain; its Q-002 marker
+    must agree with the sealed baseline (promoted_env_recovered=false).
+    """
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("M5 Gate A artifact must be a JSON object")
+    if payload.get("schema_version") != "v1_1_m5_gate_a_v1":
+        raise ValueError(
+            f"M5 Gate A artifact must use schema v1_1_m5_gate_a_v1, got "
+            f"{payload.get('schema_version')!r}"
+        )
+    q002 = payload.get("q002_non_comparable") or {}
+    if (
+        q002.get("promoted_env_recovered") is not False
+        or q002.get("promoted_env_reason") != Q002_PROMOTED_ENV_REASON
+    ):
+        raise ValueError(_MISSING_Q002)
+    return dict(q002)
 
-
-import json  # noqa: E402  (used by read_baseline_facts)
 
 __all__ = [
     "BaselineFacts",
@@ -142,4 +251,5 @@ __all__ = [
     "V1Facts",
     "compare_structural_invariants",
     "read_baseline_facts",
+    "read_m5_gate_a_q002",
 ]

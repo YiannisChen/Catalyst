@@ -51,11 +51,17 @@ def _v1(**overrides) -> V1Facts:
     return V1Facts(**_facts(**overrides))
 
 
-def test_identical_structural_invariants_declare_comparable():
-    result = compare_structural_invariants(_baseline(), _v1())
+def test_identical_structural_invariants_declare_comparable_only_when_q002_recovered():
+    # Identical invariants are comparable only when Q-002 is explicitly
+    # recovered; the sealed baseline keeps promoted_env_recovered=false so the
+    # default verdict is MANDATORY NON-COMPARABLE (Batch-B corrective).
+    result = compare_structural_invariants(_baseline(), _v1(), q002_recovered=True)
     assert isinstance(result, MigrationRegressionResult)
     assert result.comparability_declared is True
     assert result.invariant_mismatches == ()
+    unrecovered = compare_structural_invariants(_baseline(), _v1())
+    assert unrecovered.comparability_declared is False
+    assert any("Q-002" in m for m in unrecovered.invariant_mismatches)
 
 
 def test_runtime_identity_difference_declares_non_comparable():
@@ -114,6 +120,10 @@ def test_read_baseline_facts_roundtrip(tmp_path):
         "status_normalization": "SUFFICIENT",
         "refusal_normalization": None,
         "leakage_findings": [],
+        "comparability": {
+            "promoted_env_recovered": False,
+            "promoted_env_reason": "q_002_promoted_environment_tuple_unrecovered",
+        },
     }
     path = tmp_path / "baseline.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -124,6 +134,17 @@ def test_read_baseline_facts_roundtrip(tmp_path):
 
 def test_read_baseline_facts_rejects_missing_identity(tmp_path):
     path = tmp_path / "bad.json"
-    path.write_text(json.dumps({"schema_version": "baseline_v1"}), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "baseline_v1",
+                "comparability": {
+                    "promoted_env_recovered": False,
+                    "promoted_env_reason": "q_002_promoted_environment_tuple_unrecovered",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match="runtime_identity"):
         read_baseline_facts(path)
