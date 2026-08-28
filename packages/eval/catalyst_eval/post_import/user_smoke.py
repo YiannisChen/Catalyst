@@ -136,8 +136,10 @@ EXPECTED_WAVE2_CASE_COUNT = 10
 _TERMINAL_STATUSES = {
     "SUCCEEDED", "SUFFICIENT", "PARTIAL", "ABSTAIN",
     "FAILED_SYSTEM", "SYSTEM_ERROR", "FAILED_REQUEST", "CANCELLED",
+    # M6 app lifecycle terminal statuses (RunDTO.lifecycle_status).
+    "COMPLETED", "FAILED",
 }
-_FAILED_TRANSPORT = {"FAILED_SYSTEM", "SYSTEM_ERROR", "FAILED_REQUEST", "CANCELLED"}
+_FAILED_TRANSPORT = {"FAILED_SYSTEM", "SYSTEM_ERROR", "FAILED_REQUEST", "CANCELLED", "FAILED"}
 
 _SECRET_KEYS = frozenset({
     "authorization", "api_key", "x-api-key", "cookie", "set-cookie",
@@ -660,14 +662,18 @@ def _validate_citations(
 
 
 def _cited_ids_from_workspace(workspace: dict[str, Any]) -> list[str]:
-    result = workspace.get("result")
-    if not isinstance(result, dict):
-        return []
     cited: list[str] = []
-    for cause in result.get("causes") or []:
-        if not isinstance(cause, dict):
+    result = workspace.get("result")
+    if isinstance(result, dict):
+        for cause in result.get("causes") or []:
+            if not isinstance(cause, dict):
+                continue
+            cited.extend(cause.get("evidence_ids") or [])
+    # M6 V1.1 workspace projection: claims carry citation evidence ids.
+    for claim in workspace.get("claims") or []:
+        if not isinstance(claim, dict):
             continue
-        cited.extend(cause.get("evidence_ids") or [])
+        cited.extend(claim.get("citation_evidence_ids") or [])
     return cited
 
 
@@ -830,17 +836,49 @@ class FailurePathResult:
     provider_calls: int
 
 
-def _submission_failed_request(resp: HttpResponse, *, expected_reasons: set[str]) -> tuple[bool, str]:
+def _submit_then_poll_typed_failure(
+    http: Any,
+    *,
+    body: dict[str, Any],
+    expected_codes: set[str],
+    poll_interval_seconds: float = 0.01,
+    poll_timeout_seconds: float = 5.0,
+) -> tuple[bool, str]:
+    """Submit through the M6 admission route and wait for a typed run failure.
+
+    The M6 app admits syntactically valid requests durably and rejects
+    unsupported tickers/dates during execution (before any provider dispatch);
+    the probe therefore polls the authoritative RunDTO for the typed failure
+    code and asserts zero provider calls at the caller.
+    """
+    resp = http.post("/api/live-runs", json=body)
     payload = resp.json
     if resp.status_code != 200 or not isinstance(payload, dict):
-        return False, f"unexpected HTTP {resp.status_code}"
-    if payload.get("status") != "FAILED_REQUEST":
-        return False, f"expected FAILED_REQUEST, got {payload.get('status')}"
-    failure = payload.get("failure") or {}
-    sub_reason = failure.get("sub_reason")
-    if sub_reason not in expected_reasons:
-        return False, f"expected sub_reason in {sorted(expected_reasons)}, got {sub_reason!r}"
-    return True, sub_reason
+        return False, f"submit unexpected HTTP {resp.status_code}"
+    if payload.get("status") != "ACCEPTED":
+        return False, f"expected ACCEPTED submit, got {payload.get('status')}"
+    run_id = payload.get("run_id")
+    if not run_id:
+        return False, "submit missing run_id"
+    deadline = time.monotonic() + poll_timeout_seconds
+    while time.monotonic() < deadline:
+        poll = http.get(f"/api/live-runs/{run_id}")
+        data = poll.json
+        if poll.status_code != 200 or not isinstance(data, dict):
+            return False, f"poll unexpected HTTP {poll.status_code}"
+        status = data.get("status") or data.get("lifecycle_status") or "UNKNOWN"
+        if status in ("FAILED", "FAILED_SYSTEM", "SYSTEM_ERROR"):
+            failure = data.get("failure") or {}
+            code = failure.get("code") or failure.get("sub_reason")
+            if code in expected_codes:
+                return True, code
+            return False, (
+                f"expected failure code in {sorted(expected_codes)}, got {code!r}"
+            )
+        if status in ("COMPLETED", "SUFFICIENT", "PARTIAL", "ABSTAIN", "SUCCEEDED"):
+            return False, f"run unexpectedly completed: {status}"
+        time.sleep(poll_interval_seconds)
+    return False, "poll timeout waiting for typed failure"
 
 
 def _exercise_failure_paths(
@@ -851,7 +889,7 @@ def _exercise_failure_paths(
     base_url: str | None,
     credential_source: str,
 ) -> list[FailurePathResult]:
-    """Deterministic no-provider failure paths through the public HTTP boundary."""
+    """Deterministic no-provider failure paths through the M6 public boundary."""
     results: list[FailurePathResult] = []
     model = _model_config(
         provider=provider,
@@ -860,28 +898,35 @@ def _exercise_failure_paths(
         credential_source=credential_source,
     )
 
-    # invalid ticker/input
-    resp = http.post("/api/live-runs", json={
-        "ticker": "ZZZZ",
-        "trade_date": "2025-07-24",
-        "query": "Why did ZZZZ move?",
-        "model": model,
-        "config": "mcj_full",
-    })
-    ok, detail = _submission_failed_request(resp, expected_reasons={"unsupported_ticker"})
+    # invalid ticker: admitted durably, then rejected before any provider call.
+    ok, detail = _submit_then_poll_typed_failure(
+        http,
+        body={
+            "ticker": "ZZZZ",
+            "trade_date": "2025-07-24",
+            "query": "Why did ZZZZ move?",
+            "model": model,
+            "config": "mcj_full",
+        },
+        expected_codes={"unsupported_ticker"},
+    )
     results.append(FailurePathResult("invalid_ticker", ok, detail, provider_calls=0))
 
-    # invalid/future cutoff/date
-    resp = http.post("/api/live-runs", json={
-        "ticker": "TSLA",
-        "trade_date": "2099-01-01",
-        "query": "Why did TSLA move?",
-        "model": model,
-        "config": "mcj_full",
-    })
-    ok, detail = _submission_failed_request(
-        resp,
-        expected_reasons={"date_out_of_range", "missing_trading_day_context", "invalid_trade_date"},
+    # invalid/future date: admitted durably, then rejected before any provider call.
+    ok, detail = _submit_then_poll_typed_failure(
+        http,
+        body={
+            "ticker": "TSLA",
+            "trade_date": "2099-01-01",
+            "query": "Why did TSLA move?",
+            "model": model,
+            "config": "mcj_full",
+        },
+        expected_codes={
+            "date_out_of_range",
+            "missing_trading_day_context",
+            "invalid_trade_date",
+        },
     )
     results.append(FailurePathResult("invalid_trade_date", ok, detail, provider_calls=0))
 
@@ -1335,7 +1380,11 @@ def run_user_smoke(
                 poll_payload = _require_json_response(
                     poll_resp, endpoint=f"poll live-run {created_run_id}"
                 )
-                status = poll_payload.get("status", "UNKNOWN")
+                status = (
+                    poll_payload.get("status")
+                    or poll_payload.get("lifecycle_status")
+                    or "UNKNOWN"
+                )
 
             events_resp = http.get(f"/api/live-runs/{created_run_id}/events")
             if events_resp.status_code != 200:
@@ -1352,7 +1401,24 @@ def run_user_smoke(
             )
 
             trace_path = staging_dir / "traces" / f"trace-{case.case_id}.json"
-            export_run(created_run_id, out_path=trace_path, db_path=runtime_db_path)
+            try:
+                export_run(created_run_id, out_path=trace_path, db_path=runtime_db_path)
+            except ValueError:
+                # M6 runs persist the lifecycle in run_events/run_artifacts; a
+                # run that failed before graph execution has no legacy
+                # agent_runs trace. Preserve a minimal trace so evidence is
+                # never lost for review, but only for failed transports.
+                if status not in _FAILED_TRANSPORT:
+                    raise
+                _atomic_write_json(
+                    trace_path,
+                    {
+                        "run_id": created_run_id,
+                        "status": status,
+                        "events": [],
+                        "error": "no legacy trace persisted for failed M6 run",
+                    },
+                )
 
             assurance = _read_assurance(runtime_db_path, created_run_id)
             assurance_records.append(assurance)
@@ -1368,6 +1434,8 @@ def run_user_smoke(
             output_status = assurance.output_status if assurance is not None else None
             if output_status is None and isinstance(workspace.get("result"), dict):
                 output_status = workspace["result"].get("output_status")
+            if output_status is None and isinstance(workspace.get("attribution_status"), str):
+                output_status = workspace["attribution_status"]
 
             node_names = {
                 str(event.get("node") or "")
