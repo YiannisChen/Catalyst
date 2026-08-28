@@ -46,6 +46,10 @@ from catalyst_agents.retrieval.execution import (
     ResearchRetriever,
 )
 from catalyst_agents.retrieval.policy import InitialResearchPolicy, ScenarioClassification
+from catalyst_agents.runtime.experiment import (
+    ExperimentPolicyOverride,
+    resolve_experiment_seams,
+)
 from catalyst_agents.runtime.control import (
     NoopRunControl,
     raise_if_control_expired,
@@ -129,6 +133,7 @@ def build_foundation_graph(
     analyst_boundary: Callable[[EvidenceAnalystContextPack], Any] | None = None,
     structured_provider: Any | None = None,
     run_deadline_epoch_ms: int | None = None,
+    observation_policy_version: str | None = None,
 ) -> FoundationRunResult:
     """Run the V1.1 foundation pipeline in fixture mode (no Miner/Critic/Judge).
 
@@ -284,6 +289,9 @@ def build_foundation_graph(
         "prompt_template_version": template_version,
         "prompt_template_sha256": pack.prompt_template_sha256,
         "policy_version": policy_config.scenario_policy_version,
+        "observation_policy_version": (
+            observation_policy_version or "move_profile_v1"
+        ),
     }
     return FoundationRunResult(
         state=state,
@@ -608,6 +616,10 @@ class V1RunResult:
     writer_logical_calls: int
     writer_provider_attempts: int
     corrective_rounds: int
+    packing_policy_version: str = "evidence_context_pack_v1"
+    hypothesis_policy_version: str = "bounded_competition_v1"
+    observation_policy_version: str = "move_profile_v1"
+    experiment_override_present: bool = False
 
 
 def extract_answer_markers(answer_text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -662,6 +674,7 @@ def run_v1_graph(
     normalization_policy_version: str = "assessment-normalizer-v1",
     writer_sink: Any | None = None,
     control: Any | None = None,
+    experiment_override: ExperimentPolicyOverride | None = None,
 ) -> V1RunResult:
     """Run the complete V1.1 semantic path (Frozen §6.1).
 
@@ -688,6 +701,24 @@ def run_v1_graph(
     from catalyst_agents.nodes.finalizer import thin_finalizer
     from catalyst_agents.runtime.delta_sink import InMemoryDeltaSink
 
+    # A1-A5 experiment seams (M7-7): None preserves M6 behavior exactly.
+    seams = resolve_experiment_seams(
+        packing_policy_version=packing_policy_version,
+        experiment_override=experiment_override,
+    )
+    effective_packing_version = str(seams["packing_policy_version"])
+    effective_hypothesis_version = str(seams["hypothesis_policy_version"])
+    effective_observation_version = str(seams["observation_policy_version"])
+    max_corrective_rounds = int(seams["max_corrective_rounds"])
+    # The Analyst semantic identity changes only under an explicit A2 arm;
+    # None must reproduce the M6 identity byte-for-byte.
+    analyst_hypothesis_version = (
+        effective_hypothesis_version
+        if experiment_override is not None
+        and experiment_override.a2_hypothesis_policy_version is not None
+        else None
+    )
+
     # RUN_ADMISSION / QUERY_VALIDATION
     if not run_id or not ticker or not cutoff:
         raise ValueError("run_v1_graph requires run_id, ticker, and cutoff")
@@ -710,12 +741,13 @@ def run_v1_graph(
         research_concurrency=research_concurrency,
         research_stage_timeout_seconds=research_stage_timeout_seconds,
         persistence=persistence,
-        packing_policy_version=packing_policy_version,
+        packing_policy_version=effective_packing_version,
         template_bytes=template_bytes,
         template_version=template_version,
         analyst_boundary=None,
         structured_provider=structured_provider,
         run_deadline_epoch_ms=run_deadline_epoch_ms,
+        observation_policy_version=effective_observation_version,
     )
 
     # Cooperative boundary: observed after observation/retrieval and before
@@ -729,6 +761,7 @@ def run_v1_graph(
         persistence=persistence,
         prompt_template=prompt_template,
         pack_inventory_ids=foundation.context_pack.included_evidence_ids,
+        hypothesis_policy_version=analyst_hypothesis_version,
     )
     raise_if_control_expired(control)
     assessment = normalize_decision(
@@ -750,7 +783,7 @@ def run_v1_graph(
     route = route_assessment(assessment)
     # Cooperative boundary: observed before corrective dispatch.
     raise_if_control_expired(control)
-    if route == "follow_up":
+    if route == "follow_up" and max_corrective_rounds >= 1:
         corrective = run_corrective_round(
             run_id=run_id,
             round=2,
@@ -769,7 +802,7 @@ def run_v1_graph(
             research_concurrency=research_concurrency,
             research_stage_timeout_seconds=research_stage_timeout_seconds,
             persistence=persistence,
-            packing_policy_version=packing_policy_version,
+            packing_policy_version=effective_packing_version,
             template_bytes=template_bytes,
             template_version=template_version,
             llm=analyst_llm,
@@ -921,6 +954,10 @@ def run_v1_graph(
         writer_logical_calls=writer_result["writer_logical_calls"],
         writer_provider_attempts=writer_result["writer_provider_attempts"],
         corrective_rounds=corrective_rounds,
+        packing_policy_version=effective_packing_version,
+        hypothesis_policy_version=effective_hypothesis_version,
+        observation_policy_version=effective_observation_version,
+        experiment_override_present=experiment_override is not None,
     )
 
 

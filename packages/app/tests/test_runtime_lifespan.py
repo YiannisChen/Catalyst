@@ -495,3 +495,24 @@ def test_worker_thread_commit_wakes_attached_sse_stream(tmp_path: Path) -> None:
         assert any("event: stage.started" in frame for frame in collected)
 
     asyncio.run(scenario())
+
+
+def test_production_composition_rejects_experiment_override(tmp_path: Path) -> None:
+    """M7-7: eval-only experiment seams are rejected by production composition."""
+    import pytest
+
+    from catalyst_agents.runtime.experiment import (
+        EVAL_CAPABILITY_TOKEN,
+        ExperimentPolicyOverride,
+    )
+    from catalyst_app.runtime.composition import build_runtime_composition
+
+    override = ExperimentPolicyOverride(
+        eval_capability_token=EVAL_CAPABILITY_TOKEN,
+        a3_max_corrective_rounds=0,
+    )
+    with pytest.raises(ValueError, match="experiment overrides"):
+        build_runtime_composition(
+            db_path=tmp_path / "runtime.db",
+            experiment_override=override,
+        )

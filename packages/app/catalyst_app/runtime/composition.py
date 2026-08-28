@@ -1080,13 +1080,24 @@ def build_runtime_composition(
     admission_slots: int = DEFAULT_ADMISSION_SLOTS,
     max_workers: int = DEFAULT_MAX_WORKERS,
     shutdown_grace_seconds: float = DEFAULT_SHUTDOWN_GRACE_SECONDS,
+    experiment_override: Any | None = None,
 ) -> RuntimeComposition:
     """Build the single app-owned runtime composition.
 
     External boundaries (dependency loader, credential store, graph resolver,
     manifest factory, run adapter) may be injected for deterministic tests;
     the production defaults are the repository-owned implementations.
+
+    ``experiment_override`` is eval-owned (M7-7): production composition
+    rejects any non-None override so eval seams can never leak into the
+    production runtime.
     """
+    if experiment_override is not None:
+        raise ValueError(
+            "production composition rejects eval experiment overrides; "
+            "eval-only policy seams are recorded in the eval manifest, never "
+            "in the production run manifest"
+        )
     from catalyst_app.dependencies import (
         get_credential_store,
         get_runtime_dependency_loader,

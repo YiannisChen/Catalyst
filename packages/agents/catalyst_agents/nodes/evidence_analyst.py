@@ -192,6 +192,7 @@ def evidence_analyst(
     prompt_path: Path | None = None,
     schema: type[AnalystDecision] = AnalystDecision,
     pack_inventory_ids: tuple[str, ...] | None = None,
+    hypothesis_policy_version: str | None = None,
 ) -> dict:
     """Run one EvidenceAnalyst logical call and emit decision/ref artifacts.
 
@@ -232,6 +233,8 @@ def evidence_analyst(
 
     prompt = _prompt_template(prompt_path, prompt_template)
     schema_version = getattr(schema, "schema_version", "1.0")
+    if hypothesis_policy_version is not None:
+        schema_version = f"{schema_version}+hypothesis:{hypothesis_policy_version}"
     semantic_input_hash = _semantic_input_hash(
         prompt, rendered_messages, schema_version
     )
