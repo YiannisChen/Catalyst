@@ -46,6 +46,10 @@ from catalyst_agents.retrieval.execution import (
     ResearchRetriever,
 )
 from catalyst_agents.retrieval.policy import InitialResearchPolicy, ScenarioClassification
+from catalyst_agents.runtime.control import (
+    NoopRunControl,
+    raise_if_control_expired,
+)
 from catalyst_agents.runtime.manifest import ObservationPolicyConfig
 from catalyst_agents.runtime.pack_persistence import (
     PackPersistence,
@@ -365,6 +369,7 @@ def run_corrective_round(
     normalization_policy_version: str = "assessment-normalizer-v1",
     prompt_template: str | None = None,
     research_history: tuple[Any, ...] = (),
+    control: Any | None = None,
 ) -> CorrectiveRoundResult:
     """Execute one corrective round over cumulative evidence (Frozen §6.4).
 
@@ -391,6 +396,7 @@ def run_corrective_round(
     batch = prior_assessment.corrective_batch
     effective_policy = policy or CorrectivePolicy()
 
+    raise_if_control_expired(control)
     now_epoch_ms = int(time.time() * 1000)
     configured_stage_deadline = now_epoch_ms + int(
         research_stage_timeout_seconds * 1000
@@ -521,6 +527,7 @@ def run_corrective_round(
         prompt_template_sha256=pack.prompt_template_sha256,
     )
 
+    raise_if_control_expired(control)
     analyst = evidence_analyst(
         {"run_id": run_id},
         llm=llm,
@@ -528,6 +535,7 @@ def run_corrective_round(
         prompt_template=prompt_template,
         pack_inventory_ids=pack.included_evidence_ids,
     )
+    raise_if_control_expired(control)
     assessment = normalize_decision(
         analyst["analyst_decision"],
         pack,
@@ -653,6 +661,7 @@ def run_v1_graph(
     run_deadline_epoch_ms: int | None = None,
     normalization_policy_version: str = "assessment-normalizer-v1",
     writer_sink: Any | None = None,
+    control: Any | None = None,
 ) -> V1RunResult:
     """Run the complete V1.1 semantic path (Frozen §6.1).
 
@@ -683,6 +692,9 @@ def run_v1_graph(
     if not run_id or not ticker or not cutoff:
         raise ValueError("run_v1_graph requires run_id, ticker, and cutoff")
 
+    # Cooperative boundary: observed before observation/retrieval starts.
+    raise_if_control_expired(control)
+
     # OBSERVATION_BUILD .. CONTEXT_PACK_BUILD (reuse the M4 foundation spine)
     foundation = build_foundation_graph(
         run_id=run_id,
@@ -706,6 +718,10 @@ def run_v1_graph(
         run_deadline_epoch_ms=run_deadline_epoch_ms,
     )
 
+    # Cooperative boundary: observed after observation/retrieval and before
+    # the round-one Analyst call.
+    raise_if_control_expired(control)
+
     # EVIDENCE_ANALYST round 1
     analyst1 = evidence_analyst(
         foundation.state,
@@ -714,6 +730,7 @@ def run_v1_graph(
         prompt_template=prompt_template,
         pack_inventory_ids=foundation.context_pack.included_evidence_ids,
     )
+    raise_if_control_expired(control)
     assessment = normalize_decision(
         analyst1["analyst_decision"],
         foundation.context_pack,
@@ -731,6 +748,8 @@ def run_v1_graph(
     from catalyst_agents.nodes.decision_router import route_assessment
 
     route = route_assessment(assessment)
+    # Cooperative boundary: observed before corrective dispatch.
+    raise_if_control_expired(control)
     if route == "follow_up":
         corrective = run_corrective_round(
             run_id=run_id,
@@ -762,7 +781,9 @@ def run_v1_graph(
             normalization_policy_version=normalization_policy_version,
             prompt_template=prompt_template,
             research_history=foundation.classification.tasks,
+            control=control,
         )
+        raise_if_control_expired(control)
         assessment = corrective.assessment
         final_pack = corrective.context_pack
         corrective_rounds = 1
@@ -807,12 +828,17 @@ def run_v1_graph(
         format_style_contract=format_contract,
     )
     sink = writer_sink or InMemoryDeltaSink()
+    # Cooperative boundary: observed before the Writer starts; the Writer
+    # additionally observes between stream chunks and stops accepting deltas.
+    raise_if_control_expired(control)
     writer_result = writer_node(
         {"run_id": run_id},
         llm=writer_llm,
         writer_input=writer_input,
         sink=sink,
+        control=control,
     )
+    raise_if_control_expired(control)
     answer = writer_result["answer"]
 
     # POST_STREAM_ASSURANCE: the Writer surfaces real input/output hashes and

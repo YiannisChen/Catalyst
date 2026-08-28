@@ -9,7 +9,10 @@ exactly 2 logical model calls; corrective path exactly 3; provider attempts
 """
 from __future__ import annotations
 
+import pytest
+
 from datetime import date, datetime, timezone
+import time
 from typing import Any
 
 from catalyst_agents.attribution.provider import ContextInputs, RetrievedEvidence
@@ -369,3 +372,110 @@ def test_v1_graph_state_is_thin() -> None:
     # Thin orchestration: no copied evidence lists, prose, causes, or reasoning.
     for forbidden in ("retrieved_chunks", "graded_evidence", "critic_reasoning", "summary_md", "causes"):
         assert forbidden not in state
+
+
+# ── M6 corrective: cooperative control + absolute deadline boundaries ───────
+
+def test_run_deadline_bounds_stage_timeout_before_provider_dispatch() -> None:
+    """The run deadline, not the 30s stage budget, governs stage execution.
+
+    A run deadline already in the past must fail before any provider dispatch
+    even though research_stage_timeout_seconds is large."""
+    from catalyst_agents.retrieval.execution import ResearchDeadlineError
+    from catalyst_agents.runtime.pack_persistence import InMemoryPackStore
+    from catalyst_agents.graph import build_foundation_graph
+
+    retriever = GraphRetriever()
+    now_ms = int(time.time() * 1000)
+    with pytest.raises(ResearchDeadlineError):
+        build_foundation_graph(
+            run_id="run:deadline",
+            round=1,
+            temporal_identity=_temporal(),
+            data_runtime_identity=_runtime(),
+            ticker="AAPL",
+            cutoff="2026-01-15T21:00:00Z",
+            requested_manifest_id="m" * 64,
+            observation_provider=FakeObservationProvider(),
+            retriever=retriever,
+            policy_config=_policy(),
+            research_concurrency=2,
+            research_stage_timeout_seconds=30.0,
+            persistence=InMemoryPackStore(),
+            packing_policy_version="pack:v1",
+            template_bytes=b"system: analyse\n",
+            template_version="prompt:v1",
+            run_deadline_epoch_ms=now_ms - 1,
+        )
+    # The provider was never dispatched: the run deadline bound the stage.
+    assert retriever.calls == 0
+
+
+def test_control_cancellation_during_retrieval_prevents_writer_dispatch() -> None:
+    """Cancellation observed after retrieval prevents the Writer from running."""
+    from catalyst_agents.runtime.control import RunCancelledError
+
+    class FlipControl:
+        def __init__(self):
+            self.armed = False
+
+        def should_cancel(self) -> bool:
+            return self.armed
+
+        def deadline_epoch_ms(self) -> int | None:
+            return None
+
+        def cancellation_reason(self) -> str | None:
+            return "test_cancel"
+
+    control = FlipControl()
+    retriever = GraphRetriever()
+
+    class CancellingRetriever(GraphRetriever):
+        def retrieve(self, query, *, ticker, cutoff, requested_manifest_id,
+                     temporal_identity=None, top_k=8, candidate_depth=20):
+            result = super().retrieve(
+                query, ticker=ticker, cutoff=cutoff,
+                requested_manifest_id=requested_manifest_id,
+                temporal_identity=temporal_identity, top_k=top_k,
+                candidate_depth=candidate_depth,
+            )
+            control.armed = True  # cancellation wins right after retrieval
+            return result
+
+    analyst = GraphAnalystProvider(_ready_decision)
+    writer = GraphWriterProvider("SUMMARY\nAAPL.\nLIMITATIONS\nNone.")
+    kwargs = _graph_kwargs(analyst=analyst, writer=writer)
+    kwargs["retriever"] = CancellingRetriever()
+    kwargs["control"] = control
+
+    with pytest.raises(RunCancelledError):
+        run_v1_graph(**kwargs)
+
+    # The Writer was never dispatched: no deltas/answer after cancellation.
+    assert writer.calls == 0
+
+
+def test_control_cancellation_before_analyst_prevents_writer_dispatch() -> None:
+    """Cancellation observed before the Analyst prevents later stages."""
+    from catalyst_agents.runtime.control import RunCancelledError
+
+    class PreCancelControl:
+        def should_cancel(self) -> bool:
+            return True
+
+        def deadline_epoch_ms(self) -> int | None:
+            return None
+
+        def cancellation_reason(self) -> str | None:
+            return "pre_cancel"
+
+    analyst = GraphAnalystProvider(_ready_decision)
+    writer = GraphWriterProvider("SUMMARY\nAAPL.\nLIMITATIONS\nNone.")
+    kwargs = _graph_kwargs(analyst=analyst, writer=writer)
+    kwargs["control"] = PreCancelControl()
+
+    with pytest.raises(RunCancelledError):
+        run_v1_graph(**kwargs)
+    assert analyst.calls == 0
+    assert writer.calls == 0
