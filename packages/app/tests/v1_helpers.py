@@ -8,7 +8,7 @@ from fastapi import FastAPI
 
 from catalyst_app.main import create_app
 from catalyst_app.persistence.connect import open_rw
-from catalyst_app.persistence.events import EventRepository
+from catalyst_app.persistence.events import ArtifactPayload, EventRepository
 from catalyst_app.persistence.schema import init_runtime_db
 from catalyst_app.runtime.admission import AdmissionController, AdmissionRequest
 from catalyst_app.runtime.executor import RunExecutor
@@ -127,8 +127,7 @@ def terminalize_with_attribution(
     attribution_type: str = "EVIDENCE_BACKED_CAUSAL",
 ) -> None:
     """Persist stage.started + terminal run.completed + attribution artifact."""
-    import json
-
+    
     from catalyst_app.events import (
         AssuranceCompletedPayload,
         RunCompletedPayload,
@@ -136,7 +135,7 @@ def terminalize_with_attribution(
         StageStartedPayload,
     )
     from catalyst_app.lifecycle import RunLifecycleStatus
-    from catalyst_app.persistence.events import EventRepository
+    from catalyst_app.persistence.events import ArtifactPayload, EventRepository
 
     repo = EventRepository(db_path=db_path)
     repo.append(
@@ -157,24 +156,16 @@ def terminalize_with_attribution(
             total_latency_ms=10,
             runtime_identity_ref="runtime:test",
         ),
+        artifact_payloads=[
+            ArtifactPayload(
+                artifact_id=f"attribution:{run_id}",
+                artifact_type="attribution_result",
+                payload={
+                    "attribution_status": attribution_status,
+                    "attribution_type": attribution_type,
+                },
+            )
+        ],
         lifecycle_update=(RunLifecycleStatus.RUNNING, RunLifecycleStatus.COMPLETED),
     )
-    with open_rw(db_path) as conn:
-        conn.execute(
-            "INSERT INTO run_artifacts (artifact_id, run_id, event_seq, artifact_type, payload_hash, payload_json, optional)"
-            " VALUES (?, ?, ?, 'attribution_result', ?, ?, 0)",
-            (
-                f"attribution:{run_id}",
-                run_id,
-                seqs[1],
-                "c" * 64,
-                json.dumps(
-                    {
-                        "attribution_status": attribution_status,
-                        "attribution_type": attribution_type,
-                    },
-                    sort_keys=True,
-                ),
-            ),
-        )
-        conn.commit()
+    del seqs

@@ -659,3 +659,66 @@ def test_host_origin_policy_requires_explicit_override(tmp_path: Path, monkeypat
 
     with pytest.raises(RuntimeError):
         _app_with_admission(db_path)
+
+
+# ── M6 corrective: security + readiness (Finding J) ─────────────────────────
+
+def test_host_origin_allowlist_alone_never_enables_non_loopback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A populated allowlist must not enable a non-loopback Host while the
+    explicit non-loopback override is off."""
+    db_path = tmp_path / "runtime.db"
+    _fixture_db(db_path)
+    monkeypatch.delenv("CATALYST_ALLOW_NON_LOOPBACK", raising=False)
+    monkeypatch.setenv("CATALYST_ALLOWED_HOSTS", "app.example.com")
+    monkeypatch.setenv("CATALYST_ALLOWED_ORIGINS", "https://app.example.com")
+    app = _app_with_admission(db_path)
+
+    # Even though app.example.com is allowlisted, loopback mode must reject it.
+    with TestClient(app, base_url="http://app.example.com") as client:
+        response = client.get("/api/health")
+    assert response.status_code == 403
+
+    # Local loopback development remains usable.
+    with TestClient(app, base_url="http://testserver") as client:
+        response = client.get("/api/health")
+    assert response.status_code == 200
+
+
+def test_health_not_ready_when_default_runtime_identity_fails(tmp_path: Path) -> None:
+    """Finding J: /api/health must not report ready when the production
+    graph/dependency composition is unwired or identity readiness fails."""
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+
+    class UnreadyLoader:
+        def get_dependencies(self, *, force_reload: bool = False):
+            from catalyst_agents.runtime.dependencies import RuntimeDependencies
+
+            return RuntimeDependencies(
+                sqlite_db_path=tmp_path / "runtime.db",
+                lancedb_dir=tmp_path / "lancedb",
+                lancedb_table=None,
+                embedding_fn=lambda _: [],
+                embedding_model="BAAI/bge-m3",
+                embedding_dim=None,
+                reranker=None,
+                reranker_model="BAAI/bge-reranker-v2-m3",
+                default_model=None,
+                health={"status": "failed", "errors": [{"component": "sqlite", "message": "missing"}]},
+                retriever=None,
+                requested_manifest_id=None,
+                index_manifest_id=None,
+                data_runtime_identity=None,
+            )
+
+    composition = build_runtime_composition(
+        db_path=tmp_path / "runtime.db",
+        dependency_loader=UnreadyLoader(),
+        credential_store=RuntimeCredentialStore(),
+        graph_resolver=None,
+    )
+    app = create_app(runtime_composition=composition)
+    with TestClient(app) as client:
+        response = client.get("/api/health")
+    assert response.status_code == 200
+    assert response.json()["status"] != "ready"

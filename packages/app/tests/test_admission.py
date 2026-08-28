@@ -631,3 +631,178 @@ def test_startup_recovery_reconciles_slots_before_admission_reopens(tmp_path: Pa
     # Admission must not reopen with extra capacity after recovery.
     outcome = controller.admit(_request())
     assert outcome.kind == "capacity_exceeded"
+
+
+# ── M6 corrective: capacity release ownership (Finding F) ──────────────────
+
+def test_release_slot_is_keyed_by_run_id_and_exactly_once(tmp_path: Path) -> None:
+    """Duplicate release must not decrement another run's reservation."""
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.persistence.schema import init_runtime_db
+
+    db_path = tmp_path / "capacity.db"
+    with open_rw(db_path) as conn:
+        init_runtime_db(conn)
+
+    executor = RunExecutor(
+        admission_slots=4,
+        max_workers=2,
+        run_adapter=lambda run_id, t: {"ok": True},
+        shutdown_grace_seconds=0.1,
+    )
+    assert executor.try_reserve_slot("run:a") is True
+    assert executor.try_reserve_slot("run:b") is True
+    assert executor.reserved_count == 2
+
+    # Release run:a exactly once; run:b must keep its reservation.
+    executor.release_slot("run:a")
+    assert executor.reserved_count == 1
+    # Duplicate release of run:a is a no-op and cannot touch run:b.
+    executor.release_slot("run:a")
+    assert executor.reserved_count == 1
+    executor.release_slot("run:b")
+    assert executor.reserved_count == 0
+    executor.shutdown(grace_seconds=0)
+
+
+def test_release_only_after_terminal_commit_or_rollback(tmp_path: Path) -> None:
+    """An adapter returning without terminalizing cannot release capacity."""
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.persistence.schema import init_runtime_db
+
+    db_path = tmp_path / "capacity.db"
+    with open_rw(db_path) as conn:
+        init_runtime_db(conn)
+        conn.execute(
+            "INSERT INTO runs (run_id, lifecycle_status, idempotency_key, request_hash,"
+            " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at)"
+            " VALUES ('run:no-term', 'RUNNING', NULL, 'a'*64, 'm', 'b'*64, 0, 't', 't')"
+        )
+        conn.commit()
+
+    def is_terminal(run_id: str) -> bool:
+        with open_rw(db_path) as conn:
+            row = conn.execute(
+                "SELECT lifecycle_status FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return row is not None and row["lifecycle_status"] in {
+            "COMPLETED", "FAILED", "CANCELLED",
+        }
+
+    executor = RunExecutor(
+        admission_slots=4,
+        max_workers=1,
+        run_adapter=lambda run_id, t: {"ok": True, "not_terminalized": True},
+        terminal_check=is_terminal,
+        shutdown_grace_seconds=0.1,
+    )
+    assert executor.try_reserve_slot("run:no-term") is True
+    executor.submit("run:no-term", 60.0)
+    _wait_until(lambda: executor.active_count == 0)
+    # The adapter returned without terminalizing: capacity stays held by the
+    # stranded durable row instead of being released "as if it succeeded".
+    assert executor.reserved_count == 1
+    executor.shutdown(grace_seconds=0)
+
+
+def test_release_after_durable_terminal_commit(tmp_path: Path) -> None:
+    """Release happens only after the durable terminal commit."""
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.persistence.schema import init_runtime_db
+
+    db_path = tmp_path / "capacity.db"
+    with open_rw(db_path) as conn:
+        init_runtime_db(conn)
+        conn.execute(
+            "INSERT INTO runs (run_id, lifecycle_status, idempotency_key, request_hash,"
+            " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at)"
+            " VALUES ('run:term', 'ACCEPTED', NULL, 'a'*64, 'm', 'b'*64, 0, 't', 't')"
+        )
+        conn.commit()
+
+    def is_terminal(run_id: str) -> bool:
+        with open_rw(db_path) as conn:
+            row = conn.execute(
+                "SELECT lifecycle_status FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return row is not None and row["lifecycle_status"] in {
+            "COMPLETED", "FAILED", "CANCELLED",
+        }
+
+    def terminalizing_adapter(run_id: str, timeout_seconds: float) -> dict:
+        from catalyst_app.events import (
+            AssuranceCompletedPayload,
+            RunCompletedPayload,
+            RunEventType,
+            StageStartedPayload,
+        )
+        from catalyst_app.lifecycle import RunLifecycleStatus
+        from catalyst_app.persistence.events import EventRepository
+
+        repo = EventRepository(db_path=db_path)
+        repo.append(
+            run_id=run_id,
+            event_type=RunEventType.STAGE_STARTED,
+            payload=StageStartedPayload(stage="observation_build"),
+            lifecycle_update=(RunLifecycleStatus.ACCEPTED, RunLifecycleStatus.RUNNING),
+        )
+        repo.append_terminal(
+            run_id=run_id,
+            assurance_payload=AssuranceCompletedPayload(valid=True, final_result_status="SUFFICIENT"),
+            terminal_event_type=RunEventType.RUN_COMPLETED,
+            terminal_payload=RunCompletedPayload(
+                result_status="SUFFICIENT",
+                final_output_artifact_ref=f"answer:{run_id}",
+                total_latency_ms=1,
+                runtime_identity_ref="runtime:test",
+            ),
+            lifecycle_update=(RunLifecycleStatus.RUNNING, RunLifecycleStatus.COMPLETED),
+        )
+        return {"run_id": run_id, "status": "COMPLETED"}
+
+    executor = RunExecutor(
+        admission_slots=4,
+        max_workers=1,
+        run_adapter=terminalizing_adapter,
+        terminal_check=is_terminal,
+        shutdown_grace_seconds=0.1,
+    )
+    assert executor.try_reserve_slot("run:term") is True
+    executor.submit("run:term", 60.0)
+    _wait_until(lambda: executor.active_count == 0)
+    assert executor.reserved_count == 0
+    executor.shutdown(grace_seconds=0)
+
+
+def test_process_local_reservation_reconciles_with_durable_rows(tmp_path: Path) -> None:
+    """Finding F: reservation count reconciles with durable capacity rows."""
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.persistence.schema import init_runtime_db
+
+    db_path = tmp_path / "capacity.db"
+    with open_rw(db_path) as conn:
+        init_runtime_db(conn)
+        for idx, status in enumerate(("ACCEPTED", "RUNNING", "CANCEL_REQUESTED", "COMPLETED")):
+            conn.execute(
+                "INSERT INTO runs (run_id, lifecycle_status, idempotency_key, request_hash,"
+                " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at)"
+                " VALUES (?, ?, NULL, ?, ?, ?, ?, 't', 't')",
+                (f"run:{idx}", status, f"{idx}" * 64, f"m:{idx}", f"{idx+1}" * 64, idx),
+            )
+        conn.commit()
+
+    executor = RunExecutor(
+        admission_slots=4,
+        max_workers=2,
+        run_adapter=lambda run_id, t: {"ok": True},
+        shutdown_grace_seconds=0.1,
+    )
+    executor.reconcile_slots(
+        ["run:0", "run:1", "run:2"],
+    )
+    assert executor.reserved_count == 3
+    # A 4th reservation is still allowed (ACCEPTED+RUNNING+CANCEL_REQUESTED=3).
+    assert executor.try_reserve_slot("run:4") is True
+    assert executor.reserved_count == 4
+    assert executor.try_reserve_slot("run:5") is False
+    executor.shutdown(grace_seconds=0)

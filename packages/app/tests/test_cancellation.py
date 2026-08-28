@@ -9,6 +9,8 @@ or artifacts after a terminal CANCELLED; repeated cancels are idempotent.
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -236,3 +238,348 @@ def test_cancellation_token_is_threadsafe_boundary_check(tmp_path: Path) -> None
     controller.request_cancel("run:1")
     assert token.requested is True
     assert token.wait(timeout=1.0) is True
+
+
+
+# ── M6 corrective: public cancel API over the real runtime composition ─────
+
+def _fake_loader():
+    from catalyst_agents.runtime.dependencies import RuntimeDependencies
+
+    from test_default_runtime_composition import _runtime
+
+    return RuntimeDependencies(
+        sqlite_db_path=Path("/tmp/catalyst-test.db"),
+        lancedb_dir=Path("/tmp/lancedb"),
+        lancedb_table=None,
+        embedding_fn=lambda _: [],
+        embedding_model="BAAI/bge-m3",
+        embedding_dim=1024,
+        reranker=None,
+        reranker_model="BAAI/bge-reranker-v2-m3",
+        default_model="gemini-2.5-flash-nothink",
+        health={"status": "ready", "errors": []},
+        retriever=None,
+        requested_manifest_id="m" * 64,
+        index_manifest_id="d" * 64,
+        data_runtime_identity=_runtime(),
+    )
+
+
+class _CancelAwareLoader:
+    """Loader exposing identity-bound runtime deps for the production manifest."""
+
+    def get_dependencies(self, *, force_reload: bool = False):
+        return _fake_loader()
+
+
+class _CancelAwareWriter:
+    """Writer provider that blocks until the shared cancellation token fires.
+
+    This is the deterministic external-boundary stand-in for a real
+    non-cancellable provider call: it only returns after cancellation was
+    requested, so the real run adapter must discard the late output and reach
+    CANCELLED through its own boundary checks.
+    """
+
+    def __init__(self, token, started) -> None:
+        self._token = token
+        self._started = started
+        self.calls = 0
+        self.capability_metadata = {
+            "supports_structured_output": True,
+            "supports_true_streaming": True,
+            "declares_token_accounting": True,
+            "normalizes_timeout_errors": True,
+            "capability_revision": "v1.1-capability-1",
+        }
+
+    def stream(self, messages):
+        self.calls += 1
+        self._started.set()
+        self._token.wait(timeout=10)
+        return iter(("SUMMARY\nCancelled.\nLIMITATIONS\nNone.",))
+
+
+class _CancelResolver:
+    """Real resolver boundary over a per-run token from the shared registry."""
+
+    def __init__(self, tokens) -> None:
+        self.tokens = tokens
+        self.writer: _CancelAwareWriter | None = None
+        self.writer_started = threading.Event()
+
+    def resolve(self, manifest, boundary):
+        from catalyst_agents.retrieval.corrective import (
+            BackendCapability,
+            BackendHealth,
+            CorrectiveCapabilityRegistry,
+        )
+        from catalyst_agents.retrieval.task import EvidenceNeed
+        from catalyst_app.runtime.composition import ResolvedGraphRuntime
+        from test_default_runtime_composition import FakeObservationProvider, FakeRetriever, _runtime
+
+        capabilities = {}
+        for name in (
+            "COMPANY_PRIMARY", "COMPANY_NEWS", "SECTOR_NEWS", "MACRO_EVENT",
+            "MACRO_SERIES", "FUNDAMENTALS",
+        ):
+            capabilities[EvidenceNeed(name)] = BackendCapability(
+                backend=f"backend:{name.lower()}", health=BackendHealth.HEALTHY
+            )
+        self.writer = _CancelAwareWriter(self.tokens.token(manifest.run_id), self.writer_started)
+        from test_default_runtime_composition import FakeAnalystProvider, _runtime
+
+        return ResolvedGraphRuntime(
+            observation_provider=FakeObservationProvider(),
+            retriever=FakeRetriever(),
+            analyst_llm=FakeAnalystProvider(),
+            writer_llm=self.writer,
+            capability_registry=CorrectiveCapabilityRegistry(capabilities),
+            data_runtime_identity=_runtime(),
+            corrective_policy=None,
+            prompt_template="You are the Evidence Analyst. Emit the strict schema.",
+            query_builder=None,
+            structured_provider=None,
+        )
+
+
+def _cancel_composition_app(tmp_path: Path):
+    from fastapi.testclient import TestClient
+
+    from catalyst_app.main import create_app
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+
+    composition = build_runtime_composition(
+        db_path=tmp_path / "runtime.db",
+        dependency_loader=_CancelAwareLoader(),
+        credential_store=RuntimeCredentialStore(),
+        graph_resolver=_CancelResolver(tokens=None),  # replaced below
+        max_workers=2,
+        shutdown_grace_seconds=0.2,
+    )
+    composition.run_adapter.graph_resolver = _CancelResolver(tokens=composition.tokens)
+    app = create_app(runtime_composition=composition)
+    app.state.cancellation_controller = composition.cancellation
+    return app, composition
+
+
+def _cancel_body(**overrides: object) -> dict:
+    body = {
+        "ticker": "AAPL",
+        "trade_date": "2026-01-15",
+        "query": "Why did AAPL move?",
+        "model": {
+            "provider": "openai",
+            "model_id": "gpt-4.1-mini",
+            "api_key": "",
+            "credential_source": "server_env",
+        },
+    }
+    body.update(overrides)
+    return body
+
+
+def test_cancel_api_running_reaches_cancelled_with_real_adapter_boundary(tmp_path: Path) -> None:
+    """Finding D: POST /api/live-runs/{run_id}/cancel -> RUNNING ->
+    CANCEL_REQUESTED -> cooperative stop -> CANCELLED through the real run
+    adapter boundary sharing the composition token registry."""
+    from fastapi.testclient import TestClient
+
+    app, composition = _cancel_composition_app(tmp_path)
+    with TestClient(app) as client:
+        created = client.post("/api/live-runs", json=_cancel_body())
+        assert created.status_code == 200
+        run_id = created.json()["run_id"]
+
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            summary = client.get(f"/api/live-runs/{run_id}").json()
+            if summary["lifecycle_status"] == "RUNNING":
+                break
+            time.sleep(0.02)
+        assert summary["lifecycle_status"] == "RUNNING"
+        # Deterministic boundary: the writer provider is now blocked inside
+        # the real graph execution, so the token must reach that boundary.
+        assert composition.run_adapter.graph_resolver.writer_started.wait(timeout=10)
+
+        cancel = client.post(f"/api/live-runs/{run_id}/cancel")
+        assert cancel.status_code == 200
+        assert cancel.json()["acknowledged"] is True
+        assert cancel.json()["status"] in {"CANCEL_REQUESTED", "CANCELLED"}
+
+        # The writer provider saw the shared token, so the graph returned; the
+        # real adapter discarded the late output and acknowledged CANCELLED.
+        final = _wait_terminal_cancel(client, run_id)
+        assert final["lifecycle_status"] == "CANCELLED"
+        resolver = composition.run_adapter.graph_resolver
+        assert resolver.writer is not None
+        assert resolver.writer.calls >= 1
+
+        # No COMPLETED transition, no terminal artifacts after CANCELLED.
+        assert final.get("attribution_status") is None
+        events = client.get(f"/api/live-runs/{run_id}/stream").text
+        assert "event: run.completed" not in events
+        assert "event: run.cancelled" in events
+
+
+def test_cancel_api_accepted_is_terminal_and_idempotent(tmp_path: Path) -> None:
+    """Finding D: ACCEPTED -> CANCELLED terminal; repeated cancel is idempotent."""
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.main import create_app
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+    from fastapi.testclient import TestClient
+
+    # A run adapter that never claims (simulates queue delay) so the run stays
+    # ACCEPTED and cancellation is terminal before claim.
+    gate = threading.Event()
+
+    def never_start(run_id: str, timeout_seconds: float):
+        gate.wait(timeout=10)
+        return {"run_id": run_id, "status": "COMPLETED"}
+
+    composition = build_runtime_composition(
+        db_path=tmp_path / "runtime.db",
+        dependency_loader=_CancelAwareLoader(),
+        credential_store=RuntimeCredentialStore(),
+        graph_resolver=_CancelResolver(tokens=None),
+        run_adapter=never_start,
+        max_workers=1,
+        shutdown_grace_seconds=0.2,
+    )
+    app = create_app(runtime_composition=composition)
+
+    with TestClient(app) as client:
+        created = client.post("/api/live-runs", json=_cancel_body())
+        run_id = created.json()["run_id"]
+
+        cancel1 = client.post(f"/api/live-runs/{run_id}/cancel")
+        assert cancel1.status_code == 200
+        assert cancel1.json()["status"] == "CANCELLED"
+
+        cancel2 = client.post(f"/api/live-runs/{run_id}/cancel")
+        assert cancel2.status_code == 200
+        assert cancel2.json()["acknowledged"] is True
+
+        summary = client.get(f"/api/live-runs/{run_id}").json()
+        assert summary["lifecycle_status"] == "CANCELLED"
+        stream = client.get(f"/api/live-runs/{run_id}/stream").text
+        assert "event: run.cancelled" in stream
+        assert "event: run.completed" not in stream
+        gate.set()
+
+
+def test_cancel_api_late_completion_is_discarded(tmp_path: Path) -> None:
+    """Finding D: a non-cancellable provider result arriving after CANCELLED
+    is discarded; no COMPLETED/artifacts may follow."""
+    from fastapi.testclient import TestClient
+
+    from catalyst_app.main import create_app
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+
+    release = threading.Event()
+
+    class LateResolver(_CancelResolver):
+        def __init__(self, tokens) -> None:
+            super().__init__(tokens)
+            self.late_writer = None
+
+        def resolve(self, manifest, boundary):
+            from catalyst_agents.retrieval.corrective import (
+                BackendCapability,
+                BackendHealth,
+                CorrectiveCapabilityRegistry,
+            )
+            from catalyst_agents.retrieval.task import EvidenceNeed
+            from catalyst_app.runtime.composition import ResolvedGraphRuntime
+            from test_default_runtime_composition import FakeObservationProvider, FakeRetriever
+
+            capabilities = {
+                EvidenceNeed(name): BackendCapability(
+                    backend=f"backend:{name.lower()}", health=BackendHealth.HEALTHY
+                )
+                for name in (
+                    "COMPANY_PRIMARY", "COMPANY_NEWS", "SECTOR_NEWS",
+                    "MACRO_EVENT", "MACRO_SERIES", "FUNDAMENTALS",
+                )
+            }
+
+            class LateWriter:
+                calls = 0
+                capability_metadata = {
+                    "supports_structured_output": True,
+                    "supports_true_streaming": True,
+                    "declares_token_accounting": True,
+                    "normalizes_timeout_errors": True,
+                    "capability_revision": "v1.1-capability-1",
+                }
+
+                def stream(self, messages):
+                    LateWriter.calls += 1
+                    release.wait(timeout=10)
+                    return iter(("SUMMARY\nLate.\nLIMITATIONS\nNone.",))
+
+            self.late_writer = LateWriter
+            from test_default_runtime_composition import FakeAnalystProvider, _runtime
+
+            return ResolvedGraphRuntime(
+                observation_provider=FakeObservationProvider(),
+                retriever=FakeRetriever(),
+                analyst_llm=FakeAnalystProvider(),
+                writer_llm=LateWriter(),
+                capability_registry=CorrectiveCapabilityRegistry(capabilities),
+                data_runtime_identity=_runtime(),
+                corrective_policy=None,
+                prompt_template="You are the Evidence Analyst. Emit the strict schema.",
+                query_builder=None,
+                structured_provider=None,
+            )
+
+    composition = build_runtime_composition(
+        db_path=tmp_path / "runtime.db",
+        dependency_loader=_CancelAwareLoader(),
+        credential_store=RuntimeCredentialStore(),
+        graph_resolver=None,
+        max_workers=2,
+        shutdown_grace_seconds=0.2,
+    )
+    late_resolver = LateResolver(tokens=composition.tokens)
+    composition.run_adapter.graph_resolver = late_resolver
+    app = create_app(runtime_composition=composition)
+
+    with TestClient(app) as client:
+        created = client.post("/api/live-runs", json=_cancel_body())
+        run_id = created.json()["run_id"]
+
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            summary = client.get(f"/api/live-runs/{run_id}").json()
+            if summary["lifecycle_status"] == "RUNNING":
+                break
+            time.sleep(0.02)
+
+        cancel = client.post(f"/api/live-runs/{run_id}/cancel")
+        assert cancel.json()["status"] in {"CANCEL_REQUESTED", "CANCELLED"}
+        # Let the late provider output return; the real adapter must discard it.
+        release.set()
+        final = _wait_terminal_cancel(client, run_id)
+        assert final["lifecycle_status"] == "CANCELLED"
+        assert final["attribution_status"] is None
+        stream = client.get(f"/api/live-runs/{run_id}/stream").text
+        assert "event: run.completed" not in stream
+        # No run.completed artifact refs may be present after CANCELLED.
+        page = client.get(f"/api/live-runs/{run_id}/artifacts").json()
+        types = {item["ref"]["artifact_type"] for item in page["items"]}
+        assert "attribution_result" not in types
+
+
+def _wait_terminal_cancel(client, run_id: str, timeout_seconds: float = 12.0) -> dict:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        summary = client.get(f"/api/live-runs/{run_id}").json()
+        if summary["lifecycle_status"] in {"COMPLETED", "FAILED", "CANCELLED"}:
+            return summary
+        time.sleep(0.02)
+    return client.get(f"/api/live-runs/{run_id}").json()

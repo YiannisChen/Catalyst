@@ -197,3 +197,301 @@ def test_shutdown_ordering_stops_admission_and_waits_bounded(tmp_path: Path) -> 
     assert executor.active_count == 0
     assert executor.is_closed
     assert controller.admit(_request()).kind == "unavailable"
+
+
+# ── M6 corrective: shutdown ordering and cooperative cancellation (Finding E)
+
+def test_shutdown_requests_cooperative_cancellation_and_reconciles_queued(tmp_path: Path) -> None:
+    """Shutdown closes admission first, requests cooperative cancellation for
+    active runs, and leaves queued ACCEPTED rows in a recoverable durable state
+    that startup recovery reconciles."""
+    from catalyst_app.persistence.events import EventRepository
+    from catalyst_app.runtime.cancel import CancellationController, CancellationTokenRegistry
+    from catalyst_app.runtime.claim import RunClaimer
+
+    db_path = tmp_path / "runtime.db"
+    _fixture_db(db_path)
+
+    token_registry = CancellationTokenRegistry()
+    active_token_seen = threading.Event()
+
+    def cooperative_adapter(run_id: str, timeout_seconds: float) -> dict[str, object]:
+        token = token_registry.token(run_id)
+        token.wait(timeout=5)
+        active_token_seen.set()
+        return {"run_id": run_id, "status": "STOPPED"}
+
+    executor = RunExecutor(
+        admission_slots=4,
+        max_workers=1,
+        run_adapter=cooperative_adapter,
+        shutdown_grace_seconds=0.5,
+    )
+    repo = EventRepository(db_path=db_path)
+    claimer = RunClaimer(db_path=db_path, events=repo)
+    cancellation = CancellationController(
+        db_path=db_path, events=repo, claimer=claimer, tokens=token_registry
+    )
+    controller = AdmissionController(
+        db_path=db_path,
+        executor=executor,
+        events=repo,
+        manifest_factory=manifest_for_lifespan,
+        cancellation=cancellation,
+    )
+
+    # Seed one active RUNNING row (adapter will observe the token) and one
+    # queued ACCEPTED row that is never claimed before shutdown.
+    with open_rw(db_path) as conn:
+        conn.execute(
+            "INSERT INTO runs (run_id, lifecycle_status, idempotency_key, request_hash,"
+            " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at)"
+            " VALUES ('run:active', 'RUNNING', NULL, ?, 'm:active', ?, 0, 't', 't')",
+            ("a" * 64, "b" * 64),
+        )
+        conn.execute(
+            "INSERT INTO runs (run_id, lifecycle_status, idempotency_key, request_hash,"
+            " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at)"
+            " VALUES ('run:queued', 'ACCEPTED', NULL, ?, 'm:queued', ?, 1, 't', 't')",
+            ("c" * 64, "d" * 64),
+        )
+        conn.commit()
+
+    executor.reconcile_slots(["run:active", "run:queued"])
+    executor.submit("run:active", 60.0)
+
+    controller.shutdown()
+
+    # Admission closed first.
+    assert controller.admit(_request()).kind == "unavailable"
+    assert executor.is_closed
+    # Active run received cooperative cancellation (RUNNING -> CANCEL_REQUESTED).
+    with open_rw(db_path) as conn:
+        active = conn.execute(
+            "SELECT lifecycle_status FROM runs WHERE run_id='run:active'"
+        ).fetchone()["lifecycle_status"]
+        queued = conn.execute(
+            "SELECT lifecycle_status FROM runs WHERE run_id='run:queued'"
+        ).fetchone()["lifecycle_status"]
+    assert active == "CANCEL_REQUESTED"
+    assert token_registry.token("run:active").requested is True
+    assert active_token_seen.wait(timeout=2) is True
+    # Queued ACCEPTED stays in an explicitly recoverable durable state.
+    assert queued == "ACCEPTED"
+
+
+def test_shutdown_bounded_grace_respected(tmp_path: Path) -> None:
+    """Shutdown waits the bounded grace period, not forever."""
+    from catalyst_app.runtime.cancel import CancellationController, CancellationTokenRegistry
+    from catalyst_app.persistence.events import EventRepository
+    from catalyst_app.runtime.claim import RunClaimer
+
+    db_path = tmp_path / "runtime.db"
+    _fixture_db(db_path)
+    token_registry = CancellationTokenRegistry()
+    release = threading.Event()
+
+    def slow_adapter(run_id: str, timeout_seconds: float) -> dict[str, object]:
+        release.wait(timeout=5)
+        return {"run_id": run_id, "status": "COMPLETED"}
+
+    executor = RunExecutor(
+        admission_slots=2,
+        max_workers=1,
+        run_adapter=slow_adapter,
+        shutdown_grace_seconds=0.3,
+    )
+    repo = EventRepository(db_path=db_path)
+    controller = AdmissionController(
+        db_path=db_path,
+        executor=executor,
+        events=repo,
+        manifest_factory=manifest_for_lifespan,
+        cancellation=CancellationController(
+            db_path=db_path,
+            events=repo,
+            claimer=RunClaimer(db_path=db_path, events=repo),
+            tokens=token_registry,
+        ),
+    )
+    with open_rw(db_path) as conn:
+        conn.execute(
+            "INSERT INTO runs (run_id, lifecycle_status, idempotency_key, request_hash,"
+            " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at)"
+            " VALUES ('run:slow', 'RUNNING', NULL, 'a'*64, 'm', 'b'*64, 0, 't', 't')"
+        )
+        conn.commit()
+    executor.reconcile_slots(["run:slow"])
+    executor.submit("run:slow", 60.0)
+
+    import time as _time
+
+    start = _time.monotonic()
+    controller.shutdown()
+    elapsed = _time.monotonic() - start
+    assert elapsed < 2.0  # bounded grace, not the full 5s release wait
+    release.set()
+    deadline = _time.monotonic() + 5
+    while executor.active_count > 0 and _time.monotonic() < deadline:
+        _time.sleep(0.05)
+    assert executor.active_count == 0
+
+
+
+# ── M6 corrective: production notifier composition (Finding C) ─────────────
+
+def _identity_ready_loader(db_path: Path):
+    class Loader:
+        def get_dependencies(self, *, force_reload: bool = False):
+            from catalyst_agents.runtime.dependencies import RuntimeDependencies
+            from test_default_runtime_composition import _runtime
+
+            return RuntimeDependencies(
+                sqlite_db_path=db_path,
+                lancedb_dir=db_path.parent / "lancedb",
+                lancedb_table=None,
+                embedding_fn=lambda _: [],
+                embedding_model="BAAI/bge-m3",
+                embedding_dim=1024,
+                reranker=None,
+                reranker_model="BAAI/bge-reranker-v2-m3",
+                default_model="gemini-2.5-flash-nothink",
+                health={"status": "ready", "errors": []},
+                retriever=None,
+                requested_manifest_id="m" * 64,
+                index_manifest_id="d" * 64,
+                data_runtime_identity=_runtime(),
+            )
+
+    return Loader()
+
+
+def test_lifespan_wires_one_condition_registry_notifier(tmp_path: Path) -> None:
+    """The FastAPI lifespan creates one ConditionRegistry on the running event
+    loop and wires its notify_from_thread into the production EventRepository."""
+    from catalyst_app.main import create_app
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+    from catalyst_app.runtime.sse import ConditionRegistry
+
+    db_path = tmp_path / "runtime.db"
+    _fixture_db(db_path)
+    composition = build_runtime_composition(
+        db_path=db_path,
+        dependency_loader=_identity_ready_loader(db_path),
+        credential_store=RuntimeCredentialStore(),
+        graph_resolver=None,
+        max_workers=1,
+        shutdown_grace_seconds=0.1,
+    )
+    app = create_app(runtime_composition=composition)
+
+    with TestClient(app) as client:
+        client.get("/api/health")
+        registry = app.state.condition_registry
+        assert isinstance(registry, ConditionRegistry)
+        assert registry.loop is not None
+        # The production repository's after-commit notifier is the registry
+        # (bound method identity: same instance, same function).
+        notifier = composition.events.notifier
+        assert notifier is not None
+        assert notifier.__self__ is registry
+        assert notifier.__func__ is ConditionRegistry.notify_from_thread
+        # The stream router resolves the same registry instance.
+        assert app.state.condition_registry is registry
+
+
+def test_worker_thread_commit_wakes_attached_sse_stream(tmp_path: Path) -> None:
+    """Finding C: a worker-thread event commit wakes an attached live SSE
+    stream without waiting for the heartbeat timeout."""
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    from catalyst_app.events import (
+        AssuranceCompletedPayload,
+        RunCompletedPayload,
+        RunEventType,
+        StageStartedPayload,
+    )
+    from catalyst_app.lifecycle import RunLifecycleStatus
+    from catalyst_app.persistence.events import EventRepository
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.runtime.sse import ConditionRegistry, stream_events
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+    from catalyst_data.storage.connect import open_readonly
+
+    db_path = tmp_path / "runtime.db"
+    _fixture_db(db_path)
+    with open_rw(db_path) as conn:
+        conn.execute(
+            "INSERT INTO runs (run_id, lifecycle_status, idempotency_key, request_hash,"
+            " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at)"
+            " VALUES ('run:sse', 'ACCEPTED', NULL, 'a'*64, 'm:sse', 'b'*64, 0, 't', 't')"
+        )
+        conn.commit()
+
+    async def scenario() -> None:
+        registry = ConditionRegistry(loop=asyncio.get_running_loop())
+        composition = build_runtime_composition(
+            db_path=db_path,
+            dependency_loader=_identity_ready_loader(db_path),
+            credential_store=RuntimeCredentialStore(),
+            graph_resolver=None,
+            condition_registry=registry,
+            max_workers=1,
+            shutdown_grace_seconds=0.1,
+        )
+        notifier = composition.events.notifier
+        assert notifier is not None
+        assert notifier.__self__ is registry
+        assert notifier.__func__ is ConditionRegistry.notify_from_thread
+
+        collected: list[str] = []
+
+        async def collect() -> None:
+            async for frame in stream_events(
+                "run:sse",
+                None,
+                open_readonly,
+                registry,
+                db_path=db_path,
+                wait_timeout_seconds=10.0,
+            ):
+                collected.append(frame)
+                if "event: run.completed" in frame:
+                    break
+
+        task = asyncio.create_task(collect())
+        await asyncio.sleep(0.05)  # let the stream attach and start waiting
+
+        def worker_commit() -> None:
+            repo = composition.events
+            repo.append(
+                run_id="run:sse",
+                event_type=RunEventType.STAGE_STARTED,
+                payload=StageStartedPayload(stage="observation_build"),
+                lifecycle_update=(RunLifecycleStatus.ACCEPTED, RunLifecycleStatus.RUNNING),
+            )
+            repo.append_terminal(
+                run_id="run:sse",
+                assurance_payload=AssuranceCompletedPayload(valid=True, final_result_status="SUFFICIENT"),
+                terminal_event_type=RunEventType.RUN_COMPLETED,
+                terminal_payload=RunCompletedPayload(
+                    result_status="SUFFICIENT",
+                    final_output_artifact_ref="answer:run:sse",
+                    total_latency_ms=1,
+                    runtime_identity_ref="runtime:test",
+                ),
+                lifecycle_update=(RunLifecycleStatus.RUNNING, RunLifecycleStatus.COMPLETED),
+            )
+
+        loop = asyncio.get_running_loop()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pool.submit(worker_commit).result(timeout=5)
+        # The worker-thread notification wakes the stream well inside the
+        # 10-second wait timeout.
+        await asyncio.wait_for(task, timeout=3.0)
+        assert any("event: run.completed" in frame for frame in collected)
+        assert any("event: stage.started" in frame for frame in collected)
+
+    asyncio.run(scenario())

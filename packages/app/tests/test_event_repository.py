@@ -438,3 +438,69 @@ def test_run_failed_terminal_batch_writes_failure_code(tmp_path: Path) -> None:
         ).fetchone()
     assert row["lifecycle_status"] == "FAILED"
     assert row["failure_code"] == "SUBMISSION_FAILURE"
+
+
+# ── M6 corrective: terminal-batch artifacts must be discoverable as terminal
+# refs (Finding H) ──────────────────────────────────────────────────────────
+
+def test_terminal_batch_required_artifacts_attach_to_terminal_event(tmp_path: Path) -> None:
+    """Terminal-batch required artifacts must be referenced by the terminal
+    event sequence (the final sequence), so RunDTO.terminal_artifact_refs can
+    discover them at max_seq without loosening same-run validation."""
+    db_path = tmp_path / "runtime.db"
+    _prepare_db(db_path)
+    repo = _repo(db_path)
+    repo.append(
+        run_id="run:1",
+        event_type=RunEventType.RUN_ACCEPTED,
+        payload=RunAcceptedPayload(**_accepted_payload()),
+    )
+    repo.append(
+        run_id="run:1",
+        event_type=RunEventType.STAGE_STARTED,
+        payload=StageStartedPayload(stage="observation_build"),
+        lifecycle_update=(RunLifecycleStatus.ACCEPTED, RunLifecycleStatus.RUNNING),
+    )
+
+    assurance_seq, terminal_seq = repo.append_terminal(
+        run_id="run:1",
+        assurance_payload=AssuranceCompletedPayload(valid=True, final_result_status="SUFFICIENT"),
+        terminal_event_type=RunEventType.RUN_COMPLETED,
+        terminal_payload=RunCompletedPayload(
+            result_status="SUFFICIENT",
+            final_output_artifact_ref="artifact:answer",
+            total_latency_ms=10,
+            runtime_identity_ref="runtime:1",
+        ),
+        artifact_payloads=[
+            ArtifactPayload(
+                artifact_id="attribution:run:1",
+                artifact_type="attribution_result",
+                payload={"attribution_status": "SUFFICIENT", "attribution_type": "EVIDENCE_BACKED_CAUSAL"},
+            ),
+            ArtifactPayload(
+                artifact_id="assurance:run:1",
+                artifact_type="assurance",
+                payload={"valid": True, "checks": ["stream_complete"]},
+            ),
+        ],
+        lifecycle_update=(RunLifecycleStatus.RUNNING, RunLifecycleStatus.COMPLETED),
+    )
+
+    with open_rw(db_path) as conn:
+        rows = conn.execute(
+            "SELECT artifact_id, artifact_type, event_seq FROM run_artifacts"
+            " WHERE run_id='run:1' ORDER BY artifact_id"
+        ).fetchall()
+        max_seq = conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) FROM run_events WHERE run_id='run:1'"
+        ).fetchone()[0]
+    assert max_seq == terminal_seq
+    by_id = {row["artifact_id"]: row for row in rows}
+    assert by_id["attribution:run:1"]["event_seq"] == terminal_seq
+    assert by_id["assurance:run:1"]["event_seq"] == terminal_seq
+    # The artifacts are therefore discoverable as terminal refs at max_seq.
+    terminal_artifacts = [row for row in rows if row["event_seq"] == max_seq]
+    assert {row["artifact_type"] for row in terminal_artifacts} >= {
+        "attribution_result", "assurance",
+    }
