@@ -690,4 +690,3 @@ def test_cancel_during_retrieval_prevents_writer_dispatch(tmp_path: Path) -> Non
         stream = client.get(f"/api/live-runs/{run_id}/stream").text
         assert "event: run.cancelled" in stream
         assert "event: run.completed" not in stream
-
