@@ -42,9 +42,9 @@ def test_total_latency_derived_from_monotonic_timing(tmp_path: Path) -> None:
         credential_store=RuntimeCredentialStore(),
         graph_resolver=FakeGraphResolver(),
     )
-    # Simulate a run that took ~1.5s of real monotonic time.
-    adapter._started_monotonic = time.monotonic() - 1.5
-    latency = adapter._elapsed_latency_ms()
+    # Simulate a run that took ~1.5s of real monotonic time from its local
+    # per-run start (the adapter no longer stores a shared start timestamp).
+    latency = adapter._elapsed_latency_ms(time.monotonic() - 1.5)
     assert latency >= 1500
     assert latency != 1
 

@@ -307,12 +307,18 @@ def _resolve_code_revision() -> str:
 
 @dataclass(frozen=True)
 class RunBoundary:
-    """Per-run external boundary: request provider identity + volatile key."""
+    """Per-run external boundary: request provider identity + volatile key.
+
+    ``provider_timeout_seconds`` is the remaining time to the persisted
+    absolute run deadline at boundary resolution; it bounds provider request
+    timeouts and is never larger than the run's remaining budget.
+    """
 
     provider: str
     base_url: str | None
     model_id: str
     api_key: str | None
+    provider_timeout_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -369,12 +375,14 @@ class ProductionGraphRuntimeResolver(GraphRuntimeResolver):
             provider=boundary.provider,
             api_key=boundary.api_key,
             base_url=boundary.base_url,
+            timeout_seconds=boundary.provider_timeout_seconds,
         )
         writer_llm = build_v1_llm(
             model_id=manifest.writer_model_id,
             provider=boundary.provider,
             api_key=boundary.api_key,
             base_url=boundary.base_url,
+            timeout_seconds=boundary.provider_timeout_seconds,
         )
         template_bytes, template_version, analyst_prompt, _, _ = (
             production_prompt_identity()
@@ -660,11 +668,11 @@ class ProductionRunAdapter:
         self.credential_store = credential_store
         self.graph_resolver = graph_resolver
         self.last_deadline_epoch_ms: int | None = None
-        self._started_monotonic: float | None = None
 
     def __call__(self, run_id: str, timeout_seconds: float) -> dict[str, Any]:
-        if self._started_monotonic is None:
-            self._started_monotonic = time.monotonic()
+        # Per-run local start: the adapter is shared process-wide and must
+        # never publish one adapter-wide elapsed time across sequential runs.
+        started_monotonic = time.monotonic()
         manifest = self._load_manifest(run_id)
         if manifest is None:
             raise RuntimeError(f"run {run_id} has no persisted immutable RunManifest")
@@ -693,7 +701,9 @@ class ProductionRunAdapter:
             db_path=self.db_path, events=self.events, run_id=run_id
         )
         try:
-            boundary = self._load_boundary(run_id)
+            boundary = self._load_boundary(
+                run_id, deadline_epoch_ms=deadline_epoch_ms
+            )
             resolved = self.graph_resolver.resolve(manifest, boundary)
             result = run_v1_graph(
                 run_id=run_id,
@@ -728,7 +738,9 @@ class ProductionRunAdapter:
             raise_if_control_expired(control)
             self._persist_result_artifacts(run_id, result, bridge)
             raise_if_control_expired(control)
-            return self._terminalize_completed(run_id, result, bridge)
+            return self._terminalize_completed(
+                run_id, result, bridge, started_monotonic=started_monotonic
+            )
         except RunCancelledError:
             return self._acknowledge_cancelled(run_id)
         except RunDeadlineExceededError:
@@ -756,7 +768,9 @@ class ProductionRunAdapter:
             return None
         return RunManifest.model_validate_json(row["payload_json"])
 
-    def _load_boundary(self, run_id: str) -> RunBoundary:
+    def _load_boundary(
+        self, run_id: str, *, deadline_epoch_ms: int | None = None
+    ) -> RunBoundary:
         with open_rw(self.db_path) as conn:
             row = conn.execute(
                 "SELECT provider, base_url, run_manifest_id FROM runs WHERE run_id = ?",
@@ -766,11 +780,16 @@ class ProductionRunAdapter:
         if row is None or manifest is None:
             raise RuntimeError(f"run {run_id} boundary identity is missing")
         credential = self.credential_store.get(run_id)
+        provider_timeout_seconds: float | None = None
+        if deadline_epoch_ms is not None:
+            remaining_ms = max(0, deadline_epoch_ms - int(time.time() * 1000))
+            provider_timeout_seconds = remaining_ms / 1000.0
         return RunBoundary(
             provider=row["provider"] or "unknown",
             base_url=row["base_url"],
             model_id=manifest.analyst_model_id,
             api_key=credential.api_key if credential is not None else None,
+            provider_timeout_seconds=provider_timeout_seconds,
         )
 
     def _load_ticker(self, run_id: str) -> str:
@@ -797,15 +816,12 @@ class ProductionRunAdapter:
     def _past_deadline(self, deadline_epoch_ms: int) -> bool:
         return int(time.time() * 1000) >= deadline_epoch_ms
 
-    def _elapsed_latency_ms(self) -> int:
-        """Real monotonic elapsed latency since this adapter instance started.
+    def _elapsed_latency_ms(self, started_monotonic: float) -> int:
+        """Real monotonic elapsed latency for one run since its local start.
 
-        Falls back to 0 when the adapter was constructed without a start
-        timestamp (direct legacy invocations).
+        Floors at zero so genuinely sub-millisecond runs report 0.
         """
-        if self._started_monotonic is None:
-            return 0
-        return max(0, int((time.monotonic() - self._started_monotonic) * 1000))
+        return max(0, int((time.monotonic() - started_monotonic) * 1000))
 
     def _absolute_deadline_epoch_ms(
         self, run_id: str, manifest: Any, timeout_seconds: float
@@ -935,7 +951,12 @@ class ProductionRunAdapter:
             )
 
     def _terminalize_completed(
-        self, run_id: str, result: Any, bridge: StreamBridge
+        self,
+        run_id: str,
+        result: Any,
+        bridge: StreamBridge,
+        *,
+        started_monotonic: float,
     ) -> dict[str, Any]:
         final_status = result.validated_claim_plan.status.value
         final_type = result.validated_claim_plan.attribution_type.value
@@ -971,7 +992,7 @@ class ProductionRunAdapter:
                 terminal_payload=RunCompletedPayload(
                     result_status=final_status,
                     final_output_artifact_ref=f"answer:stream:{run_id}",
-                    total_latency_ms=self._elapsed_latency_ms(),
+                    total_latency_ms=self._elapsed_latency_ms(started_monotonic),
                     total_tokens=None,
                     runtime_identity_ref=self._load_manifest(run_id).data_runtime_identity_ref,
                 ),
