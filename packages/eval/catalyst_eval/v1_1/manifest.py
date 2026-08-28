@@ -239,7 +239,15 @@ class CaseResultRef(BaseModel):
 
     case_id: str
     run_manifest_id: str
+    run_manifest_hash: str
     result_artifact_id: str
+
+    @field_validator("run_manifest_hash")
+    @classmethod
+    def _sha256_hex(cls, value: str) -> str:
+        if _SHA256_RE.fullmatch(value) is None:
+            raise ValueError("must be a lowercase SHA-256 hex digest")
+        return value
 
 
 class MetricAggregate(BaseModel):
@@ -285,10 +293,18 @@ class EvalOutcome(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     completed_at: datetime
+    observed_run_artifact_identity: RunArtifactIdentity
     per_case_result_refs: tuple[CaseResultRef, ...] = ()
     aggregate_metrics: tuple[MetricAggregate, ...] = ()
     latency_tokens_cost: LatencyTokensCost
     gate_results: tuple[GateResult, ...] = ()
+
+    @model_validator(mode="after")
+    def _result_refs_are_unique(self) -> "EvalOutcome":
+        observed = [ref.case_id for ref in self.per_case_result_refs]
+        if len(observed) != len(set(observed)):
+            raise ValueError("per_case_result_refs case_ids must be unique")
+        return self
 
 
 class EvalManifest(BaseModel):
@@ -311,11 +327,23 @@ class EvalManifest(BaseModel):
         return super().model_copy(deep=deep)
 
     def append_outcome(self, outcome: EvalOutcome) -> "EvalManifest":
-        """Append the outcome exactly once; a second append fails."""
+        """Append the outcome exactly once; a second append fails.
+
+        The ordered observed bindings must match ``ordered_case_ids``
+        one-to-one: missing, duplicate, reordered, identity-mismatched, or
+        extra bindings fail closed (M7 execution lock).
+        """
         if self.outcome is not None:
             raise ValueError("EvalManifest outcome can only be appended once")
         if not isinstance(outcome, EvalOutcome):
             raise TypeError("EvalManifest append_outcome requires an EvalOutcome")
+        expected = list(self.evaluation_identity.ordered_case_ids)
+        observed = [ref.case_id for ref in outcome.per_case_result_refs]
+        if observed != expected:
+            raise ValueError(
+                "per_case_result_refs must match ordered_case_ids one-to-one "
+                f"in order (expected {expected}, observed {observed})"
+            )
         return type(self).model_validate(
             {**self.model_dump(mode="python"), "outcome": outcome.model_dump(mode="python")}
         )

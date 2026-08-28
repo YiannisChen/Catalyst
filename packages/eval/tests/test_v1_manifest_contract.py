@@ -170,10 +170,37 @@ def _experiment(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def _result_ref(case_id: str, run_id: str = "run:1") -> dict[str, Any]:
+    return {
+        "case_id": case_id,
+        "run_manifest_id": f"manifest:{run_id}:{case_id}",
+        "run_manifest_hash": "b" * 64,
+        "result_artifact_id": f"result:{run_id}:{case_id}",
+    }
+
+
 def _outcome(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "completed_at": _utc("2026-01-08T09:00:00Z"),
-        "per_case_result_refs": (),
+        "observed_run_artifact_identity": {
+            "run_manifest_bindings": (
+                {
+                    "run_manifest_id": "manifest:run:1:stage1-001",
+                    "run_manifest_hash": "b" * 64,
+                },
+                {
+                    "run_manifest_id": "manifest:run:1:stage1-002",
+                    "run_manifest_hash": "b" * 64,
+                },
+            ),
+            "context_pack_refs": (),
+            "claim_plan_refs": (),
+            "assurance_refs": (),
+        },
+        "per_case_result_refs": (
+            _result_ref("stage1-001"),
+            _result_ref("stage1-002"),
+        ),
         "aggregate_metrics": (
             MetricAggregate(
                 metric_id="citation_correctness",
