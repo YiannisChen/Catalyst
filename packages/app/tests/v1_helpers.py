@@ -127,7 +127,7 @@ def terminalize_with_attribution(
     attribution_type: str = "EVIDENCE_BACKED_CAUSAL",
 ) -> None:
     """Persist stage.started + terminal run.completed + attribution artifact."""
-    
+
     from catalyst_app.events import (
         AssuranceCompletedPayload,
         RunCompletedPayload,
