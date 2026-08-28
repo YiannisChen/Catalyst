@@ -92,3 +92,23 @@ S1 evaluation uses 65 cases across two files:
 
 These supersede the v1.2 lineage for S1 metric evaluation. The S1 ruler is driven by
 `test_s1_rebuild_eval_ruler.py` and `test_s1_three_arm.py`.
+
+## V1.1 Stage-1 Binding (M7)
+
+M7 Stage-1 evaluation is bound to a 12-case human-reviewed dataset under the
+Frozen V1.1 `GoldenCase` contract (`catalyst_eval.v1_1.case`) plus a
+stratification manifest and a dataset manifest
+(`v1_1_stage1_dataset_manifest_v1`). The authoritative files are:
+
+- `v1_1_stage1_cases.jsonl` (12 rows)
+- `v1_1_stage1_stratification.json`
+- `v1_1_stage1_dataset_manifest.json`
+
+**These files are Q-011 gated.** They are created only after an authorized
+human review seals the 12-case manifest (M7-2 authoritative seal); the
+executor never invents approval, reviewer identities, or audit decisions.
+Until that gate passes, Batch B uses deterministic synthetic hidden-gold
+fixtures in `packages/eval/tests/v1_1_fixtures.py` and
+`packages/eval/tests/test_stage1_dataset.py` to exercise the loader,
+manifest validation, metrics, and runner contracts offline. No synthetic
+fixture is authoritative, and none is ever loaded by the production runtime.
