@@ -2658,6 +2658,7 @@ def _source_from_canonical_record(
     record: Mapping[str, object],
     *,
     profile_versions: Mapping[str, str],
+    filing_body: str | None = None,
 ) -> _SourceDocument | None:
     subtype = str(record.get("subtype_table") or "")
     version_id = str(record.get("canonical_content_version_id") or "")
@@ -2688,7 +2689,20 @@ def _source_from_canonical_record(
         tickers = []
     ticker_json = json.dumps(list(tickers), separators=(",", ":"))
     metadata = record.get("subtype_metadata") if isinstance(record.get("subtype_metadata"), Mapping) else {}
-    body = _canonical_body(record)
+    if source_kind == "filing":
+        # Filing bodies are resolved deterministically from the bound
+        # filing_documents.text row (canonical_subtype_assoc); subtype_metadata
+        # never carries raw_text in production. Missing resolution fails closed.
+        if not filing_body:
+            raise ValueError(
+                f"filing content version {version_id} for asset "
+                f"{record.get('asset_id')} has no resolved body; filing text "
+                f"must be bound through canonical_subtype_assoc -> "
+                f"filing_documents.text"
+            )
+        body = filing_body
+    else:
+        body = _canonical_body(record)
     document: dict[str, Any] = {
         "document_id": document_id,
         "eligibility": eligibility,
@@ -2761,7 +2775,10 @@ def stage_corpus_candidate(
 
     Stops after unpublished manifest + reconciliation; no lexical or pointer flip.
     """
-    from catalyst_data.index_builder import build_canonical_corpus_records
+    from catalyst_data.index_builder import (
+        build_canonical_corpus_records,
+        resolve_filing_body_text,
+    )
     from catalyst_data.retrieval.source_bundle import export_candidate_source_bundle
 
     records = build_canonical_corpus_records(conn)
@@ -2806,7 +2823,22 @@ def stage_corpus_candidate(
         chunks = 0
         source_bytes = 0
         for record in records:
-            source = _source_from_canonical_record(record, profile_versions=profile_versions)
+            subtype = str(record.get("subtype_table") or "")
+            filing_body = None
+            if subtype in {"filings", "filing_documents"}:
+                filing_body = resolve_filing_body_text(
+                    conn,
+                    asset_id=str(record["asset_id"]),
+                    canonical_content_version_id=str(
+                        record["canonical_content_version_id"]
+                    ),
+                    content_hash=str(record["content_hash"]),
+                )
+            source = _source_from_canonical_record(
+                record,
+                profile_versions=profile_versions,
+                filing_body=filing_body,
+            )
             if source is None:
                 continue
             _stage_source_presence(conn, build_id=build_id, source=source, now=now)
