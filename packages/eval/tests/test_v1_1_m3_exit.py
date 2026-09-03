@@ -20,9 +20,16 @@ from catalyst_data.corpus.tokenizer import TOKENIZER_REVISION
 from catalyst_data.retrieval.index_manifest import IndexManifest
 from catalyst_data.storage.sqlite import init_db
 
-from catalyst_eval.post_import.case_pack import CasePackCase, compute_case_pack_id, load_case_pack, write_case_pack
+from catalyst_eval.post_import.case_pack import (
+    CasePackCase,
+    build_smoke_case_pack,
+    compute_case_pack_id,
+    load_case_pack,
+    write_case_pack,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+GOLDEN_DIR = Path(__file__).resolve().parents[1] / "golden_set"
 SCRIPT = REPO_ROOT / "packages" / "eval" / "scripts" / "run_v1_1_m3_exit.py"
 SEAL_BENCH = REPO_ROOT / "data" / "baseline" / "benchmark_accessions_v1.json"
 SEAL_Q005 = REPO_ROOT / "data" / "baseline" / "q005_sec_time_approval_v1.json"
@@ -496,9 +503,10 @@ def test_build_m3_t4_evidence_generates_valid_m3_evidence(tmp_path):
     conn.commit()
     conn.close()
 
-    cases = load_case_pack(
-        Path("/Users/yiannischen/Desktop/Catalyst/data/run_reports/post_import/t4_wave23_final3/case_pack.jsonl")
-    )
+    # Build the 10-case T4 smoke pack from this repo's golden sets so the test
+    # never depends on another checkout or a personal absolute path.
+    cases = build_smoke_case_pack(GOLDEN_DIR)
+    assert len(cases) == 10
     write_case_pack(cases, args.case_pack)
     resolved = module._m3_runtime_identity(args, identities, db_foreign_key_violations=0)
     conn = sqlite3.connect(f"{db.resolve().as_uri()}?mode=ro&immutable=1", uri=True)
