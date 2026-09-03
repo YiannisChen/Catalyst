@@ -22,6 +22,47 @@ STAGE1_FIXTURE_CASE_IDS = (
     "v1f-011", "v1f-012",
 )
 
+# Stage-1 stratification contract (M7-2 Q-011 lock). challenge_family is a
+# per-case scenario/challenge class from Frozen V1.1 §7.2, deliberately NOT
+# inferred from accepted cause labels: an ABSTAIN case may be a MACRO/SECTOR
+# challenge with an empty acceptable_cause_labels tuple.
+CHALLENGE_FAMILY_VALUES = (
+    "COMPANY_SPECIFIC",
+    "MACRO",
+    "SECTOR",
+    "CONTINUATION",
+    "DISTRACTOR",
+    "QUIET",
+    "ABSTENTION",
+)
+PRIMARY_EVIDENCE_KIND_VALUES = ("FULL_TEXT_BODY", "EIGHT_K_SHELL", "NONE")
+MOVE_DIRECTION_VALUES = ("positive", "negative", "mixed", "unknown")
+
+# challenge_family per synthetic case id. Macro/sector coverage is proven by
+# these challenge-family strata, never by accepted cause labels alone.
+_STAGE1_CHALLENGE_FAMILY = {
+    "v1f-001": "COMPANY_SPECIFIC",
+    "v1f-002": "SECTOR",
+    "v1f-003": "MACRO",
+    "v1f-004": "MACRO",
+    "v1f-005": "SECTOR",
+    "v1f-006": "COMPANY_SPECIFIC",
+    "v1f-007": "CONTINUATION",
+    "v1f-008": "CONTINUATION",
+    "v1f-009": "COMPANY_SPECIFIC",
+    "v1f-010": "CONTINUATION",
+    "v1f-011": "MACRO",
+    "v1f-012": "SECTOR",
+}
+
+# Signed-session direction for rows whose acceptable_cause_labels are empty
+# (ABSTAIN rows have no accepted labels by Stage-1 contract).
+_STAGE1_MOVE_DIRECTION = {
+    "v1f-003": "mixed",
+    "v1f-005": "positive",
+    "v1f-011": "mixed",
+}
+
 
 def utc(iso: str) -> str:
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).isoformat()
@@ -136,8 +177,7 @@ def make_stage1_cases() -> list[dict[str, Any]]:
         dict(case_id="v1f-003", ticker="AAPL", session_date="2025-06-12",
              cutoff="2025-06-12T20:00:00Z", question="Why did AAPL move this session?",
              oracle_status="ABSTAIN", direction="mixed",
-             cause_types=("MACRO_EVENT",),
-             labels=("fixture-macro",),
+             cause_types=(),
              expected_refusal_reason="insufficient_public_evidence",
              expected_attribution_type=None,
              parent="h004"),
@@ -152,8 +192,7 @@ def make_stage1_cases() -> list[dict[str, Any]]:
         dict(case_id="v1f-005", ticker="GOOGL", session_date="2025-06-11",
              cutoff="2025-06-11T20:00:00Z", question="Why did GOOGL rise on this date?",
              oracle_status="ABSTAIN", direction="positive",
-             cause_types=("SECTOR_MOVE",),
-             labels=("fixture-sector-move",),
+             cause_types=(),
              expected_refusal_reason="insufficient_public_evidence",
              expected_attribution_type=None,
              parent="h005"),
@@ -202,8 +241,7 @@ def make_stage1_cases() -> list[dict[str, Any]]:
         dict(case_id="v1f-011", ticker="XOM", session_date="2025-09-10",
              cutoff="2025-09-10T20:00:00Z", question="Why did XOM move with oil?",
              oracle_status="ABSTAIN", direction="mixed",
-             cause_types=("MACRO_EVENT", "SECTOR_MOVE"),
-             labels=("fixture-oil", "fixture-energy-sector"),
+             cause_types=(),
              expected_refusal_reason="insufficient_public_evidence",
              expected_attribution_type=None,
              parent="h007"),
@@ -217,7 +255,7 @@ def make_stage1_cases() -> list[dict[str, Any]]:
              corrective_recoverable=False,
              corrective_required=False,
              parent="h001",
-             notes="coverage limited: title-only news body"),
+             notes="coverage limited news body (title-only); bound primary body is FULL_TEXT material evidence"),
     ]
     cases: list[dict[str, Any]] = []
     for spec in specs:
@@ -228,28 +266,42 @@ def make_stage1_cases() -> list[dict[str, Any]]:
 
 
 def make_stratification(cases: list[dict[str, Any]]) -> dict[str, Any]:
-    """Synthetic stratification manifest for the fixture cases."""
+    """Synthetic stratification manifest for the fixture cases.
+
+    Per-case fields follow the M7-2 Q-011 contract: challenge_family is the
+    scenario/challenge class (never derived from accepted cause labels);
+    primary_evidence_kind is FULL_TEXT_BODY/NONE for material/no-material
+    cases (EIGHT_K_SHELL is never material primary evidence); move_direction
+    is the signed-session direction even when accepted labels are empty.
+    """
     per_case: dict[str, dict[str, Any]] = {}
     coverage_limited_ids: set[str] = set()
     for case in cases:
-        coverage_limited = case["case_id"] == "v1f-012"
+        case_id = case["case_id"]
+        coverage_limited = case_id == "v1f-012"
         state = "TITLE_ONLY" if coverage_limited else "FULL_TEXT"
-        per_case[case["case_id"]] = {
+        labels = case.get("acceptable_cause_labels") or ()
+        direction = (
+            labels[0]["direction"]
+            if labels else _STAGE1_MOVE_DIRECTION.get(case_id, "unknown")
+        )
+        per_case[case_id] = {
             "news_content_state": state,
             "coverage_limited": coverage_limited,
+            "challenge_family": _STAGE1_CHALLENGE_FAMILY[case_id],
+            "primary_evidence_kind": (
+                "FULL_TEXT_BODY" if case.get("expected_primary_evidence") else "NONE"
+            ),
+            "move_direction": direction,
             "parent_case_id": case["lineage"]["source"].split(":", 1)[1],
         }
         if coverage_limited:
-            coverage_limited_ids.add(case["case_id"])
+            coverage_limited_ids.add(case_id)
     return {
         "schema_version": "v1_1_stage1_stratification_v1",
         "strata": {
             "oracle_status": _counts(cases, lambda c: c["oracle_status"]),
-            "move_direction": _counts(
-                cases,
-                lambda c: c["acceptable_cause_labels"][0]["direction"]
-                if c["acceptable_cause_labels"] else "unknown",
-            ),
+            "move_direction": _counts(cases, lambda c: per_case[c["case_id"]]["move_direction"]),
             "cause_category": {
                 "company_specific": sum(
                     1 for c in cases
@@ -264,6 +316,9 @@ def make_stratification(cases: list[dict[str, Any]]) -> dict[str, Any]:
                     if any(x["cause_type"] == "SECTOR_MOVE" for x in c["acceptable_cause_labels"])
                 ),
             },
+            "challenge_family": _counts(
+                cases, lambda c: per_case[c["case_id"]]["challenge_family"]
+            ),
             "primary_evidence": {
                 "direct_primary": sum(1 for c in cases if c["expected_primary_evidence"]),
                 "no_material": sum(1 for c in cases if not c["expected_primary_evidence"]),
@@ -326,6 +381,9 @@ def make_dataset_manifest(
 
 __all__ = [
     "ALLOWED_LEGACY_PARENTS",
+    "CHALLENGE_FAMILY_VALUES",
+    "MOVE_DIRECTION_VALUES",
+    "PRIMARY_EVIDENCE_KIND_VALUES",
     "STAGE1_FIXTURE_CASE_IDS",
     "make_case",
     "make_dataset_manifest",

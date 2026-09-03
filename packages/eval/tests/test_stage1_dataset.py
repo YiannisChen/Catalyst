@@ -5,6 +5,14 @@ created here (no human approval, reviewer identity, or audit decision is
 invented). This suite validates the manifest/stratification schema and the
 loader's fail-closed rules against synthetic hidden-gold fixtures so Batch B
 contracts stay executable offline.
+
+The fixture rows carry the Stage-1 stratification contract: per-case
+``challenge_family`` (scenario class, never inferred from accepted cause
+labels), ``primary_evidence_kind`` (FULL_TEXT_BODY / EIGHT_K_SHELL / NONE),
+and ``move_direction`` (signed-session direction even when ABSTAIN has no
+accepted labels). Full strata gates (5/4/3, 6/6, direction, challenge
+family, corrective/multi-gap, ABSTAIN label, 8-K-shell) are enforced in the
+validator and tested in test_stage1_stratification_gates.py.
 """
 from __future__ import annotations
 
@@ -24,6 +32,9 @@ from catalyst_eval.v1_1.loader import (
 
 from tests.v1_1_fixtures import (
     ALLOWED_LEGACY_PARENTS,
+    CHALLENGE_FAMILY_VALUES,
+    MOVE_DIRECTION_VALUES,
+    PRIMARY_EVIDENCE_KIND_VALUES,
     make_case,
     make_dataset_manifest,
     make_stage1_cases,
@@ -55,6 +66,13 @@ def test_fixture_has_twelve_cases_with_expected_strata():
     strata = make_stratification(rows)["strata"]
     assert strata["oracle_status"] == EXPECTED_STRATA["oracle_status"]
     assert strata["primary_evidence"] == EXPECTED_STRATA["primary_evidence"]
+    # Macro/sector/company coverage is proven by challenge-family strata, not
+    # by accepted cause labels.
+    assert strata["challenge_family"]["COMPANY_SPECIFIC"] >= 1
+    assert strata["challenge_family"]["MACRO"] >= 1
+    assert strata["challenge_family"]["SECTOR"] >= 1
+    assert strata["move_direction"]["positive"] >= 1
+    assert strata["move_direction"]["negative"] >= 1
     # At least one recoverable corrective and one multi-gap recoverable case.
     recoverable = [
         r for r in rows
@@ -73,6 +91,48 @@ def test_every_case_references_an_allowed_legacy_parent(tmp_path):
         entry["parent_case_id"] for entry in stratification["per_case"].values()
     }
     assert parents <= set(ALLOWED_LEGACY_PARENTS)
+
+
+def test_every_case_has_challenge_family_not_inferred_from_labels(tmp_path):
+    """challenge_family is a stratification field, not a derived cause label.
+
+    An ABSTAIN fixture carries a MACRO or SECTOR challenge with zero accepted
+    cause labels; the family cannot have been inferred from labels because
+    there are no labels to infer from.
+    """
+    rows, _cases, stratification, _manifest = _fixture_dataset(tmp_path)
+    by_id = {row["case_id"]: row for row in rows}
+    for case_id, entry in stratification["per_case"].items():
+        assert entry["challenge_family"] in CHALLENGE_FAMILY_VALUES
+        assert entry["move_direction"] in MOVE_DIRECTION_VALUES
+        assert entry["primary_evidence_kind"] in PRIMARY_EVIDENCE_KIND_VALUES
+        labels = by_id[case_id]["acceptable_cause_labels"]
+        family = entry["challenge_family"]
+        # The family is scenario-class; a MACRO/SECTOR challenge does not
+        # require an accepted MACRO_EVENT/SECTOR_MOVE cause label.
+        if by_id[case_id]["oracle_status"] == "ABSTAIN":
+            assert not labels, (
+                f"{case_id}: ABSTAIN must have empty acceptable cause labels"
+            )
+            assert family in {"MACRO", "SECTOR"}
+
+
+def test_abstain_fixture_has_empty_labels_and_macro_sector_challenge():
+    rows = make_stage1_cases()
+    for row in rows:
+        if row["oracle_status"] == "ABSTAIN":
+            assert row["expected_refusal_reason"]
+            assert row["acceptable_cause_labels"] == []
+            assert not row["expected_primary_evidence"]
+
+
+def test_sufficient_fixture_primary_bodies_are_full_text_not_8k_shell(tmp_path):
+    rows, _cases, stratification, _manifest = _fixture_dataset(tmp_path)
+    by_id = {row["case_id"]: row for row in rows}
+    for case_id, entry in stratification["per_case"].items():
+        if by_id[case_id]["oracle_status"] == "SUFFICIENT":
+            assert by_id[case_id]["expected_primary_evidence"]
+            assert entry["primary_evidence_kind"] == "FULL_TEXT_BODY"
 
 
 def test_manifest_schema_roundtrip_passes(tmp_path):
@@ -173,3 +233,30 @@ def test_loader_rejects_disallowed_parent(tmp_path):
     manifest = make_dataset_manifest(rows, stratification)
     with pytest.raises(ValueError, match="parent_case_id"):
         validate_stage1_dataset_manifest(manifest, cases, stratification=stratification)
+
+
+def test_stage1_slot_parent_ids_are_allowed(tmp_path):
+    """Q-011 packets bind stratification slots as c01..c12.
+
+    The validator allow-list must therefore accept c01..c12 in addition to
+    the legacy T4/golden parents (M7-2 stratification contract).
+    """
+    rows = make_stage1_cases()
+    for index, row in enumerate(rows, start=1):
+        row["lineage"]["source"] = f"legacy:c{index:02d}"
+    path = tmp_path / "slots.jsonl"
+    path.write_text(
+        "".join(json.dumps(r, sort_keys=True) + "\n" for r in rows), encoding="utf-8"
+    )
+    cases = load_golden_cases(path)
+    stratification = make_stratification(rows)
+    manifest = make_dataset_manifest(rows, stratification)
+    validated = validate_stage1_dataset_manifest(
+        manifest, cases, stratification=stratification
+    )
+    assert validated["case_count"] == 12
+    parents = {
+        entry["parent_case_id"] for entry in stratification["per_case"].values()
+    }
+    assert parents <= {"c01", "c02", "c03", "c04", "c05", "c06",
+                       "c07", "c08", "c09", "c10", "c11", "c12"}
