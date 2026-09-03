@@ -497,7 +497,7 @@ def test_build_m3_t4_evidence_generates_valid_m3_evidence(tmp_path):
     conn.close()
 
     cases = load_case_pack(
-        Path("/Users/yiannischen/Projects/Catalyst/data/run_reports/post_import/t4_wave23_final3/case_pack.jsonl")
+        Path("/Users/yiannischen/Desktop/Catalyst/data/run_reports/post_import/t4_wave23_final3/case_pack.jsonl")
     )
     write_case_pack(cases, args.case_pack)
     resolved = module._m3_runtime_identity(args, identities, db_foreign_key_violations=0)
