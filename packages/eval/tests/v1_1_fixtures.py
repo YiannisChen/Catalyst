@@ -44,7 +44,7 @@ _STAGE1_CHALLENGE_FAMILY = {
     "v1f-001": "COMPANY_SPECIFIC",
     "v1f-002": "SECTOR",
     "v1f-003": "MACRO",
-    "v1f-004": "MACRO",
+    "v1f-004": "COMPANY_SPECIFIC",
     "v1f-005": "SECTOR",
     "v1f-006": "COMPANY_SPECIFIC",
     "v1f-007": "CONTINUATION",
@@ -55,14 +55,19 @@ _STAGE1_CHALLENGE_FAMILY = {
     "v1f-012": "SECTOR",
 }
 
+# Coverage-limited cases: local news serving is TITLE_ONLY/METADATA_ONLY
+# (DATA-02); they stay non-scorable for news-attribution denominators.
+COVERAGE_LIMITED_CASE_IDS = frozenset({"v1f-003", "v1f-012"})
+
+# Truthful local 8-K-shell records: the shell is present but no substantive
+# exhibit body is ingested; expected_primary_evidence stays empty.
+EIGHT_K_SHELL_CASE_IDS = frozenset({"v1f-005"})
+
 # Signed-session direction for rows whose acceptable_cause_labels are empty
 # (ABSTAIN rows have no accepted labels by Stage-1 contract).
 _STAGE1_MOVE_DIRECTION = {
-    "v1f-003": "mixed",
-    "v1f-005": "positive",
     "v1f-011": "mixed",
 }
-
 
 def utc(iso: str) -> str:
     return datetime.fromisoformat(iso.replace("Z", "+00:00")).isoformat()
@@ -154,9 +159,15 @@ def make_case(
 def make_stage1_cases() -> list[dict[str, Any]]:
     """Twelve varied synthetic cases covering the Stage-1 strata.
 
-    Strata: SUFFICIENT/PARTIAL/ABSTAIN; positive/negative/mixed; company/
-    macro/sector; direct-primary/no-material; one recoverable and one
-    multi-gap recoverable corrective case; one coverage-limited news case.
+    Natural strata (provisional natural adjudication, NOT an exact quota):
+    SUFFICIENT 9 / PARTIAL 2 / ABSTAIN 1; six direct-primary FULL_TEXT_BODY
+    cases, one truthful EIGHT_K_SHELL shell-only case, and five NONE/no-local-
+    primary cases. Includes the c01-equivalent regression (SUFFICIENT with
+    coverage_limited=true, no local material primary ID, empty
+    expected_primary_evidence), at least one SUFFICIENT FULL_TEXT_BODY
+    direct-primary case, COMPANY_SPECIFIC/MACRO/SECTOR challenge families,
+    positive and negative moves, one recoverable and one multi-gap recoverable
+    corrective case, and one ABSTAIN with empty labels plus a refusal reason.
     """
     specs = [
         dict(case_id="v1f-001", ticker="TSLA", session_date="2025-07-24",
@@ -176,14 +187,17 @@ def make_stage1_cases() -> list[dict[str, Any]]:
              parent="g013"),
         dict(case_id="v1f-003", ticker="AAPL", session_date="2025-06-12",
              cutoff="2025-06-12T20:00:00Z", question="Why did AAPL move this session?",
-             oracle_status="ABSTAIN", direction="mixed",
-             cause_types=(),
-             expected_refusal_reason="insufficient_public_evidence",
-             expected_attribution_type=None,
-             parent="h004"),
+             oracle_status="SUFFICIENT", direction="positive",
+             cause_types=("MACRO_EVENT",),
+             labels=("fixture-tariff-relief",),
+             expected_primary_evidence=(),
+             expected_refusal_reason=None,
+             expected_attribution_type="EVIDENCE_BACKED_CAUSAL",
+             parent="h004",
+             notes="c01-equivalent regression: public-world SUFFICIENT macro case with coverage-limited metadata-only news and no local material primary ID"),
         dict(case_id="v1f-004", ticker="MSFT", session_date="2025-09-15",
              cutoff="2025-09-15T20:00:00Z", question="What explains the MSFT decline?",
-             oracle_status="PARTIAL", direction="negative",
+             oracle_status="SUFFICIENT", direction="negative",
              cause_types=("COMPANY_SPECIFIC_CATALYST", "MACRO_EVENT"),
              labels=("fixture-msft", "fixture-rates"),
              evidence_ids=("fixture-ev-004",),
@@ -191,11 +205,14 @@ def make_stage1_cases() -> list[dict[str, Any]]:
              parent="g017"),
         dict(case_id="v1f-005", ticker="GOOGL", session_date="2025-06-11",
              cutoff="2025-06-11T20:00:00Z", question="Why did GOOGL rise on this date?",
-             oracle_status="ABSTAIN", direction="positive",
-             cause_types=(),
-             expected_refusal_reason="insufficient_public_evidence",
-             expected_attribution_type=None,
-             parent="h005"),
+             oracle_status="SUFFICIENT", direction="positive",
+             cause_types=("SECTOR_MOVE",),
+             labels=("fixture-sector-rebound",),
+             expected_primary_evidence=(),
+             expected_refusal_reason=None,
+             expected_attribution_type="EVIDENCE_BACKED_CAUSAL",
+             parent="h005",
+             notes="truthful EIGHT_K_SHELL local record: shell present, exhibit body absent, expected_primary_evidence empty"),
         dict(case_id="v1f-006", ticker="AMZN", session_date="2025-08-05",
              cutoff="2025-08-05T20:00:00Z", question="What moved AMZN today?",
              oracle_status="SUFFICIENT", direction="negative",
@@ -232,12 +249,14 @@ def make_stage1_cases() -> list[dict[str, Any]]:
              parent="pre_b6"),
         dict(case_id="v1f-010", ticker="INTC", session_date="2025-08-01",
              cutoff="2025-08-01T20:00:00Z", question="Why did INTC sell off?",
-             oracle_status="PARTIAL", direction="negative",
+             oracle_status="SUFFICIENT", direction="negative",
              cause_types=("REPORTING_OR_ANALYST_CONTINUATION",),
              labels=("fixture-analyst",),
              evidence_ids=(),
              expected_primary_evidence=(),
-             parent="g013"),
+             expected_attribution_type="EVIDENCE_BACKED_CAUSAL",
+             parent="g013",
+             notes="SUFFICIENT with empty expected_primary_evidence and no local material primary; public-world analyst-continuation oracle"),
         dict(case_id="v1f-011", ticker="XOM", session_date="2025-09-10",
              cutoff="2025-09-10T20:00:00Z", question="Why did XOM move with oil?",
              oracle_status="ABSTAIN", direction="mixed",
@@ -268,35 +287,43 @@ def make_stage1_cases() -> list[dict[str, Any]]:
 def make_stratification(cases: list[dict[str, Any]]) -> dict[str, Any]:
     """Synthetic stratification manifest for the fixture cases.
 
-    Per-case fields follow the M7-2 Q-011 contract: challenge_family is the
+    Per-case fields follow the M7-2 contract: challenge_family is the
     scenario/challenge class (never derived from accepted cause labels);
-    primary_evidence_kind is FULL_TEXT_BODY/NONE for material/no-material
-    cases (EIGHT_K_SHELL is never material primary evidence); move_direction
-    is the signed-session direction even when accepted labels are empty.
+    primary_evidence_kind is FULL_TEXT_BODY/NONE/EIGHT_K_SHELL where
+    EIGHT_K_SHELL truthfully records a local 8-K shell whose exhibit body is
+    absent (expected_primary_evidence stays empty); move_direction is the
+    signed-session direction even when accepted labels are empty. Declared
+    aggregate strata are recomputed from per-case rows by the validator.
     """
+    coverage_limited_ids = set(COVERAGE_LIMITED_CASE_IDS)
+    shell_ids = set(EIGHT_K_SHELL_CASE_IDS)
     per_case: dict[str, dict[str, Any]] = {}
-    coverage_limited_ids: set[str] = set()
     for case in cases:
         case_id = case["case_id"]
-        coverage_limited = case_id == "v1f-012"
-        state = "TITLE_ONLY" if coverage_limited else "FULL_TEXT"
+        coverage_limited = case_id in coverage_limited_ids
+        state = (
+            "TITLE_ONLY" if case_id == "v1f-012"
+            else "METADATA_ONLY" if coverage_limited else "FULL_TEXT"
+        )
         labels = case.get("acceptable_cause_labels") or ()
         direction = (
             labels[0]["direction"]
             if labels else _STAGE1_MOVE_DIRECTION.get(case_id, "unknown")
         )
+        if case.get("expected_primary_evidence"):
+            kind = "FULL_TEXT_BODY"
+        elif case_id in shell_ids:
+            kind = "EIGHT_K_SHELL"
+        else:
+            kind = "NONE"
         per_case[case_id] = {
             "news_content_state": state,
             "coverage_limited": coverage_limited,
             "challenge_family": _STAGE1_CHALLENGE_FAMILY[case_id],
-            "primary_evidence_kind": (
-                "FULL_TEXT_BODY" if case.get("expected_primary_evidence") else "NONE"
-            ),
+            "primary_evidence_kind": kind,
             "move_direction": direction,
             "parent_case_id": case["lineage"]["source"].split(":", 1)[1],
         }
-        if coverage_limited:
-            coverage_limited_ids.add(case_id)
     return {
         "schema_version": "v1_1_stage1_stratification_v1",
         "strata": {
@@ -321,7 +348,12 @@ def make_stratification(cases: list[dict[str, Any]]) -> dict[str, Any]:
             ),
             "primary_evidence": {
                 "direct_primary": sum(1 for c in cases if c["expected_primary_evidence"]),
-                "no_material": sum(1 for c in cases if not c["expected_primary_evidence"]),
+                "EIGHT_K_SHELL": sum(
+                    1 for c in cases if per_case[c["case_id"]]["primary_evidence_kind"] == "EIGHT_K_SHELL"
+                ),
+                "no_material": sum(
+                    1 for c in cases if per_case[c["case_id"]]["primary_evidence_kind"] == "NONE"
+                ),
             },
             "coverage": {
                 "full_text": len(cases) - len(coverage_limited_ids),
@@ -330,7 +362,6 @@ def make_stratification(cases: list[dict[str, Any]]) -> dict[str, Any]:
         },
         "per_case": per_case,
     }
-
 
 def _counts(cases: list[dict[str, Any]], key) -> dict[str, int]:
     out: dict[str, int] = {}
@@ -382,6 +413,8 @@ def make_dataset_manifest(
 __all__ = [
     "ALLOWED_LEGACY_PARENTS",
     "CHALLENGE_FAMILY_VALUES",
+    "COVERAGE_LIMITED_CASE_IDS",
+    "EIGHT_K_SHELL_CASE_IDS",
     "MOVE_DIRECTION_VALUES",
     "PRIMARY_EVIDENCE_KIND_VALUES",
     "STAGE1_FIXTURE_CASE_IDS",

@@ -10,9 +10,13 @@ The fixture rows carry the Stage-1 stratification contract: per-case
 ``challenge_family`` (scenario class, never inferred from accepted cause
 labels), ``primary_evidence_kind`` (FULL_TEXT_BODY / EIGHT_K_SHELL / NONE),
 and ``move_direction`` (signed-session direction even when ABSTAIN has no
-accepted labels). Full strata gates (5/4/3, 6/6, direction, challenge
-family, corrective/multi-gap, ABSTAIN label, 8-K-shell) are enforced in the
-validator and tested in test_stage1_stratification_gates.py.
+accepted labels). Oracle status is the public-world human adjudication and is
+NOT inferred from local corpus completeness; a coverage-limited SUFFICIENT
+case with empty ``expected_primary_evidence`` is valid, and EIGHT_K_SHELL is
+truthful only when ``expected_primary_evidence`` is empty. Presence gates
+(one of each status, positive/negative moves, company/macro/sector families,
+corrective and multi-gap recoverable, ABSTAIN labels/refusal) are enforced in
+the validator and tested in test_stage1_stratification_gates.py.
 """
 from __future__ import annotations
 
@@ -41,12 +45,6 @@ from tests.v1_1_fixtures import (
     make_stratification,
 )
 
-EXPECTED_STRATA = {
-    "oracle_status": {"SUFFICIENT": 5, "PARTIAL": 4, "ABSTAIN": 3},
-    "primary_evidence": {"direct_primary": 6, "no_material": 6},
-}
-
-
 def _fixture_dataset(tmp_path: Path, *, approved: bool = True):
     rows = make_stage1_cases()
     path = tmp_path / "stage1_cases.jsonl"
@@ -60,20 +58,20 @@ def _fixture_dataset(tmp_path: Path, *, approved: bool = True):
     return rows, cases, stratification, manifest
 
 
-def test_fixture_has_twelve_cases_with_expected_strata():
+def test_fixture_has_twelve_cases_with_presence_strata_only():
+    """The fixture covers every legitimate presence gate but locks NO exact
+    status or primary-evidence quota (5/4/3 and 6/6 are not requirements)."""
     rows = make_stage1_cases()
     assert len(rows) == 12
     strata = make_stratification(rows)["strata"]
-    assert strata["oracle_status"] == EXPECTED_STRATA["oracle_status"]
-    assert strata["primary_evidence"] == EXPECTED_STRATA["primary_evidence"]
-    # Macro/sector/company coverage is proven by challenge-family strata, not
-    # by accepted cause labels.
+    # Presence gates only: at least one of each oracle status, direction,
+    # challenge family, corrective and multi-gap recoverable.
+    assert all(strata["oracle_status"].get(s, 0) >= 1 for s in ("SUFFICIENT", "PARTIAL", "ABSTAIN"))
     assert strata["challenge_family"]["COMPANY_SPECIFIC"] >= 1
     assert strata["challenge_family"]["MACRO"] >= 1
     assert strata["challenge_family"]["SECTOR"] >= 1
     assert strata["move_direction"]["positive"] >= 1
     assert strata["move_direction"]["negative"] >= 1
-    # At least one recoverable corrective and one multi-gap recoverable case.
     recoverable = [
         r for r in rows
         if r["expected_research_behavior"]["corrective_recoverable"]
@@ -83,6 +81,26 @@ def test_fixture_has_twelve_cases_with_expected_strata():
         len(r["expected_research_behavior"]["expected_gap_reason_codes"]) >= 2
         for r in recoverable
     ), "fixture must contain a multi-gap recoverable case"
+
+
+def test_fixture_natural_distribution_is_not_a_locked_quota(tmp_path):
+    """The default fixture is a 9/2/1-style mix with a shell-separated primary
+    split (direct_primary + EIGHT_K_SHELL + no_material, not a 6/6 quota);
+    validation must accept it when the presence gates hold."""
+    rows, cases, stratification, manifest = _fixture_dataset(tmp_path)
+    strata = stratification["strata"]
+    # Presence gates only. No exact 5/4/3 or 6/6 arithmetic is required.
+    assert len(rows) == 12
+    assert all(strata["oracle_status"].get(s, 0) >= 1 for s in ("SUFFICIENT", "PARTIAL", "ABSTAIN"))
+    primary = strata["primary_evidence"]
+    assert primary["direct_primary"] >= 1
+    assert primary["EIGHT_K_SHELL"] >= 1
+    assert primary["no_material"] >= 1
+    assert primary["direct_primary"] + primary["EIGHT_K_SHELL"] + primary["no_material"] == 12
+    validated = validate_stage1_dataset_manifest(
+        manifest, cases, stratification=stratification
+    )
+    assert validated["case_count"] == 12
 
 
 def test_every_case_references_an_allowed_legacy_parent(tmp_path):
@@ -127,12 +145,66 @@ def test_abstain_fixture_has_empty_labels_and_macro_sector_challenge():
 
 
 def test_sufficient_fixture_primary_bodies_are_full_text_not_8k_shell(tmp_path):
+    """Direct-primary SUFFICIENT cases bind FULL_TEXT_BODY bodies only. The
+    c01-equivalent SUFFICIENT case (v1f-003) is coverage-limited with no local
+    material primary (NONE, empty expected_primary_evidence); v1f-012 shows a
+    coverage-limited news state may still have a FULL_TEXT_BODY filing primary."""
     rows, _cases, stratification, _manifest = _fixture_dataset(tmp_path)
     by_id = {row["case_id"]: row for row in rows}
+    # c01-equivalent: coverage-limited SUFFICIENT, no local material primary.
+    c01_entry = stratification["per_case"]["v1f-003"]
+    c01_row = by_id["v1f-003"]
+    assert c01_row["oracle_status"] == "SUFFICIENT"
+    assert c01_entry["coverage_limited"] is True
+    assert not c01_row["expected_primary_evidence"]
+    assert c01_entry["primary_evidence_kind"] == "NONE"
+    # Any direct-primary SUFFICIENT case must bind a substantive FULL_TEXT body.
     for case_id, entry in stratification["per_case"].items():
-        if by_id[case_id]["oracle_status"] == "SUFFICIENT":
-            assert by_id[case_id]["expected_primary_evidence"]
+        row = by_id[case_id]
+        if row["oracle_status"] == "SUFFICIENT" and row["expected_primary_evidence"]:
             assert entry["primary_evidence_kind"] == "FULL_TEXT_BODY"
+
+
+def test_coverage_limited_sufficient_without_local_primary_passes(tmp_path):
+    """c01-equivalent regression: SUFFICIENT + coverage_limited + NONE + empty
+    expected_primary_evidence must pass validation (public-world SUFFICIENT is
+    not downgraded by a local coverage gap)."""
+    rows, cases, stratification, manifest = _fixture_dataset(tmp_path)
+    # v1f-003 is the c01-equivalent fixture case.
+    entry = stratification["per_case"]["v1f-003"]
+    row = next(r for r in rows if r["case_id"] == "v1f-003")
+    assert row["oracle_status"] == "SUFFICIENT"
+    assert entry["coverage_limited"] is True
+    assert entry["news_content_state"] != "FULL_TEXT"
+    assert entry["primary_evidence_kind"] == "NONE"
+    assert not row["expected_primary_evidence"]
+    validated = validate_stage1_dataset_manifest(
+        manifest, cases, stratification=stratification
+    )
+    assert validated["case_count"] == 12
+
+
+def test_eight_k_shell_with_empty_primary_passes(tmp_path):
+    """A truthful EIGHT_K_SHELL record with empty expected_primary_evidence is
+    allowed for SUFFICIENT/PARTIAL/ABSTAIN under the corrected contract."""
+    rows, cases, stratification, manifest = _fixture_dataset(tmp_path)
+    entry = stratification["per_case"]["v1f-005"]
+    row = next(r for r in rows if r["case_id"] == "v1f-005")
+    assert entry["primary_evidence_kind"] == "EIGHT_K_SHELL"
+    assert not row["expected_primary_evidence"]
+    validated = validate_stage1_dataset_manifest(
+        manifest, cases, stratification=stratification
+    )
+    assert validated["case_count"] == 12
+
+
+def test_eight_k_shell_with_direct_primary_is_rejected(tmp_path):
+    """EIGHT_K_SHELL + non-empty expected_primary_evidence stays rejected."""
+    rows, cases, stratification, manifest = _fixture_dataset(tmp_path)
+    # v1f-001 is a direct-primary SUFFICIENT case; shell kind is contradictory.
+    stratification["per_case"]["v1f-001"]["primary_evidence_kind"] = "EIGHT_K_SHELL"
+    with pytest.raises(ValueError, match="primary_evidence_kind"):
+        validate_stage1_dataset_manifest(manifest, cases, stratification=stratification)
 
 
 def test_manifest_schema_roundtrip_passes(tmp_path):

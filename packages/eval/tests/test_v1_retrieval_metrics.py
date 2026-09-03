@@ -169,6 +169,24 @@ def test_primary_source_hit_denominator_is_cases_with_primary_evidence():
     assert primary.value >= 0.80
 
 
+def test_shell_or_empty_expected_primary_excluded_from_primary_hit_denominator():
+    """EIGHT_K_SHELL / empty expected_primary cases never enter the
+    primary-source-hit numerator or denominator."""
+    gold_cases = _gold_rows()
+    shell_row = next(g for g in gold_cases if g.case_id == "v1f-005")
+    assert not shell_row.expected_primary_evidence
+    metrics = compute_retrieval_metrics(_top_results(gold_cases), gold_cases, top_k=TOP_K)
+    primary = metrics.primary_source_hit
+    expected_primary_ids = {
+        g.case_id for g in gold_cases if g.expected_primary_evidence
+    }
+    assert shell_row.case_id not in expected_primary_ids
+    assert primary.denominator == len(expected_primary_ids)
+    assert set(primary.case_ids) <= expected_primary_ids
+    # Every shell/no-material case is non-scorable for the primary-source hit.
+    assert primary.non_scorable_count == len(gold_cases) - len(expected_primary_ids)
+
+
 def test_duplicate_adjusted_precision_counts_independence_groups():
     gold_cases = _gold_rows()
     gold = next(g for g in gold_cases if g.expected_primary_evidence)

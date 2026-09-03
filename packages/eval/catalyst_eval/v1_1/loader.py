@@ -1,10 +1,15 @@
-"""V1.1 GoldenCase dataset loader + provenance (M7-1).
+"""V1.1 GoldenCase dataset loader + provenance (M7-1/M7-2).
 
 Eval-owned loader (eval TSD §6; M7 execution lock). Validates the full Frozen
 V1.1 GoldenCase contract, rejects legacy-only values, enforces ABSTAIN refusal
 reasons, restricts MARKET_STRUCTURE_UNSUPPORTED to gap reason codes, verifies
 the immutable dataset content hash against a dataset manifest, and derives
-the dataset provenance string. Production packages never import this module.
+the dataset provenance string. The Stage-1 manifest validator separates the
+public-world human oracle_status from pinned-local coverage: SUFFICIENT does
+not require a local FULL_TEXT_BODY, EIGHT_K_SHELL truthfully records a local
+8-K shell only while expected_primary_evidence is empty, and every declared
+stratification aggregate is recomputed from per-case rows. Production
+packages never import this module.
 """
 from __future__ import annotations
 
@@ -185,10 +190,12 @@ PRIMARY_EVIDENCE_KIND_VALUES = frozenset(
 )
 MOVE_DIRECTION_VALUES = frozenset({"positive", "negative", "mixed", "unknown"})
 
-# Required aggregate Stage-1 strata on the 12-case human-reviewed set.
-REQUIRED_ORACLE_STATUS_COUNTS = {"SUFFICIENT": 5, "PARTIAL": 4, "ABSTAIN": 3}
-REQUIRED_PRIMARY_EVIDENCE_COUNTS = {"direct_primary": 6, "no_material": 6}
+# Required aggregate presence on the 12-case human-reviewed set. Exact
+# 5/4/3 and 6/6 quota locks are NOT Stage-1 requirements; the set needs at
+# least one of each oracle status and challenge family so every scenario class
+# is observable.
 REQUIRED_CHALLENGE_FAMILY_COVERAGE = {"COMPANY_SPECIFIC", "MACRO", "SECTOR"}
+REQUIRED_ORACLE_STATUS_PRESENCE = {"SUFFICIENT", "PARTIAL", "ABSTAIN"}
 
 
 def _require_approval(manifest: Mapping[str, Any]) -> None:
@@ -361,6 +368,103 @@ def _validate_stratification(
             )
 
     _validate_stage1_gates(cases, per_case)
+    _validate_declared_strata_equal_recomputed(stratification, cases, per_case)
+
+
+def _recompute_declared_aggregates(
+    cases: Sequence[GoldenCase],
+    per_case: Mapping[str, Mapping[str, object]],
+) -> dict[str, dict[str, int]]:
+    """Independently recompute every aggregate family the stratification may
+    declare. The validator compares each DECLARED key against these values so
+    mutating any aggregate count (not only coverage) fails closed."""
+    from collections import Counter
+
+    oracle = Counter(case.oracle_status for case in cases)
+    move = Counter()
+    family = Counter()
+    coverage_limited = 0
+    direct_primary = 0
+    shell = 0
+    no_material = 0
+    cause_company = 0
+    cause_macro = 0
+    cause_sector = 0
+    for case in cases:
+        entry = per_case[case.case_id]
+        move[entry.get("move_direction")] += 1
+        family[entry.get("challenge_family")] += 1
+        if entry.get("coverage_limited"):
+            coverage_limited += 1
+        kind = entry.get("primary_evidence_kind")
+        if case.expected_primary_evidence and kind == "FULL_TEXT_BODY":
+            direct_primary += 1
+        if kind == "EIGHT_K_SHELL":
+            shell += 1
+        if kind == "NONE":
+            no_material += 1
+        for label in case.acceptable_cause_labels:
+            if label.cause_type == "COMPANY_SPECIFIC_CATALYST":
+                cause_company += 1
+            elif label.cause_type == "MACRO_EVENT":
+                cause_macro += 1
+            elif label.cause_type == "SECTOR_MOVE":
+                cause_sector += 1
+    return {
+        "oracle_status": dict(oracle),
+        "move_direction": dict(move),
+        "challenge_family": dict(family),
+        "primary_evidence": {
+            "direct_primary": direct_primary,
+            "EIGHT_K_SHELL": shell,
+            "no_material": no_material,
+        },
+        "coverage": {
+            "full_text": len(cases) - coverage_limited,
+            "coverage_limited": coverage_limited,
+        },
+        "cause_category": {
+            "company_specific": cause_company,
+            "macro": cause_macro,
+            "sector": cause_sector,
+        },
+    }
+
+
+def _validate_declared_strata_equal_recomputed(
+    stratification: Mapping[str, Any],
+    cases: Sequence[GoldenCase],
+    per_case: Mapping[str, Mapping[str, object]],
+) -> None:
+    """Recompute ALL declared aggregate strata and reject any disagreement."""
+    strata = stratification.get("strata")
+    if not isinstance(strata, dict):
+        raise ValueError("stratification.strata must be an object")
+    recomputed = _recompute_declared_aggregates(cases, per_case)
+    for section, declared_counts in strata.items():
+        if not isinstance(declared_counts, dict):
+            raise ValueError(
+                f"stratification.strata.{section} must be an object of counts"
+            )
+        expected = recomputed.get(section)
+        if expected is None:
+            raise ValueError(
+                f"stratification.strata.{section} is not independently "
+                f"recomputable from per-case rows"
+            )
+        for key, declared in declared_counts.items():
+            if key not in expected:
+                raise ValueError(
+                    f"stratification.strata.{section}.{key} is not independently "
+                    f"recomputable from per-case rows"
+                )
+            if declared != expected[key]:
+                raise ValueError(
+                    f"stratification declared strata mismatch: "
+                    f"strata.{section}.{key}= {declared}, independently "
+                    f"recomputed= {expected[key]} (mutate per-case rows, not "
+                    f"aggregate counts)"
+                )
 
 
 def _validate_stage1_gates(
@@ -369,11 +473,14 @@ def _validate_stage1_gates(
 ) -> None:
     """Fail-closed aggregate and cross-field checks for the 12-case Stage-1 set.
 
-    The exact 12-case oracle and primary splits, positive/negative direction
-    coverage, challenge-family coverage (COMPANY_SPECIFIC/MACRO/SECTOR), at
-    least one recoverable corrective and one multi-gap recoverable case,
-    empty accepted cause labels on every ABSTAIN, refusal reasons on every
-    ABSTAIN, and the no-8-K-shell primary rule are enforced here.
+    Presence gates: exactly 12 cases, at least one SUFFICIENT/PARTIAL/ABSTAIN,
+    positive and negative direction coverage, challenge-family coverage
+    (COMPANY_SPECIFIC/MACRO/SECTOR), at least one recoverable corrective and
+    one multi-gap recoverable case, empty accepted cause labels plus refusal
+    reasons on every ABSTAIN, FULL_TEXT_BODY binding for every non-empty
+    expected_primary_evidence, and truthful EIGHT_K_SHELL recording with empty
+    expected_primary_evidence. Exact 5/4/3 and 6/6 quota arithmetic is NOT a
+    Stage-1 requirement and is not enforced here.
     """
     if len(cases) != 12:
         raise ValueError(
@@ -381,7 +488,6 @@ def _validate_stage1_gates(
         )
 
     oracle_counts: dict[str, int] = {}
-    primary_counts = {"direct_primary": 0, "no_material": 0}
     direction_counts: dict[str, int] = {}
     family_counts: dict[str, int] = {}
     has_corrective = False
@@ -392,38 +498,25 @@ def _validate_stage1_gates(
         entry = per_case[case.case_id]
         primary_kind = entry.get("primary_evidence_kind")
 
-        if primary_kind == "EIGHT_K_SHELL":
-            raise ValueError(
-                f"case {case.case_id!r}: EIGHT_K_SHELL is never material "
-                f"primary evidence and cannot appear in a Stage-1 manifest"
-            )
-
         if case.expected_primary_evidence:
-            primary_counts["direct_primary"] += 1
             if primary_kind != "FULL_TEXT_BODY":
                 raise ValueError(
-                    f"case {case.case_id!r} is direct_primary but "
+                    f"case {case.case_id!r} has expected_primary_evidence but "
                     f"primary_evidence_kind is {primary_kind!r}; direct primary "
                     f"evidence must be FULL_TEXT_BODY"
                 )
             if case.oracle_status not in ("SUFFICIENT", "PARTIAL"):
                 raise ValueError(
                     f"case {case.case_id!r} has expected_primary_evidence but "
-                    f"oracle_status {case.oracle_status!r} (no-material statuses "
-                    f"must keep expected_primary_evidence empty)"
+                    f"oracle_status {case.oracle_status!r} (ABSTAIN must keep "
+                    f"expected_primary_evidence empty)"
                 )
         else:
-            primary_counts["no_material"] += 1
-            if primary_kind != "NONE":
+            if primary_kind == "FULL_TEXT_BODY":
                 raise ValueError(
                     f"case {case.case_id!r} primary_evidence_kind "
-                    f"{primary_kind!r} requires expected_primary_evidence; "
-                    f"no_material cases must use NONE"
-                )
-            if case.oracle_status == "SUFFICIENT":
-                raise ValueError(
-                    f"case {case.case_id!r}: SUFFICIENT requires direct "
-                    f"FULL_TEXT_BODY primary evidence"
+                    f"FULL_TEXT_BODY requires non-empty expected_primary_evidence; "
+                    f"EIGHT_K_SHELL/NONE are the only empty-primary kinds"
                 )
 
         if case.oracle_status == "ABSTAIN":
@@ -454,15 +547,12 @@ def _validate_stage1_gates(
             if len(behavior.expected_gap_reason_codes) >= 2:
                 has_multi_gap = True
 
-    if oracle_counts != REQUIRED_ORACLE_STATUS_COUNTS:
+    missing_statuses = sorted(REQUIRED_ORACLE_STATUS_PRESENCE - set(oracle_counts))
+    if missing_statuses:
         raise ValueError(
-            f"Stage-1 oracle_status strata must be {REQUIRED_ORACLE_STATUS_COUNTS}, "
-            f"got {oracle_counts}"
-        )
-    if primary_counts != REQUIRED_PRIMARY_EVIDENCE_COUNTS:
-        raise ValueError(
-            f"Stage-1 primary_evidence split must be "
-            f"{REQUIRED_PRIMARY_EVIDENCE_COUNTS}, got {primary_counts}"
+            f"Stage-1 oracle_status strata require at least one each of "
+            f"SUFFICIENT/PARTIAL/ABSTAIN, missing {missing_statuses}; got "
+            f"{oracle_counts}"
         )
     if not direction_counts.get("positive") or not direction_counts.get("negative"):
         raise ValueError(
@@ -488,8 +578,6 @@ def _validate_stage1_gates(
         )
 
 
-
-
 __all__ = [
     "ALLOWED_LEGACY_PARENT_IDS",
     "CHALLENGE_FAMILY_VALUES",
@@ -497,8 +585,7 @@ __all__ = [
     "MOVE_DIRECTION_VALUES",
     "PRIMARY_EVIDENCE_KIND_VALUES",
     "REQUIRED_CHALLENGE_FAMILY_COVERAGE",
-    "REQUIRED_ORACLE_STATUS_COUNTS",
-    "REQUIRED_PRIMARY_EVIDENCE_COUNTS",
+    "REQUIRED_ORACLE_STATUS_PRESENCE",
     "STAGE1_MANIFEST_SCHEMA",
     "STAGE1_STRATIFICATION_SCHEMA",
     "canonical_bytes",
