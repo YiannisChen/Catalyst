@@ -3,8 +3,12 @@
 Citation correctness, causal support, and unsupported-material decisions come
 only from the sealed human output-audit artifact; LLM judges remain
 diagnostics. DATA-02: coverage-limited news cases are non-scorable for
-news-attribution denominators and are never reported as Analyst/model
-failures; coverage_limited and model_limited denominators stay separate.
+news-attribution denominators. News-body absence does not exclude
+filing-backed metrics: coverage-limited cases with bound
+expected_primary_evidence remain eligible for model-failure
+denominators. News-only coverage gaps are never reported as
+Analyst/model failures. coverage_limited and model_limited
+denominators stay separate.
 """
 from __future__ import annotations
 
@@ -181,24 +185,61 @@ def test_no_material_without_sanity_is_counted():
     assert metrics.no_material_producing_sufficient.numerator == 0
 
 
-def test_coverage_limited_cases_are_never_model_failures():
+def test_news_only_coverage_limited_case_is_non_scorable_for_news_and_model_failure():
+    """News-body absence with no filing primary excludes news-attribution and
+    model-failure denominators. It is never reported as a model failure."""
     gold = GoldenCase.model_validate(
         make_case(
-            case_id="cov-1", ticker="TSLA", session_date="2025-07-24",
+            case_id="news-gap-1", ticker="AAPL", session_date="2025-05-12",
+            cutoff="2025-05-12T20:00:00Z", question="Why did AAPL move this session?",
+            oracle_status="PARTIAL", direction="positive",
+            cause_types=("MACRO_EVENT",), labels=("fixture-macro",),
+            expected_primary_evidence=(),
+        )
+    )
+    run = _run_output(
+        gold,
+        output_status="SUFFICIENT",
+        claims=(_claim("c1"),),
+        coverage_limited=True,
+    )
+    audit = _audit(gold, run)
+    metrics = compute_attribution_metrics([run], [audit], [gold])
+    assert metrics.coverage_limited_count == 1
+    assert metrics.false_sufficient.eligible_count == 0
+    assert metrics.false_sufficient.non_scorable_count == 1
+    assert metrics.false_sufficient.numerator == 0
+    assert metrics.citation_correctness.eligible_count == 0
+    assert metrics.citation_correctness.non_scorable_count == 1
+
+
+def test_filing_backed_coverage_limited_case_stays_eligible_for_filing_metrics():
+    """News-body absence must not exclude filing-backed model-failure or
+    citation denominators when expected_primary_evidence is bound."""
+    gold = GoldenCase.model_validate(
+        make_case(
+            case_id="file-gap-1", ticker="TSLA", session_date="2025-07-24",
             cutoff="2025-07-24T20:00:00Z", question="Why did TSLA fall?",
-            oracle_status="SUFFICIENT", direction="negative",
+            oracle_status="PARTIAL", direction="negative",
             cause_types=("COMPANY_SPECIFIC_CATALYST",), labels=("fixture-label-0",),
             evidence_ids=("fixture-ev-001",),
             expected_primary_evidence=("fixture-ev-001",),
         )
     )
-    run = _run_output(gold, claims=(_claim("c1"),), coverage_limited=True)
+    run = _run_output(
+        gold,
+        output_status="SUFFICIENT",
+        claims=(_claim("c1"),),
+        coverage_limited=True,
+    )
     audit = _audit(gold, run)
     metrics = compute_attribution_metrics([run], [audit], [gold])
     assert metrics.coverage_limited_count == 1
-    # The coverage-limited case is excluded from model_limited denominators.
-    assert metrics.coverage_limited_count == 1
-    assert metrics.false_sufficient.eligible_count == 0
+    assert metrics.false_sufficient.eligible_count == 1
+    assert metrics.false_sufficient.non_scorable_count == 0
+    assert metrics.false_sufficient.numerator == 1
+    assert metrics.citation_correctness.eligible_count == 1
+    assert metrics.citation_correctness.non_scorable_count == 0
 
 
 def test_output_audit_roundtrip_and_validation(tmp_path):

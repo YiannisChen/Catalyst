@@ -10,8 +10,13 @@ completed sanity tasks = 0.
 
 DATA-02: a news case whose serving text is title-only/metadata-only/
 unrecovered is coverage-limited / non-scorable for news-attribution
-denominators and is NEVER reported as an Analyst or model failure;
-``coverage_limited`` and ``model_limited`` denominators stay separate.
+denominators. News-body absence does not exclude filing-backed metrics:
+a coverage-limited case with bound ``expected_primary_evidence`` remains
+eligible for model-failure and filing citation denominators. A
+coverage-limited case with no filing primary is non-scorable for both
+news-attribution and model-failure (never reported as an Analyst/model
+failure). ``coverage_limited`` and ``model_limited`` denominators stay
+separate.
 """
 from __future__ import annotations
 
@@ -176,10 +181,13 @@ def compute_attribution_metrics(
     for case_id, gold in gold_by_case.items():
         run = run_by_case[case_id]
         audit = audit_by_case[case_id]
+        filing_backed = bool(gold.expected_primary_evidence)
+        news_only_gap = bool(run.coverage_limited) and not filing_backed
         if run.coverage_limited:
             coverage_limited_count += 1
-            # DATA-02: coverage-limited cases are non-scorable for
-            # news-attribution denominators, never model failures.
+        if news_only_gap:
+            # News-body absence with no filing primary: non-scorable for
+            # news-attribution and model-failure.
             model_limited_count += 0
         else:
             model_limited_count += 1
@@ -187,9 +195,9 @@ def compute_attribution_metrics(
         confusion[(gold.oracle_status, run.output_status)] = (
             confusion.get((gold.oracle_status, run.output_status), 0) + 1
         )
-        # DATA-02: model-failure numerators/denominators exclude
-        # coverage-limited cases (never reported as Analyst/model failures).
-        if not run.coverage_limited:
+        # Filing-backed cases stay in model-failure denominators even when
+        # news serving is coverage-limited. News-only coverage gaps do not.
+        if not news_only_gap:
             if gold.oracle_status == "ABSTAIN" and run.output_status == "SUFFICIENT":
                 abstain_sufficient += 1
             if (
@@ -214,6 +222,18 @@ def compute_attribution_metrics(
                 and run.refusal_reason == gold.expected_refusal_reason
             ):
                 refusal_ok += 1
+
+        if run.latency_ms is not None:
+            latencies.append(run.latency_ms)
+        if run.tokens is not None:
+            tokens_total += run.tokens
+            token_cases += 1
+        if run.cost_usd is not None:
+            cost_total += run.cost_usd
+            cost_cases += 1
+
+        if news_only_gap:
+            continue
 
         audit_decisions = {decision.claim_id: decision for decision in audit.claims}
         for claim in run.claims:
@@ -243,15 +263,6 @@ def compute_attribution_metrics(
                     unsupported_material_cases.append(case_id)
                 if claim.role == "PRIMARY" and decision.decision == "UNSUPPORTED":
                     unsupported_primary += 1
-
-        if run.latency_ms is not None:
-            latencies.append(run.latency_ms)
-        if run.tokens is not None:
-            tokens_total += run.tokens
-            token_cases += 1
-        if run.cost_usd is not None:
-            cost_total += run.cost_usd
-            cost_cases += 1
 
     citation_value = citation_numerator / citation_denominator if citation_denominator else None
     evidence_value = evidence_supported / evidence_total if evidence_total else None
@@ -302,10 +313,11 @@ def compute_attribution_metrics(
         value=unsupported_material_value, case_ids=unsupported_material_cases,
         hard_gate=True, threshold=UNSUPPORTED_MATERIAL_CLAIMS_MAX, upper_bound=True,
     )
-    model_eligible = total_cases - coverage_limited_count
+    model_eligible = model_limited_count
+    model_non_scorable = total_cases - model_eligible
     false_sufficient_res = _metric(
         "false_sufficient", numerator=false_sufficient, denominator=model_eligible,
-        eligible=model_eligible, non_scorable=coverage_limited_count,
+        eligible=model_eligible, non_scorable=model_non_scorable,
         value=float(false_sufficient),
         case_ids=false_sufficient_cases, hard_gate=True,
         threshold=FALSE_SUFFICIENT_MAX, upper_bound=True,
@@ -313,21 +325,21 @@ def compute_attribution_metrics(
     abstain_res = _metric(
         "abstain_producing_sufficient", numerator=abstain_sufficient,
         denominator=model_eligible, eligible=model_eligible,
-        non_scorable=coverage_limited_count,
+        non_scorable=model_non_scorable,
         value=float(abstain_sufficient), case_ids=[],
         hard_gate=True, threshold=0.0, upper_bound=True,
     )
     no_material_res = _metric(
         "no_material_producing_sufficient", numerator=no_material_sufficient,
         denominator=model_eligible, eligible=model_eligible,
-        non_scorable=coverage_limited_count,
+        non_scorable=model_non_scorable,
         value=float(no_material_sufficient), case_ids=[],
         hard_gate=True, threshold=0.0, upper_bound=True,
     )
     no_material_sanity_res = _metric(
         "no_material_without_sanity", numerator=no_material_no_sanity,
         denominator=model_eligible, eligible=model_eligible,
-        non_scorable=coverage_limited_count,
+        non_scorable=model_non_scorable,
         value=float(no_material_no_sanity), case_ids=[],
         hard_gate=True, threshold=0.0, upper_bound=True,
     )

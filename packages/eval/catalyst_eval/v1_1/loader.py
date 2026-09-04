@@ -431,6 +431,15 @@ def _recompute_declared_aggregates(
     }
 
 
+MANDATORY_STRATA_SECTIONS = (
+    "oracle_status",
+    "challenge_family",
+    "move_direction",
+    "primary_evidence",
+    "coverage",
+)
+
+
 def _validate_declared_strata_equal_recomputed(
     stratification: Mapping[str, Any],
     cases: Sequence[GoldenCase],
@@ -440,6 +449,14 @@ def _validate_declared_strata_equal_recomputed(
     strata = stratification.get("strata")
     if not isinstance(strata, dict):
         raise ValueError("stratification.strata must be an object")
+    missing = [
+        section for section in MANDATORY_STRATA_SECTIONS if section not in strata
+    ]
+    if missing:
+        raise ValueError(
+            "stratification.strata missing mandatory section(s): "
+            + ", ".join(missing)
+        )
     recomputed = _recompute_declared_aggregates(cases, per_case)
     for section, declared_counts in strata.items():
         if not isinstance(declared_counts, dict):
@@ -582,6 +599,7 @@ __all__ = [
     "ALLOWED_LEGACY_PARENT_IDS",
     "CHALLENGE_FAMILY_VALUES",
     "LEGACY_PARENT_PREFIX",
+    "MANDATORY_STRATA_SECTIONS",
     "MOVE_DIRECTION_VALUES",
     "PRIMARY_EVIDENCE_KIND_VALUES",
     "REQUIRED_CHALLENGE_FAMILY_COVERAGE",

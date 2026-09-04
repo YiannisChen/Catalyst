@@ -296,3 +296,24 @@ def test_declared_oracle_status_contradicts_per_case(tmp_path):
     though per-case rows are internally consistent."""
     with pytest.raises(ValueError, match="strata"):
         _mutate_declared_stratum(tmp_path, "oracle_status", "SUFFICIENT", 5)
+
+
+MANDATORY_STRATA_SECTIONS = (
+    "oracle_status",
+    "challenge_family",
+    "move_direction",
+    "primary_evidence",
+    "coverage",
+)
+
+
+@pytest.mark.parametrize("section", MANDATORY_STRATA_SECTIONS)
+def test_omitting_mandatory_strata_section_fails(tmp_path, section):
+    """Every mandatory aggregate section must be present; omitting one fails
+    even when remaining declared counts still match per-case rows."""
+    rows, cases, stratification, manifest = _dataset(tmp_path)
+    del stratification["strata"][section]
+    with pytest.raises(ValueError, match="mandatory"):
+        validate_stage1_dataset_manifest(
+            manifest, cases, stratification=stratification
+        )
