@@ -225,6 +225,7 @@ def _run_output_from_ledger_row(row: Any, gold: GoldenCase) -> Any:
         tokens=facts.get("tokens"),
         cost_usd=facts.get("cost_usd"),
         coverage_limited=False,
+        model_limited=bool(facts.get("model_limited")),
     )
 
 def load_output_audit(path: str | Path) -> list[Stage1OutputAudit]:

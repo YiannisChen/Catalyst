@@ -62,6 +62,7 @@ def _run_output(
     claims: tuple[RunClaimOutput, ...] = (),
     sanity_tasks: tuple[str, ...] = (),
     coverage_limited: bool = False,
+    model_limited: bool = False,
 ) -> RunAttributionOutput:
     status = output_status or gold.oracle_status
     return RunAttributionOutput(
@@ -77,6 +78,7 @@ def _run_output(
         tokens=200,
         cost_usd=0.01,
         coverage_limited=coverage_limited,
+        model_limited=model_limited,
     )
 
 
@@ -200,9 +202,11 @@ def _run_all(
     *,
     output_status: dict[str, str] | None = None,
     coverage_limited: set[str] | None = None,
+    model_limited: set[str] | None = None,
 ):
     """Run every gold case through a default-support run with per-case toggles."""
     limited = coverage_limited or set()
+    model = model_limited or set()
     runs = []
     audits = []
     for gold in gold_cases:
@@ -211,6 +215,7 @@ def _run_all(
             claims=(_claim(f"claim-{gold.case_id}"),),
             output_status=(output_status or {}).get(gold.case_id),
             coverage_limited=gold.case_id in limited,
+            model_limited=gold.case_id in model,
         )
         runs.append(run)
         audits.append(_audit(gold, run))
@@ -435,6 +440,50 @@ def test_no_material_without_sanity_denominator_is_no_material_runs():
     assert metrics.no_material_without_sanity.eligible_count == 2
     assert metrics.no_material_without_sanity.non_scorable_count == 1
     assert metrics.no_material_without_sanity.gate_passed is False
+
+
+def test_model_limited_count_is_zero_without_explicit_model_limitation():
+    """model_limited_count is not an alias for model-eligible cases: a full
+    12-case run with no explicit model/runtime limitation must count 0."""
+    gold_cases = _gold_rows()
+    metrics = _run_all(gold_cases)
+    assert metrics.model_limited_count == 0
+    assert metrics.false_sufficient.eligible_count == 12
+
+
+def test_model_limited_count_counts_explicit_model_limited_runs():
+    """A run explicitly flagged model_limited is counted once; the counter is
+    independent from coverage_limited_count."""
+    gold_cases = _gold_rows()
+    metrics = _run_all(
+        gold_cases,
+        coverage_limited={"v1f-003"},
+        model_limited={"v1f-007"},
+    )
+    assert metrics.coverage_limited_count == 1
+    assert metrics.model_limited_count == 1
+
+
+def test_empty_no_material_checks_record_not_exercised():
+    """Zero-eligible conditional NO_MATERIAL checks must publish exercised=false
+    instead of implying the zero-violation formula was empirically validated."""
+    gold_cases = _gold_rows()
+    assert not any(
+        g.expected_attribution_type == "NO_MATERIAL_PUBLIC_CATALYST"
+        for g in gold_cases
+    ), "fixture regression: baseline must not contain a NO_MATERIAL stratum"
+    metrics = _run_all(gold_cases)
+    assert metrics.no_material_producing_sufficient.eligible_count == 0
+    assert metrics.no_material_producing_sufficient.numerator == 0
+    assert metrics.no_material_producing_sufficient.gate_passed is True
+    assert metrics.no_material_producing_sufficient.exercised is False
+    assert metrics.no_material_without_sanity.eligible_count == 0
+    assert metrics.no_material_without_sanity.numerator == 0
+    assert metrics.no_material_without_sanity.gate_passed is True
+    assert metrics.no_material_without_sanity.exercised is False
+    as_dict = metrics.as_dict()
+    assert as_dict["no_material_producing_sufficient"]["exercised"] is False
+    assert as_dict["no_material_without_sanity"]["exercised"] is False
 
 
 def test_output_audit_roundtrip_and_validation(tmp_path):

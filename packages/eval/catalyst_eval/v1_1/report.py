@@ -133,6 +133,7 @@ def build_report_payload(
                 tokens=facts.get("tokens"),
                 cost_usd=facts.get("cost_usd"),
                 coverage_limited=coverage_by_case[case_id],
+                model_limited=bool(facts.get("model_limited")),
             )
         )
         trajectory = facts.get("trajectory") or {}

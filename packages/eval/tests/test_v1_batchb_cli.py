@@ -623,7 +623,15 @@ def test_cli_report_publishes_real_gates_and_non_comparable(cli_env):
     assert payload["hard_gates"], "report must compute real hard gates"
     assert "citation_correctness" in payload["hard_gates"]
     assert payload["coverage_limited_count"] >= 0
-    assert payload["model_limited_count"] > 0
+    # The offline fixture completes every case with no explicit model/runtime
+    # limitation, so model_limited_count must be 0 (not 12).
+    assert payload["model_limited_count"] == 0
+    # Conditional NO_MATERIAL gates have no eligible case in the fixture and
+    # must record exercised=false while keeping the frozen zero-violation pass.
+    assert payload["attribution_metrics"]["no_material_producing_sufficient"]["eligible_count"] == 0
+    assert payload["attribution_metrics"]["no_material_producing_sufficient"]["exercised"] is False
+    assert payload["hard_gates"]["no_material_producing_sufficient"] is True
+    assert payload["attribution_metrics"]["no_material_without_sanity"]["exercised"] is False
     assert payload["comparability"] == "NON-COMPARABLE"
     assert payload["eval_id"] == eval_id
 

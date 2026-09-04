@@ -65,6 +65,10 @@ class MetricResult:
     pool_ids: tuple[str, ...]
     hard_gate: bool
     gate_passed: bool | None = None
+    # exercised=False means the metric had no eligible/denominator stratum, so
+    # a zero-violation "pass" is a frozen formula artifact, not an empirically
+    # validated check.
+    exercised: bool | None = None
 
     def passed(self, *, threshold: float | None = None) -> bool | None:
         if self.non_scorable_count and self.denominator == 0:

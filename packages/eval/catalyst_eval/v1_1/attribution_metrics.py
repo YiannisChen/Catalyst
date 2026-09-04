@@ -22,6 +22,14 @@ primary-source retrieval/citation eligibility only; bound primary-source
 (including White House/CMS NEWS evidence) keeps a coverage-limited case
 eligible for primary-source citation metrics. ``coverage_limited`` and
 ``model_limited`` reporting stay separate.
+
+``model_limited_count`` counts only runs explicitly recorded as limited by a
+model/runtime constraint (``RunAttributionOutput.model_limited``); it is 0 for
+the completed 12-case packet and is never an alias for the model-eligible case
+count (per-metric eligible counts already publish that). Conditional NO_MATERIAL
+checks publish ``exercised=false`` when their eligible stratum is empty, so a
+frozen zero-violation pass on zero eligible cases is never described as
+empirically validated behavior.
 """
 from __future__ import annotations
 
@@ -62,6 +70,9 @@ class RunAttributionOutput:
     tokens: int | None = None
     cost_usd: float | None = None
     coverage_limited: bool = False
+    # True only when the run was genuinely excluded by a model/runtime
+    # limitation recorded in the sealed run facts (never coverage limitation).
+    model_limited: bool = False
 
 
 @dataclass(frozen=True)
@@ -98,6 +109,7 @@ class AttributionMetrics:
                 "case_ids": list(getattr(self, name).case_ids),
                 "hard_gate": getattr(self, name).hard_gate,
                 "gate_passed": getattr(self, name).gate_passed,
+                "exercised": getattr(self, name).exercised,
             }
             for name in (
                 "citation_correctness", "evidence_precision", "causal_relevance",
@@ -123,10 +135,15 @@ def _metric(
     threshold: float | None = None,
     upper_bound: bool = False,
     gate_passed_override: bool | None = None,
+    exercised: bool | None = None,
 ) -> MetricResult:
     gate_passed: bool | None = gate_passed_override
     if gate_passed is None and value is not None and denominator > 0 and threshold is not None:
         gate_passed = bool(value <= threshold) if upper_bound else bool(value >= threshold)
+    # An empty eligible stratum means the check was not exercised; a zero
+    # numerator is then a formula artifact, never empirical validation.
+    if exercised is None:
+        exercised = eligible > 0 or denominator > 0
     return MetricResult(
         metric_id=metric_id,
         numerator=numerator,
@@ -139,6 +156,7 @@ def _metric(
         pool_ids=(),
         hard_gate=hard_gate,
         gate_passed=gate_passed,
+        exercised=exercised,
     )
 
 
@@ -324,14 +342,18 @@ def compute_attribution_metrics(
         value=unsupported_material_value, case_ids=unsupported_material_cases,
         hard_gate=True, threshold=UNSUPPORTED_MATERIAL_CLAIMS_MAX, upper_bound=True,
     )
-    # Report-only counter: every Stage-1 case is eligible for the
-    # false_sufficient model-failure gate under the locked "<= 1 of 12"
-    # formula. Coverage limitation affects only news-attribution metrics;
-    # each model-failure metric publishes its own eligible/non-scorable counts.
-    # These are zero-tolerance/count "violations" gates (mirroring retrieval
-    # violations): an empty eligible stratum with zero violations passes, while
-    # any violation fails, and eligible/non-scorable counts stay truthful.
-    model_limited_count = total_cases
+    # Report-only counter for cases genuinely excluded by a model/runtime
+    # limitation recorded in the sealed run facts. It is 0 for the completed
+    # 12-case packet (no such limitation) and is never an alias for
+    # model-eligible cases: coverage limitation is not a model limitation and
+    # per-metric eligible counts already publish eligibility.
+    model_limited_count = sum(1 for run in run_outputs if run.model_limited)
+
+    # Model-failure safety gates are zero-tolerance/count "violations" gates
+    # (mirroring retrieval violations): an empty eligible stratum with zero
+    # violations passes the frozen formula, while any violation fails. Empty
+    # conditional strata publish exercised=false so the pass is not described
+    # as empirically validated behavior.
     false_sufficient_res = _metric(
         "false_sufficient", numerator=false_sufficient, denominator=total_cases,
         eligible=total_cases, non_scorable=0,
@@ -355,6 +377,7 @@ def compute_attribution_metrics(
         value=float(no_material_sufficient), case_ids=[],
         hard_gate=True, threshold=0.0, upper_bound=True,
         gate_passed_override=(no_material_sufficient == 0),
+        exercised=no_material_expected_count > 0,
     )
     no_material_sanity_res = _metric(
         "no_material_without_sanity", numerator=no_material_no_sanity,
@@ -363,6 +386,7 @@ def compute_attribution_metrics(
         value=float(no_material_no_sanity), case_ids=[],
         hard_gate=True, threshold=0.0, upper_bound=True,
         gate_passed_override=(no_material_no_sanity == 0),
+        exercised=no_material_run_count > 0,
     )
     refusal = _metric(
         "refusal_correctness", numerator=refusal_ok, denominator=refusal_denom,
