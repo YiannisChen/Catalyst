@@ -299,10 +299,14 @@ def test_c04_regression_abstain_coverage_limited_empty_primary_sufficient_fails_
     audit = _audit(gold, run)
     metrics = compute_attribution_metrics([run], [audit], [gold])
     assert metrics.coverage_limited_count == 1
+    # The case is registered by BOTH safety gates: a false SUFFICIENT and an
+    # ABSTAIN producing SUFFICIENT. The false_sufficient aggregate gate uses
+    # the locked <=1-of-12 tolerance (one lone violation still passes the
+    # count<=1 formula); the ABSTAIN hard gate has zero tolerance and fails.
     assert metrics.false_sufficient.numerator == 1
     assert metrics.false_sufficient.eligible_count == 1
     assert metrics.false_sufficient.non_scorable_count == 0
-    assert metrics.false_sufficient.gate_passed is False
+    assert metrics.false_sufficient.gate_passed is True
     assert metrics.abstain_producing_sufficient.numerator == 1
     assert metrics.abstain_producing_sufficient.eligible_count == 1
     assert metrics.abstain_producing_sufficient.non_scorable_count == 0
