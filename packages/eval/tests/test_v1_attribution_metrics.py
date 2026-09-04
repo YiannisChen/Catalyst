@@ -2,13 +2,23 @@
 
 Citation correctness, causal support, and unsupported-material decisions come
 only from the sealed human output-audit artifact; LLM judges remain
-diagnostics. DATA-02: coverage-limited news cases are non-scorable for
-news-attribution denominators. News-body absence does not exclude
-filing-backed metrics: coverage-limited cases with bound
-expected_primary_evidence remain eligible for model-failure
-denominators. News-only coverage gaps are never reported as
-Analyst/model failures. coverage_limited and model_limited
-denominators stay separate.
+diagnostics. DATA-02: coverage-limited cases are non-scorable for
+news-attribution efficacy metrics only. News-body absence is never
+misattributed to the model. Model-failure safety gates are never suppressed by
+coverage limitation or by empty expected_primary_evidence:
+
+- false_sufficient denominator/eligible_count = all 12 Stage-1 cases.
+- abstain_producing_sufficient denominator/eligible_count = ABSTAIN oracle
+  cases only.
+- no_material_producing_sufficient denominator = cases whose
+  expected_attribution_type is NO_MATERIAL_PUBLIC_CATALYST.
+- no_material_without_sanity denominator = runs producing
+  NO_MATERIAL_PUBLIC_CATALYST.
+
+expected_primary_evidence controls primary-source retrieval/citation
+eligibility only; bound primary-source (including White House/CMS NEWS
+evidence) stays eligible for citation metrics when the news body is
+coverage-limited. coverage_limited and model_limited reporting stay separate.
 """
 from __future__ import annotations
 
@@ -185,9 +195,31 @@ def test_no_material_without_sanity_is_counted():
     assert metrics.no_material_producing_sufficient.numerator == 0
 
 
-def test_news_only_coverage_limited_case_is_non_scorable_for_news_and_model_failure():
-    """News-body absence with no filing primary excludes news-attribution and
-    model-failure denominators. It is never reported as a model failure."""
+def _run_all(
+    gold_cases: list[GoldenCase],
+    *,
+    output_status: dict[str, str] | None = None,
+    coverage_limited: set[str] | None = None,
+):
+    """Run every gold case through a default-support run with per-case toggles."""
+    limited = coverage_limited or set()
+    runs = []
+    audits = []
+    for gold in gold_cases:
+        run = _run_output(
+            gold,
+            claims=(_claim(f"claim-{gold.case_id}"),),
+            output_status=(output_status or {}).get(gold.case_id),
+            coverage_limited=gold.case_id in limited,
+        )
+        runs.append(run)
+        audits.append(_audit(gold, run))
+    return compute_attribution_metrics(runs, audits, gold_cases)
+
+
+def test_news_gap_coverage_limited_case_is_non_scorable_for_news_attribution_only():
+    """News-body absence with no bound primary-source is non-scorable for
+    news-attribution/citation metrics only; false SUFFICIENT still counts."""
     gold = GoldenCase.model_validate(
         make_case(
             case_id="news-gap-1", ticker="AAPL", session_date="2025-05-12",
@@ -206,19 +238,21 @@ def test_news_only_coverage_limited_case_is_non_scorable_for_news_and_model_fail
     audit = _audit(gold, run)
     metrics = compute_attribution_metrics([run], [audit], [gold])
     assert metrics.coverage_limited_count == 1
-    assert metrics.false_sufficient.eligible_count == 0
-    assert metrics.false_sufficient.non_scorable_count == 1
-    assert metrics.false_sufficient.numerator == 0
+    # false SUFFICIENT is a model-failure safety gate: all cases are eligible.
+    assert metrics.false_sufficient.eligible_count == 1
+    assert metrics.false_sufficient.non_scorable_count == 0
+    assert metrics.false_sufficient.numerator == 1
+    # News-attribution efficacy (citation) stays non-scorable on the gap.
     assert metrics.citation_correctness.eligible_count == 0
     assert metrics.citation_correctness.non_scorable_count == 1
 
 
-def test_filing_backed_coverage_limited_case_stays_eligible_for_filing_metrics():
-    """News-body absence must not exclude filing-backed model-failure or
-    citation denominators when expected_primary_evidence is bound."""
+def test_bound_primary_source_coverage_limited_case_counts_model_failure_and_citation():
+    """Coverage limitation must not exclude bound primary-source (filing or
+    White House/CMS NEWS evidence) from model-failure or citation metrics."""
     gold = GoldenCase.model_validate(
         make_case(
-            case_id="file-gap-1", ticker="TSLA", session_date="2025-07-24",
+            case_id="bound-gap-1", ticker="TSLA", session_date="2025-07-24",
             cutoff="2025-07-24T20:00:00Z", question="Why did TSLA fall?",
             oracle_status="PARTIAL", direction="negative",
             cause_types=("COMPANY_SPECIFIC_CATALYST",), labels=("fixture-label-0",),
@@ -240,6 +274,163 @@ def test_filing_backed_coverage_limited_case_stays_eligible_for_filing_metrics()
     assert metrics.false_sufficient.numerator == 1
     assert metrics.citation_correctness.eligible_count == 1
     assert metrics.citation_correctness.non_scorable_count == 0
+
+
+def test_c04_regression_abstain_coverage_limited_empty_primary_sufficient_fails_safety_gates():
+    """c04 regression: ABSTAIN + coverage_limited + empty expected_primary,
+    model output SUFFICIENT, must fail false_sufficient AND
+    abstain_producing_sufficient."""
+    gold = GoldenCase.model_validate(
+        make_case(
+            case_id="v1f-c04-reg", ticker="JPM", session_date="2025-02-20",
+            cutoff="2025-02-20T21:00:00Z", question="Why did JPM sit out this session?",
+            oracle_status="ABSTAIN", direction="unknown",
+            cause_types=(),
+            expected_refusal_reason=REFUSAL,
+            expected_attribution_type=None,
+        )
+    )
+    run = _run_output(
+        gold,
+        output_status="SUFFICIENT",
+        claims=(),
+        coverage_limited=True,
+    )
+    audit = _audit(gold, run)
+    metrics = compute_attribution_metrics([run], [audit], [gold])
+    assert metrics.coverage_limited_count == 1
+    assert metrics.false_sufficient.numerator == 1
+    assert metrics.false_sufficient.eligible_count == 1
+    assert metrics.false_sufficient.non_scorable_count == 0
+    assert metrics.false_sufficient.gate_passed is False
+    assert metrics.abstain_producing_sufficient.numerator == 1
+    assert metrics.abstain_producing_sufficient.eligible_count == 1
+    assert metrics.abstain_producing_sufficient.non_scorable_count == 0
+    assert metrics.abstain_producing_sufficient.gate_passed is False
+    assert metrics.status_confusion_matrix.get(("ABSTAIN", "SUFFICIENT")) == 1
+
+
+def test_false_sufficient_denominator_is_all_stage1_cases():
+    """false SUFFICIENT uses the locked <=1-of-12 denominator: every one of
+    the 12 Stage-1 cases is eligible regardless of coverage limitation."""
+    gold_cases = _gold_rows()
+    metrics = _run_all(
+        gold_cases,
+        output_status={"v1f-007": "SUFFICIENT"},
+        coverage_limited={"v1f-007"},
+    )
+    assert metrics.coverage_limited_count == 1
+    assert metrics.false_sufficient.numerator == 1
+    assert metrics.false_sufficient.eligible_count == 12
+    assert metrics.false_sufficient.non_scorable_count == 0
+    assert metrics.false_sufficient.case_ids == ("v1f-007",)
+
+
+def test_abstain_producing_sufficient_denominator_is_abstain_cases_only():
+    """abstain_producing_sufficient counts ABSTAIN-oracle cases that output
+    SUFFICIENT; other cases are non-scorable for that metric."""
+    gold_cases = _gold_rows()
+    metrics = _run_all(
+        gold_cases,
+        output_status={"v1f-011": "SUFFICIENT"},
+    )
+    assert metrics.abstain_producing_sufficient.numerator == 1
+    assert metrics.abstain_producing_sufficient.eligible_count == 1
+    assert metrics.abstain_producing_sufficient.non_scorable_count == 11
+    assert metrics.abstain_producing_sufficient.gate_passed is False
+    assert metrics.false_sufficient.numerator == 1
+    assert metrics.false_sufficient.eligible_count == 12
+
+
+def test_no_material_producing_sufficient_denominator_is_expected_no_material_cases():
+    """no_material_producing_sufficient denominator = cases whose
+    expected_attribution_type is NO_MATERIAL_PUBLIC_CATALYST."""
+    nm1 = GoldenCase.model_validate(
+        make_case(
+            case_id="nm-1", ticker="AAPL", session_date="2026-01-06",
+            cutoff="2026-01-06T21:00:00Z", question="Why did AAPL move?",
+            oracle_status="PARTIAL", direction="mixed",
+            cause_types=("MACRO_EVENT",), labels=("fixture-macro",),
+            expected_attribution_type="NO_MATERIAL_PUBLIC_CATALYST",
+        )
+    )
+    nm2 = GoldenCase.model_validate(
+        make_case(
+            case_id="nm-2", ticker="AAPL", session_date="2026-01-07",
+            cutoff="2026-01-07T21:00:00Z", question="Why did AAPL move again?",
+            oracle_status="PARTIAL", direction="mixed",
+            cause_types=("MACRO_EVENT",), labels=("fixture-macro",),
+            expected_attribution_type="NO_MATERIAL_PUBLIC_CATALYST",
+        )
+    )
+    eb = GoldenCase.model_validate(
+        make_case(
+            case_id="eb-1", ticker="MSFT", session_date="2026-01-08",
+            cutoff="2026-01-08T21:00:00Z", question="Why did MSFT move?",
+            oracle_status="PARTIAL", direction="positive",
+            cause_types=("COMPANY_SPECIFIC_CATALYST",), labels=("fixture-msft",),
+            evidence_ids=("fixture-ev-004",),
+            expected_primary_evidence=("fixture-ev-004",),
+        )
+    )
+    gold_cases = [nm1, nm2, eb]
+    runs = [
+        _run_output(nm1, output_status="SUFFICIENT"),
+        _run_output(nm2, output_status="PARTIAL", attribution_type="NO_MATERIAL_PUBLIC_CATALYST", sanity_tasks=("sanity:ok",)),
+        _run_output(eb, output_status="SUFFICIENT"),
+    ]
+    audits = [_audit(g, r) for g, r in zip(gold_cases, runs)]
+    metrics = compute_attribution_metrics(runs, audits, gold_cases)
+    assert metrics.no_material_producing_sufficient.numerator == 1
+    assert metrics.no_material_producing_sufficient.eligible_count == 2
+    assert metrics.no_material_producing_sufficient.non_scorable_count == 1
+    assert metrics.false_sufficient.numerator == 2
+    assert metrics.false_sufficient.eligible_count == 3
+
+
+def test_no_material_without_sanity_denominator_is_no_material_runs():
+    """no_material_without_sanity counts runs that produced
+    NO_MATERIAL_PUBLIC_CATALYST without completed sanity tasks."""
+    nm_a = GoldenCase.model_validate(
+        make_case(
+            case_id="nm-a", ticker="AAPL", session_date="2026-01-06",
+            cutoff="2026-01-06T21:00:00Z", question="Why did AAPL move?",
+            oracle_status="PARTIAL", direction="mixed",
+            cause_types=("MACRO_EVENT",), labels=("fixture-macro",),
+            expected_attribution_type="NO_MATERIAL_PUBLIC_CATALYST",
+        )
+    )
+    nm_b = GoldenCase.model_validate(
+        make_case(
+            case_id="nm-b", ticker="AAPL", session_date="2026-01-07",
+            cutoff="2026-01-07T21:00:00Z", question="Why did AAPL move again?",
+            oracle_status="PARTIAL", direction="mixed",
+            cause_types=("MACRO_EVENT",), labels=("fixture-macro",),
+            expected_attribution_type="NO_MATERIAL_PUBLIC_CATALYST",
+        )
+    )
+    eb = GoldenCase.model_validate(
+        make_case(
+            case_id="eb-x", ticker="MSFT", session_date="2026-01-08",
+            cutoff="2026-01-08T21:00:00Z", question="Why did MSFT move?",
+            oracle_status="PARTIAL", direction="positive",
+            cause_types=("COMPANY_SPECIFIC_CATALYST",), labels=("fixture-msft",),
+            evidence_ids=("fixture-ev-004",),
+            expected_primary_evidence=("fixture-ev-004",),
+        )
+    )
+    gold_cases = [nm_a, nm_b, eb]
+    runs = [
+        _run_output(nm_a, output_status="PARTIAL", attribution_type="NO_MATERIAL_PUBLIC_CATALYST", sanity_tasks=()),
+        _run_output(nm_b, output_status="PARTIAL", attribution_type="NO_MATERIAL_PUBLIC_CATALYST", sanity_tasks=("sanity:ok",)),
+        _run_output(eb, output_status="PARTIAL"),
+    ]
+    audits = [_audit(g, r) for g, r in zip(gold_cases, runs)]
+    metrics = compute_attribution_metrics(runs, audits, gold_cases)
+    assert metrics.no_material_without_sanity.numerator == 1
+    assert metrics.no_material_without_sanity.eligible_count == 2
+    assert metrics.no_material_without_sanity.non_scorable_count == 1
+    assert metrics.no_material_without_sanity.gate_passed is False
 
 
 def test_output_audit_roundtrip_and_validation(tmp_path):
