@@ -9,14 +9,19 @@ NO_MATERIAL_PUBLIC_CATALYST producing SUFFICIENT = 0, NO_MATERIAL without
 completed sanity tasks = 0.
 
 DATA-02: a news case whose serving text is title-only/metadata-only/
-unrecovered is coverage-limited / non-scorable for news-attribution
-denominators. News-body absence does not exclude filing-backed metrics:
-a coverage-limited case with bound ``expected_primary_evidence`` remains
-eligible for model-failure and filing citation denominators. A
-coverage-limited case with no filing primary is non-scorable for both
-news-attribution and model-failure (never reported as an Analyst/model
-failure). ``coverage_limited`` and ``model_limited`` denominators stay
-separate.
+unrecovered is coverage-limited and non-scorable for news-attribution
+efficacy metrics only. Missing news-body efficacy is never misattributed to
+the model, and coverage limitation never suppresses the model-failure safety
+gates. ``false_sufficient`` uses all Stage-1 cases as its denominator;
+``abstain_producing_sufficient`` uses ABSTAIN oracle cases only;
+``no_material_producing_sufficient`` uses cases whose
+``expected_attribution_type`` is NO_MATERIAL_PUBLIC_CATALYST; and
+``no_material_without_sanity`` uses runs that produced
+NO_MATERIAL_PUBLIC_CATALYST. ``expected_primary_evidence`` controls
+primary-source retrieval/citation eligibility only; bound primary-source
+(including White House/CMS NEWS evidence) keeps a coverage-limited case
+eligible for primary-source citation metrics. ``coverage_limited`` and
+``model_limited`` reporting stay separate.
 """
 from __future__ import annotations
 
@@ -117,9 +122,10 @@ def _metric(
     hard_gate: bool = False,
     threshold: float | None = None,
     upper_bound: bool = False,
+    gate_passed_override: bool | None = None,
 ) -> MetricResult:
-    gate_passed: bool | None = None
-    if value is not None and denominator > 0 and threshold is not None:
+    gate_passed: bool | None = gate_passed_override
+    if gate_passed is None and value is not None and denominator > 0 and threshold is not None:
         gate_passed = bool(value <= threshold) if upper_bound else bool(value >= threshold)
     return MetricResult(
         metric_id=metric_id,
@@ -176,43 +182,48 @@ def compute_attribution_metrics(
     cost_total = 0.0
     cost_cases = 0
     coverage_limited_count = 0
-    model_limited_count = 0
+    news_only_gap_count = 0
+    abstain_eligible_count = 0
+    no_material_expected_count = 0
+    no_material_run_count = 0
 
     for case_id, gold in gold_by_case.items():
         run = run_by_case[case_id]
         audit = audit_by_case[case_id]
-        filing_backed = bool(gold.expected_primary_evidence)
-        news_only_gap = bool(run.coverage_limited) and not filing_backed
+        bound_primary = bool(gold.expected_primary_evidence)
+        news_only_gap = bool(run.coverage_limited) and not bound_primary
         if run.coverage_limited:
             coverage_limited_count += 1
         if news_only_gap:
-            # News-body absence with no filing primary: non-scorable for
-            # news-attribution and model-failure.
-            model_limited_count += 0
-        else:
-            model_limited_count += 1
+            news_only_gap_count += 1
+        # Per-metric denominator strata (model-failure safety gates).
+        if gold.oracle_status == "ABSTAIN":
+            abstain_eligible_count += 1
+        if gold.expected_attribution_type == "NO_MATERIAL_PUBLIC_CATALYST":
+            no_material_expected_count += 1
+        if run.attribution_type == "NO_MATERIAL_PUBLIC_CATALYST":
+            no_material_run_count += 1
 
         confusion[(gold.oracle_status, run.output_status)] = (
             confusion.get((gold.oracle_status, run.output_status), 0) + 1
         )
-        # Filing-backed cases stay in model-failure denominators even when
-        # news serving is coverage-limited. News-only coverage gaps do not.
-        if not news_only_gap:
-            if gold.oracle_status == "ABSTAIN" and run.output_status == "SUFFICIENT":
-                abstain_sufficient += 1
-            if (
-                gold.expected_attribution_type == "NO_MATERIAL_PUBLIC_CATALYST"
-                and run.output_status == "SUFFICIENT"
-            ):
-                no_material_sufficient += 1
-            if (
-                run.attribution_type == "NO_MATERIAL_PUBLIC_CATALYST"
-                and not run.sanity_tasks_completed
-            ):
-                no_material_no_sanity += 1
-            if gold.oracle_status != "SUFFICIENT" and run.output_status == "SUFFICIENT":
-                false_sufficient += 1
-                false_sufficient_cases.append(case_id)
+        # Model-failure safety gates are never suppressed by coverage
+        # limitation or by empty expected_primary_evidence (DATA-02 lock).
+        if gold.oracle_status == "ABSTAIN" and run.output_status == "SUFFICIENT":
+            abstain_sufficient += 1
+        if (
+            gold.expected_attribution_type == "NO_MATERIAL_PUBLIC_CATALYST"
+            and run.output_status == "SUFFICIENT"
+        ):
+            no_material_sufficient += 1
+        if (
+            run.attribution_type == "NO_MATERIAL_PUBLIC_CATALYST"
+            and not run.sanity_tasks_completed
+        ):
+            no_material_no_sanity += 1
+        if gold.oracle_status != "SUFFICIENT" and run.output_status == "SUFFICIENT":
+            false_sufficient += 1
+            false_sufficient_cases.append(case_id)
 
         # Refusal correctness over ABSTAIN oracle cases.
         if gold.oracle_status == "ABSTAIN":
@@ -313,35 +324,45 @@ def compute_attribution_metrics(
         value=unsupported_material_value, case_ids=unsupported_material_cases,
         hard_gate=True, threshold=UNSUPPORTED_MATERIAL_CLAIMS_MAX, upper_bound=True,
     )
-    model_eligible = model_limited_count
-    model_non_scorable = total_cases - model_eligible
+    # Report-only counter: every Stage-1 case is eligible for the
+    # false_sufficient model-failure gate under the locked "<= 1 of 12"
+    # formula. Coverage limitation affects only news-attribution metrics;
+    # each model-failure metric publishes its own eligible/non-scorable counts.
+    # These are zero-tolerance/count "violations" gates (mirroring retrieval
+    # violations): an empty eligible stratum with zero violations passes, while
+    # any violation fails, and eligible/non-scorable counts stay truthful.
+    model_limited_count = total_cases
     false_sufficient_res = _metric(
-        "false_sufficient", numerator=false_sufficient, denominator=model_eligible,
-        eligible=model_eligible, non_scorable=model_non_scorable,
+        "false_sufficient", numerator=false_sufficient, denominator=total_cases,
+        eligible=total_cases, non_scorable=0,
         value=float(false_sufficient),
         case_ids=false_sufficient_cases, hard_gate=True,
         threshold=FALSE_SUFFICIENT_MAX, upper_bound=True,
+        gate_passed_override=(false_sufficient <= FALSE_SUFFICIENT_MAX),
     )
     abstain_res = _metric(
         "abstain_producing_sufficient", numerator=abstain_sufficient,
-        denominator=model_eligible, eligible=model_eligible,
-        non_scorable=model_non_scorable,
+        denominator=abstain_eligible_count, eligible=abstain_eligible_count,
+        non_scorable=total_cases - abstain_eligible_count,
         value=float(abstain_sufficient), case_ids=[],
         hard_gate=True, threshold=0.0, upper_bound=True,
+        gate_passed_override=(abstain_sufficient == 0),
     )
     no_material_res = _metric(
         "no_material_producing_sufficient", numerator=no_material_sufficient,
-        denominator=model_eligible, eligible=model_eligible,
-        non_scorable=model_non_scorable,
+        denominator=no_material_expected_count, eligible=no_material_expected_count,
+        non_scorable=total_cases - no_material_expected_count,
         value=float(no_material_sufficient), case_ids=[],
         hard_gate=True, threshold=0.0, upper_bound=True,
+        gate_passed_override=(no_material_sufficient == 0),
     )
     no_material_sanity_res = _metric(
         "no_material_without_sanity", numerator=no_material_no_sanity,
-        denominator=model_eligible, eligible=model_eligible,
-        non_scorable=model_non_scorable,
+        denominator=no_material_run_count, eligible=no_material_run_count,
+        non_scorable=total_cases - no_material_run_count,
         value=float(no_material_no_sanity), case_ids=[],
         hard_gate=True, threshold=0.0, upper_bound=True,
+        gate_passed_override=(no_material_no_sanity == 0),
     )
     refusal = _metric(
         "refusal_correctness", numerator=refusal_ok, denominator=refusal_denom,
