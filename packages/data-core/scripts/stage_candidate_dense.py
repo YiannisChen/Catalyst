@@ -35,17 +35,30 @@ from catalyst_data.index.candidate_staging_cli import (  # noqa: E402
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="mode", required=True)
-    for mode in ("preflight", "execute"):
-        p = sub.add_parser(mode)
+
+    def _common(p: argparse.ArgumentParser) -> None:
         p.add_argument("--derivative", type=Path, required=True)
         p.add_argument("--build-id", required=True)
         p.add_argument("--embedding-artifact", type=Path, required=True)
         p.add_argument("--candidate-manifest-dir", type=Path, required=True)
         p.add_argument("--source-bundle", type=Path, default=None)
-        p.add_argument("--active-lancedb-dir", type=Path, default=None)
-        p.add_argument("--active-generation-pointer", type=Path, default=None)
         p.add_argument("--expected-index-manifest-id", default=None)
         p.add_argument("--code-revision", default=None)
+
+    pre = sub.add_parser("preflight", help="read-only identity/path validation")
+    _common(pre)
+    pre.add_argument("--active-lancedb-dir", type=Path, default=None)
+    pre.add_argument("--active-generation-pointer", type=Path, default=None)
+    # Mandatory active-generation protection on the mutating command (B1):
+    # execute without an explicit active LanceDB directory and active-generation
+    # pointer is rejected by the parser before any write can occur.
+    exe = sub.add_parser(
+        "execute",
+        help="stage inactive candidate dense generation (pointer-free)",
+    )
+    _common(exe)
+    exe.add_argument("--active-lancedb-dir", type=Path, required=True)
+    exe.add_argument("--active-generation-pointer", type=Path, required=True)
     return parser
 
 

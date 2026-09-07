@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -420,4 +421,29 @@ def stage_dense(
                 pass
         raise
     _atomic_json(candidate.candidate_generation_path, _candidate_payload(candidate))
+    # Make the staged candidate directory self-describing: persist the exact
+    # embedding-artifact IndexManifest that produced this dense generation so a
+    # downstream inactive-candidate consumer (Q-011 evidence pool) can validate
+    # the candidate identity chain without a second identity formula.
+    artifact_manifest_path = Path(embedding_artifact_dir) / "index_manifest.json"
+    if artifact_manifest_path.is_file():
+        persisted_manifest_path = manifest_dir / "index_manifest.json"
+        if persisted_manifest_path.is_file():
+            try:
+                existing_manifest = json.loads(
+                    persisted_manifest_path.read_text(encoding="utf-8")
+                )
+            except json.JSONDecodeError as exc:
+                raise ValueError("staged index_manifest.json is malformed") from exc
+            if existing_manifest != new_index_manifest.to_dict():
+                raise ValueError("staged index_manifest.json identity mismatch")
+        else:
+            temporary = persisted_manifest_path.with_name(
+                persisted_manifest_path.name + ".tmp"
+            )
+            with temporary.open("w", encoding="utf-8") as handle:
+                handle.write(artifact_manifest_path.read_text(encoding="utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, persisted_manifest_path)
     return candidate
