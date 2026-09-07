@@ -1044,6 +1044,14 @@ def run_candidate_pools(
                 encoding="utf-8",
             )
             packet_hashes[case.case_id] = sha256_bytes(packet_path_out.read_bytes())
+        if _pointer_bytes(active_generation_pointer) != pointer_before:
+            raise CandidatePoolError(
+                "active-generation pointer changed during candidate pool run"
+            )
+        if _bounded_directory_digest(active_lancedb_dir) != active_digest_before:
+            raise CandidatePoolError(
+                "active LanceDB directory changed during candidate pool run"
+            )
     except BaseException:
         import shutil
 
@@ -1052,15 +1060,6 @@ def run_candidate_pools(
     finally:
         if retriever_close is not None:
             retriever_close()
-
-    if _pointer_bytes(active_generation_pointer) != pointer_before:
-        raise CandidatePoolError(
-            "active-generation pointer changed during candidate pool run"
-        )
-    if _bounded_directory_digest(active_lancedb_dir) != active_digest_before:
-        raise CandidatePoolError(
-            "active LanceDB directory changed during candidate pool run"
-        )
 
     manifest_payload = {
         "schema_version": POOL_SCHEMA,
