@@ -697,7 +697,15 @@ def _evidence_ground_truth_errors(case: GoldenCase) -> list[str]:
         errors.append(
             f"{prefix} resolved lineage requires non-empty human_confirmed_fields"
         )
+    seen_ids: set[str] = set()
     for judgment in case.evidence_judgments:
+        if judgment.evidence_id in seen_ids:
+            errors.append(
+                f"{prefix} evidence_judgments contains duplicate rows for "
+                f"evidence_id {judgment.evidence_id!r}; evidence_id must be "
+                f"unique within each case"
+            )
+        seen_ids.add(judgment.evidence_id)
         if judgment.evidence_id.startswith(LEGACY_PARENT_PREFIX):
             errors.append(
                 f"{prefix} evidence_judgments identity {judgment.evidence_id!r} "
@@ -723,20 +731,30 @@ def _evidence_ground_truth_errors(case: GoldenCase) -> list[str]:
             for judgment in case.evidence_judgments
             if judgment.evidence_id == evidence_id
         ]
-        if not matches:
+        if len(matches) != 1:
             errors.append(
-                f"{prefix} expected_primary_evidence {evidence_id!r} has no "
-                f"matching evidence_judgments row; retrieval ground truth is "
-                f"missing"
+                f"{prefix} expected_primary_evidence {evidence_id!r} must match "
+                f"exactly one unique evidence_judgments row, got "
+                f"{len(matches)}"
             )
             continue
-        if not any(
-            judgment.role == PRIMARY_SUPPORT_ROLE and judgment.temporal_eligible
-            for judgment in matches
-        ):
+        primary = matches[0]
+        failures: list[str] = []
+        if primary.role != PRIMARY_SUPPORT_ROLE:
+            failures.append(f"role={primary.role!r} != {PRIMARY_SUPPORT_ROLE}")
+        if primary.support is not True:
+            failures.append(f"support={primary.support!r} != true")
+        if primary.materiality != "material":
+            failures.append(f"materiality={primary.materiality!r} != material")
+        if primary.temporal_eligible is not True:
+            failures.append(f"temporal_eligible={primary.temporal_eligible!r} != true")
+        if not primary.independence_group:
+            failures.append("independence_group is empty")
+        if failures:
             errors.append(
-                f"{prefix} expected_primary_evidence {evidence_id!r} must be "
-                f"judged {PRIMARY_SUPPORT_ROLE} with temporal_eligible=true"
+                f"{prefix} expected_primary_evidence {evidence_id!r} judgment is "
+                f"not coherent primary_support ground truth: "
+                + "; ".join(failures)
             )
     behavior = case.expected_research_behavior
     if behavior.corrective_required or behavior.corrective_recoverable:

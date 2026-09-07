@@ -462,3 +462,42 @@ def test_fully_annotated_approved_dataset_validates_and_drives_retrieval():
     assert metrics.ndcg_at_k.denominator > 0
     assert metrics.primary_source_hit.denominator > 0
     assert metrics.recall_at_k.value is not None
+
+
+# ---------------------------------------------------------------------------
+# 9. Evidence judgments are unique and self-consistent per case
+# ---------------------------------------------------------------------------
+
+def test_duplicate_evidence_judgment_rows_rejected():
+    """The same evidence_id may not appear twice, even with conflicting roles."""
+    rows = _rows()
+    direct = next(r for r in rows if r["expected_primary_evidence"])
+    duplicate = copy.deepcopy(direct["evidence_judgments"][0])
+    duplicate["role"] = "contradiction"
+    direct["evidence_judgments"] = list(direct["evidence_judgments"]) + [duplicate]
+    with pytest.raises(ValueError, match="unique"):
+        _validate(rows)
+
+
+def test_primary_support_with_support_false_rejected():
+    """role=primary_support must not contradict support=false ground truth."""
+    rows = _rows()
+    direct = next(r for r in rows if r["expected_primary_evidence"])
+    primary_id = direct["expected_primary_evidence"][0]
+    for judgment in direct["evidence_judgments"]:
+        if judgment["evidence_id"] == primary_id:
+            judgment["support"] = False
+    with pytest.raises(ValueError, match="support"):
+        _validate(rows)
+
+
+def test_primary_support_with_non_material_rejected():
+    """role=primary_support must not claim non_material primary evidence."""
+    rows = _rows()
+    direct = next(r for r in rows if r["expected_primary_evidence"])
+    primary_id = direct["expected_primary_evidence"][0]
+    for judgment in direct["evidence_judgments"]:
+        if judgment["evidence_id"] == primary_id:
+            judgment["materiality"] = "non_material"
+    with pytest.raises(ValueError, match="materiality"):
+        _validate(rows)
