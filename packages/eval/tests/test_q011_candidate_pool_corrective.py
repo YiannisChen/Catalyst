@@ -93,25 +93,6 @@ def _derivative(tmp_path: Path, *, is_current: int = 0) -> Path:
     return db
 
 
-def _derivative_other(tmp_path: Path, *, name: str = "other.db", is_current: int = 1) -> Path:
-    db = tmp_path / name
-    conn = sqlite3.connect(db)
-    conn.execute(
-        "CREATE TABLE corpus_manifest (manifest_id TEXT PRIMARY KEY, "
-        "manifest_json TEXT, is_current INTEGER NOT NULL)"
-    )
-    conn.execute(
-        "INSERT INTO corpus_manifest (manifest_id, manifest_json, is_current) "
-        "VALUES (?, ?, ?)",
-        (_hex("c"), json.dumps({}), is_current),
-    )
-    conn.commit()
-    conn.close()
-    return db
-
-
-
-
 def _candidate_dir_with_records(tmp_path: Path, identities: dict[str, str], *, count: int = 2) -> Path:
     """Candidate dir with generation + index manifest + real LanceDB table."""
     import numpy as np
