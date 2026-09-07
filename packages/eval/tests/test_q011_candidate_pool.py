@@ -19,6 +19,13 @@ from pathlib import Path
 
 import pytest
 
+from catalyst_data.config import (
+    BGE_M3_DIMENSION,
+    BGE_M3_MODEL,
+    BGE_M3_REVISION,
+    BGE_RERANKER_MODEL,
+    BGE_RERANKER_REVISION,
+)
 from catalyst_data.retrieval.pool import load_union_pool
 
 from tests.post_import_fixtures import make_result, make_result_set
@@ -70,8 +77,9 @@ def _packet(tmp_path: Path, *, unsigned: bool = True, count: int = 12) -> Path:
 
 
 def _candidate_lancedb(tmp_path: Path, identities: dict[str, str]) -> Path:
+    """Legacy empty-ish candidate dir for mutation tests (no manifest file)."""
     candidate_dir = tmp_path / "candidate_lancedb"
-    candidate_dir.mkdir()
+    candidate_dir.mkdir(exist_ok=True)
     payload = {
         "schema_version": "candidate_generation_v1",
         "status": "inactive",
@@ -129,8 +137,9 @@ def _load_cli():
     return module
 
 
-def _base_argv(mode: str, tmp_path: Path, identities: dict[str, str]) -> list[str]:
-    return [
+def _base_argv(mode: str, tmp_path: Path, identities: dict[str, str], *, with_active: bool = False) -> list[str]:
+    candidate = _candidate_dir_with_records(tmp_path, identities)
+    argv = [
         mode,
         "--packet", str(_packet(tmp_path)),
         "--derivative", str(_derivative(tmp_path)),
@@ -140,17 +149,107 @@ def _base_argv(mode: str, tmp_path: Path, identities: dict[str, str]) -> list[st
         "--snapshot-id", identities["snapshot_id"],
         "--probe-report-id", identities["probe_report_id"],
         "--postbuild-readiness-id", identities["postbuild_readiness_id"],
-        "--lancedb-dir", str(_candidate_lancedb(tmp_path, identities)),
+        "--lancedb-dir", str(candidate),
         "--index-manifest-id", identities["index_manifest_id"],
-        "--table-name", "candidate_table",
+        "--table-name", identities.get("table_name", "candidate_table"),
         "--output-dir", str(tmp_path / "pool-out"),
         "--run-id", "q011-candidate-pool",
         "--embedding-mode", "mock_unit_test",
     ]
+    if with_active:
+        active = tmp_path / "active_lancedb"
+        active.mkdir(exist_ok=True)
+        pointer = active / "active_generation.json"
+        if not pointer.exists():
+            pointer.write_text(
+                json.dumps({"schema_version": "active_generation_v1", "table_name": "live"}),
+                encoding="utf-8",
+            )
+        argv += ["--active-lancedb-dir", str(active), "--active-generation-pointer", str(pointer)]
+    return argv
+
+
+def _candidate_dir_with_records(tmp_path: Path, identities: dict[str, str], *, count: int = 2) -> Path:
+    """Candidate dir with generation + index manifest + real LanceDB table."""
+    import numpy as np
+    from catalyst_data.config import BGE_M3_DIMENSION
+    from catalyst_data.corpus.tokenizer import TOKENIZER_REVISION
+    from catalyst_data.retrieval.index_manifest import IndexManifest
+
+    candidate_dir = tmp_path / "candidate_lancedb"
+    candidate_dir.mkdir()
+    vectors = np.zeros((count, BGE_M3_DIMENSION), dtype=np.float32)
+    for index in range(count):
+        vectors[index, 0] = 1.0 + index
+    checksums = {
+        "vectors.npy": hashlib.sha256(b"v").hexdigest(),
+        "chunk_ids.json": hashlib.sha256(b"c").hexdigest(),
+        "lancedb_table": hashlib.sha256(b"l").hexdigest(),
+    }
+    manifest = IndexManifest(
+        model_name=BGE_M3_MODEL,
+        model_revision=BGE_M3_REVISION,
+        tokenizer_revision=TOKENIZER_REVISION,
+        normalization_mode="l2",
+        dtype="float32",
+        dimension=BGE_M3_DIMENSION,
+        corpus_manifest_id=identities["corpus_manifest_id"],
+        source_bundle_id=identities["source_bundle_id"],
+        snapshot_id=identities["snapshot_id"],
+        probe_report_id=identities["probe_report_id"],
+        postbuild_readiness_id=identities["postbuild_readiness_id"],
+        artifact_hashes=checksums,
+        code_revision="a" * 40,
+        vector_count=count,
+        artifact_state="vectors_staged",
+    )
+    (candidate_dir / "index_manifest.json").write_text(
+        json.dumps(manifest.to_dict(), sort_keys=True), encoding="utf-8"
+    )
+    table_name = f"candidate_{manifest.index_manifest_id[:16]}"
+    payload = {
+        "schema_version": "candidate_generation_v1",
+        "status": "inactive",
+        "corpus_manifest_id": identities["corpus_manifest_id"],
+        "index_manifest_id": manifest.index_manifest_id,
+        "table_name": table_name,
+        "chunk_count": count,
+        "source_bundle_id": identities["source_bundle_id"],
+        "embedding_model": BGE_M3_MODEL,
+        "embedding_revision": BGE_M3_REVISION,
+        "embedding_dimension": BGE_M3_DIMENSION,
+    }
+    (candidate_dir / "candidate_generation.json").write_text(
+        json.dumps(payload, sort_keys=True), encoding="utf-8"
+    )
+    try:
+        import lancedb
+        import pyarrow as pa
+
+        table = lancedb.connect(str(candidate_dir)).create_table(
+            table_name,
+            data=[
+                {
+                    "chunk_id": f"chunk:{index:04d}",
+                    "vector": vectors[index].tolist(),
+                }
+                for index in range(count)
+            ],
+            mode="overwrite",
+        )
+    except Exception:
+        pass
+    identities["table_name"] = table_name
+    identities["index_manifest_id"] = manifest.index_manifest_id
+    return candidate_dir
 
 
 def _make_case_retriever():
-    """Deterministic HybridRetrievalResult-shaped fixture per case."""
+    """Deterministic HybridRetrievalResult-shaped fixture per case.
+
+    Each arm returns exactly one genuine result carrying the field values the
+    persisted arm artifact requires, proving all four arms were served.
+    """
     def _hybrid(case):
         import types
 
@@ -163,6 +262,10 @@ def _make_case_retriever():
                 available_at="2025-05-01T00:00:00Z",
                 mode_requested="hybrid",
                 mode_served="hybrid",
+                fusion_rank=1,
+                fusion_score=0.5,
+                lexical_rank=1,
+                lexical_raw_score=1.0,
             ),
         )
         final = (
@@ -172,6 +275,10 @@ def _make_case_retriever():
                 available_at="2025-05-01T00:00:00Z",
                 mode_requested="reranked",
                 mode_served="reranked",
+                reranker_rank=1,
+                reranker_score=9.0,
+                fusion_rank=1,
+                fusion_score=0.5,
             ),
         )
         # normalize fixture result cutoff to the case cutoff
@@ -187,6 +294,8 @@ def _make_case_retriever():
                         mode_served=served,
                         lexical_rank=item.lexical_rank,
                         dense_rank=item.dense_rank,
+                        lexical_raw_score=item.lexical_raw_score,
+                        dense_score=item.dense_score,
                     )
                 )
             return fixed
@@ -194,10 +303,22 @@ def _make_case_retriever():
         fts5_fixed = tuple(_fix_result_set(fts5, "lexical", "fts5"))
         dense_fixed = tuple(_fix_result_set(dense, "dense", "dense"))
         return types.SimpleNamespace(
-            lexical_results=types.SimpleNamespace(results=fts5_fixed),
-            dense_results=types.SimpleNamespace(results=dense_fixed),
+            lexical_results=types.SimpleNamespace(
+                results=fts5_fixed,
+                mode_served="fts5",
+                trace=types.SimpleNamespace(total_ms=1.0),
+            ),
+            dense_results=types.SimpleNamespace(
+                results=dense_fixed,
+                mode_served="dense",
+                trace=types.SimpleNamespace(total_ms=1.0),
+            ),
             fusion_results=fusion,
             final_results=final,
+            mode_requested="reranked",
+            mode_served="reranked",
+            degradation_reasons=(),
+            latency_ms=1.0,
         )
 
     return _hybrid
@@ -246,7 +367,7 @@ def test_execute_writes_twelve_pools_and_bounded_packets(tmp_path, monkeypatch):
     cli = _load_cli()
     identities = _identities()
     output = tmp_path / "pool-out"
-    argv = _base_argv("execute", tmp_path, identities)
+    argv = _base_argv("execute", tmp_path, identities, with_active=True)
     # ensure packet/derivative/lancedb arguments are consistent
     code = cli.main(argv, retriever_factory=lambda: _make_case_retriever())
     assert code == 0
@@ -262,7 +383,7 @@ def test_execute_writes_twelve_pools_and_bounded_packets(tmp_path, monkeypatch):
     assert manifest["case_count"] == 12
     assert manifest["pointer_unchanged"] is True
     assert manifest["identity"]["corpus_manifest_id"] == identities["corpus_manifest_id"]
-    assert manifest["identity"]["table_name"] == "candidate_table"
+    assert manifest["identity"]["table_name"] == identities["table_name"]
 
     for pool_path in pools:
         pool = load_union_pool(pool_path)
@@ -274,7 +395,7 @@ def test_execute_writes_twelve_pools_and_bounded_packets(tmp_path, monkeypatch):
         assert packet["unsigned_q011"] is True
         assert packet["arm_order"] == ["fts5", "dense", "hybrid", "reranked"]
         assert all(
-            row["cutoff_decision"] in {"eligible", "post_cutoff_excluded"}
+            row["temporal_status"] in {"eligible", "post_cutoff_excluded"}
             for row in packet["rows"]
         )
         assert all(row["excerpt_bounded"] is True for row in packet["rows"])
@@ -291,8 +412,7 @@ def test_execute_preserves_active_pointer_bytes(tmp_path):
         encoding="utf-8",
     )
     before = pointer.read_bytes()
-    argv = _base_argv("execute", tmp_path, identities)
-    argv += ["--active-generation-pointer", str(pointer)]
+    argv = _base_argv("execute", tmp_path, identities, with_active=True)
     code = cli.main(argv, retriever_factory=lambda: _make_case_retriever())
     assert code == 0
     assert pointer.read_bytes() == before
@@ -304,23 +424,22 @@ def test_execute_refuses_nonempty_output(tmp_path):
     output = tmp_path / "pool-out"
     output.mkdir()
     (output / "junk").write_text("x", encoding="utf-8")
-    argv = _base_argv("execute", tmp_path, identities)
+    argv = _base_argv("execute", tmp_path, identities, with_active=True)
     code = cli.main(argv, retriever_factory=lambda: _make_case_retriever())
     assert code == 2
 
 
 def test_production_mode_fails_closed_without_cuda(tmp_path):
     """The production-pinned runner is cloud-only: no CUDA means no retriever."""
-    import types
+    from catalyst_eval.v1_1.candidate_pool import build_production_retriever
 
-    cli = _load_cli()
-    args = types.SimpleNamespace(
-        derivative=tmp_path / "x.db",
-        lancedb_dir=tmp_path / "lancedb",
-        table_name="candidate_table",
-        index_manifest_id=_hex("1"),
-        corpus_manifest_id=_hex("c"),
-        reranker_timeout=2.0,
-    )
-    with pytest.raises(Exception, match="torch|CUDA|cloud"):
-        cli._retriever_factory_from_args(args)
+    with pytest.raises(Exception, match="torch|CUDA|cloud|offline"):
+        build_production_retriever(
+            derivative=tmp_path / "x.db",
+            lancedb_dir=tmp_path / "lancedb",
+            table_name="candidate_table",
+            index_manifest_id=_hex("1"),
+            corpus_manifest_id=_hex("c"),
+            reranker_timeout=2.0,
+            cuda_available=lambda: False,
+        )
