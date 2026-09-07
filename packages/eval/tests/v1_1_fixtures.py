@@ -100,6 +100,12 @@ def make_case(
         f"fixture-label-{i}" for i in range(len(tuple(cause_types)))
     )
     evidence_ids = tuple(evidence_ids)
+    expected_primary_evidence = tuple(expected_primary_evidence)
+    confirmed = ["oracle_status"]
+    if expected_primary_evidence:
+        confirmed.append("expected_primary_evidence")
+    if evidence_ids:
+        confirmed.append("evidence_judgments")
     return {
         "case_id": case_id,
         "ticker": ticker,
@@ -149,7 +155,7 @@ def make_case(
         "lineage": {
             "source": "fixture",
             "model_assisted_fields": [],
-            "human_confirmed_fields": [],
+            "human_confirmed_fields": confirmed,
             "annotated_at": "2026-08-19T00:00:00Z",
             "adjudication_state": "resolved",
         },
@@ -238,6 +244,10 @@ def make_stage1_cases() -> list[dict[str, Any]]:
              gap_reason_codes=("MISSING_PRIMARY_CONFIRMATION", "MISSING_INDEPENDENT_CORROBORATION"),
              corrective_recoverable=True,
              corrective_required=True,
+             acceptable_corrective_actions=(
+                 {"evidence_need": "COMPANY_PRIMARY", "time_scope": "PRIOR_SESSION"},
+                 {"evidence_need": "SECTOR_NEWS", "time_scope": "LOOKBACK_SESSIONS"},
+             ),
              parent="g041"),
         dict(case_id="v1f-009", ticker="NFLX", session_date="2025-07-17",
              cutoff="2025-07-17T20:00:00Z", question="What drove NFLX this session?",

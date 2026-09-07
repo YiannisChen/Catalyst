@@ -62,7 +62,7 @@ def test_write_report_json_loses_race_without_overwriting_winner(
 ):
     """A competing publisher that wins after the pre-check is immutable."""
     from pathlib import Path
-    from catalyst_eval.v1_1 import report as report_module
+    from catalyst_eval.v1_1 import loader as loader_module
 
     path = tmp_path / "report.json"
     winner = b'{"winner":true}'
@@ -71,7 +71,7 @@ def test_write_report_json_loses_race_without_overwriting_winner(
         Path(target).write_bytes(winner)
         raise FileExistsError
 
-    monkeypatch.setattr(report_module.os, "link", competing_link)
+    monkeypatch.setattr(loader_module.os, "link", competing_link)
     with pytest.raises(ReportConflictError):
         write_report_json(path, _payload())
     assert path.read_bytes() == winner

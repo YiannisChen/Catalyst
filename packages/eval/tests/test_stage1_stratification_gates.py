@@ -100,7 +100,35 @@ def test_mixed_primary_split_without_six_six_quota_passes(tmp_path):
     rows, _cases, _stratification, _manifest = _dataset(tmp_path)
     for case_id in NO_MATERIAL_PARTIAL_IDS:
         row = _case_row(rows, case_id)
-        row["expected_primary_evidence"] = [f"fixture-ev-extra:{case_id}"]
+        extra_id = f"fixture-ev-extra:{case_id}"
+        row["expected_primary_evidence"] = [extra_id]
+        # The corrected Q-011 contract binds every expected primary id to a
+        # human evidence judgment (primary_support, temporal-eligible), so the
+        # flipped direct-primary rows must carry matching judgments too.
+        judgment = dict(row["evidence_judgments"][0])
+        judgment.update(
+            {
+                "evidence_id": extra_id,
+                "chunk_id": extra_id,
+                "fact_id": None,
+                "canonical_asset_id": f"asset:{extra_id}",
+                "canonical_content_version_id": f"ver:{extra_id}",
+                "role": "primary_support",
+                "support": True,
+                "materiality": "material",
+                "temporal_eligible": True,
+                "independence_group": f"grp-extra-{case_id}",
+                "rationale": f"fixture rationale for {extra_id}",
+                "annotator": None,
+                "annotated_at": None,
+            }
+        )
+        row["evidence_judgments"] = [judgment] + list(row["evidence_judgments"])
+        row["lineage"]["human_confirmed_fields"] = [
+            "oracle_status",
+            "expected_primary_evidence",
+            "evidence_judgments",
+        ]
     cases, stratification, manifest = _rebuild(rows)
     primary = stratification["strata"]["primary_evidence"]
     assert primary["direct_primary"] == 8

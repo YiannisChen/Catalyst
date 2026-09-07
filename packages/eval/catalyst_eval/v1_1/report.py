@@ -9,12 +9,14 @@ facts.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from catalyst_eval.v1_1.loader import canonical_bytes
+from catalyst_eval.v1_1.loader import (
+    PublicationConflictError as ReportConflictError,
+    canonical_bytes,
+    write_once_bytes,
+)
 
 REPORT_SCHEMA_VERSION = "v1_1_stage1_report_v1"
 
@@ -217,9 +219,6 @@ def build_report_payload(
         "retrieval_metrics": retrieval.as_dict(),
     }
 
-class ReportConflictError(RuntimeError):
-    pass
-
 
 def report_bytes(payload: Mapping[str, Any]) -> bytes:
     return canonical_bytes(payload)
@@ -227,58 +226,12 @@ def report_bytes(payload: Mapping[str, Any]) -> bytes:
 
 def write_report_json(path: str | Path, payload: Mapping[str, Any]) -> None:
     """Write-once canonical JSON publication with conflict detection."""
-    _write_once_bytes(Path(path), report_bytes(payload))
-
-
-def _write_once_bytes(path: Path, data: bytes) -> None:
-    """Publish bytes without ever replacing a concurrently-created target."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        existing = path.read_bytes()
-        if existing == data:
-            return  # idempotent
-        raise ReportConflictError(
-            f"refusing to overwrite existing report {path} with differing bytes"
-        )
-    fd, temp_name = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
-    )
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        try:
-            os.link(temp_path, path)
-        except FileExistsError:
-            if path.read_bytes() == data:
-                return
-            raise ReportConflictError(
-                f"refusing to overwrite existing report {path} with differing bytes"
-            ) from None
-        finally:
-            try:
-                temp_path.unlink()
-            except FileNotFoundError:
-                pass
-        dir_fd = os.open(str(path.parent), os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    except BaseException:
-        try:
-            temp_path.unlink()
-        except FileNotFoundError:
-            pass
-        raise
+    write_once_bytes(Path(path), report_bytes(payload))
 
 
 def write_report_markdown(path: str | Path, markdown: str) -> None:
     """Write deterministic Markdown through the same write-once primitive."""
-    _write_once_bytes(Path(path), markdown.encode("utf-8"))
+    write_once_bytes(Path(path), markdown.encode("utf-8"))
 
 
 def render_report_markdown(payload: Mapping[str, Any]) -> str:

@@ -4,8 +4,13 @@ Eval-owned loader (eval TSD §6; M7 execution lock). Validates the full Frozen
 V1.1 GoldenCase contract, rejects legacy-only values, enforces ABSTAIN refusal
 reasons, restricts MARKET_STRUCTURE_UNSUPPORTED to gap reason codes, verifies
 the immutable dataset content hash against a dataset manifest, and derives
-the dataset provenance string. The Stage-1 manifest validator separates the
-public-world human oracle_status from pinned-local coverage: SUFFICIENT does
+the dataset provenance string. Authoritative resolved Stage-1 datasets must
+also carry evidence-level ground truth (evidence_judgments binding every
+expected primary evidence ID, human independence groups, corrective
+task/action truth, and human-confirmed lineage); publication of the official
+three-file dataset is fail-closed and write-once. The Stage-1 manifest
+validator separates the public-world human oracle_status from pinned-local
+coverage: SUFFICIENT does
 not require a local FULL_TEXT_BODY, EIGHT_K_SHELL truthfully records a local
 8-K shell only while expected_primary_evidence is empty, and every declared
 stratification aggregate is recomputed from per-case rows. Production
@@ -15,6 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -156,6 +163,78 @@ def case_list_sha256(case_ids: Sequence[str]) -> str:
 STAGE1_MANIFEST_SCHEMA = "v1_1_stage1_dataset_manifest_v1"
 STAGE1_STRATIFICATION_SCHEMA = "v1_1_stage1_stratification_v1"
 LEGACY_PARENT_PREFIX = "legacy:"
+
+# Retrieval-relevant human evidence roles (M7-5 formula lock). A resolved
+# Stage-1 dataset must bind these roles to human independence groups.
+RELEVANT_ROLE_VALUES = frozenset(
+    {"primary_support", "secondary_support", "contradiction"}
+)
+PRIMARY_SUPPORT_ROLE = "primary_support"
+
+# Official M7-2 authoritative Stage-1 file names (write-once publication).
+STAGE1_DATASET_FILE_NAMES = (
+    "v1_1_stage1_cases.jsonl",
+    "v1_1_stage1_stratification.json",
+    "v1_1_stage1_dataset_manifest.json",
+)
+
+
+class PublicationConflictError(RuntimeError):
+    """Raised when a write-once authoritative artifact already differs."""
+
+
+def write_once_bytes(path: str | Path, data: bytes) -> None:
+    """Publish bytes without ever replacing a concurrently-created target.
+
+    Absent targets are created atomically (temp file + hard link, no partial
+    final names); identical bytes are idempotent; differing bytes raise a
+    typed conflict and leave the existing file unchanged.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        existing = path.read_bytes()
+        if existing == data:
+            return  # idempotent
+        raise PublicationConflictError(
+            f"refusing to overwrite existing authoritative artifact {path} "
+            f"with differing bytes"
+        )
+    fd, temp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temp_path, path)
+        except FileExistsError:
+            if path.read_bytes() == data:
+                return
+            raise PublicationConflictError(
+                f"refusing to overwrite existing authoritative artifact {path} "
+                f"with differing bytes"
+            ) from None
+        finally:
+            try:
+                temp_path.unlink()
+            except FileNotFoundError:
+                pass
+        dir_fd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except BaseException:
+        try:
+            temp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
 
 # Legacy T4/golden parents plus the Stage-1 slot ids c01..c12 used by the
 # Q-011 candidate packets (M7-2 stratification contract). The validator's
@@ -299,6 +378,7 @@ def validate_stage1_dataset_manifest(
         for case in cases:
             _check_no_answer_hint_leakage(case)
 
+    _validate_evidence_ground_truth(cases)
     return dict(manifest)
 
 
@@ -595,6 +675,144 @@ def _validate_stage1_gates(
         )
 
 
+# ---------------------------------------------------------------------------
+# Q-011 evidence-ground-truth gates (authoritative resolved Stage-1 datasets)
+# ---------------------------------------------------------------------------
+
+def _evidence_ground_truth_errors(case: GoldenCase) -> list[str]:
+    """Fail-closed evidence ground-truth checks for one resolved case.
+
+    A resolved authoritative Stage-1 case must not omit the evidence-level
+    ground truth required by the M7 plan and retrieval metrics: every expected
+    primary evidence ID needs a schema-locked human evidence_judgments row
+    judged primary_support and temporal-eligible; relevant judgments need a
+    human independence group; corrective-required/recoverable cases need
+    acceptable initial-task and corrective-action truth; resolved lineage
+    needs human_confirmed_fields. ``legacy:*`` remains a lineage.parent
+    marker only and is never a corpus evidence identity.
+    """
+    errors: list[str] = []
+    prefix = f"case {case.case_id!r}"
+    if case.lineage.adjudication_state == "resolved" and not case.lineage.human_confirmed_fields:
+        errors.append(
+            f"{prefix} resolved lineage requires non-empty human_confirmed_fields"
+        )
+    for judgment in case.evidence_judgments:
+        if judgment.evidence_id.startswith(LEGACY_PARENT_PREFIX):
+            errors.append(
+                f"{prefix} evidence_judgments identity {judgment.evidence_id!r} "
+                f"uses the reserved {LEGACY_PARENT_PREFIX}* namespace; only "
+                f"lineage.source may carry legacy parents"
+            )
+        if judgment.role in RELEVANT_ROLE_VALUES and not judgment.independence_group:
+            errors.append(
+                f"{prefix} evidence_judgments row {judgment.evidence_id!r} with "
+                f"role {judgment.role!r} must declare independence_group for "
+                f"retrieval ground truth"
+            )
+    for evidence_id in case.expected_primary_evidence:
+        if evidence_id.startswith(LEGACY_PARENT_PREFIX):
+            errors.append(
+                f"{prefix} expected_primary_evidence identity {evidence_id!r} "
+                f"uses the reserved {LEGACY_PARENT_PREFIX}* namespace; only "
+                f"lineage.source may carry legacy parents"
+            )
+            continue
+        matches = [
+            judgment
+            for judgment in case.evidence_judgments
+            if judgment.evidence_id == evidence_id
+        ]
+        if not matches:
+            errors.append(
+                f"{prefix} expected_primary_evidence {evidence_id!r} has no "
+                f"matching evidence_judgments row; retrieval ground truth is "
+                f"missing"
+            )
+            continue
+        if not any(
+            judgment.role == PRIMARY_SUPPORT_ROLE and judgment.temporal_eligible
+            for judgment in matches
+        ):
+            errors.append(
+                f"{prefix} expected_primary_evidence {evidence_id!r} must be "
+                f"judged {PRIMARY_SUPPORT_ROLE} with temporal_eligible=true"
+            )
+    behavior = case.expected_research_behavior
+    if behavior.corrective_required or behavior.corrective_recoverable:
+        if not behavior.acceptable_initial_tasks:
+            errors.append(
+                f"{prefix} corrective_required/recoverable case must declare "
+                f"acceptable_initial_tasks truth"
+            )
+        if not behavior.acceptable_corrective_actions:
+            errors.append(
+                f"{prefix} corrective_required/recoverable case must declare "
+                f"acceptable_corrective_actions truth"
+            )
+    return errors
+
+
+def _validate_evidence_ground_truth(cases: Sequence[GoldenCase]) -> None:
+    """Reject any resolved Stage-1 dataset missing evidence-level ground truth."""
+    errors: list[str] = []
+    for case in cases:
+        errors.extend(_evidence_ground_truth_errors(case))
+    if errors:
+        raise ValueError(
+            "resolved Stage-1 dataset evidence ground truth is incomplete: "
+            + " | ".join(errors)
+        )
+
+
+def write_stage1_dataset_files(
+    out_dir: str | Path,
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    stratification: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> dict[str, str]:
+    """Publish the official Stage-1 three-file dataset fail-closed, write-once.
+
+    Validates the complete rows/stratification/manifest (including approval
+    and evidence ground truth) before publishing. Existing identical files are
+    idempotent; any differing existing file raises :class:
+    `PublicationConflictError` before any file is written; each final file is
+    created atomically and never via ordinary ``Path.write_text``.
+    """
+    out = Path(out_dir)
+    parsed = [GoldenCase.model_validate(row) for row in rows]
+    validate_stage1_dataset_manifest(
+        manifest, parsed, stratification=stratification
+    )
+    payloads = {
+        STAGE1_DATASET_FILE_NAMES[0]: (
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+        ).encode("utf-8"),
+        STAGE1_DATASET_FILE_NAMES[1]: json.dumps(
+            stratification, indent=2, sort_keys=True
+        ).encode("utf-8") + b"\n",
+        STAGE1_DATASET_FILE_NAMES[2]: json.dumps(
+            manifest, indent=2, sort_keys=True
+        ).encode("utf-8") + b"\n",
+    }
+    out.mkdir(parents=True, exist_ok=True)
+    # Preflight conflict check across the whole set so no partial authoritative
+    # update can occur when any single target already differs.
+    for name, data in payloads.items():
+        target = out / name
+        if target.exists() and target.read_bytes() != data:
+            raise PublicationConflictError(
+                f"refusing to overwrite existing authoritative artifact "
+                f"{target} with differing bytes"
+            )
+    digests: dict[str, str] = {}
+    for name, data in payloads.items():
+        write_once_bytes(out / name, data)
+        digests[name] = hashlib.sha256(data).hexdigest()
+    return digests
+
+
 __all__ = [
     "ALLOWED_LEGACY_PARENT_IDS",
     "CHALLENGE_FAMILY_VALUES",
@@ -602,14 +820,19 @@ __all__ = [
     "MANDATORY_STRATA_SECTIONS",
     "MOVE_DIRECTION_VALUES",
     "PRIMARY_EVIDENCE_KIND_VALUES",
+    "RELEVANT_ROLE_VALUES",
     "REQUIRED_CHALLENGE_FAMILY_COVERAGE",
     "REQUIRED_ORACLE_STATUS_PRESENCE",
+    "STAGE1_DATASET_FILE_NAMES",
     "STAGE1_MANIFEST_SCHEMA",
     "STAGE1_STRATIFICATION_SCHEMA",
+    "PublicationConflictError",
     "canonical_bytes",
     "case_list_sha256",
     "dataset_content_sha256",
     "dataset_provenance",
     "load_golden_cases",
     "validate_stage1_dataset_manifest",
+    "write_once_bytes",
+    "write_stage1_dataset_files",
 ]
