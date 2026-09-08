@@ -118,14 +118,20 @@ def reciprocal_rank_fusion(
 # ---------------------------------------------------------------------------
 
 
-def load_reranker(model_name: str = RERANKER_MODEL) -> Any | None:
-    """Load a cross-encoder reranker model.
+def load_reranker(
+    model_name: str = RERANKER_MODEL, *, local_files_only: bool = True
+) -> Any | None:
+    """Load a pinned cross-encoder reranker model from the local model cache.
 
-    Tries sentence_transformers.CrossEncoder first. Returns None with a
-    warning if the model cannot be loaded (missing deps, CPU/memory issues).
+    Production loading is offline and pinned: the CrossEncoder is created with
+    ``local_files_only=True`` so a missing local cache fails closed instead of
+    downloading, and CUDA is required (no CPU/degraded fallback). Returns None
+    only when sentence-transformers is unavailable or the load itself fails;
+    callers that require a reranker must treat None as a hard preflight error.
 
     Args:
-        model_name: HuggingFace model ID for the cross-encoder.
+        model_name: HuggingFace model ID for the cross-encoder (pinned).
+        local_files_only: Never contact the HuggingFace hub.
 
     Returns:
         A CrossEncoder instance, or None if loading fails.
@@ -142,10 +148,18 @@ def load_reranker(model_name: str = RERANKER_MODEL) -> Any | None:
     try:
         if model_name != RERANKER_MODEL:
             raise ValueError("reranker model must use the pinned BGE reranker identity")
-        reranker = CrossEncoder(model_name, revision=BGE_RERANKER_REVISION, device="cuda")
+        reranker = CrossEncoder(
+            model_name,
+            revision=BGE_RERANKER_REVISION,
+            device="cuda",
+            local_files_only=bool(local_files_only),
+        )
         return reranker
     except Exception as exc:
-        logger.warning("Failed to load reranker %s: %s", model_name, exc)
+        logger.warning(
+            "Failed to load offline reranker %s (local_files_only=%s): %s",
+            model_name, local_files_only, exc,
+        )
         return None
 
 

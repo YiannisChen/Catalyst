@@ -96,6 +96,50 @@ def test_artifact_rejects_unpinned_retrieval_config(tmp_path):
         write_arm_artifact(root=tmp_path, run_id="r", case_id="c", query="q", cutoff_ts="2026-01-01T00:00:00Z", filters={}, retrieval_config={}, arms=arms)
 
 
+def test_artifact_accepts_optional_identity_filter_chain(tmp_path):
+    """Optional identity filters carry the candidate chain on the arm artifact."""
+    from catalyst_data.retrieval.artifacts import load_arm_artifact, write_arm_artifact
+
+    filters = {
+        "ticker": "AAPL", "evidence_types": [], "source_classes": [],
+        "corpus_manifest_id": "a" * 64, "index_manifest_id": "1" * 64,
+        "build_id": "b" * 64, "source_bundle_id": "c" * 64,
+        "snapshot_id": "d" * 64, "probe_report_id": "e" * 64,
+        "postbuild_readiness_id": "f" * 64, "table_name": "candidate_abcd",
+        "model_name": "BAAI/bge-m3", "model_revision": "g" * 40,
+        "embedding_dimension": 1024, "reranker_model": "BAAI/bge-reranker-v2-m3",
+        "reranker_revision": "h" * 40,
+    }
+    path = write_arm_artifact(
+        root=tmp_path, run_id="run-cand", case_id="B001",
+        query="AAPL earnings", cutoff_ts="2026-01-15T21:00:00Z",
+        filters=filters,
+        retrieval_config={"lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60, "fused_top_k": 20, "display_top_k": 8, "embedding_revision": BGE_M3_REVISION, "reranker_revision": BGE_RERANKER_REVISION, "reranker_timeout_seconds": 2.0},
+        arms=FOUR_COMPLETE_ARM_RESULTS,
+        created_at="2026-07-22T00:00:00Z",
+    )
+    loaded = load_arm_artifact(path)
+    assert loaded.filters == filters
+    assert loaded.artifact_id == load_arm_artifact(path).artifact_id
+
+
+def test_artifact_rejects_unknown_filter_key(tmp_path):
+    from catalyst_data.retrieval.artifacts import ArtifactValidationError, write_arm_artifact
+
+    filters = {
+        "ticker": "AAPL", "evidence_types": [], "source_classes": [],
+        "corpus_manifest_id": "a" * 64, "index_manifest_id": "1" * 64,
+        "not_a_real_filter": "x",
+    }
+    with pytest.raises(ArtifactValidationError, match="filters fields mismatch"):
+        write_arm_artifact(
+            root=tmp_path, run_id="r", case_id="c", query="q",
+            cutoff_ts="2026-01-01T00:00:00Z", filters=filters,
+            retrieval_config={"lexical_top_k": 20, "dense_top_k": 20, "fusion_k": 60, "fused_top_k": 20, "display_top_k": 8, "embedding_revision": BGE_M3_REVISION, "reranker_revision": BGE_RERANKER_REVISION, "reranker_timeout_seconds": 2.0},
+            arms=FOUR_COMPLETE_ARM_RESULTS,
+        )
+
+
 def test_artifact_rejects_missing_or_string_rank(tmp_path):
     from catalyst_data.retrieval.artifacts import ArtifactValidationError, write_arm_artifact
 
