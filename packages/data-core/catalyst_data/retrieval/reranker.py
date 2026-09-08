@@ -178,7 +178,16 @@ def rerank(
         key=lambda pair: (-pair[1], pair[0].chunk_id),
     )
     ordered = [
-        item.model_copy(update={"reranker_score": score, "reranker_rank": rank})
+        item.model_copy(
+            update={
+                "reranker_score": score,
+                "reranker_rank": rank,
+                "mode_requested": "reranked",
+                "mode_served": "reranked",
+                "is_degraded": False,
+                "fallback_reason": None,
+            }
+        )
         for rank, (item, score) in enumerate(ranked, start=1)
     ]
     return RetrievalResultSet(

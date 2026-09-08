@@ -22,6 +22,38 @@ def test_reranker_top_8_presentation():
     assert [r.reranker_rank for r in result.results] == list(range(1, 9))
 
 
+def test_reranker_success_relabels_fused_items_as_reranked():
+    """Q-011 four-arm gate reads item.mode_served, not only the result-set label.
+
+    Production fusion candidates enter rerank as hybrid/hybrid. A successful
+    rerank must relabel every returned item to reranked/reranked with finite
+    scores, otherwise the candidate pool rejects the arm as hybrid.
+    """
+    from catalyst_data.retrieval.reranker import rerank
+
+    candidates = [
+        make_result(
+            f"fused:{index:02d}",
+            mode_requested="hybrid",
+            mode_served="hybrid",
+            fusion_rank=index,
+            fusion_score=1.0 / index,
+        )
+        for index in range(1, 9)
+    ]
+    result = rerank(query="test", candidates=candidates, reranker=RecordingReranker())
+    assert result.mode_served == "reranked"
+    assert result.is_degraded is False
+    assert len(result.results) == 8
+    for item in result.results:
+        assert item.mode_requested == "reranked"
+        assert item.mode_served == "reranked"
+        assert item.is_degraded is False
+        assert item.fallback_reason is None
+        assert isinstance(item.reranker_score, float)
+        assert item.reranker_rank >= 1
+
+
 def test_reranker_timeout_falls_back_to_rrf():
     from catalyst_data.retrieval.reranker import rerank
 
