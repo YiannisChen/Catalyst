@@ -542,6 +542,7 @@ def retrieve_hybrid(
     reranker_gate: RerankerGate | None = None,
     temporal_identity: TemporalIdentity | None = None,
     data_runtime_identity: DataRuntimeIdentity | None = None,
+    inactive_build_id: str | None = None,
     return_v1: Literal[False],
 ) -> HybridRetrievalResult:
     """Overload: explicit ``return_v1=False`` always yields the legacy shape."""
@@ -566,6 +567,7 @@ def retrieve_hybrid(
     reranker_gate: RerankerGate | None = None,
     temporal_identity: TemporalIdentity | None = None,
     data_runtime_identity: DataRuntimeIdentity | None = None,
+    inactive_build_id: str | None = None,
     return_v1: Literal[True] = True,
 ) -> v1_result.RetrievalResultSet | HybridRetrievalResult:
     """Overload: the default path may emit the V1.1 set or a legacy result."""
@@ -589,6 +591,7 @@ def retrieve_hybrid(
     reranker_gate: RerankerGate | None = None,
     temporal_identity: TemporalIdentity | None = None,
     data_runtime_identity: DataRuntimeIdentity | None = None,
+    inactive_build_id: str | None = None,
     return_v1: bool = True,
 ) -> v1_result.RetrievalResultSet | HybridRetrievalResult:
     """Run lexical and dense arms directly with identical scope arguments.
@@ -599,7 +602,9 @@ def retrieve_hybrid(
     and fail/degraded paths emit the legacy ``HybridRetrievalResult`` (outer
     arm result sets + flat temporal identity). The M1/M3 four-arm exit library
     passes ``return_v1=False`` to opt out of the V1 conversion; all other
-    callers are unchanged.
+    callers are unchanged. ``inactive_build_id`` binds the lexical arm to one
+    exact inactive candidate build's per-build FTS (pointer-free); when
+    omitted the unchanged active served-manifest lexical path is used.
     """
     _validate_hybrid_inputs(
         db,
@@ -633,8 +638,11 @@ def retrieve_hybrid(
     lexical = dense = None
     reasons: list[str] = []
     try:
+        lexical_kwargs = dict(shared_scope)
+        if inactive_build_id is not None:
+            lexical_kwargs["inactive_build_id"] = inactive_build_id
         lexical = retrieve_lexical(
-            db, query, top_k=20, candidate_depth=20, **shared_scope,
+            db, query, top_k=20, candidate_depth=20, **lexical_kwargs,
         )
     except RetrievalArmUnavailableError as exc:
         reasons.append(exc.code)

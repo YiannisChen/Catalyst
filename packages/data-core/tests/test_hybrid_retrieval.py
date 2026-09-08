@@ -553,3 +553,63 @@ def test_production_hybrid_retriever_passes_temporal_identity_unchanged(monkeypa
     for hit in results.hits:
         assert hit.temporal_identity == temporal
         assert hit.data_runtime_identity == runtime
+
+
+# ---------------------------------------------------------------------------
+# Inactive-candidate build binding (Q-011 corrective)
+# ---------------------------------------------------------------------------
+
+def test_hybrid_passes_inactive_build_to_lexical_arm_only(monkeypatch):
+    """An explicit inactive build id binds the lexical arm and not dense."""
+    import catalyst_data.retrieval.hybrid as hybrid_module
+
+    lexical, dense = _arms()
+    lexical_calls = []
+    dense_calls = []
+
+    def fake_lexical(*args, **kwargs):
+        lexical_calls.append(kwargs)
+        return lexical
+
+    def fake_dense(*args, **kwargs):
+        dense_calls.append(kwargs)
+        return dense
+
+    monkeypatch.setattr(hybrid_module, "retrieve_lexical", fake_lexical)
+    monkeypatch.setattr(hybrid_module, "retrieve_dense", fake_dense)
+
+    build_id = "b" * 64
+    result = hybrid_module.retrieve_hybrid(
+        _FakeManifestDb(), query="AAPL earnings", ticker="AAPL",
+        cutoff="2026-01-15T21:00:00Z", mode="hybrid",
+        query_embedding=np.ones(1024, dtype=np.float32),
+        requested_manifest_id=MANIFEST_A, index_manifest_id="1" * 64,
+        lancedb_table=object(), inactive_build_id=build_id,
+    )
+    assert result.mode_served == "hybrid"
+    assert lexical_calls[0]["inactive_build_id"] == build_id
+    assert "inactive_build_id" not in dense_calls[0]
+
+
+def test_hybrid_omits_inactive_build_for_active_path(monkeypatch):
+    """No explicit build identity keeps the exact active lexical call shape."""
+    import catalyst_data.retrieval.hybrid as hybrid_module
+
+    lexical, dense = _arms()
+    lexical_calls = []
+
+    def fake_lexical(*args, **kwargs):
+        lexical_calls.append(kwargs)
+        return lexical
+
+    monkeypatch.setattr(hybrid_module, "retrieve_lexical", fake_lexical)
+    monkeypatch.setattr(hybrid_module, "retrieve_dense", lambda *a, **k: dense)
+
+    hybrid_module.retrieve_hybrid(
+        _FakeManifestDb(), query="AAPL earnings", ticker="AAPL",
+        cutoff="2026-01-15T21:00:00Z", mode="hybrid",
+        query_embedding=np.ones(1024, dtype=np.float32),
+        requested_manifest_id=MANIFEST_A, index_manifest_id="1" * 64,
+        lancedb_table=object(),
+    )
+    assert "inactive_build_id" not in lexical_calls[0]

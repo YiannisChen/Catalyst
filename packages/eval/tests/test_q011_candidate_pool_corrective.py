@@ -1353,3 +1353,61 @@ def test_candidate_table_count_closes_table_after_success_and_failure(tmp_path, 
     with pytest.raises(CandidatePoolError, match="unreadable"):
         pool_mod._candidate_table_count(tmp_path, "candidate_table")
     assert closed == ["ok", "boom"]
+
+
+# ---------------------------------------------------------------------------
+# Q-011 corrective: candidate build identity reaches the pool retriever.
+# ---------------------------------------------------------------------------
+
+def test_pool_cli_passes_candidate_build_identity_to_retriever(tmp_path, monkeypatch):
+    """The production_pinned CLI forwards identity.build_id to the builder.
+
+    The builder is recorded here (cloud-only CUDA path); this proves the pool
+    runner binds the exact inactive build identity before retrieval begins.
+    """
+    import importlib.util
+
+    cli_path = Path(__file__).resolve().parents[1] / "scripts" / "run_q011_candidate_pool.py"
+    spec = importlib.util.spec_from_file_location("run_q011_candidate_pool_cli", cli_path)
+    assert spec is not None and spec.loader is not None
+    cli_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli_module)
+
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    derivative = _derivative(tmp_path)
+    ident = _identity(
+        tmp_path, identities, candidate=candidate, derivative=derivative
+    )
+    recorded: dict[str, Any] = {}
+
+    def recording_builder(**kwargs: Any):
+        recorded.update(kwargs)
+        return _make_case_retriever(), lambda: None
+
+    monkeypatch.setattr(
+        cli_module, "build_production_retriever", recording_builder
+    )
+    active, pointer = _active(tmp_path)
+    output = tmp_path / "pool-out-build-id"
+    argv = [
+        "execute",
+        "--packet", str(_packet(tmp_path)),
+        "--derivative", str(derivative),
+        "--build-id", identities["build_id"],
+        "--corpus-manifest-id", identities["corpus_manifest_id"],
+        "--source-bundle-id", identities["source_bundle_id"],
+        "--snapshot-id", identities["snapshot_id"],
+        "--probe-report-id", identities["probe_report_id"],
+        "--postbuild-readiness-id", identities["postbuild_readiness_id"],
+        "--lancedb-dir", str(candidate),
+        "--index-manifest-id", identities["index_manifest_id"],
+        "--embedding-mode", "production_pinned",
+        "--run-id", "q011-cli-build-id",
+        "--output-dir", str(output),
+        "--active-lancedb-dir", str(active),
+        "--active-generation-pointer", str(pointer),
+    ]
+    assert cli_module.main(argv) == 0
+    assert recorded.get("build_id") == identities["build_id"]
+    assert recorded.get("corpus_manifest_id") == identities["corpus_manifest_id"]

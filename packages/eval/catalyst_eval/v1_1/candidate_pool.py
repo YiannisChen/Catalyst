@@ -999,6 +999,7 @@ def build_production_retriever(
     table_name: str,
     index_manifest_id: str,
     corpus_manifest_id: str,
+    build_id: str | None = None,
     reranker_timeout: float = 2.0,
     cuda_available: Callable[[], bool] | None = None,
     embedder_factory: Any | None = None,
@@ -1009,6 +1010,9 @@ def build_production_retriever(
     Fails closed before any 12-case run when CUDA or the pinned offline
     BGE-M3/reranker contract cannot be satisfied.  The returned callable is
     bound to a read-only candidate SQLite URI and the candidate LanceDB table.
+    When ``build_id`` is supplied, the inactive candidate lexical generation
+    is read-only verified once and every hybrid retrieval binds the lexical
+    arm to that exact inactive build.
     """
     import lancedb
 
@@ -1059,6 +1063,23 @@ def build_production_retriever(
             reranker = reranker_loader()
         if reranker is None:
             raise CandidatePoolError("production reranker could not be loaded")
+        if build_id is not None:
+            from catalyst_data.retrieval.fts5 import (
+                RetrievalContractError,
+                verify_inactive_lexical_build,
+            )
+
+            try:
+                verify_inactive_lexical_build(
+                    conn,
+                    requested_manifest_id=corpus_manifest_id,
+                    build_id=build_id,
+                )
+            except RetrievalContractError as exc:
+                raise CandidatePoolError(
+                    "inactive candidate lexical build verification failed: "
+                    f"{exc}"
+                ) from exc
     except BaseException:
         if conn is not None:
             try:
@@ -1077,8 +1098,7 @@ def build_production_retriever(
         if closed["value"]:
             raise CandidatePoolError("retriever is closed")
         try:
-            return _retrieve_hybrid(
-                conn,
+            hybrid_kwargs = dict(
                 query=case.question,
                 ticker=case.ticker,
                 cutoff=case.cutoff,
@@ -1091,6 +1111,9 @@ def build_production_retriever(
                 reranker_timeout_seconds=reranker_timeout,
                 return_v1=False,
             )
+            if build_id is not None:
+                hybrid_kwargs["inactive_build_id"] = build_id
+            return _retrieve_hybrid(conn, **hybrid_kwargs)
         except CandidatePoolError:
             raise
         except Exception as exc:

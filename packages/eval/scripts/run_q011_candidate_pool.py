@@ -118,6 +118,7 @@ def main(
                     table_name=identity.table_name,
                     index_manifest_id=identity.index_manifest_id,
                     corpus_manifest_id=identity.corpus_manifest_id,
+                    build_id=identity.build_id,
                     reranker_timeout=args.reranker_timeout,
                 )
             result = run_candidate_pools(
