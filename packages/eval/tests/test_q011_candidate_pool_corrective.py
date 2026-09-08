@@ -1124,12 +1124,45 @@ def _null_one_field(records: list[dict[str, Any]], field: str) -> list[dict[str,
     return out
 
 
+def test_null_independence_group_id_is_recorded_not_rejected(tmp_path):
+    """Independence group is optional corpus provenance, not a required identity.
+
+    The Q-011 candidate stores independence_group_id as nullable TEXT; a null
+    must be published as null on the bounded packet rather than failing the
+    four-arm pool after genuine retrieval.
+    """
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    active, pointer = _active(tmp_path)
+    records = _null_one_field(
+        _default_chunk_records(identities["build_id"]), "independence_group_id"
+    )
+    derivative = _derivative(
+        tmp_path, name="meta-null-independence.db", chunk_rows=records
+    )
+    ident = _identity(tmp_path, identities, candidate=candidate, derivative=derivative)
+    out = tmp_path / "out-null-independence"
+    run_candidate_pools(
+        identity=ident,
+        packet_path=_packet(tmp_path),
+        output_dir=out,
+        retrieve_case=_make_case_retriever(),
+        active_lancedb_dir=active,
+        active_generation_pointer=pointer,
+    )
+    packet = json.loads((out / "packets" / "c01.json").read_text())
+    matching = [row for row in packet["rows"] if row["evidence_id"] == "c01-a"]
+    assert matching
+    for row in matching:
+        assert "independence_group_id" in row
+        assert row["independence_group_id"] in (None, "")
+
+
 @pytest.mark.parametrize(
     "field",
     (
         "canonical_asset_id",
         "content_version_id",
-        "independence_group_id",
         "content_state",
         "parse_quality",
     ),

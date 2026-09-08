@@ -88,7 +88,6 @@ _MODE_SERVED_CONTRACT = {"fts5", "dense", "hybrid", "reranked"}
 _EXACT_BUILD_IDENTITY_FIELDS = (
     "canonical_asset_id",
     "content_version_id",
-    "independence_group_id",
     "content_state",
     "parse_quality",
 )
