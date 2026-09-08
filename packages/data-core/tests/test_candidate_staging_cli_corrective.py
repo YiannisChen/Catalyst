@@ -28,6 +28,7 @@ from catalyst_data.corpus.tokenizer import TOKENIZER_REVISION
 from catalyst_data.retrieval.index_manifest import IndexManifest
 
 HEX40 = "a" * 40
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Self-contained fixture helpers (mirror the original suite; local copies keep
 # the corrective suite independent of pytest package-root layouts).
@@ -37,41 +38,108 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _artifact_dir(tmp_path: Path, *, count: int = 2, code_revision: str = HEX40):
+def _order_checksum(chunk_ids: list[str]) -> str:
+    return hashlib.sha256(
+        json.dumps(chunk_ids, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _code_revision() -> str:
+    from catalyst_data.retrieval.git_revision import resolve_git_revision
+
+    return resolve_git_revision(repo_root=REPO_ROOT, require_clean=False)
+
+
+def _write_source_bundle(root: Path, records: list[dict]) -> tuple[Path, str]:
+    from catalyst_data.retrieval.source_bundle import (
+        _chunk_record_hash,
+        _stream_source_bundle_id,
+    )
+
+    bundle_id = _stream_source_bundle_id(
+        corpus_manifest_id="c" * 64,
+        snapshot_id="6" * 64,
+        probe_report_id="7" * 64,
+        postbuild_readiness_id="8" * 64,
+        record_hashes=[_chunk_record_hash(record) for record in records],
+    )
+    bundle = root / f"source_{bundle_id[:16]}"
+    bundle.mkdir()
+    (bundle / "chunks.jsonl").write_text(
+        "".join(
+            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+            for record in records
+        ),
+        encoding="utf-8",
+    )
+    manifest = {
+        "schema_version": "1.1.0",
+        "source_bundle_id": bundle_id,
+        "corpus_manifest_id": "c" * 64,
+        "snapshot_id": "6" * 64,
+        "probe_report_id": "7" * 64,
+        "postbuild_readiness_id": "8" * 64,
+        "chunk_count": len(records),
+        "universe_manifest_id": "u" * 64,
+    }
+    (bundle / "source_bundle_manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    checksums = {
+        name: _sha(bundle / name)
+        for name in ("chunks.jsonl", "source_bundle_manifest.json")
+    }
+    (bundle / "checksums.sha256").write_text(
+        "\n".join(f"{value}  {name}" for name, value in sorted(checksums.items())) + "\n",
+        encoding="utf-8",
+    )
+    return bundle, bundle_id
+
+
+def _artifact_dir(tmp_path: Path, *, count: int = 2, code_revision: str | None = None):
     import numpy as np
 
+    if code_revision is None:
+        code_revision = _code_revision()
     chunk_ids = [f"chunk:{index:04d}" for index in range(count)]
     vectors = np.zeros((count, BGE_M3_DIMENSION), dtype=np.float32)
     for index in range(count):
         vectors[index, index] = 1.0
+    records = []
+    texts = [f"fixture {index}" for index in range(count)]
+    for chunk_id, text in zip(chunk_ids, texts):
+        records.append(
+            {
+                "chunk_id": chunk_id,
+                "document_id": f"doc:{chunk_id}",
+                "content_text": text,
+                "content_hash": hashlib.sha256(text.encode()).hexdigest(),
+                "metadata_hash": "b" * 64,
+                "available_at": "2026-08-01T00:00:00Z",
+                "ticker_associations": '["AAPL"]',
+                "corpus_manifest_id": "c" * 64,
+                "chunk_profile_version": "news_v2",
+            }
+        )
+    bundle, bundle_id = _write_source_bundle(tmp_path, records)
     root = tmp_path / "embedding-artifact"
     root.mkdir()
     np.save(root / "vectors.npy", vectors)
-    (root / "chunk_ids.json").write_text(json.dumps(chunk_ids), encoding="utf-8")
-    texts = [f"fixture {index}" for index in range(count)]
-    lines = []
-    for chunk_id, text in zip(chunk_ids, texts):
-        record = {
-            "chunk_id": chunk_id,
-            "document_id": f"doc:{chunk_id}",
-            "content_text": text,
-            "content_hash": hashlib.sha256(text.encode()).hexdigest(),
-            "metadata_hash": "b" * 64,
-            "available_at": "2026-08-01T00:00:00Z",
-            "ticker_associations": '["AAPL"]',
-            "corpus_manifest_id": "c" * 64,
-            "chunk_profile_version": "news_v2",
-        }
-        lines.append(json.dumps(record, sort_keys=True, separators=(",", ":")))
-    (root / "chunks.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (root / "chunk_ids.json").write_text(
+        json.dumps(chunk_ids, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
+    (root / "chunks.jsonl").write_text(
+        "".join(
+            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+            for record in records
+        ),
+        encoding="utf-8",
+    )
     checksums = {
         "vectors.npy": _sha(root / "vectors.npy"),
         "chunk_ids.json": _sha(root / "chunk_ids.json"),
     }
-    (root / "checksums.sha256").write_text(
-        "\n".join(f"{value}  {name}" for name, value in sorted(checksums.items())) + "\n",
-        encoding="utf-8",
-    )
     manifest = IndexManifest(
         model_name=BGE_M3_MODEL,
         model_revision=BGE_M3_REVISION,
@@ -80,7 +148,7 @@ def _artifact_dir(tmp_path: Path, *, count: int = 2, code_revision: str = HEX40)
         dtype="float32",
         dimension=BGE_M3_DIMENSION,
         corpus_manifest_id="c" * 64,
-        source_bundle_id="1" * 64,
+        source_bundle_id=bundle_id,
         snapshot_id="6" * 64,
         probe_report_id="7" * 64,
         postbuild_readiness_id="8" * 64,
@@ -92,11 +160,18 @@ def _artifact_dir(tmp_path: Path, *, count: int = 2, code_revision: str = HEX40)
         code_revision=code_revision,
         vector_count=count,
         artifact_state="vectors_staged",
+        vectors_checksum=checksums["vectors.npy"],
+        chunk_order_checksum=_order_checksum(chunk_ids),
     )
     (root / "index_manifest.json").write_text(
         json.dumps(manifest.to_dict(), sort_keys=True), encoding="utf-8"
     )
-    return root, chunk_ids, manifest
+    checksums["index_manifest.json"] = _sha(root / "index_manifest.json")
+    (root / "checksums.sha256").write_text(
+        "\n".join(f"{value}  {name}" for name, value in sorted(checksums.items())) + "\n",
+        encoding="utf-8",
+    )
+    return root, chunk_ids, manifest, bundle
 
 
 def _derivative(
@@ -212,7 +287,7 @@ def _active_pointers(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _fixture(tmp_path: Path):
-    artifact, chunk_ids, manifest = _artifact_dir(tmp_path)
+    artifact, chunk_ids, manifest, bundle = _artifact_dir(tmp_path)
     db = _derivative(tmp_path, manifest=manifest, chunk_ids=chunk_ids)
     active_dir, pointer = _active_pointers(tmp_path)
     candidate_dir = tmp_path / "candidate_manifest"
@@ -225,6 +300,8 @@ def _fixture(tmp_path: Path):
         "active_dir": active_dir,
         "pointer": pointer,
         "candidate_dir": candidate_dir,
+        "bundle": bundle,
+        "code_revision": manifest.code_revision,
     }
 
 
@@ -277,7 +354,7 @@ def _write_manifest_copy(fx: dict) -> Path:
 
 
 def _argv(mode: str, fx: dict, *, extra: list[str] | None = None) -> list[str]:
-    return [
+    args = [
         mode,
         "--derivative", str(fx["db"]),
         "--build-id", fx["build_id"],
@@ -285,8 +362,17 @@ def _argv(mode: str, fx: dict, *, extra: list[str] | None = None) -> list[str]:
         "--candidate-manifest-dir", str(fx["candidate_dir"]),
         "--active-lancedb-dir", str(fx["active_dir"]),
         "--active-generation-pointer", str(fx["pointer"]),
-        *(extra or []),
     ]
+    if mode == "execute":
+        args.extend(
+            [
+                "--source-bundle", str(fx["bundle"]),
+                "--expected-index-manifest-id", fx["manifest"].index_manifest_id,
+                "--code-revision", fx["code_revision"],
+            ]
+        )
+    args.extend(extra or [])
+    return args
 
 
 def test_execute_parser_requires_active_generation_arguments(tmp_path):
@@ -353,7 +439,7 @@ def test_preflight_rejects_disagreeing_pre_existing_generation(tmp_path):
 def test_execute_rejects_active_corpus_contradiction(tmp_path):
     """B3: is_current=1 always rejects, even when the build claims lexical-ready."""
     cli = _load_cli()
-    artifact, chunk_ids, manifest = _artifact_dir(tmp_path)
+    artifact, chunk_ids, manifest, bundle = _artifact_dir(tmp_path)
     db = _derivative(tmp_path, manifest=manifest, chunk_ids=chunk_ids, is_current=1)
     active_dir, pointer = _active_pointers(tmp_path)
     candidate_dir = tmp_path / "candidate_manifest"
@@ -365,6 +451,8 @@ def test_execute_rejects_active_corpus_contradiction(tmp_path):
         "candidate_dir": candidate_dir,
         "active_dir": active_dir,
         "pointer": pointer,
+        "bundle": bundle,
+        "code_revision": manifest.code_revision,
     }
     with pytest.raises(Exception, match="is_current=1|inactive"):
         cli.main(_argv("execute", fx))
@@ -374,7 +462,7 @@ def test_execute_rejects_active_corpus_contradiction(tmp_path):
 def test_preflight_rejects_readiness_status_flag_disagreement(tmp_path):
     """B3: status=lexical_ready with lexical_ready=0 is incoherent and rejects."""
     cli = _load_cli()
-    artifact, chunk_ids, manifest = _artifact_dir(tmp_path)
+    artifact, chunk_ids, manifest, _bundle = _artifact_dir(tmp_path)
     db = _derivative(
         tmp_path, manifest=manifest, chunk_ids=chunk_ids,
         lexical_ready=0, status="lexical_ready",
@@ -391,7 +479,7 @@ def test_preflight_rejects_readiness_status_flag_disagreement(tmp_path):
 def test_preflight_rejects_readiness_flag_disagreement_reverse(tmp_path):
     """B3: status=reconciliation_ready with lexical_ready=1 is incoherent too."""
     cli = _load_cli()
-    artifact, chunk_ids, manifest = _artifact_dir(tmp_path)
+    artifact, chunk_ids, manifest, _bundle = _artifact_dir(tmp_path)
     db = _derivative(
         tmp_path, manifest=manifest, chunk_ids=chunk_ids,
         lexical_ready=1, status="reconciliation_ready",
@@ -503,3 +591,73 @@ def test_symlink_alias_to_active_directory_rejected(tmp_path):
     link.symlink_to(fx["active_dir"], target_is_directory=True)
     with pytest.raises(Exception, match="aliases protected active path"):
         cli.main(_argv("preflight", fx, extra=["--candidate-manifest-dir", str(link)]))
+
+
+def test_execute_parser_requires_source_bundle_manifest_id_and_code_revision(tmp_path):
+    """Execute without --source-bundle/--expected-index-manifest-id/--code-revision
+    is rejected by the parser before any write."""
+    cli = _load_cli()
+    fx = _fixture(tmp_path)
+    base = [
+        "execute",
+        "--derivative", str(fx["db"]),
+        "--build-id", fx["build_id"],
+        "--embedding-artifact", str(fx["artifact"]),
+        "--candidate-manifest-dir", str(fx["candidate_dir"]),
+        "--active-lancedb-dir", str(fx["active_dir"]),
+        "--active-generation-pointer", str(fx["pointer"]),
+    ]
+    with pytest.raises(SystemExit):
+        cli.main(base)
+    with pytest.raises(SystemExit):
+        cli.main(base + ["--source-bundle", str(tmp_path / "bundle")])
+    with pytest.raises(SystemExit):
+        cli.main(base + ["--expected-index-manifest-id", "a" * 64])
+    with pytest.raises(SystemExit):
+        cli.main(base + ["--code-revision", "a" * 40])
+    assert not fx["candidate_dir"].exists()
+
+
+def test_execute_core_rejects_missing_source_bundle_manifest_id_and_code_revision(tmp_path):
+    """Core-level execute without the three identity guards fails closed."""
+    from catalyst_data.index.candidate_staging_cli import (
+        CandidateDenseStagingError,
+        CandidateDenseStagingInputs,
+        execute_stage_candidate_dense,
+    )
+
+    fx = _fixture(tmp_path)
+    inputs = CandidateDenseStagingInputs(
+        derivative=fx["db"],
+        build_id=fx["build_id"],
+        embedding_artifact_dir=fx["artifact"],
+        candidate_manifest_dir=fx["candidate_dir"],
+        source_bundle=None,
+        active_lancedb_dir=fx["active_dir"],
+        active_generation_pointer=fx["pointer"],
+        expected_index_manifest_id=None,
+        code_revision=None,
+    )
+    with pytest.raises(
+        CandidateDenseStagingError,
+        match="source-bundle|expected-index-manifest-id|code-revision",
+    ):
+        execute_stage_candidate_dense(inputs)
+    assert not fx["candidate_dir"].exists()
+
+
+def test_table_only_interrupted_staging_is_fail_closed_with_operator_cleanup(tmp_path):
+    """A leftover candidate_*.lance table without published identity records
+    remains fail-closed; the error names the operator cleanup/restart procedure.
+    """
+    cli = _load_cli()
+    fx = _fixture(tmp_path)
+    table_name = f"candidate_{fx['manifest'].index_manifest_id[:16]}"
+    table_dir = fx["candidate_dir"] / f"{table_name}.lance"
+    table_dir.mkdir(parents=True)
+    (table_dir / "partial").write_text("interrupted", encoding="utf-8")
+    with pytest.raises(Exception, match="Operator cleanup"):
+        cli.main(_argv("preflight", fx))
+    with pytest.raises(Exception, match="identical execute command"):
+        cli.main(_argv("execute", fx))
+    assert (fx["candidate_dir"] / "candidate_generation.json").exists() is False

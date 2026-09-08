@@ -20,6 +20,12 @@ The core verifies, before any mutation, that:
 confirms the active-generation pointer bytes are unchanged on success.
 ``stage_dense`` idempotent resume is preserved: an existing matching
 ``candidate_generation.json`` is returned without re-mutation.
+
+A manifest-only, generation-only, or table-only leftover is fail-closed.
+Operator cleanup: delete the candidate manifest directory contents
+(candidate_generation.json, index_manifest.json, and the candidate_*.lance
+table) then re-run the identical execute command. Do not promote or copy
+leftovers into the active generation.
 """
 from __future__ import annotations
 
@@ -32,8 +38,12 @@ from pathlib import Path
 from typing import Any
 
 from catalyst_data.config import BGE_M3_DIMENSION, BGE_M3_MODEL, BGE_M3_REVISION
+from catalyst_data.index.v1_staging import INTERRUPTED_CANDIDATE_OPERATOR_PROCEDURE
+from catalyst_data.retrieval.git_revision import resolve_git_revision
 from catalyst_data.retrieval.gpu_contract import verify_source_bundle
 from catalyst_data.retrieval.index_manifest import IndexManifest
+
+_REPO_ROOT = Path(__file__).resolve().parents[4]
 
 _HEX64 = "0123456789abcdef"
 
@@ -74,21 +84,31 @@ def _verify_required_execution_guards(
     *,
     active_lancedb_dir: Path | None,
     active_generation_pointer: Path | None,
+    source_bundle: Path | None = None,
+    expected_index_manifest_id: str | None = None,
+    code_revision: str | None = None,
 ) -> None:
-    """Production execute must name the active generation explicitly.
+    """Production execute must name identities and the active generation.
 
-    Pointer-free protection is mandatory: an execute that cannot fingerprint
-    the active LanceDB directory and active-generation pointer is rejected
-    before any mutation.
+    Missing or empty --source-bundle, --expected-index-manifest-id,
+    --code-revision, --active-lancedb-dir, or --active-generation-pointer
+    is rejected before any mutation.
     """
     missing = []
+    if source_bundle is None:
+        missing.append("--source-bundle")
+    if not expected_index_manifest_id:
+        missing.append("--expected-index-manifest-id")
+    if not code_revision:
+        missing.append("--code-revision")
     if active_lancedb_dir is None:
         missing.append("--active-lancedb-dir")
     if active_generation_pointer is None:
         missing.append("--active-generation-pointer")
     if missing:
         raise CandidateDenseStagingError(
-            "execute requires explicit active-generation protection; missing: "
+            "execute requires explicit source-bundle, expected-index-manifest-id, "
+            "code-revision, and active-generation protection; missing: "
             + ", ".join(missing)
         )
 
@@ -285,21 +305,14 @@ def _verify_no_active_alias(
 def _resolve_code_revision(code_revision: str | None) -> str | None:
     if code_revision is None:
         return None
-    import subprocess
-
     try:
-        head = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True
-        ).strip()
-    except Exception as exc:  # pragma: no cover - environment dependent
-        raise CandidateDenseStagingError(
-            "unable to resolve git HEAD for --code-revision"
-        ) from exc
-    if code_revision != head:
-        raise CandidateDenseStagingError(
-            f"--code-revision {code_revision} != git HEAD {head}"
+        return resolve_git_revision(
+            repo_root=_REPO_ROOT,
+            expected=code_revision,
+            require_clean=False,
         )
-    return code_revision
+    except Exception as exc:
+        raise CandidateDenseStagingError(str(exc)) from exc
 
 
 def _verify_pre_existing_candidate_record(
@@ -325,7 +338,8 @@ def _verify_pre_existing_candidate_record(
         if not manifest_path.is_file():
             raise CandidateDenseStagingError(
                 "candidate_generation.json exists without a matching "
-                "index_manifest.json; refusing half-published candidate resume"
+                "index_manifest.json; refusing half-published candidate resume. "
+                + INTERRUPTED_CANDIDATE_OPERATOR_PROCEDURE
             )
         try:
             existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -386,7 +400,8 @@ def _verify_pre_existing_candidate_record(
     if manifest_path.is_file():
         raise CandidateDenseStagingError(
             "index_manifest.json exists without candidate_generation.json; "
-            "refusing half-published candidate resume"
+            "refusing half-published candidate resume. "
+            + INTERRUPTED_CANDIDATE_OPERATOR_PROCEDURE
         )
     table_dir = Path(candidate_manifest_dir) / (
         f"candidate_{manifest.index_manifest_id[:16]}.lance"
@@ -394,7 +409,8 @@ def _verify_pre_existing_candidate_record(
     if table_dir.exists():
         raise CandidateDenseStagingError(
             "candidate LanceDB table exists without published identity "
-            "records; refusing half-published candidate resume"
+            "records; refusing half-published candidate resume. "
+            + INTERRUPTED_CANDIDATE_OPERATOR_PROCEDURE
         )
 
 
@@ -465,6 +481,9 @@ def execute_stage_candidate_dense(
     _verify_required_execution_guards(
         active_lancedb_dir=inputs.active_lancedb_dir,
         active_generation_pointer=inputs.active_generation_pointer,
+        source_bundle=inputs.source_bundle,
+        expected_index_manifest_id=inputs.expected_index_manifest_id,
+        code_revision=inputs.code_revision,
     )
     preflight = preflight_stage_candidate_dense(inputs)
     expected_chunk_count = preflight["expected_chunk_count"]

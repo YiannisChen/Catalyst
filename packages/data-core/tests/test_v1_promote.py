@@ -46,7 +46,9 @@ def _artifact_dir(root: Path, *, chunk_ids: list[str]) -> Path:
     artifact = root / "embedding-artifact"
     artifact.mkdir(parents=True)
     np.save(artifact / "vectors.npy", vectors)
-    (artifact / "chunk_ids.json").write_text(json.dumps(chunk_ids), encoding="utf-8")
+    (artifact / "chunk_ids.json").write_text(
+        json.dumps(chunk_ids, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
     # Real GPU artifacts never contain chunks.jsonl; per-row metadata is read
     # from the derivative corpus_build_chunks via source_conn/source_build_id.
     checksums = {
@@ -72,6 +74,7 @@ def _dense_manifest(
         "chunk_ids.json": _sha(artifact / "chunk_ids.json"),
         "lancedb_table": "c" * 64,
     }
+    chunk_ids = json.loads((artifact / "chunk_ids.json").read_text(encoding="utf-8"))
     return IndexManifest(
         model_name=BGE_M3_MODEL,
         model_revision=BGE_M3_REVISION,
@@ -88,6 +91,10 @@ def _dense_manifest(
         code_revision="a" * 40,
         vector_count=vector_count,
         artifact_state="vectors_staged",
+        vectors_checksum=hashes["vectors.npy"],
+        chunk_order_checksum=hashlib.sha256(
+            json.dumps(chunk_ids, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
     )
 
 

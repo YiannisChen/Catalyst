@@ -17,6 +17,12 @@ def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _order_checksum(chunk_ids: list[str]) -> str:
+    return hashlib.sha256(
+        json.dumps(chunk_ids, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
 def _artifact_dir(tmp_path: Path, *, count: int = 2) -> tuple[Path, list[str], np.ndarray]:
     chunk_ids = [f"chunk:{index:04d}" for index in range(count)]
     vectors = np.zeros((count, BGE_M3_DIMENSION), dtype=np.float32)
@@ -25,7 +31,9 @@ def _artifact_dir(tmp_path: Path, *, count: int = 2) -> tuple[Path, list[str], n
     root = tmp_path / "embedding-artifact"
     root.mkdir()
     np.save(root / "vectors.npy", vectors)
-    (root / "chunk_ids.json").write_text(json.dumps(chunk_ids), encoding="utf-8")
+    (root / "chunk_ids.json").write_text(
+        json.dumps(chunk_ids, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
     texts = [f"fixture {index}" for index in range(count)]
     lines = []
     for chunk_id, text in zip(chunk_ids, texts):
@@ -53,13 +61,20 @@ def _artifact_dir(tmp_path: Path, *, count: int = 2) -> tuple[Path, list[str], n
     return root, chunk_ids, vectors
 
 
-def _manifest(artifact: Path, *, vector_count: int, source_bundle_id: str = "1" * 64) -> IndexManifest:
+def _manifest(
+    artifact: Path,
+    *,
+    vector_count: int,
+    source_bundle_id: str = "1" * 64,
+    bind_payload: bool = True,
+) -> IndexManifest:
     hashes = {
         "vectors.npy": _sha(artifact / "vectors.npy"),
         "chunk_ids.json": _sha(artifact / "chunk_ids.json"),
         "lancedb_table": "c" * 64,
     }
-    return IndexManifest(
+    chunk_ids = json.loads((artifact / "chunk_ids.json").read_text(encoding="utf-8"))
+    kwargs: dict = dict(
         model_name=BGE_M3_MODEL,
         model_revision=BGE_M3_REVISION,
         tokenizer_revision=TOKENIZER_REVISION,
@@ -76,6 +91,10 @@ def _manifest(artifact: Path, *, vector_count: int, source_bundle_id: str = "1" 
         vector_count=vector_count,
         artifact_state="vectors_staged",
     )
+    if bind_payload:
+        kwargs["vectors_checksum"] = hashes["vectors.npy"]
+        kwargs["chunk_order_checksum"] = _order_checksum(chunk_ids)
+    return IndexManifest(**kwargs)
 
 
 def test_stage_dense_missing_api():
@@ -717,3 +736,132 @@ def test_stage_dense_late_hash_and_order_failures_fail_before_table_mutation(tmp
         finally:
             conn.close()
         _assert_no_partial_candidate(manifest_dir, active, before, prior_table)
+
+
+# ---------------------------------------------------------------------------
+# Cloud-readiness: bind embedding files to IndexManifest before LanceDB writes.
+# Reuse the GPU canonical checksum formulas; do not invent a second identity.
+# ---------------------------------------------------------------------------
+
+
+def _bound_manifest(artifact: Path, *, vector_count: int, **overrides) -> IndexManifest:
+    chunk_ids = json.loads((artifact / "chunk_ids.json").read_text(encoding="utf-8"))
+    vectors_checksum = _sha(artifact / "vectors.npy")
+    chunk_ids_checksum = _sha(artifact / "chunk_ids.json")
+    values = dict(
+        model_name=BGE_M3_MODEL,
+        model_revision=BGE_M3_REVISION,
+        tokenizer_revision=TOKENIZER_REVISION,
+        normalization_mode="l2",
+        dtype="float32",
+        dimension=BGE_M3_DIMENSION,
+        corpus_manifest_id="c" * 64,
+        source_bundle_id="1" * 64,
+        snapshot_id="6" * 64,
+        probe_report_id="7" * 64,
+        postbuild_readiness_id="8" * 64,
+        artifact_hashes={
+            "vectors.npy": vectors_checksum,
+            "chunk_ids.json": chunk_ids_checksum,
+            "lancedb_table": "c" * 64,
+        },
+        code_revision="a" * 40,
+        vector_count=vector_count,
+        artifact_state="vectors_staged",
+        vectors_checksum=vectors_checksum,
+        chunk_order_checksum=_order_checksum(chunk_ids),
+    )
+    values.update(overrides)
+    return IndexManifest(**values)
+
+
+def test_stage_dense_rejects_missing_index_manifest_vector_checksum(tmp_path):
+    """IndexManifest.vectors_checksum is required; None is not a bind."""
+    from catalyst_data.index.v1_staging import stage_dense
+
+    artifact, _chunk_ids, _vectors = _artifact_dir(tmp_path)
+    manifest = _manifest(artifact, vector_count=2, bind_payload=False)
+    assert manifest.vectors_checksum is None
+    with pytest.raises(ValueError, match="vectors_checksum"):
+        stage_dense(
+            tmp_path / "candidates" / manifest.index_manifest_id,
+            embedding_artifact_dir=artifact,
+            new_index_manifest=manifest,
+            expected_chunk_count=2,
+        )
+
+
+def test_stage_dense_rejects_vectors_checksum_disagreeing_with_file(tmp_path):
+    from catalyst_data.index.v1_staging import stage_dense
+
+    artifact, _chunk_ids, _vectors = _artifact_dir(tmp_path)
+    manifest = _bound_manifest(artifact, vector_count=2, vectors_checksum="e" * 64)
+    with pytest.raises(ValueError, match="vectors checksum"):
+        stage_dense(
+            tmp_path / "candidates" / manifest.index_manifest_id,
+            embedding_artifact_dir=artifact,
+            new_index_manifest=manifest,
+            expected_chunk_count=2,
+        )
+
+
+def test_stage_dense_rejects_chunk_order_checksum_disagreeing_with_ids(tmp_path):
+    from catalyst_data.index.v1_staging import stage_dense
+
+    artifact, _chunk_ids, _vectors = _artifact_dir(tmp_path)
+    manifest = _bound_manifest(
+        artifact, vector_count=2, chunk_order_checksum="f" * 64
+    )
+    with pytest.raises(ValueError, match="chunk order checksum"):
+        stage_dense(
+            tmp_path / "candidates" / manifest.index_manifest_id,
+            embedding_artifact_dir=artifact,
+            new_index_manifest=manifest,
+            expected_chunk_count=2,
+        )
+
+
+def test_stage_dense_rejects_chunk_ids_artifact_hash_disagreeing_with_file(tmp_path):
+    from catalyst_data.index.v1_staging import stage_dense
+
+    artifact, _chunk_ids, _vectors = _artifact_dir(tmp_path)
+    hashes = {
+        "vectors.npy": _sha(artifact / "vectors.npy"),
+        "chunk_ids.json": "d" * 64,
+        "lancedb_table": "c" * 64,
+    }
+    manifest = _bound_manifest(artifact, vector_count=2, artifact_hashes=hashes)
+    with pytest.raises(ValueError, match="chunk index artifact hash"):
+        stage_dense(
+            tmp_path / "candidates" / manifest.index_manifest_id,
+            embedding_artifact_dir=artifact,
+            new_index_manifest=manifest,
+            expected_chunk_count=2,
+        )
+
+
+def test_stage_dense_rejects_checksums_listing_disagreeing_with_index_manifest(tmp_path):
+    """checksums.sha256, on-disk files, and IndexManifest must all agree."""
+    from catalyst_data.index.v1_staging import stage_dense
+
+    artifact, _chunk_ids, _vectors = _artifact_dir(tmp_path)
+    manifest = _bound_manifest(artifact, vector_count=2)
+    listed = (artifact / "checksums.sha256").read_text(encoding="utf-8")
+    (artifact / "checksums.sha256").write_text(
+        listed.replace(
+            _sha(artifact / "vectors.npy"),
+            "b" * 64,
+            1,
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        stage_dense(
+            tmp_path / "candidates" / manifest.index_manifest_id,
+            embedding_artifact_dir=artifact,
+            new_index_manifest=manifest,
+            expected_chunk_count=2,
+        )
+
+
+# ---------------------------------------------------------------------------

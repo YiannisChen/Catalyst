@@ -13,6 +13,14 @@ the candidate build must be lexical-ready. ``execute`` never calls
 ``promote_v1_generation`` and never creates/modifies active pointers. An
 already-staged matching ``candidate_generation.json`` is returned unchanged
 (idempotent resume).
+
+Interrupted staging is fail-closed. A leftover ``candidate_generation.json``,
+``index_manifest.json``, or ``candidate_*.lance`` table without the complete
+published pair is rejected. Operator cleanup: delete the candidate manifest
+directory contents (candidate_generation.json, index_manifest.json, and the
+candidate_*.lance table) then re-run the identical execute command. Do not
+promote or copy leftovers into the active generation. There is no automatic
+recovery.
 """
 from __future__ import annotations
 
@@ -41,22 +49,25 @@ def _parser() -> argparse.ArgumentParser:
         p.add_argument("--build-id", required=True)
         p.add_argument("--embedding-artifact", type=Path, required=True)
         p.add_argument("--candidate-manifest-dir", type=Path, required=True)
-        p.add_argument("--source-bundle", type=Path, default=None)
-        p.add_argument("--expected-index-manifest-id", default=None)
-        p.add_argument("--code-revision", default=None)
 
     pre = sub.add_parser("preflight", help="read-only identity/path validation")
     _common(pre)
+    pre.add_argument("--source-bundle", type=Path, default=None)
+    pre.add_argument("--expected-index-manifest-id", default=None)
+    pre.add_argument("--code-revision", default=None)
     pre.add_argument("--active-lancedb-dir", type=Path, default=None)
     pre.add_argument("--active-generation-pointer", type=Path, default=None)
-    # Mandatory active-generation protection on the mutating command (B1):
-    # execute without an explicit active LanceDB directory and active-generation
-    # pointer is rejected by the parser before any write can occur.
+    # Mandatory identity and active-generation protection on the mutating
+    # command: execute without these flags is rejected by the parser before
+    # any write can occur.
     exe = sub.add_parser(
         "execute",
         help="stage inactive candidate dense generation (pointer-free)",
     )
     _common(exe)
+    exe.add_argument("--source-bundle", type=Path, required=True)
+    exe.add_argument("--expected-index-manifest-id", required=True)
+    exe.add_argument("--code-revision", required=True)
     exe.add_argument("--active-lancedb-dir", type=Path, required=True)
     exe.add_argument("--active-generation-pointer", type=Path, required=True)
     return parser

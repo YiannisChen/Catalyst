@@ -24,45 +24,115 @@ from catalyst_data.corpus.tokenizer import TOKENIZER_REVISION
 from catalyst_data.retrieval.index_manifest import IndexManifest
 
 HEX40 = "a" * 40
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _artifact_dir(tmp_path: Path, *, count: int = 2, code_revision: str = HEX40) -> tuple[Path, list[str], IndexManifest]:
+def _order_checksum(chunk_ids: list[str]) -> str:
+    return hashlib.sha256(
+        json.dumps(chunk_ids, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _code_revision() -> str:
+    from catalyst_data.retrieval.git_revision import resolve_git_revision
+
+    return resolve_git_revision(repo_root=REPO_ROOT, require_clean=False)
+
+
+def _write_source_bundle(root: Path, records: list[dict]) -> tuple[Path, str]:
+    from catalyst_data.retrieval.source_bundle import (
+        _chunk_record_hash,
+        _stream_source_bundle_id,
+    )
+
+    bundle_id = _stream_source_bundle_id(
+        corpus_manifest_id="c" * 64,
+        snapshot_id="6" * 64,
+        probe_report_id="7" * 64,
+        postbuild_readiness_id="8" * 64,
+        record_hashes=[_chunk_record_hash(record) for record in records],
+    )
+    bundle = root / f"source_{bundle_id[:16]}"
+    bundle.mkdir()
+    (bundle / "chunks.jsonl").write_text(
+        "".join(
+            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+            for record in records
+        ),
+        encoding="utf-8",
+    )
+    manifest = {
+        "schema_version": "1.1.0",
+        "source_bundle_id": bundle_id,
+        "corpus_manifest_id": "c" * 64,
+        "snapshot_id": "6" * 64,
+        "probe_report_id": "7" * 64,
+        "postbuild_readiness_id": "8" * 64,
+        "chunk_count": len(records),
+        "universe_manifest_id": "u" * 64,
+    }
+    (bundle / "source_bundle_manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    checksums = {
+        name: _sha(bundle / name)
+        for name in ("chunks.jsonl", "source_bundle_manifest.json")
+    }
+    (bundle / "checksums.sha256").write_text(
+        "\n".join(f"{value}  {name}" for name, value in sorted(checksums.items())) + "\n",
+        encoding="utf-8",
+    )
+    return bundle, bundle_id
+
+
+def _artifact_dir(
+    tmp_path: Path, *, count: int = 2, code_revision: str | None = None
+) -> tuple[Path, list[str], IndexManifest, Path]:
+    if code_revision is None:
+        code_revision = _code_revision()
     chunk_ids = [f"chunk:{index:04d}" for index in range(count)]
     vectors = np.zeros((count, BGE_M3_DIMENSION), dtype=np.float32)
     for index in range(count):
         vectors[index, index] = 1.0
+    records = []
+    texts = [f"fixture {index}" for index in range(count)]
+    for chunk_id, text in zip(chunk_ids, texts):
+        records.append(
+            {
+                "chunk_id": chunk_id,
+                "document_id": f"doc:{chunk_id}",
+                "content_text": text,
+                "content_hash": hashlib.sha256(text.encode()).hexdigest(),
+                "metadata_hash": "b" * 64,
+                "available_at": "2026-08-01T00:00:00Z",
+                "ticker_associations": '["AAPL"]',
+                "corpus_manifest_id": "c" * 64,
+                "chunk_profile_version": "news_v2",
+            }
+        )
+    bundle, bundle_id = _write_source_bundle(tmp_path, records)
     root = tmp_path / "embedding-artifact"
     root.mkdir()
     np.save(root / "vectors.npy", vectors)
-    (root / "chunk_ids.json").write_text(json.dumps(chunk_ids), encoding="utf-8")
-    texts = [f"fixture {index}" for index in range(count)]
-    lines = []
-    for chunk_id, text in zip(chunk_ids, texts):
-        record = {
-            "chunk_id": chunk_id,
-            "document_id": f"doc:{chunk_id}",
-            "content_text": text,
-            "content_hash": hashlib.sha256(text.encode()).hexdigest(),
-            "metadata_hash": "b" * 64,
-            "available_at": "2026-08-01T00:00:00Z",
-            "ticker_associations": '["AAPL"]',
-            "corpus_manifest_id": "c" * 64,
-            "chunk_profile_version": "news_v2",
-        }
-        lines.append(json.dumps(record, sort_keys=True, separators=(",", ":")))
-    (root / "chunks.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (root / "chunk_ids.json").write_text(
+        json.dumps(chunk_ids, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
+    (root / "chunks.jsonl").write_text(
+        "".join(
+            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
+            for record in records
+        ),
+        encoding="utf-8",
+    )
     checksums = {
         "vectors.npy": _sha(root / "vectors.npy"),
         "chunk_ids.json": _sha(root / "chunk_ids.json"),
     }
-    (root / "checksums.sha256").write_text(
-        "\n".join(f"{value}  {name}" for name, value in sorted(checksums.items())) + "\n",
-        encoding="utf-8",
-    )
     manifest = IndexManifest(
         model_name=BGE_M3_MODEL,
         model_revision=BGE_M3_REVISION,
@@ -71,7 +141,7 @@ def _artifact_dir(tmp_path: Path, *, count: int = 2, code_revision: str = HEX40)
         dtype="float32",
         dimension=BGE_M3_DIMENSION,
         corpus_manifest_id="c" * 64,
-        source_bundle_id="1" * 64,
+        source_bundle_id=bundle_id,
         snapshot_id="6" * 64,
         probe_report_id="7" * 64,
         postbuild_readiness_id="8" * 64,
@@ -83,11 +153,18 @@ def _artifact_dir(tmp_path: Path, *, count: int = 2, code_revision: str = HEX40)
         code_revision=code_revision,
         vector_count=count,
         artifact_state="vectors_staged",
+        vectors_checksum=checksums["vectors.npy"],
+        chunk_order_checksum=_order_checksum(chunk_ids),
     )
     (root / "index_manifest.json").write_text(
         json.dumps(manifest.to_dict(), sort_keys=True), encoding="utf-8"
     )
-    return root, chunk_ids, manifest
+    checksums["index_manifest.json"] = _sha(root / "index_manifest.json")
+    (root / "checksums.sha256").write_text(
+        "\n".join(f"{value}  {name}" for name, value in sorted(checksums.items())) + "\n",
+        encoding="utf-8",
+    )
+    return root, chunk_ids, manifest, bundle
 
 
 def _derivative(
@@ -212,7 +289,7 @@ def _active_pointers(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _fixture(tmp_path: Path):
-    artifact, chunk_ids, manifest = _artifact_dir(tmp_path)
+    artifact, chunk_ids, manifest, bundle = _artifact_dir(tmp_path)
     db = _derivative(tmp_path, manifest=manifest, chunk_ids=chunk_ids)
     active_dir, pointer = _active_pointers(tmp_path)
     candidate_dir = tmp_path / "candidate_manifest"
@@ -225,11 +302,13 @@ def _fixture(tmp_path: Path):
         "active_dir": active_dir,
         "pointer": pointer,
         "candidate_dir": candidate_dir,
+        "bundle": bundle,
+        "code_revision": manifest.code_revision,
     }
 
 
 def _argv(mode: str, fx, *, extra: list[str] | None = None) -> list[str]:
-    return [
+    args = [
         mode,
         "--derivative", str(fx["db"]),
         "--build-id", fx["build_id"],
@@ -237,8 +316,17 @@ def _argv(mode: str, fx, *, extra: list[str] | None = None) -> list[str]:
         "--candidate-manifest-dir", str(fx["candidate_dir"]),
         "--active-lancedb-dir", str(fx["active_dir"]),
         "--active-generation-pointer", str(fx["pointer"]),
-        *(extra or []),
     ]
+    if mode == "execute":
+        args.extend(
+            [
+                "--source-bundle", str(fx["bundle"]),
+                "--expected-index-manifest-id", fx["manifest"].index_manifest_id,
+                "--code-revision", fx["code_revision"],
+            ]
+        )
+    args.extend(extra or [])
+    return args
 
 
 def test_preflight_accepts_inactive_candidate(tmp_path):
@@ -251,7 +339,7 @@ def test_preflight_accepts_inactive_candidate(tmp_path):
 
 def test_preflight_rejects_current_active_corpus(tmp_path):
     cli = _load_cli()
-    artifact, chunk_ids, manifest = _artifact_dir(tmp_path)
+    artifact, chunk_ids, manifest, _bundle = _artifact_dir(tmp_path)
     db = _derivative(tmp_path, manifest=manifest, chunk_ids=chunk_ids, is_current=1)
     active_dir, pointer = _active_pointers(tmp_path)
     candidate_dir = tmp_path / "candidate_manifest"
@@ -265,7 +353,7 @@ def test_preflight_rejects_current_active_corpus(tmp_path):
 
 def test_preflight_rejects_non_lexical_ready_build(tmp_path):
     cli = _load_cli()
-    artifact, chunk_ids, manifest = _artifact_dir(tmp_path)
+    artifact, chunk_ids, manifest, _bundle = _artifact_dir(tmp_path)
     db = _derivative(tmp_path, manifest=manifest, chunk_ids=chunk_ids,
                      lexical_ready=0, status="reconciliation_ready")
     active_dir, pointer = _active_pointers(tmp_path)
@@ -323,7 +411,7 @@ def test_execute_failure_leaves_pointer_bytes_unchanged(tmp_path):
     # Force a post-identity failure by pointing at an active corpus candidate.
     other = tmp_path / "other"
     other.mkdir()
-    artifact, chunk_ids, manifest = _artifact_dir(other)
+    artifact, chunk_ids, manifest, bundle = _artifact_dir(other)
     db = _derivative(other, manifest=manifest, chunk_ids=chunk_ids, is_current=1)
     active_dir2, pointer2 = _active_pointers(other)
     with pytest.raises(Exception):
@@ -331,5 +419,8 @@ def test_execute_failure_leaves_pointer_bytes_unchanged(tmp_path):
             "execute", "--derivative", str(db), "--build-id", "b" * 64,
             "--embedding-artifact", str(artifact), "--candidate-manifest-dir", str(fx["candidate_dir"]),
             "--active-lancedb-dir", str(active_dir2), "--active-generation-pointer", str(pointer2),
+            "--source-bundle", str(bundle),
+            "--expected-index-manifest-id", manifest.index_manifest_id,
+            "--code-revision", manifest.code_revision,
         ])
     assert fx["pointer"].read_bytes() == pointer_before
