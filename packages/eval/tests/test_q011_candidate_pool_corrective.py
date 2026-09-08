@@ -1312,3 +1312,44 @@ def test_production_retriever_closes_sqlite_when_lancedb_open_fails(tmp_path, mo
         )
     assert created, "sqlite connection was never opened"
     assert created[0].closed is True
+
+
+def test_candidate_table_count_closes_table_after_success_and_failure(tmp_path, monkeypatch):
+    """Opened LanceDB tables must be closed after count_rows success and failure."""
+    import types
+    import catalyst_eval.v1_1.candidate_pool as pool_mod
+
+    closed: list[str] = []
+
+    class _Table:
+        def __init__(self, mode: str):
+            self.mode = mode
+
+        def count_rows(self):
+            if self.mode == "boom":
+                raise OSError("count failed")
+            return 4
+
+        def close(self):
+            closed.append(self.mode)
+
+    tables = [_Table("ok"), _Table("boom")]
+
+    class _DB:
+        def table_names(self):
+            return {"candidate_table"}
+
+        def open_table(self, name):
+            assert name == "candidate_table"
+            return tables.pop(0)
+
+    stub = types.ModuleType("lancedb")
+    stub.connect = lambda *args, **kwargs: _DB()
+    monkeypatch.setitem(sys.modules, "lancedb", stub)
+
+    count = pool_mod._candidate_table_count(tmp_path, "candidate_table")
+    assert count == 4
+    assert closed == ["ok"]
+    with pytest.raises(CandidatePoolError, match="unreadable"):
+        pool_mod._candidate_table_count(tmp_path, "candidate_table")
+    assert closed == ["ok", "boom"]

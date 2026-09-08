@@ -233,6 +233,7 @@ def _candidate_table_count(candidate_dir: Path, table_name: str) -> int:
         raise CandidatePoolError(
             f"candidate LanceDB table {table_name} is missing from {candidate_dir}"
         )
+    table = None
     try:
         table = db.open_table(table_name)
         return int(table.count_rows())
@@ -240,6 +241,14 @@ def _candidate_table_count(candidate_dir: Path, table_name: str) -> int:
         raise CandidatePoolError(
             f"candidate LanceDB table {table_name} is unreadable"
         ) from exc
+    finally:
+        if table is not None:
+            close = getattr(table, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
 
 
 def _load_candidate_identity_payload(candidate_dir: Path) -> dict[str, Any]:
