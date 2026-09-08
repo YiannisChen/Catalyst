@@ -19,7 +19,9 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -76,8 +78,53 @@ def _packet(tmp_path: Path, *, unsigned: bool = True, count: int = 12) -> Path:
     return path
 
 
-def _derivative(tmp_path: Path, *, is_current: int = 0) -> Path:
-    db = tmp_path / "derivative.db"
+def _default_chunk_records(build_id: str, count: int = 12) -> list[dict[str, Any]]:
+    """Metadata records for every fixture arm chunk used by the 12-case retriever."""
+    records: list[dict[str, Any]] = []
+    for index in range(1, count + 1):
+        slot = f"c{index:02d}"
+        for suffix in ("a", "b", "c", "d"):
+            chunk_id = f"{slot}-{suffix}"
+            content_text = f"evidence text {chunk_id}"
+            records.append(
+                {
+                    "chunk_id": chunk_id,
+                    "document_id": f"doc:{chunk_id}",
+                    "content_hash": hashlib.sha256(content_text.encode()).hexdigest(),
+                    "metadata_hash": "b" * 64,
+                    "chunk_profile_version": "news_v2",
+                    "source_class": "reported_news",
+                    "dedup_cluster_id": f"dedup:{chunk_id}",
+                    "cluster_first_available_at": "2025-05-01T00:00:00Z",
+                    "representative_document_id": f"doc:{chunk_id}",
+                    "canonical_asset_id": f"asset:{chunk_id}",
+                    "content_version_id": f"content_version:{chunk_id}",
+                    "corpus_document_id": f"doc:{chunk_id}",
+                    "content_state": "live",
+                    "independence_group_id": f"group:{chunk_id}",
+                    "parse_quality": "full",
+                    "section_parse_degraded": 0,
+                    "available_at": "2025-05-01T00:00:00Z",
+                }
+            )
+    return records
+
+
+def _derivative(
+    tmp_path: Path,
+    *,
+    name: str = "derivative.db",
+    is_current: int = 0,
+    build_id: str | None = "b" * 64,
+    build_manifest_id: str | None = None,
+    status: str = "lexical_ready",
+    lexical_ready: int = 1,
+    chunk_count: int = 2,
+    chunk_rows: list[dict[str, Any]] | None = None,
+    create_chunks: bool = True,
+    chunk_table_unique: bool = True,
+) -> Path:
+    db = tmp_path / name
     conn = sqlite3.connect(db)
     conn.execute(
         "CREATE TABLE corpus_manifest (manifest_id TEXT PRIMARY KEY, "
@@ -86,8 +133,82 @@ def _derivative(tmp_path: Path, *, is_current: int = 0) -> Path:
     conn.execute(
         "INSERT INTO corpus_manifest (manifest_id, manifest_json, is_current) "
         "VALUES (?, ?, ?)",
-        (_hex("c"), json.dumps({}), is_current),
+        (build_manifest_id or _hex("c"), json.dumps({}), is_current),
     )
+    if build_id is not None:
+        conn.execute(
+            "CREATE TABLE corpus_publication_builds (build_id TEXT PRIMARY KEY, "
+            "manifest_id TEXT NOT NULL, status TEXT NOT NULL, lexical_ready INTEGER "
+            "NOT NULL DEFAULT 0, chunk_count INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO corpus_publication_builds "
+            "(build_id, manifest_id, status, lexical_ready, chunk_count) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                build_id,
+                build_manifest_id or _hex("c"),
+                status,
+                int(lexical_ready),
+                chunk_count,
+            ),
+        )
+    if build_id is not None and create_chunks:
+        unique = "PRIMARY KEY (build_id, chunk_id)" if chunk_table_unique else ""
+        conn.execute(
+            f"""
+            CREATE TABLE corpus_build_chunks (
+                build_id TEXT NOT NULL,
+                chunk_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                metadata_hash TEXT NOT NULL,
+                chunk_profile_version TEXT NOT NULL,
+                source_class TEXT NOT NULL,
+                dedup_cluster_id TEXT,
+                cluster_first_available_at TEXT,
+                representative_document_id TEXT,
+                canonical_asset_id TEXT,
+                content_version_id TEXT,
+                corpus_document_id TEXT,
+                content_state TEXT,
+                independence_group_id TEXT,
+                parse_quality TEXT,
+                section_parse_degraded INTEGER NOT NULL,
+                available_at TEXT NOT NULL
+                {("," + unique) if unique else ""}
+            )
+            """
+        )
+        records = (
+            chunk_rows
+            if chunk_rows is not None
+            else _default_chunk_records(build_id)
+        )
+        for record in records:
+            conn.execute(
+                "INSERT INTO corpus_build_chunks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    build_id,
+                    record["chunk_id"],
+                    record["document_id"],
+                    record["content_hash"],
+                    record["metadata_hash"],
+                    record["chunk_profile_version"],
+                    record["source_class"],
+                    record.get("dedup_cluster_id"),
+                    record.get("cluster_first_available_at"),
+                    record.get("representative_document_id"),
+                    record.get("canonical_asset_id"),
+                    record.get("content_version_id"),
+                    record.get("corpus_document_id"),
+                    record.get("content_state"),
+                    record.get("independence_group_id"),
+                    record.get("parse_quality"),
+                    int(record.get("section_parse_degraded", 0)),
+                    record["available_at"],
+                ),
+            )
     conn.commit()
     conn.close()
     return db
@@ -603,3 +724,385 @@ def test_candidate_remains_inactive_and_pointer_unchanged(tmp_path):
     payload = json.loads((candidate / "candidate_generation.json").read_text())
     assert payload["status"] == "inactive"
     assert pointer.read_bytes() == pointer_before
+
+
+# ---------------------------------------------------------------------------
+# Final narrow corrective pass: build-row identity, output-dir protection,
+# metadata binding, real chunk_profile_version, artifact identity chain,
+# offline reranker contract.
+# ---------------------------------------------------------------------------
+
+
+def test_missing_build_row_rejected(tmp_path):
+    """Item 1: a derivative without corpus_publication_builds fails closed."""
+    import catalyst_eval.v1_1.candidate_pool as pool_mod
+
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    # No corpus_publication_builds table on this derivative.
+    derivative = _derivative(tmp_path, build_id=None)
+    with pytest.raises(CandidatePoolError, match="corpus_publication_builds|not found"):
+        pool_mod.load_candidate_identity(
+            run_id="q011-corrective",
+            packet_path=_packet(tmp_path),
+            derivative=derivative,
+            build_id=identities["build_id"],
+            corpus_manifest_id=identities["corpus_manifest_id"],
+            source_bundle_id=identities["source_bundle_id"],
+            snapshot_id=identities["snapshot_id"],
+            probe_report_id=identities["probe_report_id"],
+            postbuild_readiness_id=identities["postbuild_readiness_id"],
+            lancedb_dir=candidate,
+        )
+
+
+def test_arbitrary_build_id_rejected(tmp_path):
+    """Item 1: build_id with no matching build row is rejected."""
+    import catalyst_eval.v1_1.candidate_pool as pool_mod
+
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    derivative = _derivative(tmp_path, build_id=_hex("9"))  # table row for other id
+    with pytest.raises(CandidatePoolError, match="not found"):
+        pool_mod.load_candidate_identity(
+            run_id="q011-corrective",
+            packet_path=_packet(tmp_path),
+            derivative=derivative,
+            build_id=identities["build_id"],
+            corpus_manifest_id=identities["corpus_manifest_id"],
+            source_bundle_id=identities["source_bundle_id"],
+            snapshot_id=identities["snapshot_id"],
+            probe_report_id=identities["probe_report_id"],
+            postbuild_readiness_id=identities["postbuild_readiness_id"],
+            lancedb_dir=candidate,
+        )
+
+
+def test_wrong_build_ownership_rejected(tmp_path):
+    """Item 1: build manifest_id must equal the candidate corpus manifest."""
+    import catalyst_eval.v1_1.candidate_pool as pool_mod
+
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    derivative = _derivative(tmp_path)
+    conn = sqlite3.connect(derivative)
+    conn.execute(
+        "UPDATE corpus_publication_builds SET manifest_id=? WHERE build_id=?",
+        (_hex("9"), identities["build_id"]),
+    )
+    conn.commit()
+    conn.close()
+    with pytest.raises(CandidatePoolError, match="manifest_id"):
+        pool_mod.load_candidate_identity(
+            run_id="q011-corrective",
+            packet_path=_packet(tmp_path),
+            derivative=derivative,
+            build_id=identities["build_id"],
+            corpus_manifest_id=identities["corpus_manifest_id"],
+            source_bundle_id=identities["source_bundle_id"],
+            snapshot_id=identities["snapshot_id"],
+            probe_report_id=identities["probe_report_id"],
+            postbuild_readiness_id=identities["postbuild_readiness_id"],
+            lancedb_dir=candidate,
+        )
+
+
+def test_contradictory_build_readiness_rejected(tmp_path):
+    """Item 1: status lexical_ready with lexical_ready=0 is incoherent."""
+    import catalyst_eval.v1_1.candidate_pool as pool_mod
+
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    derivative = _derivative(
+        tmp_path, status="lexical_ready", lexical_ready=0, chunk_count=2
+    )
+    with pytest.raises(CandidatePoolError, match="lexical-ready|lexical_ready"):
+        pool_mod.load_candidate_identity(
+            run_id="q011-corrective",
+            packet_path=_packet(tmp_path),
+            derivative=derivative,
+            build_id=identities["build_id"],
+            corpus_manifest_id=identities["corpus_manifest_id"],
+            source_bundle_id=identities["source_bundle_id"],
+            snapshot_id=identities["snapshot_id"],
+            probe_report_id=identities["probe_report_id"],
+            postbuild_readiness_id=identities["postbuild_readiness_id"],
+            lancedb_dir=candidate,
+        )
+
+
+def test_build_chunk_count_mismatch_rejected(tmp_path):
+    """Item 1: build chunk_count must equal the generation/vector count."""
+    import catalyst_eval.v1_1.candidate_pool as pool_mod
+
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    derivative = _derivative(
+        tmp_path, status="lexical_ready", lexical_ready=1, chunk_count=9
+    )
+    with pytest.raises(CandidatePoolError, match="chunk_count mismatch"):
+        pool_mod.load_candidate_identity(
+            run_id="q011-corrective",
+            packet_path=_packet(tmp_path),
+            derivative=derivative,
+            build_id=identities["build_id"],
+            corpus_manifest_id=identities["corpus_manifest_id"],
+            source_bundle_id=identities["source_bundle_id"],
+            snapshot_id=identities["snapshot_id"],
+            probe_report_id=identities["probe_report_id"],
+            postbuild_readiness_id=identities["postbuild_readiness_id"],
+            lancedb_dir=candidate,
+        )
+
+
+def _identity_for(
+    pool_mod,
+    tmp_path: Path,
+    identities: dict[str, str],
+    *,
+    candidate: Path,
+    derivative: Path,
+) -> None:
+    pool_mod.load_candidate_identity(
+        run_id="q011-corrective",
+        packet_path=_packet(tmp_path),
+        derivative=derivative,
+        build_id=identities["build_id"],
+        corpus_manifest_id=identities["corpus_manifest_id"],
+        source_bundle_id=identities["source_bundle_id"],
+        snapshot_id=identities["snapshot_id"],
+        probe_report_id=identities["probe_report_id"],
+        postbuild_readiness_id=identities["postbuild_readiness_id"],
+        lancedb_dir=candidate,
+    )
+
+
+def test_missing_lancedb_table_rejected(tmp_path):
+    """Item 1: missing candidate LanceDB table must fail closed."""
+    import catalyst_eval.v1_1.candidate_pool as pool_mod
+
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    import lancedb
+
+    db = lancedb.connect(str(candidate))
+    names = set(db.table_names())
+    for name in names:
+        db.drop_table(name)
+    derivative = _derivative(tmp_path)
+    with pytest.raises(CandidatePoolError, match="missing from|LanceDB table"):
+        _identity_for(pool_mod, tmp_path, identities, candidate=candidate, derivative=derivative)
+
+
+def test_unreadable_lancedb_table_rejected(tmp_path, monkeypatch):
+    """Item 1: an unreadable LanceDB connection must fail closed (not None)."""
+    import types
+    import catalyst_eval.v1_1.candidate_pool as pool_mod
+
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    derivative = _derivative(tmp_path)
+
+    def connect_boom(*args, **kwargs):
+        raise OSError("unreadable lancedb dir")
+
+    stub = types.ModuleType("lancedb")
+    stub.connect = connect_boom
+    monkeypatch.setitem(sys.modules, "lancedb", stub)
+    with pytest.raises(CandidatePoolError, match="unreadable|lancedb"):
+        _identity_for(pool_mod, tmp_path, identities, candidate=candidate, derivative=derivative)
+
+
+def test_output_dir_beneath_active_lancedb_rejected_before_retrieval(tmp_path):
+    """Item 2: output under the active LanceDB dir fails before any retrieval."""
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    ident = _identity(tmp_path, identities, candidate=candidate)
+    active = tmp_path / "active_lancedb"
+    active.mkdir()
+    pointer = active / "active_generation.json"
+    pointer.write_text(
+        json.dumps({"schema_version": "active_generation_v1"}),
+        encoding="utf-8",
+    )
+    out = active / "pool_out"
+    called: list[str] = []
+
+    def boom(case):
+        called.append(case.case_id)
+        raise AssertionError("retriever must not be called")
+
+    with pytest.raises(CandidatePoolError, match="output dir .* aliases protected active"):
+        run_candidate_pools(
+            identity=ident,
+            packet_path=_packet(tmp_path),
+            output_dir=out,
+            retrieve_case=boom,
+            active_lancedb_dir=active,
+            active_generation_pointer=pointer,
+        )
+    assert called == []
+    assert not out.exists()
+
+
+def test_missing_metadata_row_rejected(tmp_path):
+    """Item 3: exactly one metadata row per union chunk is required."""
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    active, pointer = _active(tmp_path)
+    records = _default_chunk_records(identities["build_id"])
+    records = [record for record in records if record["chunk_id"] != "c01-a"]
+    derivative = _derivative(tmp_path, name="meta-missing.db", chunk_rows=records)
+    ident = _identity(tmp_path, identities, candidate=candidate, derivative=derivative)
+    with pytest.raises(CandidatePoolError, match="metadata row missing"):
+        run_candidate_pools(
+            identity=ident,
+            packet_path=_packet(tmp_path),
+            output_dir=tmp_path / "out",
+            retrieve_case=_make_case_retriever(),
+            active_lancedb_dir=active,
+            active_generation_pointer=pointer,
+        )
+
+
+def test_duplicate_metadata_row_rejected(tmp_path):
+    """Item 3: duplicate build metadata rows are rejected."""
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    active, pointer = _active(tmp_path)
+    records = _default_chunk_records(identities["build_id"])
+    duplicate = dict(records[0])
+    duplicate["document_id"] = "dup-doc"
+    derivative = _derivative(
+        tmp_path, name="meta-dup.db",
+        chunk_rows=records + [duplicate], chunk_table_unique=False,
+    )
+    ident = _identity(tmp_path, identities, candidate=candidate, derivative=derivative)
+    with pytest.raises(CandidatePoolError, match="duplicate metadata row"):
+        run_candidate_pools(
+            identity=ident,
+            packet_path=_packet(tmp_path),
+            output_dir=tmp_path / "out",
+            retrieve_case=_make_case_retriever(),
+            active_lancedb_dir=active,
+            active_generation_pointer=pointer,
+        )
+
+
+def test_metadata_sqlite_error_fails_closed(tmp_path):
+    """Item 3: schema/SQLite errors are not converted into an empty dict."""
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    active, pointer = _active(tmp_path)
+    # Build table exists but corpus_build_chunks is absent -> query error.
+    derivative = _derivative(tmp_path, name="meta-no-chunks.db", create_chunks=False)
+    ident = _identity(tmp_path, identities, candidate=candidate, derivative=derivative)
+    with pytest.raises(CandidatePoolError, match="metadata lookup failed"):
+        run_candidate_pools(
+            identity=ident,
+            packet_path=_packet(tmp_path),
+            output_dir=tmp_path / "out",
+            retrieve_case=_make_case_retriever(),
+            active_lancedb_dir=active,
+            active_generation_pointer=pointer,
+        )
+
+
+def test_packet_uses_real_chunk_profile_version(tmp_path):
+    """Item 4: no invented candidate_chunk_profile_v1 fallback."""
+    identities = _identities()
+    out = _run(tmp_path, identities)
+    for packet_path in sorted((out / "packets").glob("c*.json")):
+        text = packet_path.read_text(encoding="utf-8")
+        assert "candidate_chunk_profile_v1" not in text
+        packet = json.loads(text)
+        assert packet["rows"]
+        for row in packet["rows"]:
+            assert row["chunk_profile_version"] == "news_v2"
+
+
+def test_arm_artifact_filters_carry_complete_identity_chain(tmp_path):
+    """Item 5: persisted arm filters include the full candidate identity chain."""
+    from catalyst_data.retrieval.artifacts import load_arm_artifact
+
+    identities = _identities()
+    out = _run(tmp_path, identities)
+    arm_files = sorted((out / "arms").glob("c*.json"))
+    assert arm_files
+    for arm_path in arm_files:
+        artifact = load_arm_artifact(arm_path)
+        filters = artifact.filters
+        expected = {
+            "build_id": identities["build_id"],
+            "corpus_manifest_id": identities["corpus_manifest_id"],
+            "index_manifest_id": identities["index_manifest_id"],
+            "source_bundle_id": identities["source_bundle_id"],
+            "snapshot_id": identities["snapshot_id"],
+            "probe_report_id": identities["probe_report_id"],
+            "postbuild_readiness_id": identities["postbuild_readiness_id"],
+            "table_name": identities["table_name"],
+            "model_name": BGE_M3_MODEL,
+            "model_revision": BGE_M3_REVISION,
+            "reranker_model": "BAAI/bge-reranker-v2-m3",
+        }
+        for key, value in expected.items():
+            assert filters[key] == value, key
+        assert filters["embedding_dimension"] == BGE_M3_DIMENSION
+
+
+def test_production_reranker_missing_fails_before_run(tmp_path):
+    """Item 7: a None reranker aborts before the 12-case run; no fallback."""
+    from catalyst_eval.v1_1.candidate_pool import build_production_retriever
+
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    table_name = identities["table_name"]
+    ident = _identity(tmp_path, identities, candidate=candidate)
+
+    class _EmbedderFactory:
+        def create(self, model_name):
+            assert model_name == BGE_M3_MODEL
+            return _FakeEmbedder()
+
+    class _FakeEmbedder:
+        def embed_query(self, text):
+            return [0.0] * BGE_M3_DIMENSION
+
+    with pytest.raises(CandidatePoolError, match="reranker"):
+        build_production_retriever(
+            derivative=Path(ident.derivative),
+            lancedb_dir=str(candidate),
+            table_name=table_name,
+            index_manifest_id=ident.index_manifest_id,
+            corpus_manifest_id=ident.corpus_manifest_id,
+            reranker_timeout=2.0,
+            cuda_available=lambda: True,
+            embedder_factory=_EmbedderFactory(),
+            reranker_loader=lambda: None,
+        )
+
+
+def test_production_embedder_missing_fails_before_run(tmp_path):
+    """Item 7: a missing offline embedder aborts before the 12-case run."""
+    from catalyst_eval.v1_1.candidate_pool import build_production_retriever
+
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    ident = _identity(tmp_path, identities, candidate=candidate)
+
+    class _EmbedderFactory:
+        def create(self, model_name):
+            raise RuntimeError("offline embedder cache missing")
+
+    with pytest.raises(Exception, match="embedder|offline|cache|RuntimeError"):
+        build_production_retriever(
+            derivative=Path(ident.derivative),
+            lancedb_dir=str(candidate),
+            table_name=ident.table_name,
+            index_manifest_id=ident.index_manifest_id,
+            corpus_manifest_id=ident.corpus_manifest_id,
+            reranker_timeout=2.0,
+            cuda_available=lambda: True,
+            embedder_factory=_EmbedderFactory(),
+            reranker_loader=lambda: object(),
+        )

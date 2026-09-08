@@ -16,6 +16,7 @@ import importlib.util
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -94,7 +95,48 @@ def _candidate_lancedb(tmp_path: Path, identities: dict[str, str]) -> Path:
     return candidate_dir
 
 
-def _derivative(tmp_path: Path, *, is_current: int = 0) -> Path:
+def _chunk_records(build_id: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for index in range(1, 13):
+        slot = f"c{index:02d}"
+        for suffix in ("a", "b", "c", "d"):
+            chunk_id = f"{slot}-{suffix}"
+            content_text = f"evidence text {chunk_id}"
+            records.append(
+                {
+                    "chunk_id": chunk_id,
+                    "document_id": f"doc:{chunk_id}",
+                    "content_hash": hashlib.sha256(content_text.encode()).hexdigest(),
+                    "metadata_hash": "b" * 64,
+                    "chunk_profile_version": "news_v2",
+                    "source_class": "reported_news",
+                    "dedup_cluster_id": f"dedup:{chunk_id}",
+                    "cluster_first_available_at": "2025-05-01T00:00:00Z",
+                    "representative_document_id": f"doc:{chunk_id}",
+                    "canonical_asset_id": f"asset:{chunk_id}",
+                    "content_version_id": f"content_version:{chunk_id}",
+                    "corpus_document_id": f"doc:{chunk_id}",
+                    "content_state": "live",
+                    "independence_group_id": f"group:{chunk_id}",
+                    "parse_quality": "full",
+                    "section_parse_degraded": 0,
+                    "available_at": "2025-05-01T00:00:00Z",
+                }
+            )
+    return records
+
+
+def _derivative(
+    tmp_path: Path,
+    *,
+    is_current: int = 0,
+    build_id: str | None = _hex("b"),
+    build_manifest_id: str | None = None,
+    status: str = "lexical_ready",
+    lexical_ready: int = 1,
+    chunk_count: int = 2,
+    with_chunks: bool = True,
+) -> Path:
     db = tmp_path / "derivative.db"
     conn = sqlite3.connect(db)
     conn.execute(
@@ -104,8 +146,66 @@ def _derivative(tmp_path: Path, *, is_current: int = 0) -> Path:
     conn.execute(
         "INSERT INTO corpus_manifest (manifest_id, manifest_json, is_current) "
         "VALUES (?, ?, ?)",
-        (_hex("c"), json.dumps({}), is_current),
+        (build_manifest_id or _hex("c"), json.dumps({}), is_current),
     )
+    if build_id is not None:
+        conn.execute(
+            "CREATE TABLE corpus_publication_builds (build_id TEXT PRIMARY KEY, "
+            "manifest_id TEXT NOT NULL, status TEXT NOT NULL, lexical_ready INTEGER "
+            "NOT NULL DEFAULT 0, chunk_count INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO corpus_publication_builds "
+            "(build_id, manifest_id, status, lexical_ready, chunk_count) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (build_id, build_manifest_id or _hex("c"), status, int(lexical_ready), chunk_count),
+        )
+    if build_id is not None and with_chunks:
+        conn.execute(
+            """
+            CREATE TABLE corpus_build_chunks (
+                build_id TEXT NOT NULL,
+                chunk_id TEXT NOT NULL,
+                document_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                metadata_hash TEXT NOT NULL,
+                chunk_profile_version TEXT NOT NULL,
+                source_class TEXT NOT NULL,
+                dedup_cluster_id TEXT,
+                cluster_first_available_at TEXT,
+                representative_document_id TEXT,
+                canonical_asset_id TEXT,
+                content_version_id TEXT,
+                corpus_document_id TEXT,
+                content_state TEXT,
+                independence_group_id TEXT,
+                parse_quality TEXT,
+                section_parse_degraded INTEGER NOT NULL,
+                available_at TEXT NOT NULL,
+                PRIMARY KEY (build_id, chunk_id)
+            )
+            """
+        )
+        for record in _chunk_records(build_id):
+            conn.execute(
+                "INSERT INTO corpus_build_chunks VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    build_id, record["chunk_id"], record["document_id"],
+                    record["content_hash"], record["metadata_hash"],
+                    record["chunk_profile_version"], record["source_class"],
+                    record.get("dedup_cluster_id"),
+                    record.get("cluster_first_available_at"),
+                    record.get("representative_document_id"),
+                    record.get("canonical_asset_id"),
+                    record.get("content_version_id"),
+                    record.get("corpus_document_id"),
+                    record.get("content_state"),
+                    record.get("independence_group_id"),
+                    record.get("parse_quality"),
+                    int(record.get("section_parse_degraded", 0)),
+                    record["available_at"],
+                ),
+            )
     conn.commit()
     conn.close()
     return db

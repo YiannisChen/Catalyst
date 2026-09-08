@@ -84,7 +84,6 @@ _GENERATION_FIELDS = (
     "embedding_revision",
     "embedding_dimension",
 )
-_CHUNK_PROFILE_VERSION = "candidate_chunk_profile_v1"
 _MODE_SERVED_CONTRACT = {"fts5", "dense", "hybrid", "reranked", "sql_like", "failed"}
 
 
@@ -202,29 +201,38 @@ def load_q011_cases(packet_path: str | Path) -> list[CaseQuery]:
     return queries
 
 
-def _candidate_table_count(candidate_dir: Path, table_name: str) -> int | None:
+def _candidate_table_count(candidate_dir: Path, table_name: str) -> int:
     """Bounded vector count for the candidate LanceDB table.
 
     Uses the LanceDB row-count API when available; never loads table contents
-    into RAM.  Returns None only when the table is absent (fail-closed caller
-    decides) or lancedb is not importable (unit environments).
+    into RAM.  A missing/unreadable table or an unavailable LanceDB runtime is
+    a fail-closed error (never ``None``, never silently treated as success).
     """
     try:
         import lancedb  # type: ignore
-    except Exception:
-        return None
+    except Exception as exc:
+        raise CandidatePoolError(
+            f"lancedb unavailable for candidate table {table_name}: "
+            f"{type(exc).__name__}"
+        ) from exc
     try:
         db = lancedb.connect(str(candidate_dir))
         names = set(db.table_names())
-    except Exception:
-        return None
+    except Exception as exc:
+        raise CandidatePoolError(
+            f"candidate LanceDB directory is unreadable: {candidate_dir}"
+        ) from exc
     if table_name not in names:
-        return None
+        raise CandidatePoolError(
+            f"candidate LanceDB table {table_name} is missing from {candidate_dir}"
+        )
     try:
         table = db.open_table(table_name)
         return int(table.count_rows())
-    except Exception:
-        return None
+    except Exception as exc:
+        raise CandidatePoolError(
+            f"candidate LanceDB table {table_name} is unreadable"
+        ) from exc
 
 
 def _load_candidate_identity_payload(candidate_dir: Path) -> dict[str, Any]:
@@ -362,36 +370,83 @@ def load_candidate_identity(
             "candidate chunk/vector count mismatch with IndexManifest"
         )
 
-    # 4. Bounded table existence/count check when the table is present.
+    # 4. Bounded table existence/count check is REQUIRED: a missing/unreadable
+    #    candidate LanceDB table is never accepted.
+    generation_count = int(payload.get("chunk_count") or 0)
     table_count = _candidate_table_count(candidate_dir, expected_table)
-    if table_count is not None and table_count != int(payload.get("chunk_count") or 0):
+    if table_count != generation_count:
         raise CandidatePoolError(
             "candidate LanceDB table count mismatch: "
-            f"table={table_count} generation={payload.get('chunk_count')}"
+            f"table={table_count} generation={generation_count}"
         )
 
-    # 5. Derivative corpus manifest must remain inactive.
+    # 5. Derivative corpus manifest must remain inactive AND the exact build
+    #    row must exist and agree with the generation/IndexManifest records.
     derivative_path = Path(derivative).resolve()
     if not derivative_path.is_file():
         raise CandidatePoolError(f"candidate derivative DB not found: {derivative_path}")
     uri = f"{derivative_path.as_uri()}?mode=ro&immutable=1"
     conn = sqlite3.connect(uri, uri=True)
     try:
-        row = conn.execute(
-            "SELECT is_current FROM corpus_manifest WHERE manifest_id=?",
-            (payload.get("corpus_manifest_id"),),
-        ).fetchone()
+        try:
+            manifest_row = conn.execute(
+                "SELECT is_current FROM corpus_manifest WHERE manifest_id=?",
+                (payload.get("corpus_manifest_id"),),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise CandidatePoolError(
+                "candidate derivative corpus_manifest query failed"
+            ) from exc
+        if manifest_row is None:
+            raise CandidatePoolError(
+                f"corpus_manifest {payload.get('corpus_manifest_id')} not found on derivative"
+            )
+        if int(manifest_row[0] or 0) != 0:
+            raise CandidatePoolError(
+                f"corpus_manifest {payload.get('corpus_manifest_id')} is_current=1; "
+                "refusing active-corpus-derived identity"
+            )
+        try:
+            build = conn.execute(
+                "SELECT status, lexical_ready, chunk_count, manifest_id "
+                "FROM corpus_publication_builds WHERE build_id=?",
+                (build_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise CandidatePoolError(
+                "candidate derivative corpus_publication_builds query failed"
+            ) from exc
+        if build is None:
+            raise CandidatePoolError(
+                f"candidate build {build_id} not found on derivative"
+            )
+        build_status, build_ready, build_chunk_count, build_manifest_id = build
+        if str(build_manifest_id or "") != payload.get("corpus_manifest_id"):
+            raise CandidatePoolError(
+                f"candidate build {build_id} manifest_id {build_manifest_id!r} != "
+                f"corpus manifest {payload.get('corpus_manifest_id')!r}"
+            )
+        if (
+            str(build_status or "") != "lexical_ready"
+            or int(build_ready or 0) != 1
+        ):
+            raise CandidatePoolError(
+                f"candidate build {build_id} is not lexical-ready "
+                f"(status={build_status!r}, lexical_ready={build_ready!r})"
+            )
+        build_chunk_count = int(build_chunk_count or 0)
+        if build_chunk_count != generation_count:
+            raise CandidatePoolError(
+                "candidate build chunk_count mismatch: "
+                f"build={build_chunk_count} generation={generation_count}"
+            )
+        if build_chunk_count != int(manifest.vector_count or 0):
+            raise CandidatePoolError(
+                "candidate build/IndexManifest count mismatch: "
+                f"build={build_chunk_count} index={manifest.vector_count}"
+            )
     finally:
         conn.close()
-    if row is None:
-        raise CandidatePoolError(
-            f"corpus_manifest {payload.get('corpus_manifest_id')} not found on derivative"
-        )
-    if int(row[0] or 0) != 0:
-        raise CandidatePoolError(
-            f"corpus_manifest {payload.get('corpus_manifest_id')} is_current=1; "
-            "refusing active-corpus-derived identity"
-        )
 
     packet = Path(packet_path)
     return CandidatePoolIdentity(
@@ -528,17 +583,24 @@ def _available_meta_fields(meta: Mapping[str, Any] | None) -> dict[str, Any]:
     return {
         key: meta.get(key)
         for key in (
-            "canonical_asset_id",
-            "content_version_id",
+            "chunk_id",
+            "document_id",
             "content_hash",
             "metadata_hash",
+            "chunk_profile_version",
+            "source_class",
+            "dedup_cluster_id",
+            "cluster_first_available_at",
+            "representative_document_id",
+            "canonical_asset_id",
+            "content_version_id",
+            "corpus_document_id",
             "content_state",
             "independence_group_id",
             "parse_quality",
             "section_parse_degraded",
+            "available_at",
             "provider",
-            "corpus_document_id",
-            "source_class",
         )
         if key in meta and meta.get(key) is not None
     }
@@ -554,7 +616,40 @@ def _packet_row_for_result(
 ) -> dict[str, Any]:
     meta_fields = _available_meta_fields(meta)
     content_text = str(getattr(result, "content_text", "") or "")
-    available_at = str(getattr(result, "available_at", "") or "")
+    # Exact build metadata is authoritative for identity/provenance fields.
+    # Optional schema fields may be None, but the required DB-backed fields
+    # below are guaranteed by _candidate_metadata_lookup.
+    if meta is None:
+        raise CandidatePoolError(
+            f"case {case.case_id}: missing authoritative metadata for "
+            f"chunk {result.chunk_id}"
+        )
+    chunk_profile_version = str(meta_fields.get("chunk_profile_version") or "")
+    if not chunk_profile_version:
+        raise CandidatePoolError(
+            f"case {case.case_id}: chunk {result.chunk_id} has no real "
+            "chunk_profile_version in the candidate build"
+        )
+    document_id = str(meta_fields.get("document_id") or "")
+    if not document_id:
+        raise CandidatePoolError(
+            f"case {case.case_id}: chunk {result.chunk_id} has no document_id "
+            "in the candidate build"
+        )
+    source_class = str(meta_fields.get("source_class") or "")
+    if not source_class:
+        raise CandidatePoolError(
+            f"case {case.case_id}: chunk {result.chunk_id} has no source_class "
+            "in the candidate build"
+        )
+    content_hash = str(meta_fields.get("content_hash") or "")
+    metadata_hash = str(meta_fields.get("metadata_hash") or "")
+    if not content_hash or not metadata_hash:
+        raise CandidatePoolError(
+            f"case {case.case_id}: chunk {result.chunk_id} lacks a persisted "
+            "content/metadata hash in the candidate build"
+        )
+    available_at = str(meta_fields.get("available_at") or "")
     decision = _cutoff_decision(available_at, case.cutoff)
     ticker_associations = list(getattr(result, "ticker_associations", ()) or ())
     row: dict[str, Any] = {
@@ -562,10 +657,8 @@ def _packet_row_for_result(
         "evidence_id": result.chunk_id,
         "canonical_asset_id": meta_fields.get("canonical_asset_id"),
         "content_version_id": meta_fields.get("content_version_id"),
-        "document_id": getattr(result, "document_id", None)
-        or meta_fields.get("corpus_document_id"),
-        "source_class": getattr(result, "source_class", None)
-        or meta_fields.get("source_class"),
+        "document_id": document_id,
+        "source_class": source_class,
         "available_at": available_at,
         "case_cutoff_utc": case.cutoff,
         "temporal_status": decision,
@@ -573,13 +666,12 @@ def _packet_row_for_result(
         "excerpt_bounded": True,
         "ticker": ticker_associations[0] if ticker_associations else case.ticker,
         "ticker_associations": ticker_associations,
-        "dedup_cluster_id": getattr(result, "dedup_cluster_id", None),
-        "cluster_first_available_at": getattr(result, "cluster_first_available_at", None),
-        "representative_document_id": getattr(result, "representative_document_id", None),
-        "content_hash": meta_fields.get("content_hash"),
-        "metadata_hash": meta_fields.get("metadata_hash"),
-        "chunk_profile_version": meta_fields.get("chunk_profile_version")
-        or _CHUNK_PROFILE_VERSION,
+        "dedup_cluster_id": meta_fields.get("dedup_cluster_id"),
+        "cluster_first_available_at": meta_fields.get("cluster_first_available_at"),
+        "representative_document_id": meta_fields.get("representative_document_id"),
+        "content_hash": content_hash,
+        "metadata_hash": metadata_hash,
+        "chunk_profile_version": chunk_profile_version,
         "independence_group_id": meta_fields.get("independence_group_id"),
         "parse_quality": meta_fields.get("parse_quality"),
         "content_state": meta_fields.get("content_state"),
@@ -667,41 +759,52 @@ def validate_four_arm_served(hybrid: Any, *, case_id: str) -> dict[str, Sequence
     return arms
 
 
+_METADATA_REQUIRED_COLUMNS = {
+    "document_id", "content_hash", "metadata_hash", "chunk_profile_version",
+    "source_class", "available_at", "section_parse_degraded",
+}
+
+
 def _candidate_metadata_lookup(
     derivative: Path,
-    corpus_manifest_id: str,
+    build_id: str,
     chunk_ids: Sequence[str],
 ) -> dict[str, dict[str, Any]]:
-    """Bounded per-case canonical metadata lookup from the candidate DB.
+    """Bounded per-case canonical metadata lookup bound to the exact build_id.
 
-    Reads only the requested chunk rows (never whole tables/documents). Fields
-    that do not exist on the authoritative schema stay unavailable in packets.
+    Reads only the requested chunk rows for the candidate ``build_id`` (never
+    whole tables/documents and never a manifest-id join that could span other
+    builds).  Exactly one row is required for every requested chunk: missing
+    rows, duplicate rows, and SQLite/schema errors fail closed instead of being
+    reported as an empty metadata dictionary.
     """
-    if not chunk_ids:
+    unique_chunk_ids = tuple(dict.fromkeys(chunk_ids))
+    if not unique_chunk_ids:
         return {}
     uri = f"{derivative.resolve().as_uri()}?mode=ro&immutable=1"
     conn = sqlite3.connect(uri, uri=True)
     try:
-        placeholders = ",".join("?" for _ in chunk_ids)
-        rows = conn.execute(
-            f"""
-            SELECT c.chunk_id, c.document_id, c.content_hash, c.metadata_hash,
-                   c.chunk_profile_version, c.source_class, c.dedup_cluster_id,
-                   c.cluster_first_available_at, c.representative_document_id,
-                   c.canonical_asset_id, c.content_version_id,
-                   c.corpus_document_id, c.content_state,
-                   c.independence_group_id, c.parse_quality,
-                   c.section_parse_degraded, c.available_at
-            FROM corpus_build_chunks c
-            JOIN corpus_publication_builds b ON b.build_id = c.build_id
-            WHERE b.manifest_id = ? AND c.chunk_id IN ({placeholders})
-            """,
-            (corpus_manifest_id, *chunk_ids),
-        ).fetchall()
-    except sqlite3.Error:
-        # Table set may be a fixture subset; enrichment is best-effort and
-        # bounded. Missing metadata fields are reported as unavailable.
-        return {}
+        placeholders = ",".join("?" for _ in unique_chunk_ids)
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT chunk_id, document_id, content_hash, metadata_hash,
+                       chunk_profile_version, source_class, dedup_cluster_id,
+                       cluster_first_available_at, representative_document_id,
+                       canonical_asset_id, content_version_id,
+                       corpus_document_id, content_state,
+                       independence_group_id, parse_quality,
+                       section_parse_degraded, available_at
+                FROM corpus_build_chunks
+                WHERE build_id = ? AND chunk_id IN ({placeholders})
+                """,
+                (build_id, *unique_chunk_ids),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise CandidatePoolError(
+                "candidate metadata lookup failed (build_id="
+                f"{build_id}): {exc}"
+            ) from exc
     finally:
         conn.close()
     columns = (
@@ -715,7 +818,32 @@ def _candidate_metadata_lookup(
     result: dict[str, dict[str, Any]] = {}
     for raw in rows:
         record = dict(zip(columns, raw))
-        result[str(record["chunk_id"])] = record
+        chunk_id = str(record["chunk_id"] or "")
+        if not chunk_id:
+            raise CandidatePoolError(
+                "candidate metadata row has an empty chunk_id"
+            )
+        if chunk_id in result:
+            raise CandidatePoolError(
+                f"duplicate metadata row for chunk {chunk_id} in build {build_id}"
+            )
+        missing = [
+            name for name in _METADATA_REQUIRED_COLUMNS
+            if record.get(name) is None
+            or (isinstance(record.get(name), str) and not record[name])
+        ]
+        if missing:
+            raise CandidatePoolError(
+                f"candidate metadata row for chunk {chunk_id} is missing "
+                "required field(s): " + ",".join(sorted(missing))
+            )
+        result[chunk_id] = record
+    missing_chunks = [name for name in unique_chunk_ids if name not in result]
+    if missing_chunks:
+        raise CandidatePoolError(
+            "candidate metadata row missing for chunk(s): "
+            + ",".join(missing_chunks)
+        )
     return result
 
 
@@ -787,6 +915,21 @@ def _write_case_arm_artifact(
             "source_classes": [],
             "corpus_manifest_id": identity.corpus_manifest_id,
             "index_manifest_id": identity.index_manifest_id,
+            # Complete candidate identity chain on the persisted artifact so
+            # evidence review can bind every arm to the exact candidate build,
+            # source bundle, snapshot/probe/postbuild readiness, table and
+            # pinned model contract without a second identity formula.
+            "build_id": identity.build_id,
+            "source_bundle_id": identity.source_bundle_id,
+            "snapshot_id": identity.snapshot_id,
+            "probe_report_id": identity.probe_report_id,
+            "postbuild_readiness_id": identity.postbuild_readiness_id,
+            "table_name": identity.table_name,
+            "model_name": identity.model_name,
+            "model_revision": identity.model_revision,
+            "embedding_dimension": identity.dimension,
+            "reranker_model": identity.reranker_model,
+            "reranker_revision": identity.reranker_revision,
         },
         retrieval_config=_pinned_retrieval_config(reranker_timeout_seconds),
         arms=artifact_arms,
@@ -832,7 +975,6 @@ def build_production_retriever(
     bound to a read-only candidate SQLite URI and the candidate LanceDB table.
     """
     import lancedb
-    import torch
 
     from catalyst_agents.runtime.query_embedding import (
         ProductionBgeM3QueryEmbeddingFactory,
@@ -841,6 +983,13 @@ def build_production_retriever(
     from catalyst_data.retrieval.reranker import rerank as _rerank
 
     if cuda_available is None:
+        try:
+            import torch  # noqa: F401
+        except ImportError as exc:
+            raise CandidatePoolError(
+                "production_pinned requires CUDA and torch (cloud-only); "
+                "torch is not installed"
+            ) from exc
         cuda_available = lambda: bool(torch.cuda.is_available())  # noqa: E731
     if not cuda_available():
         raise CandidatePoolError("production_pinned requires CUDA (cloud-only)")
@@ -933,6 +1082,32 @@ def run_candidate_pools(
         active_generation_pointer=active_generation_pointer,
     )
     out = Path(output_dir)
+    # Validate the output dir against both protected active paths BEFORE any
+    # mkdir, artifact write, or retrieval call: equality, ancestor/descendant
+    # nesting, and symlink aliases all fail closed.
+    output_resolved = _resolve_lexical(out)
+    if active_lancedb_dir is not None:
+        active_resolved = _resolve_lexical(Path(active_lancedb_dir))
+        if (
+            output_resolved == active_resolved
+            or output_resolved.is_relative_to(active_resolved)
+            or active_resolved.is_relative_to(output_resolved)
+        ):
+            raise CandidatePoolError(
+                f"output dir {output_resolved} aliases protected active "
+                f"LanceDB dir {active_resolved}"
+            )
+    if active_generation_pointer is not None:
+        pointer_resolved = _resolve_lexical(Path(active_generation_pointer))
+        if (
+            output_resolved == pointer_resolved
+            or output_resolved.is_relative_to(pointer_resolved)
+            or pointer_resolved.is_relative_to(output_resolved)
+        ):
+            raise CandidatePoolError(
+                f"output dir {output_resolved} aliases protected active "
+                f"generation pointer {pointer_resolved}"
+            )
     if out.exists() and any(out.iterdir()):
         raise CandidatePoolError(f"output dir must be empty or absent: {out}")
     preflight = preflight_candidate_pool(
@@ -1004,7 +1179,7 @@ def run_candidate_pools(
             ))
             meta = _candidate_metadata_lookup(
                 Path(identity.derivative),
-                identity.corpus_manifest_id,
+                identity.build_id,
                 lookup_chunks,
             )
             rows = [
