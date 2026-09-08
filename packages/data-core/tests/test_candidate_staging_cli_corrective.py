@@ -266,6 +266,16 @@ def _prewrite_candidate(
     return path
 
 
+def _write_manifest_copy(fx: dict) -> Path:
+    """Write a matching index_manifest.json copy next to the generation."""
+    fx["candidate_dir"].mkdir(parents=True, exist_ok=True)
+    path = fx["candidate_dir"] / "index_manifest.json"
+    path.write_text(
+        json.dumps(fx["manifest"].to_dict(), sort_keys=True), encoding="utf-8"
+    )
+    return path
+
+
 def _argv(mode: str, fx: dict, *, extra: list[str] | None = None) -> list[str]:
     return [
         mode,
@@ -420,6 +430,67 @@ def test_execute_resume_validates_inactive_coherent_generation(tmp_path):
     code2 = cli.main(_argv("execute", fx))
     assert code2 == 0
     assert (fx["candidate_dir"] / "candidate_generation.json").read_bytes() == generation_before
+
+
+def test_generation_only_half_published_resume_rejected(tmp_path):
+    """Item 6: a crash after generation before manifest cannot resume."""
+    cli = _load_cli()
+    fx = _fixture(tmp_path)
+    _prewrite_candidate(fx)
+    assert not (fx["candidate_dir"] / "index_manifest.json").exists()
+    with pytest.raises(Exception, match="index_manifest.json|half-published"):
+        cli.main(_argv("preflight", fx))
+    with pytest.raises(Exception, match="index_manifest.json|half-published"):
+        cli.main(_argv("execute", fx))
+
+
+def test_manifest_only_half_published_resume_rejected(tmp_path):
+    """Item 6: a crash after manifest before generation cannot resume."""
+    cli = _load_cli()
+    fx = _fixture(tmp_path)
+    _write_manifest_copy(fx)
+    assert not (fx["candidate_dir"] / "candidate_generation.json").exists()
+    with pytest.raises(Exception, match="candidate_generation.json|half-published"):
+        cli.main(_argv("preflight", fx))
+    with pytest.raises(Exception, match="candidate_generation.json|half-published"):
+        cli.main(_argv("execute", fx))
+
+
+def test_half_published_disagreement_rejected(tmp_path):
+    """Item 6: resume requires exact manifest/generation identity agreement."""
+    cli = _load_cli()
+    fx = _fixture(tmp_path)
+    _prewrite_candidate(fx)
+    manifest_copy = _write_manifest_copy(fx)
+    manifest = json.loads(manifest_copy.read_text(encoding="utf-8"))
+    manifest["vector_count"] = manifest["vector_count"] + 1
+    manifest_copy.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    with pytest.raises(Exception, match="index_manifest.json|identity mismatch|disagreement"):
+        cli.main(_argv("preflight", fx))
+
+
+def test_manifest_written_before_generation_on_publish(tmp_path):
+    """Item 6: publication order is manifest first, generation last."""
+    from catalyst_data.index import v1_staging
+    import catalyst_data.index.v1_staging as v1_mod
+
+    writes: list[str] = []
+    real_atomic = v1_mod._atomic_json
+
+    def recording_atomic(path, payload):
+        name = Path(path).name
+        writes.append(name)
+        real_atomic(path, payload)
+
+    fx = _fixture(tmp_path)
+    v1_mod._atomic_json = recording_atomic
+    try:
+        cli = _load_cli()
+        code = cli.main(_argv("execute", fx))
+    finally:
+        v1_mod._atomic_json = real_atomic
+    assert code == 0
+    assert writes == ["index_manifest.json", "candidate_generation.json"]
 
 
 def test_symlink_alias_to_active_directory_rejected(tmp_path):

@@ -307,56 +307,94 @@ def _verify_pre_existing_candidate_record(
     candidate_manifest_dir: Path,
     manifest: IndexManifest,
 ) -> None:
-    """Validate an already-staged candidate_generation.json (idempotent resume).
+    """Validate an already-staged inactive candidate (idempotent resume).
 
-    A pre-existing record must be inactive and carry the exact identity chain
-    implied by the embedding artifact.  A coherent record is the only valid
-    resumable state; missing is acceptable only for a first-time staging of a
-    new inactive manifest directory.  Any disagreement fails closed before
-    mutation.
+    A resumable candidate requires BOTH published records —
+    ``candidate_generation.json`` and its matching authoritative
+    ``index_manifest.json`` — with exact identity agreement.  A pre-existing
+    record must be inactive and carry the exact identity chain implied by the
+    embedding artifact.  Generation-only or manifest-only half-published state
+    fails closed before any mutation; a coherent pair is the only valid
+    resumable state.  Missing records are acceptable only for a first-time
+    staging of a fresh inactive manifest directory.
     """
     generation_path = Path(candidate_manifest_dir) / "candidate_generation.json"
-    if not generation_path.is_file():
+    manifest_path = Path(candidate_manifest_dir) / "index_manifest.json"
+
+    def _require_persisted_manifest() -> None:
+        if not manifest_path.is_file():
+            raise CandidateDenseStagingError(
+                "candidate_generation.json exists without a matching "
+                "index_manifest.json; refusing half-published candidate resume"
+            )
+        try:
+            existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise CandidateDenseStagingError(
+                "pre-existing index_manifest.json is malformed; refusing resume"
+            ) from exc
+        if existing_manifest != manifest.to_dict():
+            raise CandidateDenseStagingError(
+                "pre-existing index_manifest.json disagrees with the embedding "
+                "artifact manifest"
+            )
+
+    if generation_path.is_file():
+        try:
+            payload = json.loads(generation_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise CandidateDenseStagingError(
+                "pre-existing candidate_generation.json is malformed; refusing resume"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise CandidateDenseStagingError(
+                "pre-existing candidate_generation.json must be an object"
+            )
+        if payload.get("schema_version") != "candidate_generation_v1":
+            raise CandidateDenseStagingError(
+                "pre-existing candidate_generation.json schema mismatch"
+            )
+        if payload.get("status") != "inactive":
+            raise CandidateDenseStagingError(
+                "pre-existing candidate_generation.json status is not inactive; "
+                "candidate staging must be pointer-free"
+            )
+        expected_index_id = manifest.index_manifest_id
+        expected_table = f"candidate_{expected_index_id[:16]}"
+        expected = {
+            "index_manifest_id": expected_index_id,
+            "corpus_manifest_id": manifest.corpus_manifest_id,
+            "source_bundle_id": manifest.source_bundle_id,
+            "table_name": expected_table,
+            "chunk_count": manifest.vector_count,
+            "embedding_model": manifest.model_name,
+            "embedding_revision": manifest.model_revision,
+            "embedding_dimension": manifest.dimension,
+        }
+        mismatched = [
+            name for name, value in expected.items()
+            if payload.get(name) != value
+        ]
+        if mismatched:
+            raise CandidateDenseStagingError(
+                "pre-existing candidate_generation.json identity disagreement: "
+                + ",".join(mismatched)
+            )
+        _require_persisted_manifest()
         return
-    try:
-        payload = json.loads(generation_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
+
+    if manifest_path.is_file():
         raise CandidateDenseStagingError(
-            "pre-existing candidate_generation.json is malformed; refusing resume"
-        ) from exc
-    if not isinstance(payload, dict):
-        raise CandidateDenseStagingError(
-            "pre-existing candidate_generation.json must be an object"
+            "index_manifest.json exists without candidate_generation.json; "
+            "refusing half-published candidate resume"
         )
-    if payload.get("schema_version") != "candidate_generation_v1":
+    table_dir = Path(candidate_manifest_dir) / (
+        f"candidate_{manifest.index_manifest_id[:16]}.lance"
+    )
+    if table_dir.exists():
         raise CandidateDenseStagingError(
-            "pre-existing candidate_generation.json schema mismatch"
-        )
-    if payload.get("status") != "inactive":
-        raise CandidateDenseStagingError(
-            "pre-existing candidate_generation.json status is not inactive; "
-            "candidate staging must be pointer-free"
-        )
-    expected_index_id = manifest.index_manifest_id
-    expected_table = f"candidate_{expected_index_id[:16]}"
-    expected = {
-        "index_manifest_id": expected_index_id,
-        "corpus_manifest_id": manifest.corpus_manifest_id,
-        "source_bundle_id": manifest.source_bundle_id,
-        "table_name": expected_table,
-        "chunk_count": manifest.vector_count,
-        "embedding_model": manifest.model_name,
-        "embedding_revision": manifest.model_revision,
-        "embedding_dimension": manifest.dimension,
-    }
-    mismatched = [
-        name for name, value in expected.items()
-        if payload.get(name) != value
-    ]
-    if mismatched:
-        raise CandidateDenseStagingError(
-            "pre-existing candidate_generation.json identity disagreement: "
-            + ",".join(mismatched)
+            "candidate LanceDB table exists without published identity "
+            "records; refusing half-published candidate resume"
         )
 
 

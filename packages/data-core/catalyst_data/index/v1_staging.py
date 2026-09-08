@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -311,13 +310,46 @@ def stage_dense(
         embedding_revision=BGE_M3_REVISION,
         embedding_dimension=BGE_M3_DIMENSION,
     )
-    existing = candidate.candidate_generation_path
-    if existing.is_file():
-        payload = json.loads(existing.read_text(encoding="utf-8"))
+    generation_path = candidate.candidate_generation_path
+    manifest_path = Path(candidate.manifest_dir) / "index_manifest.json"
+    manifest_payload = new_index_manifest.to_dict()
+
+    def _require_persisted_manifest() -> None:
+        if not manifest_path.is_file():
+            raise ValueError(
+                "candidate_generation.json exists without a matching "
+                "index_manifest.json; refusing half-published candidate resume"
+            )
+        try:
+            existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError("staged index_manifest.json is malformed") from exc
+        if existing_manifest != manifest_payload:
+            raise ValueError("staged index_manifest.json identity mismatch")
+
+    if generation_path.is_file():
+        payload = json.loads(generation_path.read_text(encoding="utf-8"))
         if payload != _candidate_payload(candidate):
             raise ValueError("existing candidate_generation.json identity mismatch")
+        # Resume requires both published records and exact identity agreement.
+        # A generation record alone (crash between manifest/generation) is a
+        # half-published candidate and must never be accepted.
+        _require_persisted_manifest()
         validate_dense_candidate(candidate, expected_chunk_count=expected_chunk_count)
         return candidate
+    if manifest_path.is_file():
+        raise ValueError(
+            "index_manifest.json exists without candidate_generation.json; "
+            "refusing half-published candidate resume"
+        )
+    # A LanceDB table without either published identity record is also
+    # half-published (crash before the manifest/generation publish step).
+    table_dir = Path(candidate.manifest_dir) / f"{table_name}.lance"
+    if table_dir.exists():
+        raise ValueError(
+            "candidate LanceDB table exists without published identity "
+            "records; refusing half-published candidate resume"
+        )
 
     def metadata_factory() -> Iterator[dict[str, Any]]:
         """Return a fresh authoritative metadata iterator for each pass.
@@ -420,30 +452,10 @@ def stage_dense(
             except Exception:
                 pass
         raise
+    # Make the staged candidate directory self-describing.  The matching
+    # index_manifest.json is published first (from the in-memory authoritative
+    # IndexManifest), and candidate_generation.json only after it is safely
+    # persisted, so a crash between the two can never look complete.
+    _atomic_json(manifest_path, manifest_payload)
     _atomic_json(candidate.candidate_generation_path, _candidate_payload(candidate))
-    # Make the staged candidate directory self-describing: persist the exact
-    # embedding-artifact IndexManifest that produced this dense generation so a
-    # downstream inactive-candidate consumer (Q-011 evidence pool) can validate
-    # the candidate identity chain without a second identity formula.
-    artifact_manifest_path = Path(embedding_artifact_dir) / "index_manifest.json"
-    if artifact_manifest_path.is_file():
-        persisted_manifest_path = manifest_dir / "index_manifest.json"
-        if persisted_manifest_path.is_file():
-            try:
-                existing_manifest = json.loads(
-                    persisted_manifest_path.read_text(encoding="utf-8")
-                )
-            except json.JSONDecodeError as exc:
-                raise ValueError("staged index_manifest.json is malformed") from exc
-            if existing_manifest != new_index_manifest.to_dict():
-                raise ValueError("staged index_manifest.json identity mismatch")
-        else:
-            temporary = persisted_manifest_path.with_name(
-                persisted_manifest_path.name + ".tmp"
-            )
-            with temporary.open("w", encoding="utf-8") as handle:
-                handle.write(artifact_manifest_path.read_text(encoding="utf-8"))
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, persisted_manifest_path)
     return candidate
