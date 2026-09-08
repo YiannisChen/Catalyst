@@ -31,13 +31,37 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 JOURNAL_DEFAULT = REPO_ROOT / "data" / "manifests" / "m3_promotion_journal.json"
 _HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 
-# Exact frozen source snapshot (supervisor-locked). Always in the alias-rejection
-# set so a derivative can never be a symlink/hardlink/samefile of the frozen DB,
+# Supervisor-locked frozen source snapshot identity (7a004acc…). The path is
+# always derived from the current repo root and the repo-owned authoritative
+# manifests (active_data_snapshot.json when present); it is never hard-coded
+# to a user-specific checkout path, and it remains in the alias-rejection set
 # even when the worktree has no data/manifests/active_data_snapshot.json.
-FROZEN_SNAPSHOT_PATH = Path(
-    "/Users/yiannischen/Projects/Catalyst/data/snapshots/"
-    "catalyst_b2o_7a004accb187a17dd5661821913f5b84785af7fe448d6a92331f0bd8aea92f49.db"
+_FROZEN_SNAPSHOT_ID = (
+    "7a004accb187a17dd5661821913f5b84785af7fe448d6a92331f0bd8aea92f49"
 )
+_FROZEN_SNAPSHOT_FILENAME = f"catalyst_b2o_{_FROZEN_SNAPSHOT_ID}.db"
+
+
+def _derive_frozen_snapshot_path(repo_root: Path = REPO_ROOT) -> Path:
+    """Repo-root-relative frozen snapshot DB path from authoritative manifests."""
+    manifest = Path(repo_root) / "data" / "manifests" / "active_data_snapshot.json"
+    if manifest.is_file():
+        try:
+            payload = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        snapshot_id = payload.get("snapshot_id")
+        recorded = payload.get("db_path") or payload.get("path")
+        if isinstance(recorded, str) and recorded:
+            recorded_name = Path(recorded).name
+            if recorded_name.endswith(".db"):
+                return Path(repo_root) / "data" / "snapshots" / recorded_name
+        if isinstance(snapshot_id, str) and snapshot_id:
+            return Path(repo_root) / "data" / "snapshots" / f"catalyst_b2o_{snapshot_id}.db"
+    return Path(repo_root) / "data" / "snapshots" / _FROZEN_SNAPSHOT_FILENAME
+
+
+FROZEN_SNAPSHOT_PATH = _derive_frozen_snapshot_path(REPO_ROOT)
 
 from catalyst_data.index.v1_promote import (  # noqa: E402
     PromotionResult,
@@ -86,8 +110,10 @@ def _require_head(expected_head: str, repo: Path = REPO_ROOT) -> None:
 
 def _frozen_live_db_paths(repo_root: Path = REPO_ROOT) -> list[Path]:
     """Authoritative frozen/live DB paths; always includes the frozen snapshot."""
-    paths: list[Path] = [FROZEN_SNAPSHOT_PATH]
-    snapshot_manifest = repo_root / "data" / "manifests" / "active_data_snapshot.json"
+    paths: list[Path] = [FROZEN_SNAPSHOT_PATH, _derive_frozen_snapshot_path(repo_root)]
+    # De-duplicate in case the repo-root derivation matches the module default.
+    paths = list(dict.fromkeys(paths))
+    snapshot_manifest = Path(repo_root) / "data" / "manifests" / "active_data_snapshot.json"
     if snapshot_manifest.is_file():
         try:
             payload = json.loads(snapshot_manifest.read_text(encoding="utf-8"))
@@ -96,12 +122,12 @@ def _frozen_live_db_paths(repo_root: Path = REPO_ROOT) -> list[Path]:
         candidate = payload.get("path") or payload.get("db_path")
         if isinstance(candidate, str) and candidate:
             paths.append(Path(candidate))
-    working_db = repo_root / "data" / "manifests" / "b2o_working_db_path.txt"
+    working_db = Path(repo_root) / "data" / "manifests" / "b2o_working_db_path.txt"
     if working_db.is_file():
         text = working_db.read_text(encoding="utf-8").strip()
         if text:
             paths.append(Path(text))
-    app_default = repo_root / ".local" / "live_runtime.db"
+    app_default = Path(repo_root) / ".local" / "live_runtime.db"
     if app_default.exists():
         paths.append(app_default)
     return paths
@@ -114,10 +140,13 @@ def _reject_aliased_db(path: Path, repo_root: Path = REPO_ROOT) -> None:
         raise ValueError("DB path must not be a symlink")
     resolved = candidate.resolve()
     for forbidden in _frozen_live_db_paths(repo_root):
+        # Path-level comparison first (strict=False) so a forbidden frozen/live
+        # DB is rejected by identity even when the protected file is not
+        # present on the current checkout (no 5.5 GB open/read is required).
+        if resolved == Path(forbidden).resolve(strict=False):
+            raise ValueError("DB path resolves to a forbidden frozen/live DB")
         if not forbidden.exists():
             continue
-        if resolved == forbidden.resolve():
-            raise ValueError("DB path resolves to a forbidden frozen/live DB")
         try:
             if os.path.samefile(resolved, forbidden):
                 raise ValueError("DB path aliases a forbidden frozen/live DB")
