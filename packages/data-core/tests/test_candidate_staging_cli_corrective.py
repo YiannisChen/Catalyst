@@ -129,13 +129,6 @@ def _artifact_dir(tmp_path: Path, *, count: int = 2, code_revision: str | None =
     (root / "chunk_ids.json").write_text(
         json.dumps(chunk_ids, separators=(",", ":")) + "\n", encoding="utf-8"
     )
-    (root / "chunks.jsonl").write_text(
-        "".join(
-            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
-            for record in records
-        ),
-        encoding="utf-8",
-    )
     checksums = {
         "vectors.npy": _sha(root / "vectors.npy"),
         "chunk_ids.json": _sha(root / "chunk_ids.json"),
@@ -661,3 +654,148 @@ def test_table_only_interrupted_staging_is_fail_closed_with_operator_cleanup(tmp
     with pytest.raises(Exception, match="identical execute command"):
         cli.main(_argv("execute", fx))
     assert (fx["candidate_dir"] / "candidate_generation.json").exists() is False
+
+
+def _assert_no_candidate_lancedb_mutation(fx: dict) -> None:
+    candidate = fx["candidate_dir"]
+    if candidate.exists():
+        assert list(candidate.glob("*.lance")) == []
+        assert not (candidate / "candidate_generation.json").exists()
+
+
+def _rebuild_self_consistent_artifact(
+    artifact: Path, chunk_ids: list[str], *, template: IndexManifest
+) -> IndexManifest:
+    """Rewrite vectors/chunk_ids/manifest/checksums for a new ID sequence.
+
+    The rewritten artifact is internally consistent and keeps the original
+    source-bundle identity so only the ordered chunk sequence disagrees.
+    """
+    import numpy as np
+
+    chunks_jsonl = artifact / "chunks.jsonl"
+    if chunks_jsonl.exists():
+        chunks_jsonl.unlink()
+    count = len(chunk_ids)
+    vectors = np.zeros((count, BGE_M3_DIMENSION), dtype=np.float32)
+    for index in range(count):
+        vectors[index, index] = 1.0
+    np.save(artifact / "vectors.npy", vectors)
+    (artifact / "chunk_ids.json").write_text(
+        json.dumps(chunk_ids, separators=(",", ":")) + "\n", encoding="utf-8"
+    )
+    checksums = {
+        "vectors.npy": _sha(artifact / "vectors.npy"),
+        "chunk_ids.json": _sha(artifact / "chunk_ids.json"),
+    }
+    manifest = IndexManifest(
+        model_name=template.model_name,
+        model_revision=template.model_revision,
+        tokenizer_revision=template.tokenizer_revision,
+        normalization_mode=template.normalization_mode,
+        dtype=template.dtype,
+        dimension=template.dimension,
+        corpus_manifest_id=template.corpus_manifest_id,
+        source_bundle_id=template.source_bundle_id,
+        snapshot_id=template.snapshot_id,
+        probe_report_id=template.probe_report_id,
+        postbuild_readiness_id=template.postbuild_readiness_id,
+        artifact_hashes={
+            "vectors.npy": checksums["vectors.npy"],
+            "chunk_ids.json": checksums["chunk_ids.json"],
+            "lancedb_table": template.artifact_hashes["lancedb_table"],
+        },
+        code_revision=template.code_revision,
+        vector_count=count,
+        artifact_state="vectors_staged",
+        vectors_checksum=checksums["vectors.npy"],
+        chunk_order_checksum=_order_checksum(chunk_ids),
+    )
+    (artifact / "index_manifest.json").write_text(
+        json.dumps(manifest.to_dict(), sort_keys=True), encoding="utf-8"
+    )
+    checksums["index_manifest.json"] = _sha(artifact / "index_manifest.json")
+    (artifact / "checksums.sha256").write_text(
+        "\n".join(f"{value}  {name}" for name, value in sorted(checksums.items())) + "\n",
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def test_execute_rejects_equal_count_different_chunk_ids_before_lancedb(tmp_path):
+    """Source bundle and embedding artifact share count but not chunk IDs."""
+    cli = _load_cli()
+    fx = _fixture(tmp_path)
+    new_ids = ["chunk:0000", "chunk:9999"]
+    fx["manifest"] = _rebuild_self_consistent_artifact(
+        fx["artifact"], new_ids, template=fx["manifest"]
+    )
+    alt = tmp_path / "wrong-ids"
+    alt.mkdir()
+    fx["db"] = _derivative(alt, manifest=fx["manifest"], chunk_ids=new_ids)
+    with pytest.raises(Exception, match="frozen order|chunk-id"):
+        cli.main(_argv("execute", fx))
+    _assert_no_candidate_lancedb_mutation(fx)
+
+
+def test_execute_rejects_reordered_chunk_ids_before_lancedb(tmp_path):
+    cli = _load_cli()
+    fx = _fixture(tmp_path)
+    new_ids = list(reversed(fx["chunk_ids"]))
+    fx["manifest"] = _rebuild_self_consistent_artifact(
+        fx["artifact"], new_ids, template=fx["manifest"]
+    )
+    alt = tmp_path / "reordered-ids"
+    alt.mkdir()
+    fx["db"] = _derivative(alt, manifest=fx["manifest"], chunk_ids=new_ids)
+    with pytest.raises(Exception, match="frozen order|chunk-id|order"):
+        cli.main(_argv("execute", fx))
+    _assert_no_candidate_lancedb_mutation(fx)
+
+
+def test_execute_rejects_self_consistent_artifact_for_wrong_bundle_sequence(tmp_path):
+    """A fully recomputed artifact for the wrong IDs is still rejected."""
+    cli = _load_cli()
+    fx = _fixture(tmp_path)
+    new_ids = ["chunk:aaaa", "chunk:bbbb"]
+    fx["manifest"] = _rebuild_self_consistent_artifact(
+        fx["artifact"], new_ids, template=fx["manifest"]
+    )
+    alt = tmp_path / "wrong-seq"
+    alt.mkdir()
+    fx["db"] = _derivative(alt, manifest=fx["manifest"], chunk_ids=new_ids)
+    with pytest.raises(Exception, match="frozen order|chunk-id"):
+        cli.main(_argv("execute", fx))
+    _assert_no_candidate_lancedb_mutation(fx)
+
+
+def test_execute_rejects_validated_manifest_id_disagreeing_with_expected(tmp_path):
+    cli = _load_cli()
+    fx = _fixture(tmp_path)
+    argv = _argv("execute", fx)
+    idx = argv.index("--expected-index-manifest-id")
+    argv[idx + 1] = "a" * 64
+    with pytest.raises(Exception, match="index manifest id mismatch|expected"):
+        cli.main(argv)
+    _assert_no_candidate_lancedb_mutation(fx)
+
+
+def test_execute_rejects_non_production_mock_artifact_before_lancedb(tmp_path):
+    cli = _load_cli()
+    fx = _fixture(tmp_path)
+    manifest_path = fx["artifact"] / "index_manifest.json"
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["non_production"] = True
+    manifest_path.write_text(json.dumps(raw, sort_keys=True), encoding="utf-8")
+    checksums = {
+        "vectors.npy": _sha(fx["artifact"] / "vectors.npy"),
+        "chunk_ids.json": _sha(fx["artifact"] / "chunk_ids.json"),
+        "index_manifest.json": _sha(manifest_path),
+    }
+    (fx["artifact"] / "checksums.sha256").write_text(
+        "\n".join(f"{value}  {name}" for name, value in sorted(checksums.items())) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(Exception, match="non_production"):
+        cli.main(_argv("execute", fx))
+    _assert_no_candidate_lancedb_mutation(fx)

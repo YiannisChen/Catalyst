@@ -40,7 +40,7 @@ from typing import Any
 from catalyst_data.config import BGE_M3_DIMENSION, BGE_M3_MODEL, BGE_M3_REVISION
 from catalyst_data.index.v1_staging import INTERRUPTED_CANDIDATE_OPERATOR_PROCEDURE
 from catalyst_data.retrieval.git_revision import resolve_git_revision
-from catalyst_data.retrieval.gpu_contract import verify_source_bundle
+from catalyst_data.retrieval.gpu_contract import validate_embedding_import
 from catalyst_data.retrieval.index_manifest import IndexManifest
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -221,30 +221,6 @@ def _verify_expected_manifest_id(
             )
 
 
-def _verify_source_bundle_identity(
-    manifest: IndexManifest,
-    source_bundle: Path | None,
-    *,
-    expected_chunk_count: int,
-) -> int:
-    if source_bundle is None:
-        return expected_chunk_count
-    verified = verify_source_bundle(
-        source_bundle,
-        expected_source_bundle_id=manifest.source_bundle_id,
-        expected_snapshot_id=manifest.snapshot_id,
-        expected_corpus_manifest_id=manifest.corpus_manifest_id,
-        expected_probe_report_id=manifest.probe_report_id,
-        expected_postbuild_readiness_id=manifest.postbuild_readiness_id,
-    )
-    if verified.chunk_count != expected_chunk_count:
-        raise CandidateDenseStagingError(
-            "source bundle chunk_count mismatch: "
-            f"bundle={verified.chunk_count} index={expected_chunk_count}"
-        )
-    return verified.chunk_count
-
-
 def _protected_alias_error(label: str, left: Path, right: Path) -> str:
     return (
         f"{label}: {left} aliases protected active path {right}; "
@@ -419,8 +395,27 @@ def preflight_stage_candidate_dense(
 ) -> dict[str, Any]:
     """Validate identities and path safety without mutating anything."""
     _require_hex64(inputs.build_id, label="build_id")
-    manifest = _load_artifact_manifest(inputs.embedding_artifact_dir)
-    _verify_expected_manifest_id(manifest, inputs.expected_index_manifest_id)
+    if inputs.source_bundle is not None:
+        try:
+            validated = validate_embedding_import(
+                inputs.source_bundle,
+                inputs.embedding_artifact_dir,
+                allow_non_production=False,
+            )
+        except Exception as exc:
+            raise CandidateDenseStagingError(str(exc)) from exc
+        manifest = _load_artifact_manifest(inputs.embedding_artifact_dir)
+        if validated.index_manifest_id != manifest.index_manifest_id:
+            raise CandidateDenseStagingError(
+                "validate_embedding_import IndexManifest id disagrees with artifact: "
+                f"validated={validated.index_manifest_id} "
+                f"loaded={manifest.index_manifest_id}"
+            )
+        _verify_expected_manifest_id(validated, inputs.expected_index_manifest_id)
+        manifest = validated
+    else:
+        manifest = _load_artifact_manifest(inputs.embedding_artifact_dir)
+        _verify_expected_manifest_id(manifest, inputs.expected_index_manifest_id)
     _verify_pre_existing_candidate_record(
         candidate_manifest_dir=inputs.candidate_manifest_dir,
         manifest=manifest,
@@ -443,9 +438,6 @@ def preflight_stage_candidate_dense(
         )
     finally:
         conn.close()
-    _verify_source_bundle_identity(
-        manifest, inputs.source_bundle, expected_chunk_count=expected_chunk_count
-    )
     return {
         "schema_version": "candidate_dense_staging_preflight_v1",
         "mode": "preflight",

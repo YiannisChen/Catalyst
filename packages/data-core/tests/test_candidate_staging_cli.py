@@ -122,13 +122,6 @@ def _artifact_dir(
     (root / "chunk_ids.json").write_text(
         json.dumps(chunk_ids, separators=(",", ":")) + "\n", encoding="utf-8"
     )
-    (root / "chunks.jsonl").write_text(
-        "".join(
-            json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n"
-            for record in records
-        ),
-        encoding="utf-8",
-    )
     checksums = {
         "vectors.npy": _sha(root / "vectors.npy"),
         "chunk_ids.json": _sha(root / "chunk_ids.json"),
