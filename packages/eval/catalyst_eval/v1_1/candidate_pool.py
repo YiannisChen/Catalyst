@@ -84,7 +84,14 @@ _GENERATION_FIELDS = (
     "embedding_revision",
     "embedding_dimension",
 )
-_MODE_SERVED_CONTRACT = {"fts5", "dense", "hybrid", "reranked", "sql_like", "failed"}
+_MODE_SERVED_CONTRACT = {"fts5", "dense", "hybrid", "reranked"}
+_EXACT_BUILD_IDENTITY_FIELDS = (
+    "canonical_asset_id",
+    "content_version_id",
+    "independence_group_id",
+    "content_state",
+    "parse_quality",
+)
 
 
 class CandidatePoolError(RuntimeError):
@@ -649,6 +656,13 @@ def _packet_row_for_result(
             f"case {case.case_id}: chunk {result.chunk_id} lacks a persisted "
             "content/metadata hash in the candidate build"
         )
+    for field in _EXACT_BUILD_IDENTITY_FIELDS:
+        value = meta_fields.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise CandidatePoolError(
+                f"case {case.case_id}: chunk {result.chunk_id} has no real "
+                f"{field} in the candidate build"
+            )
     available_at = str(meta_fields.get("available_at") or "")
     decision = _cutoff_decision(available_at, case.cutoff)
     ticker_associations = list(getattr(result, "ticker_associations", ()) or ())
@@ -726,6 +740,16 @@ def validate_four_arm_served(hybrid: Any, *, case_id: str) -> dict[str, Sequence
         )
     arms = _arm_rows(hybrid)
     problems: list[str] = []
+    lexical_set = getattr(hybrid, "lexical_results", None)
+    dense_set = getattr(hybrid, "dense_results", None)
+    if lexical_set is not None:
+        set_served = str(getattr(lexical_set, "mode_served", "") or "")
+        if set_served != "fts5":
+            problems.append(f"fts5 arm served as {set_served!r}")
+    if dense_set is not None:
+        set_served = str(getattr(dense_set, "mode_served", "") or "")
+        if set_served != "dense":
+            problems.append(f"dense arm served as {set_served!r}")
     for name in ARM_ORDER:
         items = arms[name]
         if not items:
@@ -733,7 +757,9 @@ def validate_four_arm_served(hybrid: Any, *, case_id: str) -> dict[str, Sequence
         for item in items:
             served = str(getattr(item, "mode_served", "") or "")
             requested = str(getattr(item, "mode_requested", "") or "")
-            if served not in _MODE_SERVED_CONTRACT:
+            if served != name:
+                problems.append(f"{name} arm served as {served!r}")
+            elif served not in _MODE_SERVED_CONTRACT:
                 problems.append(f"{name} arm has invalid mode_served {served!r}")
             if bool(getattr(item, "is_degraded", False)):
                 problems.append(f"{name} arm result is degraded")
@@ -762,6 +788,7 @@ def validate_four_arm_served(hybrid: Any, *, case_id: str) -> dict[str, Sequence
 _METADATA_REQUIRED_COLUMNS = {
     "document_id", "content_hash", "metadata_hash", "chunk_profile_version",
     "source_class", "available_at", "section_parse_degraded",
+    *_EXACT_BUILD_IDENTITY_FIELDS,
 }
 
 
@@ -994,27 +1021,47 @@ def build_production_retriever(
     if not cuda_available():
         raise CandidatePoolError("production_pinned requires CUDA (cloud-only)")
 
-    factory = embedder_factory or ProductionBgeM3QueryEmbeddingFactory()
-    embedder = factory.create(model_name=BGE_M3_MODEL)
-    # Reranker contract: pinned offline model.  load_reranker returns None on
-    # failure, so a None reranker must abort the pool before the first case.
-    reranker = None
-    if reranker_loader is None:
-        from catalyst_data.storage.lancedb_store import load_reranker
-
-        reranker = load_reranker(model_name=BGE_RERANKER_MODEL)
-    else:
-        reranker = reranker_loader()
-    if reranker is None:
-        raise CandidatePoolError("production reranker could not be loaded")
-
     db_path = Path(derivative)
     if not db_path.is_file():
         raise CandidatePoolError(f"candidate derivative DB not found: {db_path}")
-    uri = f"{db_path.resolve().as_uri()}?mode=ro&immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
-    lancedb_conn = lancedb.connect(str(lancedb_dir))
-    table = lancedb_conn.open_table(table_name)
+
+    factory = embedder_factory or ProductionBgeM3QueryEmbeddingFactory()
+    conn = None
+    table = None
+    try:
+        uri = f"{db_path.resolve().as_uri()}?mode=ro&immutable=1"
+        conn = sqlite3.connect(uri, uri=True)
+        lancedb_conn = lancedb.connect(str(lancedb_dir))
+        try:
+            table = lancedb_conn.open_table(table_name)
+        except Exception as exc:
+            raise CandidatePoolError(
+                f"candidate LanceDB table {table_name} is unreadable"
+            ) from exc
+        embedder = factory.create(model_name=BGE_M3_MODEL)
+        # Reranker contract: pinned offline model.  load_reranker returns None
+        # on failure, so a None reranker must abort the pool before the first
+        # case.
+        if reranker_loader is None:
+            from catalyst_data.storage.lancedb_store import load_reranker
+
+            reranker = load_reranker(model_name=BGE_RERANKER_MODEL)
+        else:
+            reranker = reranker_loader()
+        if reranker is None:
+            raise CandidatePoolError("production reranker could not be loaded")
+    except BaseException:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        if table is not None:
+            try:
+                table.close()
+            except Exception:
+                pass
+        raise
     closed = {"value": False}
 
     def _retrieve_case(case):
@@ -1077,6 +1124,33 @@ def run_candidate_pools(
     results. Never writes official GoldenCase files and never mutates active
     pointers.
     """
+    try:
+        return _run_candidate_pools_body(
+            identity=identity,
+            packet_path=packet_path,
+            output_dir=output_dir,
+            retrieve_case=retrieve_case,
+            active_lancedb_dir=active_lancedb_dir,
+            active_generation_pointer=active_generation_pointer,
+            embedding_mode=embedding_mode,
+            reranker_timeout_seconds=reranker_timeout_seconds,
+        )
+    finally:
+        if retriever_close is not None:
+            retriever_close()
+
+
+def _run_candidate_pools_body(
+    *,
+    identity: CandidatePoolIdentity,
+    packet_path: str | Path,
+    output_dir: str | Path,
+    retrieve_case: Callable[[CaseQuery], Any],
+    active_lancedb_dir: Path | None,
+    active_generation_pointer: Path | None,
+    embedding_mode: str,
+    reranker_timeout_seconds: float,
+) -> dict[str, Any]:
     _require_execution_guards(
         active_lancedb_dir=active_lancedb_dir,
         active_generation_pointer=active_generation_pointer,
@@ -1232,9 +1306,6 @@ def run_candidate_pools(
 
         shutil.rmtree(out, ignore_errors=True)
         raise
-    finally:
-        if retriever_close is not None:
-            retriever_close()
 
     manifest_payload = {
         "schema_version": POOL_SCHEMA,

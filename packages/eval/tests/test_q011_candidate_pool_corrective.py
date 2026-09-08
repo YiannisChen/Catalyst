@@ -1106,3 +1106,209 @@ def test_production_embedder_missing_fails_before_run(tmp_path):
             embedder_factory=_EmbedderFactory(),
             reranker_loader=lambda: object(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Cloud-readiness: exact-build evidence identities, exact arm mode_served,
+# and retriever cleanup on preflight/output-path failures.
+# ---------------------------------------------------------------------------
+
+
+def _null_one_field(records: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
+    out = []
+    for record in records:
+        copied = dict(record)
+        if copied["chunk_id"] == "c01-a":
+            copied[field] = None
+        out.append(copied)
+    return out
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "canonical_asset_id",
+        "content_version_id",
+        "independence_group_id",
+        "content_state",
+        "parse_quality",
+    ),
+)
+def test_null_exact_build_identity_is_rejected(tmp_path, field):
+    """Q-011 evidence rows must carry real exact-build values; null is unpublished."""
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    active, pointer = _active(tmp_path)
+    records = _null_one_field(_default_chunk_records(identities["build_id"]), field)
+    derivative = _derivative(tmp_path, name=f"meta-null-{field}.db", chunk_rows=records)
+    ident = _identity(tmp_path, identities, candidate=candidate, derivative=derivative)
+    with pytest.raises(CandidatePoolError, match=field):
+        run_candidate_pools(
+            identity=ident,
+            packet_path=_packet(tmp_path),
+            output_dir=tmp_path / "out",
+            retrieve_case=_make_case_retriever(),
+            active_lancedb_dir=active,
+            active_generation_pointer=pointer,
+        )
+
+
+def _hybrid_with_served(*, fts5="fts5", dense="dense", hybrid="hybrid", reranked="reranked"):
+    import types
+
+    def _item(chunk_id, requested, served, **scores):
+        return make_result(
+            chunk_id,
+            ticker="AAPL",
+            available_at="2025-05-01T00:00:00Z",
+            mode_requested=requested,
+            mode_served=served,
+            **scores,
+        )
+
+    fts5_item = _item("c01-a", "lexical", fts5, lexical_rank=1, lexical_raw_score=1.0)
+    dense_item = _item("c01-b", "dense", dense, dense_rank=1, dense_score=0.9)
+    hybrid_item = _item("c01-c", "hybrid", hybrid, fusion_rank=1, fusion_score=0.5)
+    reranked_item = _item(
+        "c01-d", "reranked", reranked, reranker_rank=1, reranker_score=9.0
+    )
+    return types.SimpleNamespace(
+        lexical_results=types.SimpleNamespace(
+            results=(fts5_item,), mode_served=fts5, is_degraded=False
+        ),
+        dense_results=types.SimpleNamespace(
+            results=(dense_item,), mode_served=dense, is_degraded=False
+        ),
+        fusion_results=(hybrid_item,),
+        final_results=(reranked_item,),
+        mode_requested="reranked",
+        mode_served="reranked",
+        degradation_reasons=(),
+        latency_ms=1.0,
+    )
+
+
+def test_fts5_arm_must_be_served_as_fts5():
+    hybrid = _hybrid_with_served(fts5="sql_like")
+    with pytest.raises(CandidatePoolError, match="fts5 arm .*fts5|served as 'sql_like'"):
+        validate_four_arm_served(hybrid, case_id="c01")
+
+
+def test_dense_arm_must_be_served_as_dense():
+    hybrid = _hybrid_with_served(dense="hybrid")
+    with pytest.raises(CandidatePoolError, match="dense arm .*dense|served as 'hybrid'"):
+        validate_four_arm_served(hybrid, case_id="c01")
+
+
+def test_hybrid_arm_must_be_served_as_hybrid():
+    hybrid = _hybrid_with_served(hybrid="reranked")
+    with pytest.raises(CandidatePoolError, match="hybrid arm .*hybrid|served as 'reranked'"):
+        validate_four_arm_served(hybrid, case_id="c01")
+
+
+def test_reranked_arm_must_be_served_as_reranked():
+    hybrid = _hybrid_with_served(reranked="hybrid")
+    with pytest.raises(CandidatePoolError, match="reranked arm .*reranked|served as 'hybrid'"):
+        validate_four_arm_served(hybrid, case_id="c01")
+
+
+def test_retriever_closed_on_nonempty_output_dir(tmp_path):
+    """Cleanup must run for output-path failures after the retriever exists."""
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    ident = _identity(tmp_path, identities, candidate=candidate)
+    active, pointer = _active(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "stale.json").write_text("{}", encoding="utf-8")
+    closed = {"n": 0}
+
+    def close():
+        closed["n"] += 1
+
+    with pytest.raises(CandidatePoolError, match="empty"):
+        run_candidate_pools(
+            identity=ident,
+            packet_path=_packet(tmp_path),
+            output_dir=out,
+            retrieve_case=_make_case_retriever(),
+            active_lancedb_dir=active,
+            active_generation_pointer=pointer,
+            retriever_close=close,
+        )
+    assert closed["n"] == 1
+
+
+def test_retriever_closed_on_output_alias_failure(tmp_path):
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    ident = _identity(tmp_path, identities, candidate=candidate)
+    active, pointer = _active(tmp_path)
+    closed = {"n": 0}
+
+    def close():
+        closed["n"] += 1
+
+    with pytest.raises(CandidatePoolError, match="aliases protected active"):
+        run_candidate_pools(
+            identity=ident,
+            packet_path=_packet(tmp_path),
+            output_dir=active / "pool_out",
+            retrieve_case=_make_case_retriever(),
+            active_lancedb_dir=active,
+            active_generation_pointer=pointer,
+            retriever_close=close,
+        )
+    assert closed["n"] == 1
+
+
+def test_production_retriever_closes_sqlite_when_lancedb_open_fails(tmp_path, monkeypatch):
+    """SQLite opened during retriever construction must close if LanceDB fails."""
+    import types
+    import catalyst_eval.v1_1.candidate_pool as pool_mod
+
+    identities = _identities()
+    candidate = _candidate(tmp_path, identities)
+    ident = _identity(tmp_path, identities, candidate=candidate)
+
+    class _EmbedderFactory:
+        def create(self, model_name):
+            return types.SimpleNamespace(embed_query=lambda text: [0.0] * BGE_M3_DIMENSION)
+
+    created: list[Any] = []
+
+    class _Conn:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    def fake_connect(*args, **kwargs):
+        conn = _Conn()
+        created.append(conn)
+        return conn
+
+    class _BoomDB:
+        def open_table(self, name):
+            raise OSError("table open failed")
+
+    stub = types.ModuleType("lancedb")
+    stub.connect = lambda *args, **kwargs: _BoomDB()
+    monkeypatch.setitem(__import__("sys").modules, "lancedb", stub)
+    monkeypatch.setattr(pool_mod.sqlite3, "connect", fake_connect)
+
+    with pytest.raises(CandidatePoolError, match="unreadable|table|LanceDB|open"):
+        pool_mod.build_production_retriever(
+            derivative=Path(ident.derivative),
+            lancedb_dir=str(candidate),
+            table_name=ident.table_name,
+            index_manifest_id=ident.index_manifest_id,
+            corpus_manifest_id=ident.corpus_manifest_id,
+            reranker_timeout=2.0,
+            cuda_available=lambda: True,
+            embedder_factory=_EmbedderFactory(),
+            reranker_loader=lambda: object(),
+        )
+    assert created, "sqlite connection was never opened"
+    assert created[0].closed is True
