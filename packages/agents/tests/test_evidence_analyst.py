@@ -19,8 +19,10 @@ import pytest
 from catalyst_agents.attribution.analyst import (
     AnalystDecision,
     AttributionStatus,
+    AttributionType,
     CandidateHypothesis,
     EvidenceDecision,
+    ResearchDecision,
 )
 from catalyst_agents.attribution.context_pack import EvidenceAnalystContextPack
 from catalyst_agents.attribution.context_pack_builder import (
@@ -844,3 +846,299 @@ def test_declared_method_rejected_by_factory_fails_closed() -> None:
     with pytest.raises(ProviderCapabilityError):
         evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
     assert llm.calls == 0
+
+
+# ---------------------------------------------------------------------------
+# M7 STAGE-1: json_mode field contract + typed parser failure
+#
+# The 2026-09-15 live c01 run terminalized SYSTEM_ERROR because DeepSeek's
+# json_object answer used invented field names and langchain's
+# OutputParserException was not a ModelRoleCallError (so it was neither
+# retried nor typed). These tests pin the two corrections: the node maps
+# parse failures onto the retryable ModelSchemaFailure, and the json_mode
+# request carries the exact AnalystDecision field contract.
+# ---------------------------------------------------------------------------
+
+# A METADATA_ONLY coverage row from the live c01 run: visible in the coverage
+# summary, never part of the citable pack inventory.
+METADATA_ONLY_COVERAGE_ID = (
+    "cf436246bcb70f5f6b0e6d5f8cbb4a4f4ac50d0f8cd17f0f4c5c0bb1d9d1b0a1"
+    ":news_v2:body:0001"
+)
+
+
+class _RaisingSurfaceProvider(FakeAnalystProvider):
+    """Native surface that raises the injected exception on every invoke."""
+
+    def __init__(self, exc: BaseException) -> None:
+        super().__init__(_valid_decision_dict)
+        self.exc = exc
+
+    def with_structured_output(self, schema):
+        outer = self
+
+        class Surface:
+            def invoke(self, messages):
+                outer.calls += 1
+                outer.captured_messages.append(
+                    [
+                        dict(message)
+                        if isinstance(message, dict)
+                        else {"role": message.role, "content": message.content}
+                        for message in messages
+                    ]
+                )
+                raise outer.exc
+
+        return Surface()
+
+
+def _empty_inventory_example_dict() -> dict:
+    from catalyst_agents.nodes.evidence_analyst import _empty_inventory_example
+
+    return _empty_inventory_example(AnalystDecision)
+
+
+def test_langchain_output_parser_exception_becomes_typed_schema_failure() -> None:
+    """json_mode parses with langchain's PydanticOutputParser, which raises
+    OutputParserException when the model invents field names. That failure is
+    the retryable structured-schema failure: the node must retry once with the
+    identical input and then raise typed MODEL_SCHEMA_FAILURE, never leak the
+    parser error to the executor as an untyped SYSTEM_ERROR."""
+    from langchain_core.exceptions import OutputParserException
+
+    store = InMemoryPackStore()
+    _persist_pair(store)
+    llm = _RaisingSurfaceProvider(
+        OutputParserException(
+            "Failed to parse AnalystDecision from completion "
+            '{"evidence_classifications": [{"evidence_id": "e1", '
+            '"classification": "WEAK"}]}',
+            llm_output=(
+                '{"evidence_classifications": [{"evidence_id": "e1", '
+                '"classification": "WEAK"}]}'
+            ),
+        )
+    )
+    with pytest.raises(
+        ModelSchemaFailure, match="unparseable structured output JSON"
+    ) as excinfo:
+        evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert type(excinfo.value) is ModelSchemaFailure
+    assert "MODEL_SCHEMA_FAILURE" in str(excinfo.value)
+    assert llm.calls == 2
+
+
+def test_unmapped_provider_error_is_not_retried_or_retyped() -> None:
+    """Only structured-output parse failures are retyped: an unmapped provider
+    error (an endpoint 400) propagates unchanged after exactly one attempt."""
+    class BadRequestError(Exception):
+        """Stand-in for a non-retryable provider HTTP error."""
+
+    store = InMemoryPackStore()
+    _persist_pair(store)
+    llm = _RaisingSurfaceProvider(BadRequestError("400 invalid_request_error"))
+    with pytest.raises(BadRequestError):
+        evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert llm.calls == 1
+
+
+def test_generated_empty_inventory_example_matches_the_pinned_contract() -> None:
+    """The example must be generated from the Pydantic model (never
+    hand-written) and must still carry the required exact fields."""
+    example = _empty_inventory_example_dict()
+    assert example == {
+        "schema_version": "1.0",
+        "evidence_decisions": [],
+        "candidate_hypotheses": [],
+        "conflicts": [],
+        "proposed_missing_evidence": [],
+        "research_decision": "ABSTAIN",
+        "recommended_status": "ABSTAIN",
+        "proposed_attribution_type": "NO_MATERIAL_PUBLIC_CATALYST",
+        "proposed_corrective_intents": [],
+    }
+    # Drift guard: the example cannot acquire or drop a schema field.
+    assert set(example) == set(AnalystDecision.model_fields)
+
+
+def test_json_mode_contract_text_names_the_decision_fields_and_example() -> None:
+    from catalyst_agents.nodes.evidence_analyst import _json_mode_field_contract
+
+    text = _json_mode_field_contract(AnalystDecision)
+    assert "evidence_decisions" in text
+    assert "disposition" in text
+    assert "METADATA_ONLY" in text
+    assert json.dumps(_empty_inventory_example_dict(), indent=2) in text
+    for name in AnalystDecision.model_fields:
+        assert name in text
+
+
+def test_contract_is_appended_to_the_system_prompt_before_hashing() -> None:
+    """The contract text must be part of the hashed prompt, not a side channel:
+    the semantic input hash covers exactly what the provider receives."""
+    from catalyst_agents.nodes.evidence_analyst import _semantic_input_hash
+
+    store = InMemoryPackStore()
+    _persist_pair(store)
+    llm = FakeAnalystProvider(_abstain_decision_dict)
+    bare_prompt = "You are the Evidence Analyst. Emit the strict schema."
+    result = evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+
+    system_message = llm.captured_messages[0][0]
+    assert system_message["role"] == "system"
+    assert system_message["content"].startswith(bare_prompt)
+    assert "evidence_decisions" in system_message["content"]
+    assert "disposition" in system_message["content"]
+
+    assert result["semantic_input_hash"] == _semantic_input_hash(
+        system_message["content"], _rendered_messages(), "1.0"
+    )
+    assert result["semantic_input_hash"] != _semantic_input_hash(
+        bare_prompt, _rendered_messages(), "1.0"
+    )
+
+
+def test_generated_empty_example_parses_as_abstain_in_one_logical_call() -> None:
+    """The emitted example is itself a valid AnalystDecision: the live model
+    constrained to that shape completes as an evidence-free ABSTAIN."""
+    store = InMemoryPackStore()
+    _persist_pair(store, pack=_build_pack(included=()))
+    llm = FakeAnalystProvider(_empty_inventory_example_dict)
+    result = evidence_analyst(
+        {"run_id": "run:1"},
+        llm=llm,
+        persistence=store,
+        prompt_template="t",
+        schema=AnalystDecision,
+    )
+    assert llm.calls == 1
+    assert result["analyst_decision"].research_decision is ResearchDecision.ABSTAIN
+    assert result["analyst_decision"].recommended_status is AttributionStatus.ABSTAIN
+    assert (
+        result["analyst_decision"].proposed_attribution_type
+        is AttributionType.NO_MATERIAL_PUBLIC_CATALYST
+    )
+    assert result["analyst_decision"].evidence_decisions == ()
+
+
+def test_empty_inventory_metadata_only_coverage_id_is_a_schema_failure() -> None:
+    """A METADATA_ONLY coverage row is not inventory: citing it is a bounded
+    schema failure after exactly two provider attempts."""
+    store = InMemoryPackStore()
+    _persist_pair(store, pack=_build_pack(included=()))
+    llm = FakeAnalystProvider(
+        lambda: {
+            "schema_version": "1.0",
+            "evidence_decisions": [
+                {
+                    "evidence_id": METADATA_ONLY_COVERAGE_ID,
+                    "disposition": "WEAK",
+                    "reason_code": "metadata_only",
+                }
+            ],
+            "candidate_hypotheses": [],
+            "research_decision": "ABSTAIN",
+            "recommended_status": "ABSTAIN",
+            "proposed_attribution_type": "NO_MATERIAL_PUBLIC_CATALYST",
+        }
+    )
+    with pytest.raises(ModelSchemaFailure, match="outside the pack inventory"):
+        evidence_analyst(
+            {"run_id": "run:1"},
+            llm=llm,
+            persistence=store,
+            prompt_template="t",
+            schema=AnalystDecision,
+        )
+    assert llm.calls == 2
+
+
+def test_json_mode_outbound_payload_carries_the_field_contract_offline() -> None:
+    """Transport-level check (mock httpx transport, dummy key, no network):
+    the json_mode request body declares response_format json_object and its
+    system message carries the AnalystDecision field names and example.
+
+    The production declaration (provider deepseek -> method json_mode) is
+    pinned by packages/app/tests/test_llm_factory_capability.py; the node is
+    exercised here against a real langchain json_mode surface.
+    """
+    import httpx
+    from langchain_openai import ChatOpenAI
+
+    captured: dict = {}
+
+    def handler(request: "httpx.Request") -> "httpx.Response":
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        captured["call_count"] = captured.get("call_count", 0) + 1
+        body = {
+            "id": "chatcmpl-offline-1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "deepseek-flash",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": json.dumps(_empty_inventory_example_dict()),
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 7,
+                "total_tokens": 18,
+            },
+        }
+        return httpx.Response(200, json=body)
+
+    client = ChatOpenAI(
+        model="deepseek-flash",
+        api_key="sk-test-dummy-key",
+        base_url="https://offline.invalid/v1",
+        temperature=0.0,
+        max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    object.__setattr__(
+        client,
+        "capability_metadata",
+        {
+            "supports_structured_output": True,
+            "supports_true_streaming": True,
+            "declares_token_accounting": True,
+            "normalizes_timeout_errors": True,
+            "capability_revision": "v1.1-capability-1",
+            "structured_output_method": "json_mode",
+        },
+    )
+
+    store = InMemoryPackStore()
+    _persist_pair(store, pack=_build_pack(included=()))
+    result = evidence_analyst(
+        {"run_id": "run:1"},
+        llm=client,
+        persistence=store,
+        prompt_template="You are the Evidence Analyst. Emit the strict schema.",
+        schema=AnalystDecision,
+    )
+
+    assert captured["call_count"] == 1
+    payload = captured["payload"]
+    assert payload["response_format"] == {"type": "json_object"}
+    system_contents = [
+        message["content"]
+        for message in payload["messages"]
+        if message["role"] == "system"
+    ]
+    assert any(
+        "evidence_decisions" in content and "disposition" in content
+        for content in system_contents
+    )
+    assert any(
+        json.dumps(_empty_inventory_example_dict(), indent=2) in content
+        for content in system_contents
+    )
+    assert result["analyst_decision"].research_decision is ResearchDecision.ABSTAIN

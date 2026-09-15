@@ -18,7 +18,16 @@ from typing import Any, Callable
 
 from pydantic import ValidationError
 
-from catalyst_agents.attribution.analyst import AnalystDecision
+from catalyst_agents.attribution.analyst import (
+    AnalystDecision,
+    AttributionStatus,
+    AttributionType,
+    CandidateHypothesis,
+    EvidenceDecision,
+    ProposedCorrectiveIntent,
+    ProposedMissingEvidence,
+    ResearchDecision,
+)
 from catalyst_agents.attribution.context_pack_builder import (
     RenderMessage,
     canonical_context_pack_json,
@@ -62,6 +71,116 @@ def _prompt_template(prompt_path: Path | None, prompt_text: str | None) -> str:
     if prompt_path is not None:
         return prompt_path.read_text(encoding="utf-8")
     return ""
+
+
+_ANALYST_DECISION_EXAMPLE_SCHEMA_VERSION = "1.0"
+
+# Exact-field empty-inventory AnalystDecision. ``json_mode`` sends
+# ``response_format={"type": "json_object"}``, which carries no schema, so the
+# field contract must travel in the prompt text; this mapping is generated from
+# the Pydantic contract so field names and enum values cannot drift.
+_EMPTY_INVENTORY_EXAMPLE: dict[str, Any] = {
+    "schema_version": _ANALYST_DECISION_EXAMPLE_SCHEMA_VERSION,
+    "evidence_decisions": [],
+    "candidate_hypotheses": [],
+    "conflicts": [],
+    "proposed_missing_evidence": [],
+    "research_decision": ResearchDecision.ABSTAIN.value,
+    "recommended_status": AttributionStatus.ABSTAIN.value,
+    "proposed_attribution_type": AttributionType.NO_MATERIAL_PUBLIC_CATALYST.value,
+    "proposed_corrective_intents": [],
+}
+
+# Nested contracts whose field names the model also has to reproduce exactly.
+_NESTED_DECISION_MODELS: tuple[tuple[str, Any], ...] = (
+    ("evidence_decisions[]", EvidenceDecision),
+    ("candidate_hypotheses[]", CandidateHypothesis),
+    ("proposed_missing_evidence[]", ProposedMissingEvidence),
+    ("proposed_corrective_intents[]", ProposedCorrectiveIntent),
+)
+
+
+def _empty_inventory_example(schema: type[AnalystDecision]) -> dict[str, Any]:
+    """Return the exact-field empty-inventory example for ``schema``.
+
+    Generated against the live Pydantic contract: the example is filtered to
+    the model's declared fields and is validated before use. If the contract
+    ever drifts (a field added or renamed) this returns ``{}`` and no example
+    is injected — the strict ``extra="forbid"`` parse stays authoritative.
+    """
+    fields = set(schema.model_fields)
+    example = {
+        name: value
+        for name, value in _EMPTY_INVENTORY_EXAMPLE.items()
+        if name in fields
+    }
+    if set(example) != fields:
+        return {}
+    try:
+        schema.model_validate(example)
+    except ValidationError:
+        return {}
+    return example
+
+
+def _json_mode_field_contract(schema: type[AnalystDecision]) -> str:
+    """System-prompt text carrying the AnalystDecision contract into json_mode.
+
+    ``json_object`` mode embeds no schema, so the model receives the exact
+    field names, the empty-inventory example, and the inventory constraint
+    here instead. The text is appended to the prompt BEFORE the semantic input
+    hash, so the hash covers exactly what the provider receives.
+    """
+    example = _empty_inventory_example(schema)
+    if not example:
+        return ""
+    nested = "\n".join(
+        "  - `{label}` items use exactly these fields: {fields}".format(
+            label=label, fields=", ".join(model.model_fields)
+        )
+        for label, model in _NESTED_DECISION_MODELS
+    )
+    return (
+        "\n\n## JSON output contract for this call\n"
+        "This call uses JSON object mode, so no schema is transmitted with the "
+        "request. Emit exactly these field names (no additions, no renames, no "
+        "extra wrapper object):\n"
+        "```json\n"
+        + json.dumps(example, indent=2)
+        + "\n```\n"
+        "Nested records must use exactly these fields:\n"
+        + nested
+        + "\n\nHard constraints for this call:\n"
+        "- Only evidence IDs listed in the evidence inventory may appear in "
+        "`evidence_decisions[].evidence_id`, "
+        "`candidate_hypotheses[].supporting_evidence_ids`, or "
+        "`candidate_hypotheses[].contradicting_evidence_ids`.\n"
+        "- If the evidence inventory is empty, `evidence_decisions` MUST be "
+        "`[]` and `research_decision` MUST be `\"ABSTAIN\"`; never cite an "
+        "ID that is not in the inventory.\n"
+        "- METADATA_ONLY coverage rows are NOT inventory: they are never "
+        "citable evidence and never a reason to emit a decision.\n"
+    )
+
+
+def _is_structured_output_parse_failure(exc: BaseException) -> bool:
+    """True for langchain's structured-output parse failure.
+
+    ``with_structured_output(schema, method="json_mode")`` parses with
+    ``PydanticOutputParser``, which raises ``OutputParserException`` when the
+    model returns valid JSON with the wrong fields. That is a structured-schema
+    failure, not a transport failure; it is matched by class/module name so the
+    agents package keeps no hard import dependency on langchain parse internals.
+    """
+    if isinstance(exc, ModelSchemaFailure):
+        return True
+    cls = type(exc)
+    if cls.__name__ != "OutputParserException":
+        return False
+    module = getattr(cls, "__module__", "") or ""
+    return module == "langchain_core.exceptions" or module.startswith(
+        "langchain_core."
+    )
 
 
 def _semantic_input_hash(
@@ -273,6 +392,9 @@ def evidence_analyst(
     schema_version = getattr(schema, "schema_version", "1.0")
     if hypothesis_policy_version is not None:
         schema_version = f"{schema_version}+hypothesis:{hypothesis_policy_version}"
+    # json_mode carries no schema, so the field contract is part of the prompt
+    # and is therefore covered by the semantic input hash below.
+    prompt = prompt + _json_mode_field_contract(schema)
     semantic_input_hash = _semantic_input_hash(
         prompt, rendered_messages, schema_version
     )
@@ -293,11 +415,28 @@ def evidence_analyst(
     # An admitted-but-broken surface fails closed at admission.
     structured_surface = _admit_structured_output_surface(llm, schema)
 
+    def _invoke_surface() -> Any:
+        """Call the admitted surface, typing parse failures for the retry.
+
+        A langchain ``OutputParserException`` is a structured-schema failure:
+        without this mapping it is not a ``ModelRoleCallError``, so the bounded
+        retry never fires and the executor terminalizes a generic SYSTEM_ERROR
+        instead of MODEL_SCHEMA_FAILURE. Unmapped provider errors (for example
+        an endpoint 400) still propagate unchanged and are never retried.
+        """
+        try:
+            if structured_surface is not None:
+                return structured_surface.invoke(dict_messages)
+            return _invoke_llm(llm, dict_messages)
+        except Exception as exc:
+            if _is_structured_output_parse_failure(exc):
+                raise ModelSchemaFailure(
+                    "unparseable structured output JSON"
+                ) from exc
+            raise
+
     def attempt() -> AnalystDecision:
-        if structured_surface is not None:
-            raw = structured_surface.invoke(dict_messages)
-        else:
-            raw = _invoke_llm(llm, dict_messages)
+        raw = _invoke_surface()
         decision = _parse_decision(raw, schema)
         _validate_hypothesis_policy(decision, hypothesis_policy_version)
         # Reference-integrity against the authoritative persisted inventory is
