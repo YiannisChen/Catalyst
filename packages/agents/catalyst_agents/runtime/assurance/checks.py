@@ -156,8 +156,16 @@ def run_structural_assurance(run_id: str, artifacts: dict[str, Any]) -> list[Ass
     )
 
     sections_ok = all(section in answer_upper for section in required_sections)
+
+    def _limitation_haystack(value: str) -> str:
+        # Writer markdown wrappers (``**bold**`` / ``__bold__``) must not
+        # fail-close a required limitation whose template text is present.
+        # Do not strip single underscores: reason codes keep them.
+        return value.replace("**", "").replace("__", "").lower()
+
+    haystack = _limitation_haystack(answer_text)
     limitations_ok = all(
-        limitation.lower() in answer_text.lower() for limitation in required_limitations
+        _limitation_haystack(limitation) in haystack for limitation in required_limitations
     )
     status_ok = emitted_status == validated_status and emitted_type == validated_type
 

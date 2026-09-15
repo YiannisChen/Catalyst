@@ -387,6 +387,38 @@ def test_foundation_renderer_empty_included_emits_inventory_none():
     assert extra == ["metadata_only_identities=meta:a,meta:b"]
 
 
+def test_foundation_renderer_title_only_is_not_citable_inventory():
+    """TITLE_ONLY identities may be shown as non-citable info, never inventory=."""
+    from catalyst_agents.graph import _foundation_renderer
+
+    title = _payload_item(
+        "title:a",
+        content_state="TITLE_ONLY",
+        material_capability="LEAD_ONLY",
+        evidence_role="INDEPENDENT_REPORT",
+    )
+    draft = _draft_with_inventory(
+        "evidence_context_pack_v1",
+        inventory=(title,),
+        included=(),
+        excluded=("title:a",),
+    )
+    messages = _foundation_renderer(draft)
+    inventory_lines = [
+        message.content
+        for message in messages
+        if message.content.startswith("inventory=")
+    ]
+    assert inventory_lines == ["inventory=NONE"]
+    assert all("title:a" not in line for line in inventory_lines)
+    extra = [
+        message.content
+        for message in messages
+        if message.content.startswith("title_only_identities=")
+    ]
+    assert extra == ["title_only_identities=title:a"]
+
+
 # --- A5: observation builder behavior --------------------------------------
 
 

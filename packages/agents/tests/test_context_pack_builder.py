@@ -528,6 +528,33 @@ def test_metadata_only_marker_never_appears_in_draft_or_pack_bytes():
     )
 
 
+def test_title_only_never_included_as_citable_body():
+    """Live c05: TITLE_ONLY / LEAD_ONLY titles are not FULL_TEXT and must not
+    enter included_evidence_ids. Dispatching Analyst on a title-only pack
+    produced FOLLOW_UP + a corrective round and then failed assurance.
+    """
+    title = "TSLA stock has given up its prior gain."
+    state = _empty_state()
+    state = state.upsert(
+        _item(
+            "title",
+            source_class="reported_news",
+            evidence_role="INDEPENDENT_REPORT",
+            content_state="TITLE_ONLY",
+            material_capability="LEAD_ONLY",
+            excerpt=title,
+        )
+    )
+    draft = _draft(state)
+    assert "title" in draft.excluded_evidence_ids
+    assert "title" not in draft.included_evidence_ids
+    actions = {record.evidence_id: record.action for record in draft.truncation_metadata}
+    assert actions["title"] == "TITLE_ONLY"
+    inventory = {item.evidence_id: item for item in draft.evidence_inventory}
+    assert inventory["title"].excerpt_text is None
+    assert inventory["title"].content_state == "TITLE_ONLY"
+
+
 def test_metadata_only_not_in_any_role_array():
     state = _empty_state()
     state = state.upsert(

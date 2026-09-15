@@ -55,7 +55,7 @@ def test_thin_finalizer_refuses_non_assured_envelope() -> None:
     failing[0] = AssuranceCheck(
         check_name="stream_complete", status="fail", detail="incomplete", checked_at="2026-01-01T00:00:00Z"
     )
-    with pytest.raises(AssuranceFailed, match="ASSURANCE_FAILED"):
+    with pytest.raises(AssuranceFailed, match="failing_checks=stream_complete"):
         thin_finalizer(
             {"run_id": "run:1"},
             answer_text="provisional",

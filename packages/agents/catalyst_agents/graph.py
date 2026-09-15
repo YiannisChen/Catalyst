@@ -75,9 +75,10 @@ from catalyst_data.canonical.temporal import TemporalIdentity, utc_iso_z
 def _citable_inventory_line(draft: PackedContextDraft) -> str:
     """Citable inventory is ``included_evidence_ids`` only.
 
-    METADATA_ONLY / excluded rows may exist in ``evidence_inventory`` as
-    identity records, but they are not citable and must not be labeled
-    ``inventory=``. An empty citable set is explicit ``inventory=NONE``.
+    METADATA_ONLY / TITLE_ONLY / excluded rows may exist in
+    ``evidence_inventory`` as identity records, but they are not citable and
+    must not be labeled ``inventory=``. An empty citable set is explicit
+    ``inventory=NONE``.
     """
     if not draft.included_evidence_ids:
         return "inventory=NONE"
@@ -95,6 +96,19 @@ def _metadata_only_identities_line(draft: PackedContextDraft) -> str | None:
     if not ids:
         return None
     return "metadata_only_identities=" + ",".join(ids)
+
+
+def _title_only_identities_line(draft: PackedContextDraft) -> str | None:
+    """Non-citable TITLE_ONLY identities, never labeled as inventory."""
+    included = set(draft.included_evidence_ids)
+    ids = tuple(
+        item.evidence_id
+        for item in draft.evidence_inventory
+        if item.content_state == "TITLE_ONLY" and item.evidence_id not in included
+    )
+    if not ids:
+        return None
+    return "title_only_identities=" + ",".join(ids)
 
 
 def _foundation_renderer(draft: PackedContextDraft) -> tuple[RenderMessage, ...]:
@@ -122,6 +136,9 @@ def _foundation_renderer(draft: PackedContextDraft) -> tuple[RenderMessage, ...]
     extra = _metadata_only_identities_line(draft)
     if extra is not None:
         messages.append(RenderMessage(role="system", content=extra))
+    title_extra = _title_only_identities_line(draft)
+    if title_extra is not None:
+        messages.append(RenderMessage(role="system", content=title_extra))
     return tuple(messages)
 
 

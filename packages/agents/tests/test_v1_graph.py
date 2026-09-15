@@ -478,6 +478,43 @@ def test_v1_graph_metadata_only_empty_citable_inventory_skips_analyst() -> None:
     )
 
 
+def test_v1_graph_title_only_empty_citable_inventory_skips_analyst() -> None:
+    """Live c05 shape: retrieved rows are TITLE_ONLY (plus METADATA_ONLY), so
+    included_evidence_ids is empty, Analyst is not dispatched, and the run
+    completes ABSTAIN without a corrective round.
+    """
+    from dataclasses import replace
+
+    class TitleOnlyRetriever(GraphRetriever):
+        def _evidence(self, chunk_id: str, rank: int):
+            return replace(
+                super()._evidence(chunk_id, rank),
+                content_state="TITLE_ONLY",
+                material_capability="LEAD_ONLY",
+                content_text="TSLA stock has given up its prior gain.",
+            )
+
+    analyst = GraphAnalystProvider(_ready_decision)
+    writer = GraphWriterProvider(
+        "OBSERVED_MOVE\nAAPL +9.5%.\nLIMITATIONS\nNo causal explanation was established from the available evidence."
+    )
+    kwargs = _graph_kwargs(analyst=analyst, writer=writer)
+    kwargs["retriever"] = TitleOnlyRetriever()
+    result = run_v1_graph(**kwargs)
+    assert analyst.calls == 0
+    assert writer.calls == 1
+    assert result.analyst_logical_calls == 0
+    assert result.analyst_provider_attempts == 0
+    assert result.corrective_rounds == 0
+    assert result.context_pack.included_evidence_ids == ()
+    assert all(
+        item.content_state == "TITLE_ONLY"
+        for item in result.context_pack.evidence_inventory
+    )
+    assert result.terminal_envelope["final_status"] == "ABSTAIN"
+    assert result.terminal_envelope["assured"] is True
+
+
 def test_v1_graph_state_is_thin() -> None:
     analyst = GraphAnalystProvider(_ready_decision)
     writer = GraphWriterProvider(_writer_text_factory())

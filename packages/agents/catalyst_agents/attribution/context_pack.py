@@ -138,6 +138,7 @@ class TruncationRecord(BaseModel):
         "INCLUDED_FULL",
         "INCLUDED_TRUNCATED",
         "METADATA_ONLY",
+        "TITLE_ONLY",
         "EXCLUDED_DUPLICATE",
         "EXCLUDED_BUDGET",
         "EXCLUDED_INELIGIBLE",

@@ -335,3 +335,44 @@ def test_structural_assurance_accepts_writer_role_bracket_abstain_answer() -> No
     failed = {check.check_name: check.detail for check in checks if check.status == "fail"}
     assert failed == {}, failed
     assert all(check.status == "pass" for check in checks)
+
+
+def test_structural_assurance_accepts_markdown_bolded_required_limitations() -> None:
+    """Live e93b3cfc c05: Writer bolded limitation labels
+    (``**Coverage gap:**``) so exact substring matching failed. Markdown
+    wrappers around the template text must not fail required_limitations.
+    """
+    from catalyst_agents.graph import extract_answer_markers
+    from catalyst_agents.runtime.assurance.checks import derive_answer_output_hash
+
+    required = (
+        "Unresolved material conflict remains between evidence items.",
+        "Coverage gap: MISSING_PRIMARY_CONFIRMATION for COMPANY_PRIMARY.",
+    )
+    answer_text = (
+        "## OBSERVED_MOVE\nTSLA declined 14.52% on 2026-07-23.\n\n"
+        "## LIMITATIONS\n"
+        "- **Unresolved material conflict** remains between evidence items. "
+        "(claim_id: claim:conflict)\n"
+        "- **Coverage gap:** MISSING_PRIMARY_CONFIRMATION for COMPANY_PRIMARY. "
+        "(claim_id: claim:gap)\n"
+    )
+    citations, claims = extract_answer_markers(answer_text)
+    artifacts = _artifacts(
+        answer_text=answer_text,
+        answer_text_sha256=derive_answer_output_hash(answer_text),
+        output_hash=derive_answer_output_hash(answer_text),
+        emitted_citations=citations,
+        emitted_claim_markers=claims,
+        permitted_claim_ids=("claim:conflict", "claim:gap"),
+        permitted_evidence_ids=(),
+        required_sections=("OBSERVED_MOVE", "LIMITATIONS"),
+        required_limitations=required,
+        emitted_status="ABSTAIN",
+        emitted_attribution_type="EVIDENCE_BACKED_CAUSAL",
+        validated_status="ABSTAIN",
+        validated_attribution_type="EVIDENCE_BACKED_CAUSAL",
+    )
+    checks = run_structural_assurance("run:c05b", artifacts)
+    failed = {check.check_name for check in checks if check.status == "fail"}
+    assert "required_limitations" not in failed, failed
