@@ -994,10 +994,21 @@ def test_json_mode_contract_text_names_the_decision_fields_and_example() -> None
     text = _json_mode_field_contract(AnalystDecision)
     assert "evidence_decisions" in text
     assert "disposition" in text
-    assert "METADATA_ONLY" in text
     assert json.dumps(_empty_inventory_example_dict(), indent=2) in text
     for name in AnalystDecision.model_fields:
         assert name in text
+
+
+def test_inventory_constraint_text_states_the_pack_inventory_rules() -> None:
+    """No JSON schema can express "only IDs in the pack inventory are citable",
+    so these rules are prompt text on every structured-output method."""
+    from catalyst_agents.nodes.evidence_analyst import _inventory_constraint_text
+
+    text = _inventory_constraint_text()
+    assert "evidence inventory" in text
+    assert "METADATA_ONLY" in text
+    assert "evidence_decisions" in text and "MUST be" in text
+    assert "ABSTAIN" in text
 
 
 def test_json_mode_contract_is_appended_to_the_system_prompt_before_hashing() -> None:
@@ -1297,17 +1308,37 @@ def test_function_calling_declared_method_is_forwarded_to_the_factory() -> None:
     assert result["analyst_logical_calls"] == 1
 
 
-def test_function_calling_prompt_does_not_restate_the_json_mode_contract() -> None:
-    """The schema is enforced by tools[] on this path, so the prompt must not
-    claim a schema-less json_object call: the system message stays the caller
-    prompt."""
+def test_function_calling_prompt_carries_no_field_contract_only_inventory_rules() -> None:
+    """The schema travels in tools[] on this path, so the prompt must not claim
+    a schema-less json_object call nor restate the field example. The evidence
+    inventory rules stay: no JSON schema can constrain pack membership."""
     store = InMemoryPackStore()
     _persist_pair(store)
     llm = MethodAwareAnalystProvider(_valid_decision_dict, method="function_calling")
     bare_prompt = "You are the Evidence Analyst. Emit the strict schema."
     evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
 
-    assert llm.captured_messages[0][0]["content"] == bare_prompt
+    content = llm.captured_messages[0][0]["content"]
+    assert content.startswith(bare_prompt)
+    assert "no schema is transmitted" not in content
+    assert json.dumps(_empty_inventory_example_dict(), indent=2) not in content
+    assert "METADATA_ONLY" in content
+
+
+def test_inventory_rules_are_injected_for_every_structured_output_method() -> None:
+    """The live c01 run proved it: the model cited a METADATA_ONLY coverage row
+    as evidence because the pack-inventory rules had been dropped from the
+    prompt. They must reach the provider whatever the declared method is."""
+    for method in ("json_mode", "function_calling"):
+        store = InMemoryPackStore()
+        _persist_pair(store)
+        llm = MethodAwareAnalystProvider(_valid_decision_dict, method=method)
+        evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+
+        content = llm.captured_messages[0][0]["content"]
+        assert "Only evidence IDs listed in the evidence inventory" in content
+        assert "METADATA_ONLY coverage rows are NOT inventory" in content
+        assert "evidence_decisions` MUST be" in content
 
 
 def test_tool_argument_validation_error_becomes_typed_schema_failure() -> None:

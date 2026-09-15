@@ -125,12 +125,15 @@ def _empty_inventory_example(schema: type[AnalystDecision]) -> dict[str, Any]:
 
 
 def _json_mode_field_contract(schema: type[AnalystDecision]) -> str:
-    """System-prompt text carrying the AnalystDecision contract into json_mode.
+    """System-prompt text carrying the AnalystDecision *field shape* into json_mode.
 
     ``json_object`` mode embeds no schema, so the model receives the exact
-    field names, the empty-inventory example, and the inventory constraint
-    here instead. The text is appended to the prompt BEFORE the semantic input
-    hash, so the hash covers exactly what the provider receives.
+    field names and the empty-inventory example here instead. The text is
+    appended to the prompt BEFORE the semantic input hash, so the hash covers
+    exactly what the provider receives. Under ``function_calling`` the schema
+    travels in ``tools[]`` and this text is documentation only: it is not
+    injected, because its own preamble ("no schema is transmitted") would be
+    false on that request.
     """
     example = _empty_inventory_example(schema)
     if not example:
@@ -151,7 +154,22 @@ def _json_mode_field_contract(schema: type[AnalystDecision]) -> str:
         + "\n```\n"
         "Nested records must use exactly these fields:\n"
         + nested
-        + "\n\nHard constraints for this call:\n"
+    )
+
+
+def _inventory_constraint_text() -> str:
+    """System-prompt text carrying the pack-inventory rules into every call.
+
+    No JSON schema can express "only evidence IDs present in the pack
+    inventory are citable", so these rules are prompt text on every
+    structured-output method — the transmitted tool schema constrains field
+    names and enum values, not pack membership. The live 2026-09-15 c01 run is
+    the evidence: with the rules dropped from the prompt the model cited a
+    METADATA_ONLY coverage row as evidence and the run failed
+    reference-integrity validation.
+    """
+    return (
+        "\n\n## Evidence inventory rules for this call\n"
         "- Only evidence IDs listed in the evidence inventory may appear in "
         "`evidence_decisions[].evidence_id`, "
         "`candidate_hypotheses[].supporting_evidence_ids`, or "
@@ -453,17 +471,20 @@ def evidence_analyst(
     if hypothesis_policy_version is not None:
         schema_version = f"{schema_version}+hypothesis:{hypothesis_policy_version}"
     # The declared structured-output method decides how the AnalystDecision
-    # contract reaches the provider. ``json_mode`` sends
+    # *shape* reaches the provider. ``json_mode`` sends
     # ``response_format: json_object``, which carries no schema, so the field
     # contract (documented by ``_json_mode_field_contract``) is appended to the
     # prompt and covered by the semantic input hash below. Under
     # ``function_calling`` the schema travels in ``tools[]`` with a forced
-    # ``tool_choice``: the prompt text would then be redundant and, because it
-    # states the call is schema-less, inaccurate — so it is not injected and
-    # the tool schema is the constraint mechanism.
+    # ``tool_choice``, so the field contract is not injected and the tool schema
+    # is the shape mechanism.
+    #
+    # The pack-inventory rules are NOT a shape mechanism: no JSON schema can
+    # constrain pack membership, so they are appended on every method.
     declared_method = provider_capability_for(llm).structured_output_method
     if declared_method == "json_mode":
         prompt = prompt + _json_mode_field_contract(schema)
+    prompt = prompt + _inventory_constraint_text()
     semantic_input_hash = _semantic_input_hash(
         prompt, rendered_messages, schema_version
     )
