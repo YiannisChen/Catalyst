@@ -758,3 +758,89 @@ def test_fallback_invoke_path_used_when_no_native_surface() -> None:
     result = evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
     assert llm.calls == 1
     assert result["analyst_logical_calls"] == 1
+
+
+# ---------------------------------------------------------------------------
+# DeepSeek structured-output method admission (json_object via langchain
+# json_mode). The declared method travels in the capability metadata.
+# ---------------------------------------------------------------------------
+
+
+def test_declared_structured_output_method_is_forwarded_to_the_factory() -> None:
+    """A provider that declares ``structured_output_method`` must have that
+    method forwarded to ``with_structured_output``; the schema stays the
+    positional argument."""
+    store = InMemoryPackStore()
+    _persist_pair(store)
+    captured: dict = {}
+
+    class MethodAwareProvider(FakeAnalystProvider):
+        def __init__(self, decision_factory):
+            super().__init__(decision_factory)
+            self.capability_metadata = dict(
+                self.capability_metadata, structured_output_method="json_mode"
+            )
+
+        def with_structured_output(self, schema, method=None):
+            captured["schema"] = schema
+            captured["method"] = method
+            outer = self
+
+            class Surface:
+                def invoke(self, messages):
+                    outer.calls += 1
+                    return outer.decision_factory()
+
+            return Surface()
+
+    llm = MethodAwareProvider(_valid_decision_dict)
+    result = evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert captured["method"] == "json_mode"
+    assert captured["schema"] is AnalystDecision
+    assert result["analyst_provider_attempts"] == 1
+    assert result["analyst_logical_calls"] == 1
+
+
+def test_provider_without_declared_method_keeps_schema_only_factory() -> None:
+    """Fakes and providers whose factory only accepts ``schema`` keep working:
+    no method keyword is passed when the metadata declares none."""
+    store = InMemoryPackStore()
+    _persist_pair(store)
+
+    class SchemaOnlyProvider(FakeAnalystProvider):
+        def with_structured_output(self, schema):  # no method kwarg at all
+            outer = self
+
+            class Surface:
+                def invoke(self, messages):
+                    outer.calls += 1
+                    return outer.decision_factory()
+
+            return Surface()
+
+    llm = SchemaOnlyProvider(_valid_decision_dict)
+    result = evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert result["analyst_provider_attempts"] == 1
+    assert result["analyst_logical_calls"] == 1
+
+
+def test_declared_method_rejected_by_factory_fails_closed() -> None:
+    """A declared method the factory cannot accept is a typed capability
+    failure, never a silent method-less fallback."""
+    store = InMemoryPackStore()
+    _persist_pair(store)
+
+    class LyingMethodProvider(FakeAnalystProvider):
+        def __init__(self, decision_factory):
+            super().__init__(decision_factory)
+            self.capability_metadata = dict(
+                self.capability_metadata, structured_output_method="json_mode"
+            )
+
+        def with_structured_output(self, schema):
+            return None
+
+    llm = LyingMethodProvider(_valid_decision_dict)
+    with pytest.raises(ProviderCapabilityError):
+        evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert llm.calls == 0

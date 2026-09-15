@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 
 from retrieval_model_fixtures import RecordingReranker, make_result, make_results
@@ -211,8 +212,8 @@ class _CountingGate:
         self._inner = RerankerGate()
         self.worker_starts = 0
 
-    def acquire(self, *, target, name):
-        worker = self._inner.acquire(target=target, name=name)
+    def acquire(self, *, target, name, deadline=None):
+        worker = self._inner.acquire(target=target, name=name, deadline=deadline)
         if worker is not None:
             self.worker_starts += 1
         return worker
@@ -254,4 +255,121 @@ def test_reranker_gate_acquire_race_is_closed():
     assert first is not None
     assert second is None
     first.join()
+    assert gate.live_worker_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Bounded wait: the gate waits for the live worker inside the caller's own
+# budget instead of answering busy on first contact.
+# ---------------------------------------------------------------------------
+
+
+class _ConcurrencyRecordingReranker:
+    """Records the maximum number of simultaneously running inferences."""
+
+    def __init__(self, seconds: float):
+        self.seconds = seconds
+        self.live = 0
+        self.max_live = 0
+        self.lock = threading.Lock()
+
+    def score(self, query, candidates):
+        with self.lock:
+            self.live += 1
+            self.max_live = max(self.max_live, self.live)
+        try:
+            time.sleep(self.seconds)
+            return [1.0 for _ in candidates]
+        finally:
+            with self.lock:
+                self.live -= 1
+
+
+def test_reranker_gate_waits_for_live_worker_within_its_own_budget():
+    """A request that arrives while one inference is live waits for it and is
+    then served normally inside its own (unchanged) timeout budget."""
+    from catalyst_data.retrieval.reranker import RerankerGate, rerank
+
+    class SlowReranker:
+        def score(self, query, candidates):
+            time.sleep(0.15)
+            return [1.0 for _ in candidates]
+
+    gate = RerankerGate()
+    first = rerank(
+        query="first", candidates=make_results(2), reranker=SlowReranker(),
+        timeout_seconds=0.02, gate=gate,
+    )
+    assert first.degradation_reasons == ("reranker_timeout",)
+
+    second = rerank(
+        query="second", candidates=make_results(2), reranker=SlowReranker(),
+        timeout_seconds=1.0, gate=gate,
+    )
+    assert second.is_degraded is False
+    assert "reranker_busy" not in second.degradation_reasons
+    assert second.mode_served == "reranked"
+    assert len(second.results) == 2
+
+
+def test_reranker_gate_reports_busy_only_after_wait_budget_exhausted():
+    """Busy is the last resort: the caller first waits out its whole budget
+    and never starts a second live inference."""
+    from catalyst_data.retrieval.reranker import rerank
+
+    class SlowReranker:
+        def score(self, query, candidates):
+            time.sleep(0.2)
+            return [1.0 for _ in candidates]
+
+    gate = _CountingGate()
+    timed_out = rerank(
+        query="first", candidates=make_results(2), reranker=SlowReranker(),
+        timeout_seconds=0.01, gate=gate,
+    )
+    assert timed_out.degradation_reasons == ("reranker_timeout",)
+
+    started = time.monotonic()
+    busy = rerank(
+        query="second", candidates=make_results(2), reranker=SlowReranker(),
+        timeout_seconds=0.08, gate=gate,
+    )
+    waited = time.monotonic() - started
+    assert busy.degradation_reasons == ("reranker_busy",)
+    assert busy.mode_served == "hybrid"
+    assert waited >= 0.05, f"busy returned without waiting its budget: {waited:.3f}s"
+    assert gate.worker_starts == 1
+    assert gate.live_worker_count == 1
+
+
+def test_concurrent_rerank_keeps_single_live_inference_and_serves_both():
+    """Two concurrent requests must be served reranked: one live inference at
+    a time, the second waiting for it inside the same 2.0s-style budget."""
+    from catalyst_data.retrieval.reranker import RerankerGate, rerank
+
+    gate = RerankerGate()
+    reranker = _ConcurrencyRecordingReranker(0.12)
+    results: list = [None, None]
+    barrier = threading.Barrier(2)
+
+    def worker(index: int) -> None:
+        barrier.wait(timeout=5)
+        results[index] = rerank(
+            query=f"q{index}", candidates=make_results(4), reranker=reranker,
+            timeout_seconds=2.0, gate=gate,
+        )
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert reranker.max_live == 1
+    for result in results:
+        assert result is not None
+        assert result.is_degraded is False
+        assert result.degradation_reasons == ()
+        assert result.mode_served == "reranked"
+        assert len(result.results) == 4
     assert gate.live_worker_count == 0

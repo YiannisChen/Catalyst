@@ -1208,8 +1208,8 @@ def test_four_arm_timeout_never_starts_second_reranker_worker(tmp_path, monkeypa
     started_workers: list = []
     original_acquire = RerankerGate.acquire
 
-    def spy_acquire(self, *, target, name):
-        worker = original_acquire(self, target=target, name=name)
+    def spy_acquire(self, *, target, name, deadline=None):
+        worker = original_acquire(self, target=target, name=name, deadline=deadline)
         started_workers.append(worker)
         return worker
 

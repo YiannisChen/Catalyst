@@ -26,13 +26,22 @@ CAPABILITY_REVISION = "v1.1-capability-1"
 
 @dataclass(frozen=True)
 class ProviderCapability:
-    """Declared V1.1 provider capability surface (Final TSD §15)."""
+    """Declared V1.1 provider capability surface (Final TSD §15).
+
+    ``structured_output_method`` optionally names the LangChain
+    ``with_structured_output`` method the endpoint accepts. OpenAI-compatible
+    endpoints that reject ``response_format: json_schema`` (for example
+    DeepSeek, which documents ``json_object``) declare ``"json_mode"`` so the
+    Analyst admission can steer the request instead of sending an unsupported
+    shape. ``None`` keeps the provider default (function-calling/json-schema).
+    """
 
     supports_structured_output: bool
     supports_true_streaming: bool
     declares_token_accounting: bool
     normalizes_timeout_errors: bool
     capability_revision: str
+    structured_output_method: str | None = None
 
 
 class ProviderCapabilityError(RuntimeError):
@@ -322,6 +331,7 @@ def provider_capability_for(llm: Any) -> ProviderCapability:
         ),
         normalizes_timeout_errors=hasattr(llm, "request_timeout"),
         capability_revision=CAPABILITY_REVISION,
+        structured_output_method=None,
     )
 
 

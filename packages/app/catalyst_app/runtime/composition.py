@@ -68,6 +68,7 @@ from catalyst_app.persistence.events import (
     TerminalRunError,
     payload_sha256,
 )
+from catalyst_app.public_text import validate_safe_public_text
 from catalyst_app.runtime.admission import (
     AdmissionController,
     AdmissionRequest,
@@ -1314,8 +1315,12 @@ def build_runtime_composition(
             RunLifecycleStatus.CANCELLED,
         }
 
-    def failure_handler(run_id: str, code: str) -> None:
-        _default_failure_handler(events, claimer)(run_id, code)
+    terminal_failure_handler = _default_failure_handler(events, claimer)
+
+    def failure_handler(
+        run_id: str, code: str, exc: BaseException | None = None
+    ) -> None:
+        terminal_failure_handler(run_id, code, exc)
 
     adapter = run_adapter or ProductionRunAdapter(
         db_path=path,
@@ -1360,10 +1365,39 @@ def build_runtime_composition(
     )
 
 
+def _sanitized_failure_message(exc: BaseException | None) -> str | None:
+    """Public diagnostic text for a crashed run: ``ExceptionType: first line``.
+
+    Fail-closed sanitization: the candidate must pass
+    ``validate_safe_public_text`` (bounded length, no secret/raw-provider
+    patterns). When it does not, the exception type alone is persisted as the
+    typed code; when even that is unusable the generic executor code is used.
+    No key, header, or raw provider body can reach the durable public field.
+    """
+    if exc is None:
+        return None
+    type_name = type(exc).__name__ or "Exception"
+    first_line = " ".join((str(exc).splitlines() or [""])[0].split())
+    candidates = []
+    if first_line:
+        candidates.append(f"{type_name}: {first_line[:240]}")
+    candidates.append(type_name)
+    candidates.append("EXECUTOR_FAILURE")
+    for candidate in candidates:
+        try:
+            validate_safe_public_text(candidate)
+        except ValueError:
+            continue
+        return candidate
+    return None
+
+
 def _default_failure_handler(events: EventRepository, claimer: RunClaimer):
     """Terminalize a run as FAILED when the adapter crashes mid-run."""
 
-    def handler(run_id: str, code: str) -> None:
+    def handler(
+        run_id: str, code: str, exc: BaseException | None = None
+    ) -> None:
         lifecycle = claimer.current_lifecycle(run_id)
         if lifecycle is None or lifecycle not in (
             RunLifecycleStatus.ACCEPTED,
@@ -1381,6 +1415,7 @@ def _default_failure_handler(events: EventRepository, claimer: RunClaimer):
                 failure_code=code,
                 stage="EXECUTION",
                 retryable=True,
+                safe_message=_sanitized_failure_message(exc),
             ),
             lifecycle_update=(lifecycle, RunLifecycleStatus.FAILED),
         )

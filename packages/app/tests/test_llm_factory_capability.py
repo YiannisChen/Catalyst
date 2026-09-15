@@ -219,3 +219,34 @@ def test_build_v1_llm_omits_fixed_timeout_when_not_supplied() -> None:
         )
     kwargs = chat_openai.call_args.kwargs
     assert kwargs.get("timeout") != 90
+
+
+def test_build_v1_llm_declares_json_mode_structured_output_for_deepseek() -> None:
+    """DeepSeek's OpenAI-compatible surface rejects response_format
+    json_schema; the client must declare the json_object (langchain
+    ``json_mode``) method so the analyst admission can steer to it."""
+    client = build_v1_llm(
+        "deepseek-flash",
+        provider="deepseek",
+        api_key="sk-test-key-123",
+        base_url="https://example.invalid/v1",
+    )
+    metadata = client.capability_metadata
+    assert metadata["structured_output_method"] == "json_mode"
+    assert metadata["structured_output_method"] != "json_object"
+    assert metadata["supports_structured_output"] is True
+    # the metadata must stay admissible through the capability contract
+    capability = require_capabilities(client, REQUIRED)
+    assert capability.structured_output_method == "json_mode"
+
+
+def test_build_v1_llm_declares_no_structured_output_method_for_other_providers() -> None:
+    client = build_v1_llm(
+        "provider-specific-model",
+        provider="custom_openai_compatible",
+        api_key="sk-test-key-123",
+        base_url="https://example.invalid/v1",
+    )
+    assert client.capability_metadata.get("structured_output_method") is None
+    capability = require_capabilities(client, REQUIRED)
+    assert capability.structured_output_method is None

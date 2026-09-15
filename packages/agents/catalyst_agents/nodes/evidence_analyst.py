@@ -39,6 +39,7 @@ from catalyst_agents.runtime.provider_capability import (
     TechnicalRetryExhausted,
     invoke_with_bounded_retry,
     extract_provider_usage,
+    provider_capability_for,
     require_capabilities,
 )
 
@@ -157,18 +158,27 @@ def render_messages_to_dicts(messages: tuple[RenderMessage, ...]) -> list[dict]:
 def _admit_structured_output_surface(llm: Any, schema: type[AnalystDecision]) -> Any | None:
     """Admit the provider's native structured-output surface, fail closed.
 
-    ``with_structured_output(schema)`` is a factory, not a model call. If the
-    provider does not expose it, None is returned and the strict invoke+parse
-    fallback is used (fake-provider testability). If the provider ADMITS the
-    surface but the factory raises or returns an unusable surface, this fails
-    closed with a typed ProviderCapabilityError — never a silent raw-invoke
-    fallback.
+    ``with_structured_output(schema[, method])`` is a factory, not a model
+    call. If the provider does not expose it, None is returned and the strict
+    invoke+parse fallback is used (fake-provider testability). When the
+    admitted capability metadata declares ``structured_output_method`` the
+    method is forwarded so an endpoint that rejects ``json_schema`` receives
+    the supported shape (DeepSeek -> ``json_mode``/``json_object``); factories
+    that only accept ``schema`` are unaffected because no method is declared.
+    If the provider ADMITS the surface but the factory raises or returns an
+    unusable surface, this fails closed with a typed ProviderCapabilityError —
+    never a silent raw-invoke or method-less fallback.
     """
     with_structured = getattr(llm, "with_structured_output", None)
     if not callable(with_structured):
         return None
+    method = provider_capability_for(llm).structured_output_method
     try:
-        surface = with_structured(schema)
+        surface = (
+            with_structured(schema, method=method)
+            if method
+            else with_structured(schema)
+        )
     except Exception as exc:
         raise ProviderCapabilityError(
             provider=type(llm).__name__,

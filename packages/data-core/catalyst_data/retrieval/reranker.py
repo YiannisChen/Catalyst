@@ -3,43 +3,83 @@ single-flight gate (B6-L Finding 5).
 
 A timed-out daemon inference is still running on the GPU, so a new request must
 never start another inference while one is outstanding. ``RerankerGate``
-enforces at most one live worker; requests that cannot acquire the gate fall
-back to hybrid with a typed ``reranker_busy`` reason and recovery is automatic
-once the background task finishes.
+enforces at most one live worker. A request that finds a live worker waits for
+it inside its own (unchanged) budget before answering: the gate returns ``None``
+— the typed ``reranker_busy`` fallback — only once that wait budget is
+exhausted, and recovery stays automatic once the background task finishes.
 """
 
 from __future__ import annotations
 
 import queue
 import threading
+import time
 from typing import Callable, Iterable
 
 from .result import RetrievalResult, RetrievalResultSet
+
+# Poll granularity while waiting for the single live inference to finish.
+DEFAULT_GATE_POLL_SECONDS = 0.002
 
 
 class RerankerGate:
     """Single-flight gate: at most one outstanding reranker inference."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, poll_interval_seconds: float = DEFAULT_GATE_POLL_SECONDS) -> None:
+        if poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be positive")
         self._lock = threading.Lock()
         self._worker: threading.Thread | None = None
+        self._poll_interval_seconds = poll_interval_seconds
 
-    def acquire(self, *, target: Callable[[], None], name: str) -> threading.Thread | None:
-        """Return a running worker only when no live worker exists.
+    def _start_if_idle_locked(
+        self, target: Callable[[], None], name: str
+    ) -> threading.Thread | None:
+        """Start one worker under the gate lock, or return ``None`` if busy.
 
-        The thread is started while the gate lock is held so there is no
+        The thread is started while the lock is held so there is no
         acquire/start race: a concurrent request can never observe an
-        unstarted worker as free. Returns ``None`` when the previous
-        timed-out inference is still running, so the caller falls back
-        without starting a new GPU task.
+        unstarted worker as free.
+        """
+        if self._worker is not None and self._worker.is_alive():
+            return None
+        worker = threading.Thread(target=target, name=name, daemon=True)
+        self._worker = worker
+        worker.start()
+        return worker
+
+    def acquire(
+        self,
+        *,
+        target: Callable[[], None],
+        name: str,
+        deadline: float | None = None,
+    ) -> threading.Thread | None:
+        """Return a running worker, waiting for the live one when allowed.
+
+        ``deadline`` is a ``time.monotonic()`` instant supplied by the caller
+        from its existing budget. While a worker is live the gate polls until
+        that worker finishes and then starts this request's worker, so a short
+        contention window no longer degrades a healthy call. ``None`` is
+        returned only when the wait budget is exhausted (or when no deadline
+        was supplied, preserving the immediate-busy contract for direct
+        callers). At most one inference is ever live.
         """
         with self._lock:
-            if self._worker is not None and self._worker.is_alive():
-                return None
-            worker = threading.Thread(target=target, name=name, daemon=True)
-            self._worker = worker
-            worker.start()
+            worker = self._start_if_idle_locked(target, name)
+        if worker is not None:
             return worker
+        if deadline is None:
+            return None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            time.sleep(min(self._poll_interval_seconds, remaining))
+            with self._lock:
+                worker = self._start_if_idle_locked(target, name)
+            if worker is not None:
+                return worker
 
     @property
     def live_worker_count(self) -> int:
@@ -98,7 +138,9 @@ def _scores_with_timeout_and_gate(
     """Score under the single-flight gate with typed degradation reasons.
 
     Returns ``(scores, None)`` on success and ``(None, reason)`` on
-    ``reranker_busy`` / ``reranker_timeout`` / ``reranker_error``.
+    ``reranker_busy`` / ``reranker_timeout`` / ``reranker_error``. ``busy``
+    means the single-flight wait budget was exhausted, not that another
+    inference merely happened to be live.
     """
     if timeout_seconds is None:
         return _scores(reranker, query, candidates, content_lookup), None
@@ -112,10 +154,14 @@ def _scores_with_timeout_and_gate(
         except BaseException as exc:
             completed.put((None, exc))
 
-    worker = gate.acquire(target=worker_fn, name="catalyst-reranker")
+    # The caller's existing timeout budget covers the wait for a live worker
+    # *and* this request's own inference: the gate may only answer busy once
+    # that whole budget is spent, never on first contact.
+    deadline = time.monotonic() + timeout_seconds
+    worker = gate.acquire(target=worker_fn, name="catalyst-reranker", deadline=deadline)
     if worker is None:
         return None, "reranker_busy"
-    worker.join(timeout_seconds)
+    worker.join(max(0.0, deadline - time.monotonic()))
     if worker.is_alive():
         return None, "reranker_timeout"
     scores, error = completed.get_nowait()

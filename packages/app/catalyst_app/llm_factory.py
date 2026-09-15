@@ -31,6 +31,12 @@ SUPPORTED_MODELS: list[str] = [
 DEFAULT_MODEL: str = "gemini-2.5-flash-nothink"
 V1_MAX_OUTPUT_TOKENS: int = 2_000
 
+# Endpoints that reject ``response_format: json_schema`` need the LangChain
+# method that emits ``response_format: {"type": "json_object"}``.
+_PROVIDER_STRUCTURED_OUTPUT_METHODS: dict[str, str] = {
+    "deepseek": "json_mode",
+}
+
 _PROVIDER_DEFAULTS: dict[str, str] = {
     "openai": "https://api.openai.com/v1",
     "aihubmix": "https://aihubmix.com/v1",
@@ -179,6 +185,12 @@ def build_v1_llm(
             "declares_token_accounting": True,
             "normalizes_timeout_errors": True,
             "capability_revision": "v1.1-capability-1",
+            # DeepSeek's OpenAI-compatible surface documents response_format
+            # json_object|text only, so the analyst admission must not send
+            # the OpenAI json_schema shape.
+            "structured_output_method": _PROVIDER_STRUCTURED_OUTPUT_METHODS.get(
+                provider
+            ),
         },
     )
     return client
