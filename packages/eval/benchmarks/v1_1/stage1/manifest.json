@@ -1,0 +1,171 @@
+{
+  "a3_eligible_ids": [],
+  "a4_readiness_eligible_ids": [],
+  "adjudication_state": "resolved",
+  "approval_authority": "q011-ann-primary-001",
+  "approved_at": "2026-09-11T08:05:20Z",
+  "case_count": 12,
+  "case_list_sha256": "9ef46e85f736cf92d0196b7742fdfc31dda91dd0b5b634b5ca938a74fba28ce5",
+  "dataset_content_sha256": "65c124403af33f262065685e1e19a3d1a583e822bacd5f82817dad69e9a43c9a",
+  "dataset_id": "v1_1_stage1_q011",
+  "dataset_version": "1.1.0",
+  "ordered_case_ids": [
+    "c01",
+    "c02",
+    "c03",
+    "c04",
+    "c05",
+    "c06",
+    "c07",
+    "c08",
+    "c09",
+    "c10",
+    "c11",
+    "c12"
+  ],
+  "reviewer_ids": [
+    "q011-ann-primary-001"
+  ],
+  "schema_version": "v1_1_benchmark_dataset_manifest_v1",
+  "second_pass_case_ids": [
+    "c01",
+    "c03",
+    "c04",
+    "c09",
+    "c10",
+    "c11",
+    "c12"
+  ],
+  "stratification": {
+    "per_case": {
+      "c01": {
+        "challenge_family": "MACRO",
+        "coverage_limited": false,
+        "move_direction": "positive",
+        "news_content_state": "FULL_TEXT",
+        "parent_case_id": "c01",
+        "primary_evidence_kind": "FULL_TEXT_BODY"
+      },
+      "c02": {
+        "challenge_family": "COMPANY_SPECIFIC",
+        "coverage_limited": true,
+        "move_direction": "positive",
+        "news_content_state": "METADATA_ONLY",
+        "parent_case_id": "c02",
+        "primary_evidence_kind": "FULL_TEXT_BODY"
+      },
+      "c03": {
+        "challenge_family": "SECTOR",
+        "coverage_limited": true,
+        "move_direction": "positive",
+        "news_content_state": "METADATA_ONLY",
+        "parent_case_id": "c03",
+        "primary_evidence_kind": "NONE"
+      },
+      "c04": {
+        "challenge_family": "QUIET",
+        "coverage_limited": true,
+        "move_direction": "negative",
+        "news_content_state": "METADATA_ONLY",
+        "parent_case_id": "c04",
+        "primary_evidence_kind": "NONE"
+      },
+      "c05": {
+        "challenge_family": "COMPANY_SPECIFIC",
+        "coverage_limited": true,
+        "move_direction": "negative",
+        "news_content_state": "METADATA_ONLY",
+        "parent_case_id": "c05",
+        "primary_evidence_kind": "FULL_TEXT_BODY"
+      },
+      "c06": {
+        "challenge_family": "COMPANY_SPECIFIC",
+        "coverage_limited": true,
+        "move_direction": "positive",
+        "news_content_state": "METADATA_ONLY",
+        "parent_case_id": "c06",
+        "primary_evidence_kind": "FULL_TEXT_BODY"
+      },
+      "c07": {
+        "challenge_family": "COMPANY_SPECIFIC",
+        "coverage_limited": true,
+        "move_direction": "positive",
+        "news_content_state": "METADATA_ONLY",
+        "parent_case_id": "c07",
+        "primary_evidence_kind": "FULL_TEXT_BODY"
+      },
+      "c08": {
+        "challenge_family": "COMPANY_SPECIFIC",
+        "coverage_limited": true,
+        "move_direction": "positive",
+        "news_content_state": "METADATA_ONLY",
+        "parent_case_id": "c08",
+        "primary_evidence_kind": "FULL_TEXT_BODY"
+      },
+      "c09": {
+        "challenge_family": "COMPANY_SPECIFIC",
+        "coverage_limited": true,
+        "move_direction": "negative",
+        "news_content_state": "METADATA_ONLY",
+        "parent_case_id": "c09",
+        "primary_evidence_kind": "FULL_TEXT_BODY"
+      },
+      "c10": {
+        "challenge_family": "SECTOR",
+        "coverage_limited": true,
+        "move_direction": "negative",
+        "news_content_state": "METADATA_ONLY",
+        "parent_case_id": "c10",
+        "primary_evidence_kind": "FULL_TEXT_BODY"
+      },
+      "c11": {
+        "challenge_family": "COMPANY_SPECIFIC",
+        "coverage_limited": true,
+        "move_direction": "positive",
+        "news_content_state": "METADATA_ONLY",
+        "parent_case_id": "c11",
+        "primary_evidence_kind": "FULL_TEXT_BODY"
+      },
+      "c12": {
+        "challenge_family": "COMPANY_SPECIFIC",
+        "coverage_limited": true,
+        "move_direction": "positive",
+        "news_content_state": "METADATA_ONLY",
+        "parent_case_id": "c12",
+        "primary_evidence_kind": "NONE"
+      }
+    },
+    "schema_version": "v1_1_stage1_stratification_v1",
+    "strata": {
+      "cause_category": {
+        "company_specific": 9,
+        "macro": 2,
+        "sector": 2
+      },
+      "challenge_family": {
+        "COMPANY_SPECIFIC": 8,
+        "MACRO": 1,
+        "QUIET": 1,
+        "SECTOR": 2
+      },
+      "coverage": {
+        "coverage_limited": 11,
+        "full_text": 1
+      },
+      "move_direction": {
+        "negative": 4,
+        "positive": 8
+      },
+      "oracle_status": {
+        "ABSTAIN": 1,
+        "PARTIAL": 2,
+        "SUFFICIENT": 9
+      },
+      "primary_evidence": {
+        "EIGHT_K_SHELL": 0,
+        "direct_primary": 9,
+        "no_material": 3
+      }
+    }
+  }
+}
