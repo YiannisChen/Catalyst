@@ -36,7 +36,9 @@ class SQLiteContextProvider:
         cutoff: str,
         information_window_start_at: str | None = None,
     ) -> ContextInputs:
-        with sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True) as conn:
+        with sqlite3.connect(
+            f"file:{self.db_path}?mode=ro&immutable=1", uri=True
+        ) as conn:
             rows = conn.execute(
                 """
                 SELECT date, open, close, volume
@@ -81,7 +83,9 @@ class SQLiteContextProvider:
         if not self.major_series_ids:
             return False
         try:
-            with sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True) as conn:
+            with sqlite3.connect(
+                f"file:{self.db_path}?mode=ro&immutable=1", uri=True
+            ) as conn:
                 conn.execute("SELECT 1 FROM macro_observations LIMIT 1").fetchone()
         except sqlite3.Error:
             return False
@@ -98,7 +102,9 @@ class SQLiteContextProvider:
         if not self.major_series_ids:
             return ()
         try:
-            with sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True) as conn:
+            with sqlite3.connect(
+                f"file:{self.db_path}?mode=ro&immutable=1", uri=True
+            ) as conn:
                 if information_window_start_at is not None:
                     rows = conn.execute(
                         """SELECT series_id, released_at

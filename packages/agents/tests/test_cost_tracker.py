@@ -13,6 +13,10 @@ class Response:
     usage = Usage()
 
 
+class MissingUsageResponse:
+    pass
+
+
 def test_known_cost_estimate():
     est = CostEstimate(model_id="gpt-4o", tokens_prompt=1000, tokens_completion=200)
     assert est.cost_status == "known"
@@ -32,6 +36,20 @@ def test_unknown_cost_contaminates_run_aggregate():
     assert state["cost_breakdown"][0]["cost_usd"] is None
     assert state["cost_status"] == "unknown"
     assert state["total_cost_usd"] is None
+
+
+def test_missing_usage_is_unknown_not_zero():
+    state = {
+        "model_id": "gpt-4o", "cost_breakdown": [],
+        "total_cost_usd": 0.0, "total_tokens": 0,
+    }
+    track_cost(state, "streaming_writer", MissingUsageResponse())
+    row = state["cost_breakdown"][0]
+    assert row["input_tokens"] is None
+    assert row["output_tokens"] is None
+    assert row["cost_status"] == "unknown"
+    assert row["cost_usd"] is None
+    assert state["total_tokens"] is None
 
 
 def test_known_cost_keeps_known_aggregate():

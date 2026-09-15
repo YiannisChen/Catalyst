@@ -12,7 +12,7 @@ import json
 import math
 import re
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, overload
 
 import numpy as np
@@ -420,6 +420,133 @@ class HybridRetrievalResult:
     query_date_decision: str | None = None
 
 
+# -- pre-conversion retrieval observation (M7 Phase A corrective) -------------
+#
+# The V1.1 hit contract is deliberately lossy: only the served reranked stage
+# carries ranks, while the pre-rerank stages (lexical/dense/fusion) are written
+# as ``None``. Anything that needs the *observed* retrieval process (candidate
+# order, rank displacement, which stages really executed, why the reranker
+# degraded) must read it here, before the lossy conversion, and never infer it
+# from the converted hits.
+
+# Pre-rerank candidate ordering preference: the fusion order is the actual
+# candidate order handed to the reranker; single-arm fallbacks use the arm that
+# served, and this preference never invents a rank.
+_PRE_RERANK_ATTRS = ("fusion_rank", "lexical_rank", "dense_rank")
+
+
+@dataclass(frozen=True)
+class HybridRetrievalObservation:
+    """Observed facts for one production hybrid retrieval call.
+
+    Every field is derived from the retriever's own result objects: the
+    pre-rerank candidate order is the fused order handed to the reranker, the
+    final order is the reranker's own ordering, and the arm names are the
+    stages that actually executed. ``duplicate_drops`` stays ``None`` (typed
+    unavailable) because no retrieval contract exposes a post-dedup drop list.
+    """
+
+    requested_mode: str
+    served_mode: str
+    ordered_candidate_evidence_ids: tuple[str, ...] = ()
+    ordered_final_ranked_evidence_ids: tuple[str, ...] = ()
+    rank_changes: dict[str, int] = field(default_factory=dict)
+    duplicate_drops: None = None
+    arm_names: tuple[str, ...] = ()
+    degradation_reasons: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ObservedHybridRetrieval:
+    """The pre-conversion observation plus the served V1.1 result set.
+
+    ``result_set`` is ``None`` when the call degraded (the reranker fell back to
+    the hybrid order): the frozen V1.1 contract only represents a served
+    reranked set, so a degraded call has no representable result set. The
+    observation is still authoritative about what actually happened and why.
+    """
+
+    observation: HybridRetrievalObservation
+    result_set: v1_result.RetrievalResultSet | None = None
+
+
+def _candidate_rank(item: object) -> int | None:
+    for attribute in _PRE_RERANK_ATTRS:
+        value = getattr(item, attribute, None)
+        if isinstance(value, int) and value >= 1:
+            return value
+    return None
+
+
+def observe_hybrid_result(hybrid: "HybridRetrievalResult") -> HybridRetrievalObservation:
+    """Capture the observed retrieval facts before any lossy V1 conversion."""
+    # In the reranked path ``final_results`` is the display top-k (normally 8),
+    # while ``fusion_results`` is the complete input handed to the reranker
+    # (the production candidate depth is 20). Candidate inventory must preserve
+    # that complete input; otherwise the evaluator cannot distinguish a
+    # candidate that was never served from one that merely fell below display
+    # top-k.
+    candidate_source = tuple(hybrid.fusion_results) or tuple(hybrid.final_results)
+    ordered_candidates = [
+        (
+            _candidate_rank(item) or position,
+            item.chunk_id,
+        )
+        for position, item in enumerate(candidate_source, start=1)
+    ]
+    ordered_candidates.sort(key=lambda pair: (pair[0], pair[1]))
+
+    reranked_items = (
+        tuple(hybrid.reranker_results.results)
+        if hybrid.mode_served == "reranked" and hybrid.reranker_results is not None
+        else ()
+    )
+    ordered_final = [
+        (rank, item.chunk_id)
+        for item in reranked_items
+        if (rank := getattr(item, "reranker_rank", None)) is not None
+    ]
+    ordered_final.sort(key=lambda pair: (pair[0], pair[1]))
+
+    final_rank_by_chunk = {chunk_id: rank for rank, chunk_id in ordered_final}
+    rank_changes = {
+        chunk_id: pre_rank - final_rank_by_chunk[chunk_id]
+        for pre_rank, chunk_id in ordered_candidates
+        if chunk_id in final_rank_by_chunk
+        and pre_rank - final_rank_by_chunk[chunk_id] != 0
+    }
+
+    arms: list[str] = []
+    if hybrid.lexical_results is not None:
+        arms.append("lexical")
+    if hybrid.dense_results is not None:
+        arms.append("dense")
+    # Both arm result objects are populated only after their control flow has
+    # completed successfully. Fusion still executed when that input was empty;
+    # use the stage presence, not tuple truthiness, as the execution fact.
+    if hybrid.lexical_results is not None and hybrid.dense_results is not None:
+        arms.append("fusion")
+    # A successful reranker is served even when it returns an empty ranking.
+    # A degraded reranker remains an observed degradation, not a served arm.
+    if hybrid.mode_served == "reranked" and hybrid.reranker_results is not None:
+        arms.append("reranked")
+
+    return HybridRetrievalObservation(
+        requested_mode=hybrid.mode_requested,
+        served_mode=hybrid.mode_served,
+        ordered_candidate_evidence_ids=tuple(
+            chunk_id for _rank, chunk_id in ordered_candidates
+        ),
+        ordered_final_ranked_evidence_ids=tuple(
+            chunk_id for _rank, chunk_id in ordered_final
+        ),
+        rank_changes=rank_changes,
+        duplicate_drops=None,
+        arm_names=tuple(arms),
+        degradation_reasons=tuple(hybrid.degradation_reasons),
+    )
+
+
 class ProductionHybridRetriever:
     """Production retriever binding (M4-0 §1.2).
 
@@ -494,9 +621,62 @@ class ProductionHybridRetriever:
                 "production retrieval requires the validated request "
                 "TemporalIdentity",
             )
+        observed = self.retrieve_with_observation(
+            query,
+            ticker=ticker,
+            cutoff=cutoff,
+            requested_manifest_id=requested_manifest_id,
+            temporal_identity=temporal_identity,
+            top_k=top_k,
+            candidate_depth=candidate_depth,
+        )
+        if observed.result_set is None:
+            # Unchanged fail-closed contract: a degraded call has no
+            # representable V1.1 reranked set. The observation path
+            # (``retrieve_with_observation``) is how callers observe what was
+            # actually served and why.
+            raise RetrievalContractError(
+                "retrieval_v1_contract_not_served",
+                f"mode served {observed.observation.served_mode!r} cannot "
+                "produce a V1.1 result set",
+            )
+        return observed.result_set
+
+    def retrieve_with_observation(
+        self,
+        query: str,
+        *,
+        ticker: str,
+        cutoff: str,
+        requested_manifest_id: str,
+        temporal_identity: TemporalIdentity | None = None,
+        top_k: int = 8,
+        candidate_depth: int = 20,
+    ) -> ObservedHybridRetrieval:
+        """Serve the V1.1 result set plus the real pre-conversion observation.
+
+        The observation is computed from the retriever's own hybrid result
+        (candidate order handed to the reranker, the reranker's final order,
+        the stages that actually executed, and the real degradation reasons),
+        never from the lossy converted hits.
+        """
+        if candidate_depth != 20:
+            raise ValueError("production hybrid candidate_depth must be 20")
+        if self.data_runtime_identity is None:
+            raise RetrievalContractError(
+                "data_runtime_identity_unavailable",
+                "production retrieval requires the runtime-authority "
+                "DataRuntimeIdentity",
+            )
+        if temporal_identity is None:
+            raise RetrievalContractError(
+                "temporal_identity_unavailable",
+                "production retrieval requires the validated request "
+                "TemporalIdentity",
+            )
         conn, owned = self._operation_connection()
         try:
-            result = retrieve_hybrid(
+            hybrid = retrieve_hybrid(
                 conn,
                 query=query,
                 ticker=ticker,
@@ -511,13 +691,31 @@ class ProductionHybridRetriever:
                 reranker_gate=self._reranker_gate,
                 temporal_identity=temporal_identity,
                 data_runtime_identity=self.data_runtime_identity,
+                return_v1=False,
             )
-            if not isinstance(result, v1_result.RetrievalResultSet):
+            if not isinstance(hybrid, HybridRetrievalResult):
                 raise RetrievalContractError(
-                    "retrieval_v1_contract_not_served",
-                    "production hybrid retrieval did not serve the V1.1 result set",
+                    "retrieval_hybrid_contract_not_returned",
+                    "production hybrid retrieval did not return the hybrid result",
                 )
-            return result
+            observation = observe_hybrid_result(hybrid)
+            if hybrid.mode_served != "reranked":
+                # A degraded call cannot be represented as a V1.1 reranked set;
+                # the observation still tells the caller what was served and
+                # why it degraded.
+                return ObservedHybridRetrieval(observation=observation)
+            result_set = _to_v1_result_set(
+                conn,
+                hybrid=hybrid,
+                requested_manifest_id=requested_manifest_id,
+                index_manifest_id=self.index_manifest_id,
+                cutoff=cutoff,
+                temporal_identity=temporal_identity,
+                data_runtime_identity=self.data_runtime_identity,
+            )
+            return ObservedHybridRetrieval(
+                observation=observation, result_set=result_set
+            )
         finally:
             if owned:
                 conn.close()
@@ -713,6 +911,11 @@ def retrieve_hybrid(
 
 
 __all__ = [
-    "HybridRetrievalResult", "ProductionHybridRetriever", "V1_QUERY_POLICY_VERSION",
+    "HybridRetrievalObservation",
+    "HybridRetrievalResult",
+    "ObservedHybridRetrieval",
+    "ProductionHybridRetriever",
+    "V1_QUERY_POLICY_VERSION",
+    "observe_hybrid_result",
     "retrieve_hybrid",
 ]

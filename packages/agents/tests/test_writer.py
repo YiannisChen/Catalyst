@@ -278,3 +278,38 @@ def test_writer_node_surfaces_real_token_and_completion_metadata() -> None:
 
     assert len(result["writer_input_hash"]) == 64
     assert result["writer_input_hash"] == derive_writer_input_hash(_writer_input())
+
+
+def test_writer_reads_langchain_usage_metadata() -> None:
+    sink = InMemoryDeltaSink()
+
+    class UsageMetadataProvider(FakeStreamingProvider):
+        def stream(self, messages):
+            self.calls += 1
+            self.captured_messages.append([dict(message) for message in messages])
+            yield {"content": "answer", "usage_metadata": {
+                "input_tokens": 31, "output_tokens": 9, "total_tokens": 40
+            }}
+
+    result = writer_node(
+        {"run_id": "run:usage-metadata"},
+        llm=UsageMetadataProvider([]),
+        writer_input=_writer_input(),
+        sink=sink,
+    )
+
+    assert result["input_tokens"] == 31
+    assert result["output_tokens"] == 9
+
+
+def test_writer_missing_usage_is_unknown_not_zero() -> None:
+    sink = InMemoryDeltaSink()
+    result = writer_node(
+        {"run_id": "run:unknown-usage"},
+        llm=FakeStreamingProvider(["answer"]),
+        writer_input=_writer_input(),
+        sink=sink,
+    )
+
+    assert result["input_tokens"] is None
+    assert result["output_tokens"] is None

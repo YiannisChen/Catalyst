@@ -207,8 +207,16 @@ def run_structural_assurance(run_id: str, artifacts: dict[str, Any]) -> list[Ass
         metadata_ok = False
     if artifacts.get("timed_out") and completion_state == "completed":
         metadata_ok = False
-    tokens = [artifacts.get("input_tokens", 0), artifacts.get("output_tokens", 0)]
-    if any(not isinstance(token, int) or token < 0 for token in tokens):
+    tokens = [artifacts.get("input_tokens"), artifacts.get("output_tokens")]
+    # Missing usage is an explicitly unavailable accounting fact. It is not a
+    # structural stream failure: the budget layer charges its conservative
+    # reservation and eval metrics remain non-scorable. Any reported value,
+    # however, must still be a non-negative integer.
+    if any(
+        token is not None
+        and (not isinstance(token, int) or isinstance(token, bool) or token < 0)
+        for token in tokens
+    ):
         metadata_ok = False
 
     checks = {

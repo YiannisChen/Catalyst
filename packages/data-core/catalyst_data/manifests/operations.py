@@ -91,7 +91,7 @@ def bootstrap_candidate(
     if tmp_path.exists():
         tmp_path.unlink()
     try:
-        ro_uri = f"{source_path.resolve().as_uri()}?mode=ro"
+        ro_uri = f"{source_path.resolve().as_uri()}?mode=ro&immutable=1"
         source_conn = sqlite3.connect(ro_uri, uri=True)
         dest_conn = sqlite3.connect(tmp_path)
         try:

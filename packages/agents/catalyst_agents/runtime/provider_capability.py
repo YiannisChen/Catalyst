@@ -16,6 +16,7 @@ the same logical call does not increment the logical count.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any, Callable
 
 MAX_TECHNICAL_RETRIES_PER_LOGICAL_ROLE = 1
@@ -110,9 +111,63 @@ class BoundedRetryResult:
     result: Any
     counts: BoundedCallCounts
     attempts: tuple[AttemptRecord, ...] = field(default_factory=tuple)
+    attempt_usages: tuple[tuple[int | None, int | None], ...] = field(
+        default_factory=tuple
+    )
 
 
 _RETRYABLE = (ModelTransportFailure, ModelTimeoutFailure, ModelSchemaFailure)
+
+
+def _usage_candidates(raw: Any) -> tuple[Mapping[str, Any], ...]:
+    """Return provider usage mappings across common response envelopes."""
+    candidates: list[Mapping[str, Any]] = []
+
+    def add(value: Any) -> None:
+        if isinstance(value, Mapping):
+            candidates.append(value)
+
+    add(raw)
+    for name in ("usage_metadata", "response_metadata"):
+        add(getattr(raw, name, None))
+    if isinstance(raw, Mapping):
+        for name in ("usage_metadata", "response_metadata"):
+            add(raw.get(name))
+
+    for parent in tuple(candidates):
+        for name in ("token_usage", "usage"):
+            add(parent.get(name))
+
+    return tuple(candidates)
+
+
+def _nonnegative_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def extract_provider_usage(raw: Any) -> tuple[int | None, int | None]:
+    """Extract verifiable input/output usage without zero-filling.
+
+    The returned pair may be partial; callers must treat either ``None`` as
+    unknown. This is shared by Analyst/Writer retry accounting so every
+    dispatched attempt is evaluated under the same rule.
+    """
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    for mapping in _usage_candidates(raw):
+        if input_tokens is None:
+            input_tokens = _nonnegative_int(
+                mapping.get("input_tokens", mapping.get("prompt_tokens"))
+            )
+        if output_tokens is None:
+            output_tokens = _nonnegative_int(
+                mapping.get("output_tokens", mapping.get("completion_tokens"))
+            )
+        if input_tokens is not None and output_tokens is not None:
+            break
+    return input_tokens, output_tokens
 
 
 def invoke_with_bounded_retry(
@@ -121,19 +176,55 @@ def invoke_with_bounded_retry(
     role: str,
     semantic_input_hash: str,
     attempts_log: list[AttemptRecord] | None = None,
+    budget: Any | None = None,
+    provider: str | None = None,
+    model_id: str | None = None,
+    usage_extractor: Callable[[Any], tuple[int | None, int | None]] | None = None,
 ) -> BoundedRetryResult:
     """Run one logical model call with at most one technical retry.
 
     The semantic input is identical across attempts (same hash). A valid
     semantic result (including ABSTAIN/PARTIAL) is never retried. After
     exhaustion the caller sees ``TechnicalRetryExhausted``.
+
+    When ``budget`` (a ``ProviderBudgetGuard``) is supplied, every provider
+    attempt reserves the shared budget *before* dispatch and is settled with
+    the genuinely reported token usage afterwards. A reservation failure
+    propagates unchanged: the provider is never dispatched without budget.
+
+    Once an attempt has actually been dispatched its budget is consumed no
+    matter how it ends: a success settles with the reported usage, a retryable
+    failure settles the conservative bound and the retry reserves again, and a
+    non-retryable failure settles the conservative bound before propagating.
+    Only a reservation whose dispatch never happened can be refunded (and the
+    guard never refunds it; the caller simply never settles it).
     """
+    if budget is not None and (provider is None or model_id is None):
+        raise ValueError(
+            "a budget guard requires the exact provider/model_id identity so "
+            "the pre-call cost bound is identity-bound"
+        )
     local_attempts: list[AttemptRecord] = []
+    local_usages: list[tuple[int | None, int | None]] = []
     max_attempts = MAX_TECHNICAL_RETRIES_PER_LOGICAL_ROLE + 1
     for attempt in range(1, max_attempts + 1):
+        reservation = None
+        if budget is not None:
+            reservation = budget.reserve(
+                role=role, provider=provider, model_id=model_id
+            )
+            if attempt == 1:
+                record_logical_call = getattr(budget, "record_logical_call", None)
+                if callable(record_logical_call):
+                    record_logical_call(role=role)
         try:
             result = fn()
         except _RETRYABLE as exc:
+            local_usages.append((None, None))
+            if reservation is not None:
+                # The attempt was dispatched; its budget is consumed even
+                # though it failed (a retry reserves again).
+                budget.settle(reservation)
             local_attempts.append(
                 AttemptRecord(
                     role=role,
@@ -150,6 +241,40 @@ def invoke_with_bounded_retry(
                     role=role, attempts=attempt, last_error=exc
                 ) from exc
             continue
+        except BaseException as exc:
+            local_usages.append((None, None))
+            # A non-retryable failure is still a dispatched, billed attempt: a
+            # provider that was reached may have consumed tokens before
+            # failing, so the conservative bound is settled before the error
+            # propagates. The reservation is never left outstanding.
+            if reservation is not None:
+                budget.settle(reservation)
+            local_attempts.append(
+                AttemptRecord(
+                    role=role,
+                    attempt=attempt,
+                    semantic_input_hash=semantic_input_hash,
+                    outcome=type(exc).__name__,
+                    error_code=str(exc),
+                )
+            )
+            if attempts_log is not None:
+                attempts_log.extend(local_attempts)
+            raise
+        input_tokens: int | None = None
+        output_tokens: int | None = None
+        if usage_extractor is not None:
+            try:
+                input_tokens, output_tokens = usage_extractor(result)
+            except Exception:  # pragma: no cover - defensive
+                input_tokens, output_tokens = None, None
+        local_usages.append((input_tokens, output_tokens))
+        if reservation is not None:
+            budget.settle(
+                reservation,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+            )
         local_attempts.append(
             AttemptRecord(
                 role=role,
@@ -164,6 +289,7 @@ def invoke_with_bounded_retry(
             result=result,
             counts=BoundedCallCounts(logical_calls=1, provider_attempts=attempt),
             attempts=tuple(local_attempts),
+            attempt_usages=tuple(local_usages),
         )
     raise AssertionError("unreachable")  # pragma: no cover
 
@@ -239,6 +365,7 @@ __all__ = [
     "ProviderCapability",
     "ProviderCapabilityError",
     "TechnicalRetryExhausted",
+    "extract_provider_usage",
     "invoke_with_bounded_retry",
     "provider_capability_for",
     "require_capabilities",

@@ -64,8 +64,10 @@ def test_open_readonly_is_context_manager_and_readonly(tmp_path: Path) -> None:
         assert conn.execute("PRAGMA query_only").fetchone()[0] == 1
         assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
         assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
-        # A read-only connection must never attempt to change journal mode.
-        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == journal_before
+        # Immutable readers do not attach WAL sidecars and expose a private
+        # read view with SQLite's rollback journal mode.
+        assert journal_before == "wal"
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
         with pytest.raises(sqlite3.OperationalError):
             conn.execute(
                 "INSERT INTO runs (run_id, lifecycle_status, request_hash, run_manifest_id,"

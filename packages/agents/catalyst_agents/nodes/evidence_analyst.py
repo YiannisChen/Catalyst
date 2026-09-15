@@ -38,6 +38,7 @@ from catalyst_agents.runtime.provider_capability import (
     ModelTransportFailure,
     TechnicalRetryExhausted,
     invoke_with_bounded_retry,
+    extract_provider_usage,
     require_capabilities,
 )
 
@@ -217,6 +218,9 @@ def evidence_analyst(
     schema: type[AnalystDecision] = AnalystDecision,
     pack_inventory_ids: tuple[str, ...] | None = None,
     hypothesis_policy_version: str | None = None,
+    provider_budget: Any | None = None,
+    provider_identity: str | None = None,
+    model_identity: str | None = None,
 ) -> dict:
     """Run one EvidenceAnalyst logical call and emit decision/ref artifacts.
 
@@ -310,6 +314,10 @@ def evidence_analyst(
             attempt,
             role=ANALYST_ROLE,
             semantic_input_hash=semantic_input_hash,
+            budget=provider_budget,
+            provider=provider_identity,
+            model_id=model_identity,
+            usage_extractor=extract_provider_usage,
         )
     except TechnicalRetryExhausted as exc:
         if isinstance(exc.last_error, ModelSchemaFailure):
@@ -328,6 +336,7 @@ def evidence_analyst(
         "analyst_logical_calls": bounded.counts.logical_calls,
         "analyst_provider_attempts": bounded.counts.provider_attempts,
         "analyst_attempts": bounded.attempts,
+        "analyst_attempt_usages": bounded.attempt_usages,
     }
 
 

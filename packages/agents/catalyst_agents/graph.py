@@ -39,6 +39,12 @@ from catalyst_agents.attribution.evidence_state_builder import (
 from catalyst_agents.attribution.context_builder import ObservationBuilder
 from catalyst_agents.attribution.move_profile import MoveProfile
 from catalyst_agents.attribution.provider import ContextProvider
+from catalyst_agents.observability.aggregation import build_retrieval_diagnostics
+from catalyst_agents.observability.diagnostics import (
+    CorrectiveRoundObservation,
+    EvidenceDeltaObservation,
+    RetrievalDiagnostics,
+)
 from catalyst_agents.retrieval.execution import (
     ResearchDeadlineError,
     ResearchExecution,
@@ -357,6 +363,49 @@ def _foundation_budget():
     )
 
 
+def _corrective_round_observation(
+    *,
+    round_no: int,
+    batch: Any,
+    validated_gaps: tuple[Any, ...],
+    delta_evidence_ids: tuple[str, ...],
+) -> CorrectiveRoundObservation:
+    """Record what one executed corrective round actually did.
+
+    Derived from the code-owned batch the runtime executed, the validated gaps
+    it addressed, and the evidence the round actually added. ``EvidenceState``
+    is a cumulative union, so the runtime cannot remove evidence:
+    ``removed_evidence_ids`` is empty by contract, not by default.
+    """
+    actions = tuple(getattr(batch, "actions", ()) or ())
+    reason_by_gap_id = {
+        str(gap.gap_id): str(getattr(gap.reason_code, "value", gap.reason_code))
+        for gap in validated_gaps
+    }
+    executed_gap_ids = tuple(action.gap_id for action in actions)
+    reason_codes: list[str] = []
+    for gap_id in executed_gap_ids:
+        code = reason_by_gap_id.get(str(gap_id))
+        if code and code not in reason_codes:
+            reason_codes.append(code)
+    return CorrectiveRoundObservation(
+        round=round_no,
+        gap_ids=executed_gap_ids,
+        gap_reason_codes=tuple(reason_codes),
+        action_ids=tuple(action.action_id for action in actions),
+        evidence_needs=tuple(action.evidence_need.value for action in actions),
+        time_scopes=tuple(action.time_scope.value for action in actions),
+        research_fingerprints=tuple(
+            action.research_fingerprint for action in actions
+        ),
+        evidence_delta=EvidenceDeltaObservation(
+            round=round_no,
+            added_evidence_ids=tuple(delta_evidence_ids),
+            removed_evidence_ids=(),
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # M5-4: round-two EvidenceAnalyst over cumulative evidence
 # ---------------------------------------------------------------------------
@@ -375,6 +424,7 @@ class CorrectiveRoundResult:
     assessment: Any
     analyst_logical_calls: int
     analyst_provider_attempts: int
+    analyst_attempt_usages: tuple[tuple[int | None, int | None], ...]
     delta_evidence_ids: tuple[str, ...]
 
 
@@ -411,6 +461,9 @@ def run_corrective_round(
     research_history: tuple[Any, ...] = (),
     control: Any | None = None,
     hypothesis_policy_version: str | None = None,
+    provider_budget: Any | None = None,
+    provider_identity: str | None = None,
+    analyst_model_identity: str | None = None,
 ) -> CorrectiveRoundResult:
     """Execute one corrective round over cumulative evidence (Frozen §6.4).
 
@@ -577,6 +630,9 @@ def run_corrective_round(
         prompt_template=prompt_template,
         pack_inventory_ids=pack.included_evidence_ids,
         hypothesis_policy_version=hypothesis_policy_version,
+        provider_budget=provider_budget,
+        provider_identity=provider_identity,
+        model_identity=analyst_model_identity,
     )
     raise_if_control_expired(control)
     assessment = normalize_decision(
@@ -623,6 +679,7 @@ def run_corrective_round(
         assessment=assessment,
         analyst_logical_calls=analyst["analyst_logical_calls"],
         analyst_provider_attempts=analyst["analyst_provider_attempts"],
+        analyst_attempt_usages=analyst["analyst_attempt_usages"],
         delta_evidence_ids=draft.delta_evidence_ids,
     )
 
@@ -651,6 +708,24 @@ class V1RunResult:
     writer_logical_calls: int
     writer_provider_attempts: int
     corrective_rounds: int
+    # Observed trajectory facts retained at their source (M7 Phase A). These
+    # are recorded facts, not defaults: ``corrective_round_observations`` has
+    # one entry per round actually executed.
+    initial_task_ids: tuple[str, ...] = ()
+    initial_task_fingerprints: tuple[str, ...] = ()
+    corrective_round_observations: tuple[CorrectiveRoundObservation, ...] = ()
+    # The runtime records its deterministic terminal status. It has no
+    # machine-comparable refusal taxonomy, so refusal comparison stays
+    # non-scorable and is never claimed as available.
+    refusal_reason: str | None = None
+    refusal_reason_available: bool = False
+    # Observed retrieval facts retained at their source. ``None`` means the
+    # run never reached retrieval, so retrieval metrics are non-scorable.
+    retrieval_diagnostics: RetrievalDiagnostics | None = None
+    # Genuinely reported provider token usage; ``None`` means the provider
+    # reported none (never a claimed zero).
+    reported_input_tokens: int | None = None
+    reported_output_tokens: int | None = None
     packing_policy_version: str = "evidence_context_pack_v1"
     hypothesis_policy_version: str = "bounded_competition_v1"
     observation_policy_version: str = "move_profile_v1"
@@ -679,6 +754,21 @@ def _observed_move_text(ticker: str, move_profile: MoveProfile, session_date: st
     if target_return is None:
         return f"{ticker} moved on {session_date}"
     return f"{ticker} {target_return:+.2f}% on {session_date}"
+
+
+def _aggregate_provider_usage(
+    usages: tuple[tuple[int | None, int | None], ...],
+) -> tuple[int | None, int | None]:
+    """Sum whole-run usage only when every dispatched attempt is complete."""
+    if not usages or any(
+        input_tokens is None or output_tokens is None
+        for input_tokens, output_tokens in usages
+    ):
+        return None, None
+    return (
+        sum(input_tokens for input_tokens, _ in usages),
+        sum(output_tokens for _, output_tokens in usages),
+    )
 
 
 def run_v1_graph(
@@ -710,6 +800,10 @@ def run_v1_graph(
     writer_sink: Any | None = None,
     control: Any | None = None,
     experiment_override: ExperimentPolicyOverride | None = None,
+    provider_budget: Any | None = None,
+    provider_identity: str | None = None,
+    analyst_model_identity: str | None = None,
+    writer_model_identity: str | None = None,
 ) -> V1RunResult:
     """Run the complete V1.1 semantic path (Frozen §6.1).
 
@@ -797,6 +891,9 @@ def run_v1_graph(
         prompt_template=prompt_template,
         pack_inventory_ids=foundation.context_pack.included_evidence_ids,
         hypothesis_policy_version=analyst_hypothesis_version,
+        provider_budget=provider_budget,
+        provider_identity=provider_identity,
+        model_identity=analyst_model_identity,
     )
     raise_if_control_expired(control)
     assessment = normalize_decision(
@@ -810,6 +907,7 @@ def run_v1_graph(
     corrective_rounds = 0
     analyst_logical_calls = analyst1["analyst_logical_calls"]
     analyst_provider_attempts = analyst1["analyst_provider_attempts"]
+    analyst_attempt_usages = tuple(analyst1["analyst_attempt_usages"])
     final_pack = foundation.context_pack
 
     # Route READY | FOLLOW_UP | ABSTAIN over the normalized assessment.
@@ -818,7 +916,10 @@ def run_v1_graph(
     route = route_assessment(assessment)
     # Cooperative boundary: observed before corrective dispatch.
     raise_if_control_expired(control)
+    corrective_round_observations: tuple[CorrectiveRoundObservation, ...] = ()
     if route == "follow_up" and max_corrective_rounds >= 1:
+        corrective_batch = assessment.corrective_batch
+        corrective_gaps = tuple(assessment.validated_missing_evidence)
         corrective = run_corrective_round(
             run_id=run_id,
             round=2,
@@ -851,13 +952,25 @@ def run_v1_graph(
             research_history=foundation.classification.tasks,
             control=control,
             hypothesis_policy_version=analyst_hypothesis_version,
+            provider_budget=provider_budget,
+            provider_identity=provider_identity,
+            analyst_model_identity=analyst_model_identity,
         )
         raise_if_control_expired(control)
+        corrective_round_observations = (
+            _corrective_round_observation(
+                round_no=2,
+                batch=corrective_batch,
+                validated_gaps=corrective_gaps,
+                delta_evidence_ids=corrective.delta_evidence_ids,
+            ),
+        )
         assessment = corrective.assessment
         final_pack = corrective.context_pack
         corrective_rounds = 1
         analyst_logical_calls += corrective.analyst_logical_calls
         analyst_provider_attempts += corrective.analyst_provider_attempts
+        analyst_attempt_usages += corrective.analyst_attempt_usages
 
     # CLAIM_PLAN_BUILD
     observed_move = _observed_move_text(
@@ -906,6 +1019,9 @@ def run_v1_graph(
         writer_input=writer_input,
         sink=sink,
         control=control,
+        provider_budget=provider_budget,
+        provider_identity=provider_identity,
+        model_identity=writer_model_identity,
     )
     raise_if_control_expired(control)
     answer = writer_result["answer"]
@@ -973,6 +1089,19 @@ def run_v1_graph(
         state["context_pack_hash"] = final_pack.context_pack_sha256
 
     logical_model_call_count = analyst_logical_calls + writer_result["writer_logical_calls"]
+    retrieval_executions = [foundation.research_execution]
+    if corrective_rounds:
+        retrieval_executions.append(corrective.research_execution)
+    retrieval_diagnostics = build_retrieval_diagnostics(
+        data_runtime_identity=data_runtime_identity,
+        executions=retrieval_executions,
+    )
+    provider_attempt_usages = analyst_attempt_usages + tuple(
+        writer_result["writer_attempt_usages"]
+    )
+    reported_input_tokens, reported_output_tokens = _aggregate_provider_usage(
+        provider_attempt_usages
+    )
     return V1RunResult(
         state=state,
         move_profile=foundation.move_profile,
@@ -990,6 +1119,17 @@ def run_v1_graph(
         writer_logical_calls=writer_result["writer_logical_calls"],
         writer_provider_attempts=writer_result["writer_provider_attempts"],
         corrective_rounds=corrective_rounds,
+        initial_task_ids=tuple(task.task_id for task in foundation.classification.tasks),
+        initial_task_fingerprints=tuple(
+            task.task_fingerprint for task in foundation.classification.tasks
+        ),
+        corrective_round_observations=corrective_round_observations,
+        retrieval_diagnostics=retrieval_diagnostics,
+        # ``None`` means the provider did not report verifiable usage; a real
+        # reported zero remains a real zero and is never confused with absent
+        # metadata.
+        reported_input_tokens=reported_input_tokens,
+        reported_output_tokens=reported_output_tokens,
         packing_policy_version=effective_packing_version,
         hypothesis_policy_version=effective_hypothesis_version,
         observation_policy_version=effective_observation_version,

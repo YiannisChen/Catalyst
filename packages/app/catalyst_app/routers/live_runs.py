@@ -71,7 +71,7 @@ from catalyst_app.runtime.admission import (
 )
 from catalyst_app.runtime.composition import RuntimeUnavailableError
 from catalyst_app.workspace_projection import project_workspace, project_workspace_v1
-from catalyst_data.storage.connect import open_readonly
+from catalyst_app.persistence.connect import open_readonly
 
 router = APIRouter(prefix="/api", tags=["live-runs"])
 
@@ -237,6 +237,8 @@ def cancel_live_run(run_id: str, req: Request) -> CancelResponse:
 
 
 def _read_run_dto(db_path: Path, run_id: str) -> RunDTO | None:
+    from catalyst_app.lifecycle import RunLifecycleStatus
+
     with open_readonly(db_path) as conn:
         row = conn.execute(
             "SELECT run_id, lifecycle_status, idempotency_key, request_hash,"
@@ -247,6 +249,7 @@ def _read_run_dto(db_path: Path, run_id: str) -> RunDTO | None:
         ).fetchone()
         if row is None:
             return None
+        lifecycle = RunLifecycleStatus(row["lifecycle_status"])
         max_seq_row = conn.execute(
             "SELECT COALESCE(MAX(seq), 0) FROM run_events WHERE run_id = ?", (run_id,)
         ).fetchone()
@@ -255,11 +258,13 @@ def _read_run_dto(db_path: Path, run_id: str) -> RunDTO | None:
             " WHERE run_id = ? AND event_seq = ? ORDER BY artifact_id",
             (run_id, int(max_seq_row[0])),
         ).fetchall()
-        attribution_row = conn.execute(
-            "SELECT payload_json FROM run_artifacts"
-            " WHERE run_id = ? AND artifact_type = 'attribution_result' ORDER BY event_seq DESC LIMIT 1",
-            (run_id,),
-        ).fetchone()
+        attribution_row = None
+        if lifecycle is RunLifecycleStatus.COMPLETED:
+            attribution_row = conn.execute(
+                "SELECT payload_json FROM run_artifacts"
+                " WHERE run_id = ? AND artifact_type = 'attribution_result' ORDER BY event_seq DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
     attribution_status: str | None = None
     attribution_type: str | None = None
     if attribution_row is not None:
@@ -270,9 +275,6 @@ def _read_run_dto(db_path: Path, run_id: str) -> RunDTO | None:
         except (json.JSONDecodeError, TypeError):
             pass
 
-    from catalyst_app.lifecycle import RunLifecycleStatus
-
-    lifecycle = RunLifecycleStatus(row["lifecycle_status"])
     created_at = _utc_parse(row["created_at"])
     updated_at = _utc_parse(row["updated_at"])
     duration_ms = None

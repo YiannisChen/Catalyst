@@ -38,6 +38,10 @@ from catalyst_agents.retrieval.task import (
     TimeScope,
 )
 from catalyst_agents.runtime.manifest import ObservationPolicyConfig
+from catalyst_agents.runtime.retrieval_adapter import (
+    RetrievalCallObservation,
+    RetrievalDegradedError,
+)
 from catalyst_data.canonical.identity import DataRuntimeIdentity
 from catalyst_data.canonical.temporal import TemporalIdentity
 
@@ -266,6 +270,30 @@ def _run(executor, tasks=None):
         ticker="AAPL",
         cutoff="2026-01-15T21:00:00Z",
         requested_manifest_id="m" * 64,
+    )
+
+
+class _DegradedObservationRetriever:
+    def retrieve_with_observations(self, query, **kwargs):
+        raise RetrievalDegradedError(RetrievalCallObservation(
+            requested_mode="reranked",
+            served_mode="hybrid",
+            degradation_reasons=("reranker_failed",),
+            arm_names=("lexical", "dense", "fusion"),
+        ))
+
+
+def test_executor_propagates_real_degraded_retrieval_to_task_result():
+    task = next(task for task in _tasks() if task.evidence_need.value == "COMPANY_NEWS")
+    execution = _run(_executor(_DegradedObservationRetriever()), tasks=(task,))
+    result = execution.task_results[0]
+    assert result.status is ResearchTaskResultStatus.DEGRADED
+    assert result.mode_served == "hybrid"
+    assert result.evidence_items == ()
+    assert result.degradation_reasons == ("reranker_failed",)
+    assert execution.degradations[0].task_id == task.task_id
+    assert execution.observed_retrieval_calls[0].observation.degradation_reasons == (
+        "reranker_failed",
     )
 
 

@@ -20,7 +20,7 @@ from catalyst_app.runtime.sse import (
     parse_last_event_id,
     stream_events,
 )
-from catalyst_data.storage.connect import open_readonly
+from catalyst_app.persistence.connect import open_readonly
 
 router = APIRouter(prefix="/api", tags=["stream"])
 

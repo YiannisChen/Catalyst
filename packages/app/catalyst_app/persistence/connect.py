@@ -33,4 +33,23 @@ def open_rw(
         conn.close()
 
 
-__all__ = ["DEFAULT_BUSY_TIMEOUT_MS", "open_rw"]
+@contextmanager
+def open_readonly(
+    db_path: str | Path, *, timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS
+) -> Iterator[sqlite3.Connection]:
+    """Open the app-owned runtime DB read-only without immutable semantics.
+
+    The app runtime database is writable elsewhere and may have an active WAL;
+    ``immutable=1`` is reserved for the externally-owned Q-001 data database.
+    """
+    path = Path(db_path)
+    conn = sqlite3.connect(path, check_same_thread=False)
+    configure_runtime_connection(conn)
+    conn.execute(f"PRAGMA busy_timeout={timeout_ms}")
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+__all__ = ["DEFAULT_BUSY_TIMEOUT_MS", "open_readonly", "open_rw"]
