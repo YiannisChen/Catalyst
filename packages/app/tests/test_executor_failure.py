@@ -179,3 +179,82 @@ def test_crashed_run_without_an_exception_keeps_a_null_message(tmp_path: Path) -
     code, message = _failure_message(db_path, "run:1")
     assert code == "SYSTEM_ERROR"
     assert message is None
+
+
+def test_schema_failure_parser_excerpt_persists_a_public_safe_message(
+    tmp_path: Path,
+) -> None:
+    """The typed Analyst schema failure carries a bounded parser excerpt.
+
+    The excerpt is produced by the agents node (``_schema_failure_excerpt``);
+    whatever reaches the durable public field must still satisfy
+    ``validate_safe_public_text`` — bounded, single line, and free of
+    credential/raw-provider patterns.
+    """
+    from catalyst_agents.nodes.evidence_analyst import _schema_failure_excerpt
+    from catalyst_agents.runtime.provider_capability import ModelSchemaFailure
+    from catalyst_app.persistence.events import EventRepository
+    from catalyst_app.public_text import validate_safe_public_text
+    from catalyst_app.runtime.claim import RunClaimer
+    from catalyst_app.runtime.composition import _default_failure_handler
+
+    db_path = tmp_path / "runtime.db"
+    _running_run_row(db_path, "run:1")
+    events = EventRepository(db_path=db_path)
+    claimer = RunClaimer(db_path=db_path, events=events)
+    handler = _default_failure_handler(events, claimer)
+
+    excerpt = _schema_failure_excerpt(
+        "1 validation error for AnalystDecision\n"
+        "evidence_decisions.0.disposition\n"
+        "  Input should be 'SUPPORT', 'CONTRADICT' or 'WEAK' "
+        "[type=enum, input_value='WEAKISH', input_type=str]\n"
+        + "x" * 400
+    )
+    handler(
+        "run:1",
+        "SYSTEM_ERROR",
+        ModelSchemaFailure(
+            "MODEL_SCHEMA_FAILURE: role 'evidence_analyst' failed after 2 "
+            f"provider attempts: ModelSchemaFailure({excerpt!r})"
+        ),
+    )
+
+    code, message = _failure_message(db_path, "run:1")
+    assert code == "SYSTEM_ERROR"
+    assert message is not None
+    validate_safe_public_text(message)
+    assert "disposition" in message
+    assert len(message) <= 300
+
+
+def test_schema_failure_excerpt_never_leaks_secret_shaped_text(
+    tmp_path: Path,
+) -> None:
+    """A hostile parse message must not carry a credential or raw-provider
+    pattern into the durable public field."""
+    from catalyst_agents.nodes.evidence_analyst import _schema_failure_excerpt
+    from catalyst_agents.runtime.provider_capability import ModelSchemaFailure
+    from catalyst_app.persistence.events import EventRepository
+    from catalyst_app.public_text import validate_safe_public_text
+    from catalyst_app.runtime.claim import RunClaimer
+    from catalyst_app.runtime.composition import _default_failure_handler
+
+    db_path = tmp_path / "runtime.db"
+    _running_run_row(db_path, "run:1")
+    events = EventRepository(db_path=db_path)
+    claimer = RunClaimer(db_path=db_path, events=events)
+    handler = _default_failure_handler(events, claimer)
+
+    excerpt = _schema_failure_excerpt(
+        'Failed to parse AnalystDecision from completion {"api_key": '
+        '"sk-abcdefghijklmnopqrstuvwxyz012345"}; authorization: Bearer abcdef'
+    )
+    handler("run:1", "SYSTEM_ERROR", ModelSchemaFailure(f"MODEL_SCHEMA_FAILURE: {excerpt}"))
+
+    code, message = _failure_message(db_path, "run:1")
+    assert code == "SYSTEM_ERROR"
+    assert message is not None
+    validate_safe_public_text(message)
+    assert "sk-abcdefghijklmnopqrstuvwxyz012345" not in message
+    assert "Bearer" not in message

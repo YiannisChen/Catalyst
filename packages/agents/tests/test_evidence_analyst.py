@@ -848,6 +848,32 @@ def test_declared_method_rejected_by_factory_fails_closed() -> None:
     assert llm.calls == 0
 
 
+_METHOD_NOT_CALLED = object()
+
+
+class MethodAwareAnalystProvider(FakeAnalystProvider):
+    """Fake provider whose structured-output factory accepts ``method``.
+
+    Mirrors the production admission path: the declared capability metadata
+    carries ``structured_output_method`` and the factory receives it as a
+    keyword, so tests can exercise both the json_mode contract path and the
+    production function_calling path without a network call.
+    """
+
+    def __init__(self, decision_factory, method: str | None = None) -> None:
+        super().__init__(decision_factory)
+        self.declared_method = method
+        self.captured_method: object = _METHOD_NOT_CALLED
+        if method is not None:
+            self.capability_metadata = dict(
+                self.capability_metadata, structured_output_method=method
+            )
+
+    def with_structured_output(self, schema, method=None):
+        self.captured_method = method
+        return super().with_structured_output(schema)
+
+
 # ---------------------------------------------------------------------------
 # M7 STAGE-1: json_mode field contract + typed parser failure
 #
@@ -974,14 +1000,15 @@ def test_json_mode_contract_text_names_the_decision_fields_and_example() -> None
         assert name in text
 
 
-def test_contract_is_appended_to_the_system_prompt_before_hashing() -> None:
-    """The contract text must be part of the hashed prompt, not a side channel:
+def test_json_mode_contract_is_appended_to_the_system_prompt_before_hashing() -> None:
+    """Under the declared json_mode method the contract text must be part of
+    the hashed prompt, not a side channel: json_object transmits no schema, so
     the semantic input hash covers exactly what the provider receives."""
     from catalyst_agents.nodes.evidence_analyst import _semantic_input_hash
 
     store = InMemoryPackStore()
     _persist_pair(store)
-    llm = FakeAnalystProvider(_abstain_decision_dict)
+    llm = MethodAwareAnalystProvider(_abstain_decision_dict, method="json_mode")
     bare_prompt = "You are the Evidence Analyst. Emit the strict schema."
     result = evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
 
@@ -1142,3 +1169,235 @@ def test_json_mode_outbound_payload_carries_the_field_contract_offline() -> None
         for content in system_contents
     )
     assert result["analyst_decision"].research_decision is ResearchDecision.ABSTAIN
+
+
+# ---------------------------------------------------------------------------
+# M7 STAGE-1 (function_calling): the AnalystDecision schema travels in
+# tools[] with a forced tool_choice. json_object + prompt text is retained
+# only as the documented json_mode contract; it is not the constraint
+# mechanism on this path.
+# ---------------------------------------------------------------------------
+
+
+def _empty_inventory_tool_call_response() -> dict:
+    return {
+        "id": "chatcmpl-offline-tool-1",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "deepseek-flash",
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_offline_1",
+                            "type": "function",
+                            "function": {
+                                "name": "AnalystDecision",
+                                "arguments": json.dumps(_empty_inventory_example_dict()),
+                            },
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+    }
+
+
+def _offline_capable_client(handler, method: str):
+    """Real langchain client over a mock httpx transport (dummy key, no network)."""
+    import httpx
+    from langchain_openai import ChatOpenAI
+
+    client = ChatOpenAI(
+        model="deepseek-flash",
+        api_key="sk-test-dummy-key",
+        base_url="https://offline.invalid/v1",
+        temperature=0.0,
+        max_retries=0,
+        http_client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    object.__setattr__(
+        client,
+        "capability_metadata",
+        {
+            "supports_structured_output": True,
+            "supports_true_streaming": True,
+            "declares_token_accounting": True,
+            "normalizes_timeout_errors": True,
+            "capability_revision": "v1.1-capability-1",
+            "structured_output_method": method,
+        },
+    )
+    return client
+
+
+def test_function_calling_outbound_payload_carries_the_decision_tool_offline() -> None:
+    """Transport-level check (mock httpx transport, dummy key, no network):
+    the function_calling request carries the AnalystDecision schema in
+    ``tools[0].function`` with a forced ``tool_choice``, and no
+    ``response_format`` json_schema/json_object shape."""
+    captured: dict = {}
+
+    def handler(request):
+        captured["payload"] = json.loads(request.content.decode("utf-8"))
+        captured["call_count"] = captured.get("call_count", 0) + 1
+        import httpx
+
+        return httpx.Response(200, json=_empty_inventory_tool_call_response())
+
+    client = _offline_capable_client(handler, method="function_calling")
+    store = InMemoryPackStore()
+    _persist_pair(store, pack=_build_pack(included=()))
+    result = evidence_analyst(
+        {"run_id": "run:1"},
+        llm=client,
+        persistence=store,
+        prompt_template="You are the Evidence Analyst. Emit the strict schema.",
+        schema=AnalystDecision,
+    )
+
+    assert captured["call_count"] == 1
+    payload = captured["payload"]
+    tool = payload["tools"][0]
+    assert tool["type"] == "function"
+    assert tool["function"]["name"] == "AnalystDecision"
+    parameters = tool["function"]["parameters"]
+    assert set(parameters["properties"]) == set(AnalystDecision.model_fields)
+    assert parameters["additionalProperties"] is False
+    assert parameters["properties"]["evidence_decisions"]["items"]["properties"][
+        "disposition"
+    ]["enum"] == ["SUPPORT", "CONTRADICT", "WEAK", "LEAD_ONLY", "IRRELEVANT"]
+    assert payload["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "AnalystDecision"},
+    }
+    assert payload["parallel_tool_calls"] is False
+    assert payload.get("response_format") is None
+    assert "json_schema" not in json.dumps(payload)
+    assert result["analyst_decision"].research_decision is ResearchDecision.ABSTAIN
+    assert result["analyst_logical_calls"] == 1
+
+
+def test_function_calling_declared_method_is_forwarded_to_the_factory() -> None:
+    """The declared production method reaches the factory; the schema stays the
+    positional argument."""
+    store = InMemoryPackStore()
+    _persist_pair(store)
+    llm = MethodAwareAnalystProvider(_valid_decision_dict, method="function_calling")
+    result = evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+
+    assert llm.captured_method == "function_calling"
+    assert llm.calls == 1
+    assert result["analyst_logical_calls"] == 1
+
+
+def test_function_calling_prompt_does_not_restate_the_json_mode_contract() -> None:
+    """The schema is enforced by tools[] on this path, so the prompt must not
+    claim a schema-less json_object call: the system message stays the caller
+    prompt."""
+    store = InMemoryPackStore()
+    _persist_pair(store)
+    llm = MethodAwareAnalystProvider(_valid_decision_dict, method="function_calling")
+    bare_prompt = "You are the Evidence Analyst. Emit the strict schema."
+    evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+
+    assert llm.captured_messages[0][0]["content"] == bare_prompt
+
+
+def test_tool_argument_validation_error_becomes_typed_schema_failure() -> None:
+    """langchain's PydanticToolsParser validates tool-call arguments with the
+    schema and lets pydantic's ValidationError escape. That is the retryable
+    structured-schema failure: one identical-input retry, then typed
+    MODEL_SCHEMA_FAILURE carrying a bounded parser excerpt — never an untyped
+    SYSTEM_ERROR."""
+    from pydantic import ValidationError
+
+    try:
+        AnalystDecision.model_validate(
+            {"schema_version": "1.0", "evidence_decisions": [{"evidence_id": "e1"}]}
+        )
+    except ValidationError as exc:
+        validation_error = exc
+    else:  # pragma: no cover - the schema must reject a disposition-less item
+        raise AssertionError("expected a ValidationError")
+
+    store = InMemoryPackStore()
+    _persist_pair(store)
+    llm = _RaisingSurfaceProvider(validation_error)
+    with pytest.raises(ModelSchemaFailure) as excinfo:
+        evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+
+    assert type(excinfo.value) is ModelSchemaFailure
+    assert "MODEL_SCHEMA_FAILURE" in str(excinfo.value)
+    assert "disposition" in str(excinfo.value)
+    assert llm.calls == 2
+
+
+def test_unrelated_pydantic_validation_error_is_not_retyped() -> None:
+    """Only the AnalystDecision schema's own validation error is the retryable
+    structured-schema failure. An unrelated pydantic ValidationError from the
+    provider call propagates unchanged after exactly one attempt."""
+    from pydantic import BaseModel, ValidationError
+
+    class Unrelated(BaseModel):
+        value: int
+
+    try:
+        Unrelated(value="not-an-int")
+    except ValidationError as exc:
+        unrelated_error = exc
+    else:  # pragma: no cover - the model must reject a non-int
+        raise AssertionError("expected a ValidationError")
+
+    store = InMemoryPackStore()
+    _persist_pair(store)
+    llm = _RaisingSurfaceProvider(unrelated_error)
+    with pytest.raises(ValidationError):
+        evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+    assert llm.calls == 1
+
+
+def test_schema_failure_excerpt_is_bounded_single_line_and_secret_free() -> None:
+    """The excerpt is public-diagnostic text: single line, <=200 chars, and
+    redacted of credential/raw-provider shaped content."""
+    from catalyst_agents.nodes.evidence_analyst import _schema_failure_excerpt
+
+    excerpt = _schema_failure_excerpt(
+        "1 validation error for AnalystDecision\n"
+        "  api_key=sk-abcdefghijklmnopqrstuvwxyz012345\n"
+        + "y" * 500
+    )
+    assert len(excerpt) <= 200
+    assert "\n" not in excerpt
+    assert "sk-abcdefghijklmnopqrstuvwxyz012345" not in excerpt
+    assert "api_key=sk-" not in excerpt
+    assert excerpt
+
+
+def test_schema_failure_excerpt_is_carried_by_the_mapped_parser_failure() -> None:
+    """The OutputParserException mapping keeps a failure detail so a live
+    schema failure is diagnosable without persisting the raw completion."""
+    from langchain_core.exceptions import OutputParserException
+
+    store = InMemoryPackStore()
+    _persist_pair(store)
+    llm = _RaisingSurfaceProvider(
+        OutputParserException(
+            "Failed to parse AnalystDecision from completion "
+            '{"evidence_classifications": []}',
+        )
+    )
+    with pytest.raises(ModelSchemaFailure) as excinfo:
+        evidence_analyst({"run_id": "run:1"}, **_node_kwargs(store, llm))
+
+    message = str(excinfo.value)
+    assert "unparseable structured output JSON" in message
+    assert "Failed to parse AnalystDecision" in message
+    assert len(message) < 1000
+    assert llm.calls == 2

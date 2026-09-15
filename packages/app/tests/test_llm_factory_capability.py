@@ -221,10 +221,13 @@ def test_build_v1_llm_omits_fixed_timeout_when_not_supplied() -> None:
     assert kwargs.get("timeout") != 90
 
 
-def test_build_v1_llm_declares_json_mode_structured_output_for_deepseek() -> None:
+def test_build_v1_llm_declares_function_calling_structured_output_for_deepseek() -> None:
     """DeepSeek's OpenAI-compatible surface rejects response_format
-    json_schema; the client must declare the json_object (langchain
-    ``json_mode``) method so the analyst admission can steer to it."""
+    json_schema, and json_object carried no schema the model could follow: the
+    2026-09-15 live c01 run returned valid JSON with invented field names
+    twice in a row. The client must declare ``function_calling`` so the
+    AnalystDecision schema travels in ``tools[]`` with a forced
+    ``tool_choice``; json_mode stays out of the production path."""
     client = build_v1_llm(
         "deepseek-flash",
         provider="deepseek",
@@ -232,12 +235,12 @@ def test_build_v1_llm_declares_json_mode_structured_output_for_deepseek() -> Non
         base_url="https://example.invalid/v1",
     )
     metadata = client.capability_metadata
-    assert metadata["structured_output_method"] == "json_mode"
-    assert metadata["structured_output_method"] != "json_object"
+    assert metadata["structured_output_method"] == "function_calling"
+    assert metadata["structured_output_method"] not in ("json_mode", "json_schema")
     assert metadata["supports_structured_output"] is True
     # the metadata must stay admissible through the capability contract
     capability = require_capabilities(client, REQUIRED)
-    assert capability.structured_output_method == "json_mode"
+    assert capability.structured_output_method == "function_calling"
 
 
 def test_build_v1_llm_declares_no_structured_output_method_for_other_providers() -> None:

@@ -31,9 +31,12 @@ class ProviderCapability:
     ``structured_output_method`` optionally names the LangChain
     ``with_structured_output`` method the endpoint accepts. OpenAI-compatible
     endpoints that reject ``response_format: json_schema`` (for example
-    DeepSeek, which documents ``json_object``) declare ``"json_mode"`` so the
-    Analyst admission can steer the request instead of sending an unsupported
-    shape. ``None`` keeps the provider default (function-calling/json-schema).
+    DeepSeek, which documents ``json_object``) declare ``"function_calling"``
+    so the Analyst admission sends the schema as a forced tool call instead of
+    an unsupported response_format shape. ``json_mode`` remains a valid
+    declaration for endpoints that accept ``response_format: json_object``
+    and carry the field contract in the prompt text. ``None`` keeps the
+    provider default (function-calling/json-schema).
     """
 
     supports_structured_output: bool

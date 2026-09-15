@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -163,17 +164,70 @@ def _json_mode_field_contract(schema: type[AnalystDecision]) -> str:
     )
 
 
-def _is_structured_output_parse_failure(exc: BaseException) -> bool:
-    """True for langchain's structured-output parse failure.
+# Public-diagnostic excerpt carried by a typed schema failure. The parser
+# message is the only evidence a live schema failure leaves behind (the raw
+# completion is never persisted), so a bounded, sanitized excerpt travels in
+# the exception. The pattern mirrors catalyst_app.public_text; the agents
+# package must not depend on the app package, so the redaction is duplicated
+# here and the app-level sanitizer stays the final gate.
+_SCHEMA_FAILURE_EXCERPT_CHARACTERS = 200
+
+_UNSAFE_EXCERPT_PATTERN = re.compile(
+    r"(?:api[_ -]?key|provider[_ -]?key|authorization|bearer\s+\S+|"
+    r"raw[_ -]?(?:provider[_ -]?)?response|provider\s+response)\s*(?:=|:|\b)|"
+    r"\bsk-[A-Za-z0-9_-]{16,}\b",
+    re.IGNORECASE,
+)
+
+
+def _schema_failure_excerpt(detail: BaseException | str) -> str:
+    """Bounded single-line sanitized parser/validation detail.
+
+    Whitespace is collapsed, credential/raw-provider shaped text is redacted,
+    and the result is truncated so the durable ``failure_message`` stays a
+    bounded public diagnostic.
+    """
+    text = detail if isinstance(detail, str) else str(detail)
+    collapsed = " ".join(text.split())
+    redacted = _UNSAFE_EXCERPT_PATTERN.sub("[redacted]", collapsed)
+    bounded = redacted[:_SCHEMA_FAILURE_EXCERPT_CHARACTERS].strip()
+    return bounded or "no parser detail"
+
+
+def _schema_failure(
+    message: str, detail: BaseException | str | None = None
+) -> ModelSchemaFailure:
+    """Typed schema failure carrying a bounded sanitized excerpt when known."""
+    if detail is None:
+        return ModelSchemaFailure(message)
+    return ModelSchemaFailure(f"{message}: {_schema_failure_excerpt(detail)}")
+
+
+def _is_structured_output_parse_failure(
+    exc: BaseException, *, schema: type[AnalystDecision] | None = None
+) -> bool:
+    """True for a structured-output parse/validation failure.
 
     ``with_structured_output(schema, method="json_mode")`` parses with
     ``PydanticOutputParser``, which raises ``OutputParserException`` when the
-    model returns valid JSON with the wrong fields. That is a structured-schema
-    failure, not a transport failure; it is matched by class/module name so the
-    agents package keeps no hard import dependency on langchain parse internals.
+    model returns valid JSON with the wrong fields. ``method="function_calling"``
+    parses the tool call with ``PydanticToolsParser``, which validates the
+    arguments against the schema and lets pydantic's ``ValidationError`` escape
+    unchanged. Both are structured-schema failures, not transport failures;
+    the langchain class is matched by class/module name so the agents package
+    keeps no hard import dependency on langchain parse internals. A
+    ``ValidationError`` is only the decision schema's own failure — any other
+    pydantic validation error propagates unchanged.
     """
     if isinstance(exc, ModelSchemaFailure):
         return True
+    if isinstance(exc, ValidationError):
+        if schema is None:
+            return True
+        return (
+            str(getattr(exc, "title", "") or "") == schema.__name__
+            or f"for {schema.__name__}" in str(exc)
+        )
     cls = type(exc)
     if cls.__name__ != "OutputParserException":
         return False
@@ -240,14 +294,16 @@ def _parse_decision(raw: Any, schema: type[AnalystDecision]) -> AnalystDecision:
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise ModelSchemaFailure("unparseable structured output JSON") from exc
+            raise _schema_failure("unparseable structured output JSON", exc) from exc
     else:
         content = getattr(raw, "content", None)
         if isinstance(content, str):
             try:
                 payload = json.loads(content)
             except json.JSONDecodeError as exc:
-                raise ModelSchemaFailure("unparseable structured output JSON") from exc
+                raise _schema_failure(
+                    "unparseable structured output JSON", exc
+                ) from exc
         else:
             raise ModelSchemaFailure("provider did not return structured output")
     if not isinstance(payload, dict):
@@ -255,8 +311,8 @@ def _parse_decision(raw: Any, schema: type[AnalystDecision]) -> AnalystDecision:
     try:
         return schema.model_validate(payload)
     except ValidationError as exc:
-        raise ModelSchemaFailure(
-            f"invalid AnalystDecision schema: {exc.error_count()} error(s)"
+        raise _schema_failure(
+            f"invalid AnalystDecision schema: {exc.error_count()} error(s)", exc
         ) from exc
 
 
@@ -274,7 +330,9 @@ def render_messages_to_dicts(messages: tuple[RenderMessage, ...]) -> list[dict]:
     ]
 
 
-def _admit_structured_output_surface(llm: Any, schema: type[AnalystDecision]) -> Any | None:
+def _admit_structured_output_surface(
+    llm: Any, schema: type[AnalystDecision], *, method: str | None = None
+) -> Any | None:
     """Admit the provider's native structured-output surface, fail closed.
 
     ``with_structured_output(schema[, method])`` is a factory, not a model
@@ -282,16 +340,18 @@ def _admit_structured_output_surface(llm: Any, schema: type[AnalystDecision]) ->
     invoke+parse fallback is used (fake-provider testability). When the
     admitted capability metadata declares ``structured_output_method`` the
     method is forwarded so an endpoint that rejects ``json_schema`` receives
-    the supported shape (DeepSeek -> ``json_mode``/``json_object``); factories
-    that only accept ``schema`` are unaffected because no method is declared.
-    If the provider ADMITS the surface but the factory raises or returns an
-    unusable surface, this fails closed with a typed ProviderCapabilityError —
-    never a silent raw-invoke or method-less fallback.
+    the supported shape (DeepSeek -> ``function_calling``: the schema travels
+    in ``tools[]`` with a forced ``tool_choice``); factories that only accept
+    ``schema`` are unaffected because no method is declared. If the provider
+    ADMITS the surface but the factory raises or returns an unusable surface,
+    this fails closed with a typed ProviderCapabilityError — never a silent
+    raw-invoke or method-less fallback.
     """
     with_structured = getattr(llm, "with_structured_output", None)
     if not callable(with_structured):
         return None
-    method = provider_capability_for(llm).structured_output_method
+    if method is None:
+        method = provider_capability_for(llm).structured_output_method
     try:
         surface = (
             with_structured(schema, method=method)
@@ -392,9 +452,18 @@ def evidence_analyst(
     schema_version = getattr(schema, "schema_version", "1.0")
     if hypothesis_policy_version is not None:
         schema_version = f"{schema_version}+hypothesis:{hypothesis_policy_version}"
-    # json_mode carries no schema, so the field contract is part of the prompt
-    # and is therefore covered by the semantic input hash below.
-    prompt = prompt + _json_mode_field_contract(schema)
+    # The declared structured-output method decides how the AnalystDecision
+    # contract reaches the provider. ``json_mode`` sends
+    # ``response_format: json_object``, which carries no schema, so the field
+    # contract (documented by ``_json_mode_field_contract``) is appended to the
+    # prompt and covered by the semantic input hash below. Under
+    # ``function_calling`` the schema travels in ``tools[]`` with a forced
+    # ``tool_choice``: the prompt text would then be redundant and, because it
+    # states the call is schema-less, inaccurate — so it is not injected and
+    # the tool schema is the constraint mechanism.
+    declared_method = provider_capability_for(llm).structured_output_method
+    if declared_method == "json_mode":
+        prompt = prompt + _json_mode_field_contract(schema)
     semantic_input_hash = _semantic_input_hash(
         prompt, rendered_messages, schema_version
     )
@@ -413,7 +482,9 @@ def evidence_analyst(
 
     # Admitted native structured-output surface (built once; not a model call).
     # An admitted-but-broken surface fails closed at admission.
-    structured_surface = _admit_structured_output_surface(llm, schema)
+    structured_surface = _admit_structured_output_surface(
+        llm, schema, method=declared_method
+    )
 
     def _invoke_surface() -> Any:
         """Call the admitted surface, typing parse failures for the retry.
@@ -429,9 +500,9 @@ def evidence_analyst(
                 return structured_surface.invoke(dict_messages)
             return _invoke_llm(llm, dict_messages)
         except Exception as exc:
-            if _is_structured_output_parse_failure(exc):
-                raise ModelSchemaFailure(
-                    "unparseable structured output JSON"
+            if _is_structured_output_parse_failure(exc, schema=schema):
+                raise _schema_failure(
+                    "unparseable structured output JSON", exc
                 ) from exc
             raise
 
