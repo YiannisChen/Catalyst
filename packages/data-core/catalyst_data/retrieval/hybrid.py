@@ -12,6 +12,7 @@ import json
 import math
 import re
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, overload
 
@@ -584,6 +585,18 @@ class ProductionHybridRetriever:
         self.data_runtime_identity = data_runtime_identity
         self.reranker_timeout_seconds = reranker_timeout_seconds
         self._reranker_gate = RerankerGate()
+        self._embedding_lock = threading.Lock()
+
+    def _embed_query(self, query: str) -> Any:
+        """Encode one query at a time.
+
+        Initial research runs two HYBRID_TEXT tasks on one CUDA embedder.
+        Concurrent encode can stall past the 30s research-stage deadline
+        (live c07 ResearchDeadlineError). Reranker already has a single-flight
+        gate; query embedding must too.
+        """
+        with self._embedding_lock:
+            return self.embedding_fn(query)
 
     def _operation_connection(self) -> tuple[Any, bool]:
         """Return (connection, owned). Owned connections must be closed."""
@@ -683,7 +696,7 @@ class ProductionHybridRetriever:
                 cutoff=cutoff,
                 mode="reranked",
                 reranker=self.reranker,
-                query_embedding=self.embedding_fn(query),
+                query_embedding=self._embed_query(query),
                 requested_manifest_id=requested_manifest_id,
                 index_manifest_id=self.index_manifest_id,
                 lancedb_table=self.lancedb_table,

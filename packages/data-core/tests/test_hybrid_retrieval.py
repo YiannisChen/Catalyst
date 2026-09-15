@@ -555,6 +555,70 @@ def test_production_hybrid_retriever_passes_temporal_identity_unchanged(monkeypa
         assert hit.data_runtime_identity == runtime
 
 
+def test_production_hybrid_query_embedding_is_single_flight(monkeypatch):
+    """Live c07: two initial HYBRID_TEXT tasks embed on one CUDA model.
+    Concurrent encode can stall past the 30s research deadline. Query
+    embedding must be single-flight on the production retriever.
+    """
+    import threading
+    import time
+
+    import catalyst_data.retrieval.hybrid as hybrid_module
+    from catalyst_data.retrieval.hybrid import ProductionHybridRetriever
+
+    lexical, dense = _arms()
+    monkeypatch.setattr(hybrid_module, "retrieve_lexical", lambda *a, **k: lexical)
+    monkeypatch.setattr(hybrid_module, "retrieve_dense", lambda *a, **k: dense)
+    monkeypatch.setattr(
+        hybrid_module, "_lookup_canonical_chunk",
+        lambda db, chunk_id, *, requested_manifest_id: _canonical_meta(chunk_id),
+    )
+    current = 0
+    max_current = 0
+    counter_lock = threading.Lock()
+
+    def embed(query: str):
+        nonlocal current, max_current
+        with counter_lock:
+            current += 1
+            max_current = max(max_current, current)
+        time.sleep(0.05)
+        with counter_lock:
+            current -= 1
+        return np.ones(1024, dtype=np.float32)
+
+    retriever = ProductionHybridRetriever(
+        db=_FakeManifestDb(),
+        lancedb_table=object(),
+        embedding_fn=embed,
+        reranker=RecordingReranker(),
+        index_manifest_id="1" * 64,
+        data_runtime_identity=_runtime_identity(),
+    )
+    temporal = _temporal_identity()
+    errors: list[BaseException] = []
+
+    def worker():
+        try:
+            retriever.retrieve(
+                "Why did AMD move?",
+                ticker="AMD",
+                cutoff="2026-01-15T21:00:00Z",
+                requested_manifest_id=MANIFEST_A,
+                temporal_identity=temporal,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert max_current == 1
+
+
 # ---------------------------------------------------------------------------
 # Inactive-candidate build binding (Q-011 corrective)
 # ---------------------------------------------------------------------------
