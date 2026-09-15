@@ -254,15 +254,27 @@ def run_stage1(
 
     aggregates, gates = metrics_fn(manifest, outcomes)
     observed_identity, refs = build_outcome_identity(outcomes)
-    total_cost = sum(outcome.cost_usd or 0.0 for outcome in outcomes)
+    missing_metrics = [
+        outcome.case_id
+        for outcome in outcomes
+        if outcome.cost_usd is None
+        or outcome.latency_ms is None
+        or outcome.tokens is None
+    ]
+    if missing_metrics:
+        raise ValueError(
+            "cannot append an EvalOutcome with unknown accounting metrics for "
+            f"cases {missing_metrics}"
+        )
+    total_cost = sum(outcome.cost_usd for outcome in outcomes)
     outcome = EvalOutcome(
         completed_at=completed_at or datetime.now(timezone.utc),
         observed_run_artifact_identity=observed_identity,
         per_case_result_refs=refs,
         aggregate_metrics=tuple(aggregates),
         latency_tokens_cost=LatencyTokensCost(
-            total_latency_ms=sum(outcome.latency_ms or 0 for outcome in outcomes),
-            total_tokens=sum(outcome.tokens or 0 for outcome in outcomes),
+            total_latency_ms=sum(outcome.latency_ms for outcome in outcomes),
+            total_tokens=sum(outcome.tokens for outcome in outcomes),
             total_cost=total_cost,
         ),
         gate_results=tuple(gates),

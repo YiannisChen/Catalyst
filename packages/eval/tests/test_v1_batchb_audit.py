@@ -9,6 +9,7 @@ not one count per claim.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,7 @@ from catalyst_eval.v1_1.output_audit import (
     load_output_audit,
     validate_output_audit,
 )
+from catalyst_eval.v1_1.output_audit import _run_output_from_ledger_row
 
 from tests.v1_1_fixtures import make_stage1_cases
 
@@ -99,6 +101,129 @@ def test_audit_decision_uses_typed_vocabulary():
                 ),
             ),
         )
+    with pytest.raises(ValueError, match="material"):
+        _audit(
+            gold, run,
+            decisions=(
+                AuditClaimDecision(
+                    claim_id="c1", material="true",
+                    citation_ids=("fixture-ev-001",),
+                    decision="SUPPORT", reason_code="citations_resolve",
+                ),
+            ),
+        )
+
+
+def test_output_audit_rejects_claims_with_missing_truth_fields():
+    gold = _gold()
+    row = SimpleNamespace(
+        provider_calls=0,
+        run_facts={
+            "claims": [{"claim_id": "c1", "citation_ids": []}],
+        }
+    )
+    with pytest.raises(ValueError, match="material.*role|role.*material"):
+        _run_output_from_ledger_row(row, gold)
+
+
+def _run_facts_for_validation(gold: GoldenCase, **overrides):
+    facts = {
+        "schema_version": "v1_1_stage1_run_facts_v1",
+        "case_id": gold.case_id,
+        "output_status": "ABSTAIN",
+        "attribution_type": "NO_MATERIAL_PUBLIC_CATALYST",
+        "refusal_reason": "no supported catalyst",
+        "refusal_reason_available": True,
+        "claims": [],
+        "sanity_tasks_completed": [],
+        "latency_ms": 10,
+        "tokens": 20,
+        "cost_usd": 0.01,
+        "model_limited": False,
+        "trajectory": {
+            "corrective_triggered": False,
+            "rounds_executed": 0,
+            "gap_reason_codes": [],
+            "corrective_actions": [],
+            "research_fingerprints": [],
+            "evidence_delta_ids": [],
+            "produced_structure": False,
+        },
+        "retrieval": {
+            "observed": False,
+            "pool": None,
+            "ranked_evidence_ids": [],
+            "candidate_evidence_ids": [],
+            "reranker_contributed": False,
+            "latency_ms": None,
+            "degraded": False,
+            "ticker_violations": [],
+            "cutoff_violations": [],
+        },
+        "provider_accounting": {
+            "provider_calls": 0,
+            "tokens_in": 10,
+            "tokens_out": 10,
+            "cost_usd": 0.01,
+            "cost_method": "reported",
+        },
+        "run_id": "run:validation",
+    }
+    facts.update(overrides)
+    return facts
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "pattern"),
+    (
+        ("output_status", "UNKNOWN", "output_status"),
+        ("attribution_type", "NOT_A_BINDING_VALUE", "attribution_type"),
+        ("refusal_reason_available", 1, "refusal_reason_available"),
+        ("claims", [{"claim_id": "c1", "material": "true", "role": "PRIMARY", "citation_ids": []}], "material"),
+        ("claims", [{"claim_id": "c1", "material": True, "role": "NOT_A_ROLE", "citation_ids": []}], "role"),
+    ),
+)
+def test_run_facts_reconstruction_rejects_malformed_observed_fields(
+    field, value, pattern
+):
+    gold = _gold()
+    row = SimpleNamespace(
+        provider_calls=0,
+        run_facts=_run_facts_for_validation(gold, **{field: value}),
+    )
+    with pytest.raises(ValueError, match=pattern):
+        _run_output_from_ledger_row(row, gold)
+
+
+def test_output_audit_reconstruction_preserves_refusal_reason_availability():
+    gold = _gold()
+    row = SimpleNamespace(
+        provider_calls=0,
+        run_facts=_run_facts_for_validation(
+            gold,
+            claims=[
+                {
+                    "claim_id": "c1",
+                    "material": False,
+                    "role": "CONTEXT",
+                    "citation_ids": [],
+                }
+            ],
+        )
+    )
+    output = _run_output_from_ledger_row(row, gold)
+    assert output.refusal_reason == "no supported catalyst"
+    assert output.refusal_reason_available is True
+
+
+def test_output_audit_reconstruction_rejects_ledger_provider_call_mismatch():
+    gold = _gold()
+    row = SimpleNamespace(
+        provider_calls=1,
+        run_facts=_run_facts_for_validation(gold),
+    )
+    with pytest.raises(ValueError, match="provider_calls"):
+        _run_output_from_ledger_row(row, gold)
 
 
 def test_audit_rejects_duplicate_case_and_claim_rows(tmp_path):

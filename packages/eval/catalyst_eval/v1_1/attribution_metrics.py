@@ -64,6 +64,10 @@ class RunAttributionOutput:
     output_status: str
     attribution_type: str | None
     refusal_reason: str | None = None
+    # False when the runtime persisted no machine-comparable refusal reason.
+    # The comparison then stays non-scorable instead of scoring a false zero
+    # against free-text human truth.
+    refusal_reason_available: bool = False
     claims: tuple[RunClaimOutput, ...] = ()
     sanity_tasks_completed: tuple[str, ...] = ()
     latency_ms: int | None = None
@@ -94,6 +98,9 @@ class AttributionMetrics:
     cost_usd: MetricResult
     coverage_limited_count: int
     model_limited_count: int
+    # ABSTAIN cases whose runtime refusal reason is not machine-comparable;
+    # they are excluded from refusal_correctness rather than scored as misses.
+    refusal_unavailable_count: int
     gates: dict[str, bool | None]
 
     def as_dict(self) -> dict:
@@ -191,6 +198,7 @@ def compute_attribution_metrics(
     abstain_sufficient = 0
     no_material_sufficient = 0
     no_material_no_sanity = 0
+    refusal_unavailable = 0
     refusal_ok = 0
     refusal_denom = 0
     confusion: dict[tuple[str, str], int] = {}
@@ -243,14 +251,19 @@ def compute_attribution_metrics(
             false_sufficient += 1
             false_sufficient_cases.append(case_id)
 
-        # Refusal correctness over ABSTAIN oracle cases.
+        # Refusal correctness over ABSTAIN oracle cases whose runtime reason
+        # is actually comparable. A case with no persisted comparable reason is
+        # non-scorable, never a scored miss.
         if gold.oracle_status == "ABSTAIN":
-            refusal_denom += 1
-            if (
-                gold.expected_refusal_reason
-                and run.refusal_reason == gold.expected_refusal_reason
-            ):
-                refusal_ok += 1
+            if run.refusal_reason_available:
+                refusal_denom += 1
+                if (
+                    gold.expected_refusal_reason
+                    and run.refusal_reason == gold.expected_refusal_reason
+                ):
+                    refusal_ok += 1
+            else:
+                refusal_unavailable += 1
 
         if run.latency_ms is not None:
             latencies.append(run.latency_ms)
@@ -390,8 +403,10 @@ def compute_attribution_metrics(
     )
     refusal = _metric(
         "refusal_correctness", numerator=refusal_ok, denominator=refusal_denom,
-        eligible=refusal_denom, non_scorable=total_cases - refusal_denom,
+        eligible=refusal_denom,
+        non_scorable=total_cases - refusal_denom,
         value=refusal_value, case_ids=[],
+        exercised=refusal_denom > 0,
     )
     latency = _metric(
         "mean_latency_ms", numerator=0, denominator=len(latencies),
@@ -436,6 +451,7 @@ def compute_attribution_metrics(
         cost_usd=cost,
         coverage_limited_count=coverage_limited_count,
         model_limited_count=model_limited_count,
+        refusal_unavailable_count=refusal_unavailable,
         gates=gates,
     )
 

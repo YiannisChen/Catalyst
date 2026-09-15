@@ -3,13 +3,16 @@
 The validator must fail closed on the legitimate Stage-1 12-case contract:
 presence gates (at least one SUFFICIENT/PARTIAL/ABSTAIN, positive AND
 negative directions, COMPANY_SPECIFIC + MACRO + SECTOR challenge families,
-one recoverable corrective case and one multi-gap recoverable case), empty
-accepted cause labels plus refusal reasons on every ABSTAIN, FULL_TEXT_BODY
-binding for every non-empty expected_primary_evidence, truthful EIGHT_K_SHELL
-recording only with empty expected_primary_evidence, and declared aggregate
-strata that equal independently recomputed per-case values for EVERY declared
-aggregate key. Exact 5/4/3 or 6/6 quotas are NOT enforced. No human approval
-or reviewer identity is represented here.
+empty accepted cause labels plus refusal reasons on every ABSTAIN,
+FULL_TEXT_BODY binding for every non-empty expected_primary_evidence, truthful
+EIGHT_K_SHELL recording only with empty expected_primary_evidence, and
+declared aggregate strata that equal independently recomputed per-case values
+for EVERY declared aggregate key. Per the Q-011 human-authorized Option B
+amendment (2026-09-11), the recoverable-case and multi-gap-recoverable
+aggregate PRESENCE gates are NOT Stage-1 dataset hard gates: zero eligible
+corrective cases is legal, while the per-case corrective coherence rules stay
+fail-closed. Exact 5/4/3 or 6/6 quotas are NOT enforced. No human approval or
+reviewer identity is represented here.
 """
 from __future__ import annotations
 
@@ -255,26 +258,76 @@ def test_invalid_challenge_family_value_rejected(tmp_path):
         validate_stage1_dataset_manifest(manifest, cases, stratification=stratification)
 
 
-def test_no_recoverable_corrective_case_rejected(tmp_path):
-    rows, cases, _stratification, _manifest = _dataset(tmp_path)
+def _zero_recoverable(rows) -> None:
+    """Make every case corrective_required=false / corrective_recoverable=false
+    with empty gap and action truth (the Q-011 Option B dataset shape)."""
     for row in rows:
-        row["expected_research_behavior"]["corrective_recoverable"] = False
+        behavior = row["expected_research_behavior"]
+        behavior["corrective_required"] = False
+        behavior["corrective_recoverable"] = False
+        behavior["expected_gap_reason_codes"] = []
+        behavior["acceptable_corrective_actions"] = []
+
+
+def test_zero_recoverable_corrective_cases_passes_aggregate_validation(tmp_path):
+    """Q-011 Option B: a valid 12-case approved dataset with ZERO
+    corrective_recoverable=true cases must pass aggregate stratification
+    validation; the staged Q-011 set is exactly this shape."""
+    rows, _cases, _stratification, _manifest = _dataset(tmp_path)
+    _zero_recoverable(rows)
     cases, stratification, manifest = _rebuild(rows)
-    with pytest.raises(ValueError, match="corrective_recoverable"):
+    assert not any(
+        row["expected_research_behavior"]["corrective_recoverable"] for row in rows
+    )
+    validated = validate_stage1_dataset_manifest(
+        manifest, cases, stratification=stratification
+    )
+    assert validated["case_count"] == 12
+
+
+def test_multi_gap_recoverable_case_is_not_required_at_stage1(tmp_path):
+    """Q-011 Option B: Stage 1 must not require a >=2-gap recoverable case."""
+    rows, _cases, _stratification, _manifest = _dataset(tmp_path)
+    _zero_recoverable(rows)
+    cases, stratification, manifest = _rebuild(rows)
+    assert not any(
+        row["expected_research_behavior"]["corrective_recoverable"]
+        and len(row["expected_research_behavior"]["expected_gap_reason_codes"]) >= 2
+        for row in rows
+    )
+    validated = validate_stage1_dataset_manifest(
+        manifest, cases, stratification=stratification
+    )
+    assert validated["case_count"] == 12
+
+
+def test_recoverable_case_still_requires_task_and_action_truth(tmp_path):
+    """Per-case coherence stays fail-closed: a row marked
+    corrective_recoverable=true must still carry legal initial-task and
+    corrective-action truth even though the aggregate presence gate is gone."""
+    rows, _cases, _stratification, _manifest = _dataset(tmp_path)
+    corrective = next(
+        r for r in rows
+        if r["expected_research_behavior"]["corrective_recoverable"]
+    )
+    corrective["expected_research_behavior"]["acceptable_corrective_actions"] = []
+    cases, stratification, manifest = _rebuild(rows)
+    with pytest.raises(ValueError, match="acceptable_corrective_actions"):
         validate_stage1_dataset_manifest(
             manifest, cases, stratification=stratification
         )
 
 
-def test_no_multi_gap_recoverable_case_rejected(tmp_path):
-    rows, cases, _stratification, _manifest = _dataset(tmp_path)
-    for row in rows:
-        if row["expected_research_behavior"]["corrective_recoverable"]:
-            row["expected_research_behavior"]["expected_gap_reason_codes"] = [
-                row["expected_research_behavior"]["expected_gap_reason_codes"][0]
-            ]
+def test_required_case_still_requires_initial_task_truth(tmp_path):
+    """Per-case coherence stays fail-closed for corrective_required=true too."""
+    rows, _cases, _stratification, _manifest = _dataset(tmp_path)
+    corrective = next(
+        r for r in rows
+        if r["expected_research_behavior"]["corrective_required"]
+    )
+    corrective["expected_research_behavior"]["acceptable_initial_tasks"] = []
     cases, stratification, manifest = _rebuild(rows)
-    with pytest.raises(ValueError, match="multi-gap"):
+    with pytest.raises(ValueError, match="acceptable_initial_tasks"):
         validate_stage1_dataset_manifest(
             manifest, cases, stratification=stratification
         )

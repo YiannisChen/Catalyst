@@ -15,7 +15,7 @@ from typing import Any, Mapping, Sequence
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from catalyst_eval.v1_1.case import GoldenCase
 
@@ -60,7 +60,7 @@ class AuditClaimDecision(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     claim_id: str
-    material: bool
+    material: StrictBool
     citation_ids: tuple[str, ...] = ()
     supported_citation_ids: tuple[str, ...] = ()
     decision: AuditDecisionV1
@@ -204,28 +204,36 @@ def _run_output_from_ledger_row(row: Any, gold: GoldenCase) -> Any:
     )
 
     facts = row.run_facts or {}
+    from catalyst_eval.v1_1.run_facts import validate_run_facts
+
+    validated = validate_run_facts(
+        facts,
+        expected_case_id=gold.case_id,
+        row_provider_calls=row.provider_calls,
+    )
     claims = tuple(
         RunClaimOutput(
-            claim_id=str(claim["claim_id"]),
-            material=bool(claim.get("material", True)),
-            citation_ids=tuple(claim.get("citation_ids") or ()),
-            role=str(claim.get("role") or "PRIMARY"),
-            statement=claim.get("statement"),
+            claim_id=claim.claim_id,
+            material=claim.material,
+            citation_ids=tuple(claim.citation_ids),
+            role=claim.role,
+            statement=claim.statement,
         )
-        for claim in facts.get("claims") or ()
+        for claim in validated.claims
     )
     return RunAttributionOutput(
         case_id=gold.case_id,
-        output_status=str(facts.get("output_status") or "UNKNOWN"),
-        attribution_type=facts.get("attribution_type"),
-        refusal_reason=facts.get("refusal_reason"),
+        output_status=validated.output_status,
+        attribution_type=validated.attribution_type,
+        refusal_reason=validated.refusal_reason,
+        refusal_reason_available=validated.refusal_reason_available,
         claims=claims,
-        sanity_tasks_completed=tuple(facts.get("sanity_tasks_completed") or ()),
-        latency_ms=facts.get("latency_ms"),
-        tokens=facts.get("tokens"),
-        cost_usd=facts.get("cost_usd"),
+        sanity_tasks_completed=tuple(validated.sanity_tasks_completed),
+        latency_ms=validated.latency_ms,
+        tokens=validated.tokens,
+        cost_usd=validated.cost_usd,
         coverage_limited=False,
-        model_limited=bool(facts.get("model_limited")),
+        model_limited=validated.model_limited,
     )
 
 def load_output_audit(path: str | Path) -> list[Stage1OutputAudit]:
@@ -326,6 +334,12 @@ def validate_output_audit(
     return True
 
 
+# New V1.1 public surface terminology: the sealed human output audit contract
+# is ``HumanOutputAudit``. ``Stage1OutputAudit``/``OUTPUT_AUDIT_SCHEMA_VERSION``
+# stay exported so sealed V1.1 artifacts and adapters keep validating.
+HumanOutputAudit = Stage1OutputAudit
+
+
 __all__ = [
     "validate_audit_against_ledger",
     "AuditClaimDecision",
@@ -333,6 +347,7 @@ __all__ = [
     "AuditReasonCodeV1",
     "OUTPUT_AUDIT_SCHEMA_VERSION",
     "supported_citation_ids_for",
+    "HumanOutputAudit",
     "Stage1OutputAudit",
     "load_output_audit",
     "validate_output_audit",

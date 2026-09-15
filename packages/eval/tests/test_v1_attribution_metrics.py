@@ -59,6 +59,7 @@ def _run_output(
     output_status: str | None = None,
     attribution_type: str | None = None,
     refusal_reason: str | None = None,
+    refusal_reason_available: bool = True,
     claims: tuple[RunClaimOutput, ...] = (),
     sanity_tasks: tuple[str, ...] = (),
     coverage_limited: bool = False,
@@ -72,6 +73,7 @@ def _run_output(
         if attribution_type is not None
         else (gold.expected_attribution_type or "EVIDENCE_BACKED_CAUSAL"),
         refusal_reason=refusal_reason if refusal_reason is not None else gold.expected_refusal_reason,
+        refusal_reason_available=refusal_reason_available,
         claims=claims,
         sanity_tasks_completed=sanity_tasks,
         latency_ms=100,
@@ -520,3 +522,28 @@ def test_output_audit_rejects_identity_mismatch(tmp_path):
     audit = _audit(gold, run)
     with pytest.raises(ValueError, match="run_manifest"):
         validate_output_audit(audit, run, gold, eval_id="eval:stage1:v1", run_manifest_id="other")
+
+
+def test_refusal_correctness_is_non_scorable_without_a_runtime_reason():
+    """The runtime has no machine-comparable refusal taxonomy: an ABSTAIN case
+    must be excluded as non-scorable, never scored as a false miss."""
+    gold_cases = _gold_rows()
+    runs = []
+    audits = []
+    for gold in gold_cases:
+        claim = _claim(f"claim-{gold.case_id}")
+        run = _run_output(
+            gold,
+            claims=(claim,),
+            refusal_reason=None,
+            refusal_reason_available=False,
+        )
+        runs.append(run)
+        audits.append(_audit(gold, run))
+    metrics = compute_attribution_metrics(runs, audits, gold_cases)
+    abstain_count = sum(1 for g in gold_cases if g.oracle_status == "ABSTAIN")
+    assert abstain_count > 0
+    assert metrics.refusal_unavailable_count == abstain_count
+    assert metrics.refusal_correctness.denominator == 0
+    assert metrics.refusal_correctness.value is None
+    assert metrics.refusal_correctness.exercised is False

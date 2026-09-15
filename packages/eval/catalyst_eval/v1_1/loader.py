@@ -25,6 +25,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
 from catalyst_eval.v1_1.case import (
     GoldenCase,
     OracleStatusV1,
@@ -164,6 +166,87 @@ STAGE1_MANIFEST_SCHEMA = "v1_1_stage1_dataset_manifest_v1"
 STAGE1_STRATIFICATION_SCHEMA = "v1_1_stage1_stratification_v1"
 LEGACY_PARENT_PREFIX = "legacy:"
 
+# Professional benchmark terminology for NEW V1.1 surfaces (M7 completion
+# operator guide §2). The legacy schema value and the legacy three-file names
+# stay accepted for sealed V1.1/V1.2 compatibility and are never rewritten.
+BENCHMARK_MANIFEST_SCHEMA = "v1_1_benchmark_dataset_manifest_v1"
+STAGE1_MANIFEST_SCHEMAS = (BENCHMARK_MANIFEST_SCHEMA, STAGE1_MANIFEST_SCHEMA)
+BENCHMARK_DATASET_FILE_NAMES = (
+    "cases.jsonl",
+    "stratification.json",
+    "manifest.json",
+)
+# Accepted case/stratification basenames, benchmark first (new surfaces) then
+# the sealed legacy names (existing published directories keep working).
+BENCHMARK_CASE_BASENAMES = ("cases.jsonl", "v1_1_stage1_cases.jsonl")
+BENCHMARK_STRATIFICATION_BASENAMES = (
+    "stratification.json",
+    "v1_1_stage1_stratification.json",
+)
+
+_FORBIDDEN_EXECUTION_CEILING_KEYS = frozenset(
+    {
+        "max_provider_calls",
+        "max_cost_usd",
+        "provider_call_ceiling",
+        "cost_ceiling_usd",
+        "usd_cost_ceiling",
+    }
+)
+
+# Large runtime databases (multi-GB SQLite authority) are hashed incrementally
+# so ``prepare`` never loads a whole file into memory.
+RUNTIME_DB_HASH_CHUNK_BYTES = 8 * 1024 * 1024
+
+
+def streamed_sha256(path: str | Path) -> str:
+    """SHA-256 of a file, read in bounded chunks (never ``read_bytes``)."""
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(RUNTIME_DB_HASH_CHUNK_BYTES), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def resolve_benchmark_cases_path(manifest: Mapping[str, Any], manifest_path: str | Path) -> Path:
+    """Resolve the case JSONL for a dataset manifest path (benchmark-first).
+
+    Tries the benchmark layout (``<dir>/stage1/cases.jsonl`` then
+    ``<dir>/cases.jsonl``) before the sealed legacy name, so a manifest placed
+    in a ``benchmarks/v1_1/stage1/`` directory resolves its sibling
+    ``cases.jsonl`` while existing published directories keep resolving.
+    """
+    manifest_path = Path(manifest_path)
+    parent = manifest_path.parent
+    candidates: list[Path] = []
+    for name in BENCHMARK_CASE_BASENAMES:
+        candidates.append(parent / name)
+        candidates.append(parent / "stage1" / name)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(
+        f"no case file found for dataset manifest {manifest_path} "
+        f"(looked for {BENCHMARK_CASE_BASENAMES})"
+    )
+
+
+def resolve_benchmark_stratification_path(
+    manifest: Mapping[str, Any], manifest_path: str | Path
+) -> Path | None:
+    """Resolve the separate stratification file (benchmark-first), if any."""
+    manifest_path = Path(manifest_path)
+    parent = manifest_path.parent
+    candidates: list[Path] = []
+    for name in BENCHMARK_STRATIFICATION_BASENAMES:
+        candidates.append(parent / name)
+        candidates.append(parent / "stage1" / name)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 # Retrieval-relevant human evidence roles (M7-5 formula lock). A resolved
 # Stage-1 dataset must bind these roles to human independence groups.
 RELEVANT_ROLE_VALUES = frozenset(
@@ -172,6 +255,74 @@ RELEVANT_ROLE_VALUES = frozenset(
 PRIMARY_SUPPORT_ROLE = "primary_support"
 
 # Official M7-2 authoritative Stage-1 file names (write-once publication).
+# Public V1.1 benchmark contracts (M7 completion operator guide §2). These are
+# the professional-terminology surfaces; the sealed legacy names stay
+# readable and are never rewritten.
+
+
+class BenchmarkDatasetManifest(BaseModel):
+    """The public V1.1 benchmark dataset manifest contract.
+
+    A typed view of the frozen dataset manifest envelope: the schema version,
+    dataset identity, ordered case ids, content/list hashes, case count, and
+    reviewer identities are validated; any additional evidence envelope keys
+    are preserved verbatim (``extra="allow"``) because the dict-based
+    ``validate_stage1_dataset_manifest`` remains the authoritative validator.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: str
+    dataset_id: str
+    dataset_version: str
+    case_count: int = Field(ge=1)
+    ordered_case_ids: tuple[str, ...]
+    case_list_sha256: str
+    dataset_content_sha256: str
+    reviewer_ids: tuple[str, ...]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_execution_ceiling_keys(cls, value: Any) -> Any:
+        if isinstance(value, Mapping):
+            present = sorted(_FORBIDDEN_EXECUTION_CEILING_KEYS.intersection(value))
+            if present:
+                raise ValueError(
+                    "benchmark dataset manifest must not contain execution "
+                    f"ceiling keys: {', '.join(present)}"
+                )
+        return value
+
+    @field_validator("schema_version")
+    @classmethod
+    def _known_schema(cls, value: str) -> str:
+        if value not in STAGE1_MANIFEST_SCHEMAS:
+            raise ValueError(
+                f"benchmark dataset manifest schema must be one of "
+                f"{STAGE1_MANIFEST_SCHEMAS}, got {value!r}"
+            )
+        return value
+
+    @classmethod
+    def from_mapping(cls, manifest: Mapping[str, Any]) -> "BenchmarkDatasetManifest":
+        return cls.model_validate(dict(manifest))
+
+    def to_mapping(self) -> dict[str, Any]:
+        return self.model_dump(mode="json")
+
+
+def load_benchmark_cases(
+    path: str | Path, *, manifest: Mapping[str, Any] | None = None
+) -> list[GoldenCase]:
+    """Load and strictly validate the ordered V1.1 benchmark case JSONL.
+
+    Benchmark-named surface for :func:`load_golden_cases`; the case contract
+    itself is unchanged (``BenchmarkCase is GoldenCase``). When ``manifest`` is
+    supplied its ``dataset_content_sha256`` must match the loaded rows.
+    """
+    return load_golden_cases(path, manifest=manifest)
+
+
 STAGE1_DATASET_FILE_NAMES = (
     "v1_1_stage1_cases.jsonl",
     "v1_1_stage1_stratification.json",
@@ -317,10 +468,18 @@ def validate_stage1_dataset_manifest(
     coverage states contradict the cases. The authoritative dataset itself is
     human-sealed under Q-011; this validator is fixture-testable without it.
     """
-    if manifest.get("schema_version") != STAGE1_MANIFEST_SCHEMA:
+    if manifest.get("schema_version") not in STAGE1_MANIFEST_SCHEMAS:
         raise ValueError(
-            f"manifest schema must be {STAGE1_MANIFEST_SCHEMA}, got "
+            f"manifest schema must be one of {STAGE1_MANIFEST_SCHEMAS}, got "
             f"{manifest.get('schema_version')!r}"
+        )
+    present_ceiling_keys = sorted(
+        _FORBIDDEN_EXECUTION_CEILING_KEYS.intersection(manifest)
+    )
+    if present_ceiling_keys:
+        raise ValueError(
+            "benchmark dataset manifest must not contain execution ceiling "
+            f"keys: {', '.join(present_ceiling_keys)}"
         )
     _require_approval(manifest)
 
@@ -572,12 +731,19 @@ def _validate_stage1_gates(
 
     Presence gates: exactly 12 cases, at least one SUFFICIENT/PARTIAL/ABSTAIN,
     positive and negative direction coverage, challenge-family coverage
-    (COMPANY_SPECIFIC/MACRO/SECTOR), at least one recoverable corrective and
-    one multi-gap recoverable case, empty accepted cause labels plus refusal
+    (COMPANY_SPECIFIC/MACRO/SECTOR), empty accepted cause labels plus refusal
     reasons on every ABSTAIN, FULL_TEXT_BODY binding for every non-empty
     expected_primary_evidence, and truthful EIGHT_K_SHELL recording with empty
     expected_primary_evidence. Exact 5/4/3 and 6/6 quota arithmetic is NOT a
     Stage-1 requirement and is not enforced here.
+
+    Q-011 human-authorized Option B amendment (2026-09-11): an aggregate
+    recoverable-case or multi-gap-recoverable case is NO LONGER a Stage-1
+    dataset hard gate. Zero eligible corrective cases is a legal Stage-1
+    dataset; A3/A4 then become N/A/readiness-only (see the M7 plan amendment).
+    The per-case corrective coherence rules (typed corrective fields, initial-
+    task/action truth for any required/recoverable case) remain fail-closed in
+    ``_validate_evidence_ground_truth``.
     """
     if len(cases) != 12:
         raise ValueError(
@@ -587,8 +753,6 @@ def _validate_stage1_gates(
     oracle_counts: dict[str, int] = {}
     direction_counts: dict[str, int] = {}
     family_counts: dict[str, int] = {}
-    has_corrective = False
-    has_multi_gap = False
 
     for case in cases:
         oracle_counts[case.oracle_status] = oracle_counts.get(case.oracle_status, 0) + 1
@@ -638,12 +802,6 @@ def _validate_stage1_gates(
         if family in CHALLENGE_FAMILY_VALUES:
             family_counts[family] = family_counts.get(family, 0) + 1
 
-        behavior = case.expected_research_behavior
-        if behavior.corrective_recoverable:
-            has_corrective = True
-            if len(behavior.expected_gap_reason_codes) >= 2:
-                has_multi_gap = True
-
     missing_statuses = sorted(REQUIRED_ORACLE_STATUS_PRESENCE - set(oracle_counts))
     if missing_statuses:
         raise ValueError(
@@ -663,15 +821,6 @@ def _validate_stage1_gates(
             f"COMPANY_SPECIFIC/MACRO/SECTOR, missing {missing_families}; "
             f"challenge-family strata, not accepted cause labels, prove "
             f"macro/sector coverage"
-        )
-    if not has_corrective:
-        raise ValueError(
-            "Stage-1 set requires at least one corrective_recoverable=true case"
-        )
-    if not has_multi_gap:
-        raise ValueError(
-            "Stage-1 set requires at least one recoverable case with >=2 "
-            "expected_gap_reason_codes (multi-gap recoverable)"
         )
 
 
@@ -783,6 +932,54 @@ def _validate_evidence_ground_truth(cases: Sequence[GoldenCase]) -> None:
         )
 
 
+def write_benchmark_dataset_files(
+    out_dir: str | Path,
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    stratification: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+) -> dict[str, str]:
+    """Publish the V1.1 benchmark three-file dataset (write-once).
+
+    New V1.1 surfaces use benchmark terminology (``cases.jsonl`` /
+    ``stratification.json`` / ``manifest.json``); the manifest schema must be
+    the benchmark schema. Sealed legacy directories keep using
+    :func:`write_stage1_dataset_files`.
+    """
+    if manifest.get("schema_version") != BENCHMARK_MANIFEST_SCHEMA:
+        raise ValueError(
+            f"benchmark manifest schema must be {BENCHMARK_MANIFEST_SCHEMA}, "
+            f"got {manifest.get('schema_version')!r}"
+        )
+    out = Path(out_dir)
+    parsed = [GoldenCase.model_validate(row) for row in rows]
+    validate_stage1_dataset_manifest(manifest, parsed, stratification=stratification)
+    payloads = {
+        BENCHMARK_DATASET_FILE_NAMES[0]: (
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+        ).encode("utf-8"),
+        BENCHMARK_DATASET_FILE_NAMES[1]: json.dumps(
+            stratification, indent=2, sort_keys=True
+        ).encode("utf-8") + b"\n",
+        BENCHMARK_DATASET_FILE_NAMES[2]: json.dumps(
+            manifest, indent=2, sort_keys=True
+        ).encode("utf-8") + b"\n",
+    }
+    out.mkdir(parents=True, exist_ok=True)
+    for name, data in payloads.items():
+        target = out / name
+        if target.exists() and target.read_bytes() != data:
+            raise PublicationConflictError(
+                f"refusing to overwrite existing authoritative artifact "
+                f"{target} with differing bytes"
+            )
+    digests: dict[str, str] = {}
+    for name, data in payloads.items():
+        write_once_bytes(out / name, data)
+        digests[name] = hashlib.sha256(data).hexdigest()
+    return digests
+
+
 def write_stage1_dataset_files(
     out_dir: str | Path,
     *,
@@ -833,24 +1030,36 @@ def write_stage1_dataset_files(
 
 __all__ = [
     "ALLOWED_LEGACY_PARENT_IDS",
+    "BENCHMARK_CASE_BASENAMES",
+    "BENCHMARK_DATASET_FILE_NAMES",
+    "BENCHMARK_MANIFEST_SCHEMA",
+    "BENCHMARK_STRATIFICATION_BASENAMES",
+    "BenchmarkDatasetManifest",
     "CHALLENGE_FAMILY_VALUES",
     "LEGACY_PARENT_PREFIX",
     "MANDATORY_STRATA_SECTIONS",
     "MOVE_DIRECTION_VALUES",
     "PRIMARY_EVIDENCE_KIND_VALUES",
+    "RUNTIME_DB_HASH_CHUNK_BYTES",
     "RELEVANT_ROLE_VALUES",
     "REQUIRED_CHALLENGE_FAMILY_COVERAGE",
     "REQUIRED_ORACLE_STATUS_PRESENCE",
     "STAGE1_DATASET_FILE_NAMES",
     "STAGE1_MANIFEST_SCHEMA",
+    "STAGE1_MANIFEST_SCHEMAS",
     "STAGE1_STRATIFICATION_SCHEMA",
     "PublicationConflictError",
     "canonical_bytes",
     "case_list_sha256",
     "dataset_content_sha256",
     "dataset_provenance",
+    "load_benchmark_cases",
     "load_golden_cases",
+    "resolve_benchmark_cases_path",
+    "resolve_benchmark_stratification_path",
+    "streamed_sha256",
     "validate_stage1_dataset_manifest",
     "write_once_bytes",
+    "write_benchmark_dataset_files",
     "write_stage1_dataset_files",
 ]

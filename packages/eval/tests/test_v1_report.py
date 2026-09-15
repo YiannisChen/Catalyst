@@ -13,6 +13,7 @@ import pytest
 
 from catalyst_eval.v1_1.report import (
     ReportConflictError,
+    _sum_known_metrics,
     render_report_markdown,
     scan_report_for_secrets,
     write_report_json,
@@ -105,3 +106,9 @@ def test_secret_scan_flags_planted_secret():
 def test_secret_scan_accepts_clean_report():
     payload = _payload()
     assert scan_report_for_secrets(payload, secret_values=("sk-real",)) == []
+
+
+def test_report_metric_aggregation_preserves_unknown_instead_of_zero():
+    assert _sum_known_metrics([100, 200]) == 300
+    assert _sum_known_metrics([100, None]) is None
+    assert _sum_known_metrics([0, 2]) == 2

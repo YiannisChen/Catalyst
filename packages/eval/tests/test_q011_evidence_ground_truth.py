@@ -48,6 +48,11 @@ def _rebuild(rows, *, approved: bool = True, stratification=None):
     if stratification is None:
         stratification = make_stratification(rows)
     manifest = make_dataset_manifest(rows, stratification, approved=approved)
+    # Phase A: prepare requires the declared Q-001 runtime identity (no
+    # fallback). ``_validate_slotted`` overrides these with the exact slot
+    # identity; direct callers get a stable fixture identity.
+    manifest["data_runtime_identity_ref"] = "v1:corpus:q011-fixture"
+    manifest["data_runtime_identity_hash"] = "a" * 64
     cases = [GoldenCase.model_validate(row) for row in rows]
     return cases, stratification, manifest
 
@@ -275,6 +280,22 @@ def test_full_annotation_without_approval_is_still_rejected():
     rows = _rows()
     with pytest.raises(ValueError, match="approval"):
         _validate(rows, approved=False)
+
+
+def test_q011_slot_zero_recoverable_approved_dataset_validates():
+    """Q-011 Option B (2026-09-11): the human-authorized 12-case slot dataset
+    has corrective_required=false / corrective_recoverable=false on every case
+    with empty gaps/actions and still validates as an approved authoritative
+    Stage-1 dataset once evidence ground truth is present."""
+    rows = _reslot_cases(_rows())
+    for row in rows:
+        behavior = row["expected_research_behavior"]
+        behavior["corrective_required"] = False
+        behavior["corrective_recoverable"] = False
+        behavior["expected_gap_reason_codes"] = []
+        behavior["acceptable_corrective_actions"] = []
+    validated = _validate_slotted(rows, approved=True)
+    assert validated["case_count"] == 12
 
 
 # ---------------------------------------------------------------------------

@@ -23,13 +23,23 @@ from catalyst_eval.v1_1.retrieval_metrics import MetricResult
 
 @dataclass(frozen=True)
 class RunTrajectoryFacts:
+    """Observed runtime trajectory facts for one case (never a judgement).
+
+    ``gap_ids`` are the code-owned gap reason codes the runtime actually
+    addressed, ``corrective_actions`` the action identities it dispatched, and
+    ``rounds_executed`` the number of corrective rounds it really ran.
+    ``produced_structure`` records that the runtime returned a non-abstaining
+    structure. Stop correctness, usefulness, and recovery are computed here
+    against the predeclared ``ExpectedResearchBehavior``; the runtime never
+    reports a stop/quality judgement about itself.
+    """
+
     case_id: str
     corrective_triggered: bool
     gap_ids: tuple[str, ...] = ()
     corrective_actions: tuple[str, ...] = ()
-    stop_correct: bool = True
-    new_structure_created: bool = False
-    corrected: bool = False
+    rounds_executed: int = 0
+    produced_structure: bool = False
 
 
 @dataclass(frozen=True)
@@ -156,6 +166,18 @@ def compute_trajectory_metrics(
     unnecessary = 0
     zero_new_structure = 0
 
+    def _recovered(behavior: Any, fact: RunTrajectoryFacts) -> bool:
+        """A corrective round recovered a predeclared expected gap.
+
+        Derived here (never reported by the runtime): the round executed and
+        the runtime's observed gap reason codes cover at least one gap the
+        human predeclared for the case.
+        """
+        if not fact.corrective_triggered:
+            return False
+        expected = set(behavior.expected_gap_reason_codes)
+        return bool(expected & set(fact.gap_ids))
+
     for case_id, gold in gold_by_case.items():
         fact = facts_by_case[case_id]
         behavior = gold.expected_research_behavior
@@ -168,10 +190,11 @@ def compute_trajectory_metrics(
             trigger_triggered_cases.append(case_id)
         # Useful corrective: fired AND corrected on the predeclared
         # required+recoverable eligible subset.
+        recovered = _recovered(behavior, fact)
         if case_id in useful_eligible_ids:
-            if fact.corrective_triggered and fact.corrected:
+            if recovered:
                 useful += 1
-        elif fact.corrective_triggered and not fact.corrected:
+        elif fact.corrective_triggered and not recovered:
             # A corrective on a not-required case that did not improve the
             # outcome is unnecessary (denominator = not-required cases).
             unnecessary += 1
@@ -183,9 +206,12 @@ def compute_trajectory_metrics(
             and (not fact.corrective_triggered or fact.corrective_actions)
         ):
             gap_match += 1
-        if fact.stop_correct:
+        # Stop correctness is a derived judgement: the runtime stopped
+        # incorrectly only when a corrective was required and none ran. An
+        # unnecessary corrective is captured by unnecessary_corrective_rate.
+        if fact.corrective_triggered or not behavior.corrective_required:
             stop_ok += 1
-        if not fact.new_structure_created:
+        if not fact.produced_structure:
             zero_new_structure += 1
 
     total = len(gold_cases)

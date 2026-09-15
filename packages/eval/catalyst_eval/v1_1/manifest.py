@@ -141,14 +141,18 @@ class RunArtifactIdentity(BaseModel):
 
 
 class RetrievalPolicyIdentity(BaseModel):
-    """Arm names/order, top-K, pool, dedup/independence/reranker policy."""
+    """Arm names/order, top-K, and retrieval policy.
+
+    The observed per-case pool is a runtime fact. Identity construction must
+    not invent a synthetic pool identifier before retrieval has run.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     arm_names: tuple[str, ...]
     arm_order: tuple[str, ...]
     top_k: int = Field(ge=1)
-    candidate_pool_id: str
+    candidate_pool_id: str | None = None
     dedup_policy_version: str
     independence_policy_version: str
     reranker_policy_version: str

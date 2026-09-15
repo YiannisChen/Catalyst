@@ -64,14 +64,19 @@ def test_fixture_has_twelve_cases_with_presence_strata_only():
     rows = make_stage1_cases()
     assert len(rows) == 12
     strata = make_stratification(rows)["strata"]
-    # Presence gates only: at least one of each oracle status, direction,
-    # challenge family, corrective and multi-gap recoverable.
+    # Presence gates only: at least one of each oracle status, direction, and
+    # challenge family.
     assert all(strata["oracle_status"].get(s, 0) >= 1 for s in ("SUFFICIENT", "PARTIAL", "ABSTAIN"))
     assert strata["challenge_family"]["COMPANY_SPECIFIC"] >= 1
     assert strata["challenge_family"]["MACRO"] >= 1
     assert strata["challenge_family"]["SECTOR"] >= 1
     assert strata["move_direction"]["positive"] >= 1
     assert strata["move_direction"]["negative"] >= 1
+    # The fixture deliberately KEEPS a recoverable corrective case so the
+    # per-case coherence rules stay exercised; under the Q-011 Option B
+    # amendment (2026-09-11) this is fixture coverage, NOT a Stage-1 dataset
+    # presence gate (zero recoverable cases is legal; see
+    # test_stage1_stratification_gates.py).
     recoverable = [
         r for r in rows
         if r["expected_research_behavior"]["corrective_recoverable"]
@@ -109,6 +114,34 @@ def test_every_case_references_an_allowed_legacy_parent(tmp_path):
         entry["parent_case_id"] for entry in stratification["per_case"].values()
     }
     assert parents <= set(ALLOWED_LEGACY_PARENTS)
+
+
+def test_zero_recoverable_dataset_validates(tmp_path):
+    """Q-011 Option B (2026-09-11): the authoritative Stage-1 dataset may
+    contain zero corrective_recoverable=true cases; a valid 12-case approved
+    dataset with all corrective flags false still validates."""
+    rows = make_stage1_cases()
+    for row in rows:
+        behavior = row["expected_research_behavior"]
+        behavior["corrective_required"] = False
+        behavior["corrective_recoverable"] = False
+        behavior["expected_gap_reason_codes"] = []
+        behavior["acceptable_corrective_actions"] = []
+    path = tmp_path / "stage1_cases.jsonl"
+    path.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    cases = load_golden_cases(path)
+    stratification = make_stratification(rows)
+    manifest = make_dataset_manifest(rows, stratification)
+    assert not any(
+        row["expected_research_behavior"]["corrective_recoverable"] for row in rows
+    )
+    validated = validate_stage1_dataset_manifest(
+        manifest, cases, stratification=stratification
+    )
+    assert validated["case_count"] == 12
 
 
 def test_every_case_has_challenge_family_not_inferred_from_labels(tmp_path):

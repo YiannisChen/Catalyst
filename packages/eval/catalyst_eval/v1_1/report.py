@@ -28,6 +28,13 @@ _SECRET_PATTERNS = (
 )
 
 
+def _sum_known_metrics(values: Sequence[Any]) -> int | float | None:
+    """Sum a metric only when every contributing run recorded it."""
+    if any(value is None for value in values):
+        return None
+    return sum(values)
+
+
 def build_report_payload(
     *,
     eval_manifest: Any,
@@ -102,59 +109,68 @@ def build_report_payload(
     trajectory_facts: list[RunTrajectoryFacts] = []
     retrieval_results: list[RetrievalResult] = []
     provider_calls = 0
-    cost_total = 0.0
-    latency_total = 0
-    tokens_total = 0
+    cost_values: list[float] = []
+    latency_values: list[int | None] = []
+    token_values: list[int | None] = []
     for case_id in ordered_ids:
         row = rows[case_id]
         facts = row.run_facts
-        if facts.get("schema_version") != "v1_1_stage1_run_facts_v1":
-            raise ValueError(
-                f"run facts for {case_id!r} have an unknown schema "
-                f"{facts.get('schema_version')!r}"
-            )
+        from catalyst_eval.v1_1.run_facts import validate_run_facts
+
+        validated = validate_run_facts(
+            facts,
+            expected_case_id=case_id,
+            row_provider_calls=row.provider_calls,
+        )
         claims = tuple(
             RunClaimOutput(
-                claim_id=str(claim["claim_id"]),
-                material=bool(claim.get("material", True)),
-                citation_ids=tuple(claim.get("citation_ids") or ()),
-                role=str(claim.get("role") or "PRIMARY"),
-                statement=claim.get("statement"),
+                claim_id=claim.claim_id,
+                material=claim.material,
+                citation_ids=tuple(claim.citation_ids),
+                role=claim.role,
+                statement=claim.statement,
             )
-            for claim in facts.get("claims") or ()
+            for claim in validated.claims
         )
         run_outputs.append(
             RunAttributionOutput(
                 case_id=case_id,
-                output_status=str(facts.get("output_status") or "UNKNOWN"),
-                attribution_type=facts.get("attribution_type"),
-                refusal_reason=facts.get("refusal_reason"),
+                output_status=validated.output_status,
+                attribution_type=validated.attribution_type,
+                refusal_reason=validated.refusal_reason,
+                refusal_reason_available=validated.refusal_reason_available,
                 claims=claims,
-                sanity_tasks_completed=tuple(facts.get("sanity_tasks_completed") or ()),
-                latency_ms=facts.get("latency_ms"),
-                tokens=facts.get("tokens"),
-                cost_usd=facts.get("cost_usd"),
+                sanity_tasks_completed=tuple(validated.sanity_tasks_completed),
+                latency_ms=validated.latency_ms,
+                tokens=validated.tokens,
+                cost_usd=validated.cost_usd,
                 coverage_limited=coverage_by_case[case_id],
-                model_limited=bool(facts.get("model_limited")),
+                model_limited=validated.model_limited,
             )
         )
-        trajectory = facts.get("trajectory") or {}
+        trajectory = validated.trajectory
         trajectory_facts.append(
             RunTrajectoryFacts(
                 case_id=case_id,
-                corrective_triggered=bool(trajectory.get("corrective_triggered")),
-                gap_ids=tuple(trajectory.get("gap_ids") or ()),
-                corrective_actions=tuple(trajectory.get("corrective_actions") or ()),
-                stop_correct=bool(trajectory.get("stop_correct", True)),
-                new_structure_created=bool(trajectory.get("new_structure_created")),
-                corrected=bool(trajectory.get("corrected")),
+                corrective_triggered=trajectory.corrective_triggered,
+                # Observed code-owned gap reason codes and action identities.
+                gap_ids=tuple(trajectory.gap_reason_codes),
+                corrective_actions=tuple(trajectory.corrective_actions),
+                rounds_executed=trajectory.rounds_executed,
+                produced_structure=trajectory.produced_structure,
             )
         )
-        retrieval = facts.get("retrieval") or {}
-        pool_data = retrieval.get("pool")
+        retrieval = validated.retrieval
+        if not retrieval.observed:
+            raise ValueError(
+                f"run facts for {case_id!r} record no observed retrieval; the "
+                "run cannot be scored for retrieval and must not be reported as "
+                "a measured zero"
+            )
+        pool_data = retrieval.pool
         if not isinstance(pool_data, dict):
             raise ValueError(
-                f"run facts for {case_id!r} are missing the serialized pool manifest"
+                f"run facts for {case_id!r} are missing the observed pool manifest"
             )
         from catalyst_eval.benchmark.pool_manifest import PoolManifest
 
@@ -162,18 +178,26 @@ def build_report_payload(
             RetrievalResult(
                 case_id=case_id,
                 pool=PoolManifest.model_validate(pool_data),
-                ranked_evidence_ids=tuple(retrieval.get("ranked_evidence_ids") or ()),
-                reranker_contributed=bool(retrieval.get("reranker_contributed")),
-                latency_ms=retrieval.get("latency_ms"),
-                degraded=bool(retrieval.get("degraded")),
-                ticker_violations=tuple(retrieval.get("ticker_violations") or ()),
-                cutoff_violations=tuple(retrieval.get("cutoff_violations") or ()),
+                ranked_evidence_ids=tuple(retrieval.ranked_evidence_ids),
+                reranker_contributed=retrieval.reranker_contributed,
+                latency_ms=retrieval.latency_ms,
+                degraded=retrieval.degraded,
+                ticker_violations=tuple(retrieval.ticker_violations),
+                cutoff_violations=tuple(retrieval.cutoff_violations),
             )
         )
+        if row.cost_usd is None or validated.cost_usd is None:
+            raise ValueError(
+                f"report cannot publish with unknown provider cost for {case_id!r}"
+            )
+        if validated.cost_usd != row.cost_usd:
+            raise ValueError(
+                f"run facts and ledger cost disagree for {case_id!r}"
+            )
         provider_calls += row.provider_calls
-        cost_total += row.cost_usd or 0.0
-        latency_total += facts.get("latency_ms") or 0
-        tokens_total += facts.get("tokens") or 0
+        cost_values.append(float(validated.cost_usd))
+        latency_values.append(validated.latency_ms)
+        token_values.append(validated.tokens)
 
     audits_by_case = {audit.case_id: audit for audit in audits}
     if set(audits_by_case) != set(ordered_ids):
@@ -205,9 +229,13 @@ def build_report_payload(
         "max_provider_calls": max_provider_calls,
         "max_cost_usd": max_cost_usd,
         "provider_calls": provider_calls,
-        "cost_usd": round(cost_total, 6),
-        "latency_ms": latency_total,
-        "tokens": tokens_total,
+        "cost_usd": (
+            round(float(cost_total), 6)
+            if (cost_total := _sum_known_metrics(cost_values)) is not None
+            else None
+        ),
+        "latency_ms": _sum_known_metrics(latency_values),
+        "tokens": _sum_known_metrics(token_values),
         "coverage_limited_count": attribution.coverage_limited_count,
         "model_limited_count": attribution.model_limited_count,
         "sealed_audit": True,

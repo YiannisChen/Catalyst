@@ -9,6 +9,7 @@ contract/operator/configuration error.
 """
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -38,13 +39,27 @@ def cli_env(tmp_path) -> dict:
     strat_path.write_text(
         json.dumps(make_stratification(rows), sort_keys=True), encoding="utf-8"
     )
+    # Phase A: prepare requires a real runtime DB whose streaming SHA-256 must
+    # bind to the declared Q-001 identity hash.
+    runtime_db = tmp_path / "runtime.db"
+    runtime_db.write_bytes(b"catalyst-runtime-db\x00" * 64)
     return {
         "tmp_path": tmp_path,
         "dataset_path": dataset_path,
         "manifest_path": manifest_path,
         "strat_path": strat_path,
+        "runtime_db": runtime_db,
+        "runtime_db_sha256": hashlib.sha256(runtime_db.read_bytes()).hexdigest(),
         "eval_manifest": builder_manifest_cli,
     }
+
+
+def _identity_bound_manifest(cli_env, manifest: dict) -> dict:
+    manifest = dict(manifest)
+    manifest["data_runtime_identity_ref"] = "v1:corpus:fixture"
+    manifest["data_runtime_identity_hash"] = cli_env["runtime_db_sha256"]
+    manifest["q001_file_sha256"] = cli_env["runtime_db_sha256"]
+    return manifest
 
 
 def _load_cli():
@@ -66,6 +81,12 @@ def test_cli_prepare_makes_no_provider_calls(cli_env, monkeypatch):
         raise AssertionError("prepare must never call a provider")
 
     monkeypatch.setattr(module, "_default_runner_adapter_factory", boom_adapter)
+    manifest = _identity_bound_manifest(
+        cli_env, json.loads(cli_env["manifest_path"].read_text(encoding="utf-8"))
+    )
+    cli_env["manifest_path"].write_text(
+        json.dumps(manifest, sort_keys=True), encoding="utf-8"
+    )
     out_dir = cli_env["tmp_path"] / "out"
     exit_code = module.main([
         "prepare",
@@ -74,6 +95,7 @@ def test_cli_prepare_makes_no_provider_calls(cli_env, monkeypatch):
         "--output-dir", str(out_dir),
         "--max-provider-calls", "100",
         "--max-cost-usd", "10.0",
+        "--runtime-db", str(cli_env["runtime_db"]),
     ])
     assert exit_code == 0
     assert calls == []
@@ -89,6 +111,21 @@ def test_cli_execute_requires_ceilings(cli_env, monkeypatch):
         "--output-dir", str(out_dir),
     ])
     assert exit_code == 2
+
+
+def test_provider_budget_rejects_zero_cost_ceiling():
+    module = _load_cli()
+    with pytest.raises(module.Stage1OperatorError, match="max-cost-usd"):
+        module._build_provider_budget(
+            max_provider_calls=1, max_cost_usd=0.0, pricing=None
+        )
+
+
+def test_cli_help_describes_benchmark_inputs():
+    module = _load_cli()
+    help_text = module.build_parser().format_help()
+    assert "Benchmark dataset manifest" in help_text
+    assert "Benchmark stratification" in help_text
 
 
 def test_cli_execute_refuses_incompatible_ledger(cli_env, monkeypatch):
@@ -130,3 +167,32 @@ def test_cli_report_missing_audit_is_operator_stop(cli_env, monkeypatch):
         "--markdown-out", str(cli_env["tmp_path"] / "r.md"),
     ])
     assert exit_code == 2
+
+
+def test_cli_prepare_empty_a3_a4_creates_no_eligible_experiments(cli_env):
+    """Q-011 Option B (2026-09-11): empty a3_eligible_ids and
+    a4_readiness_eligible_ids are legal and produce NO A3/A4 eligible
+    experiment entry during prepare (readiness-only, no promotion gate)."""
+    module = _load_cli()
+
+    rows = make_stage1_cases()
+    manifest = make_dataset_manifest(rows, make_stratification(rows))
+    manifest["a3_eligible_ids"] = []
+    manifest["a4_readiness_eligible_ids"] = []
+    manifest = _identity_bound_manifest(cli_env, manifest)
+    manifest_path = cli_env["tmp_path"] / "manifest_empty_eligible.json"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    out_dir = cli_env["tmp_path"] / "out_empty_eligible"
+    exit_code = module.main([
+        "prepare",
+        "--dataset-manifest", str(manifest_path),
+        "--stratification", str(cli_env["strat_path"]),
+        "--output-dir", str(out_dir),
+        "--max-provider-calls", "100",
+        "--max-cost-usd", "10.0",
+        "--runtime-db", str(cli_env["runtime_db"]),
+    ])
+    assert exit_code == 0
+    summary = json.loads((out_dir / "prepare_summary.json").read_text(encoding="utf-8"))
+    assert summary["eval_manifest"]["eligible_experiments"] == []
