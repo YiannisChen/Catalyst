@@ -180,7 +180,14 @@ def _coverage() -> "CoverageSummary":
     )
 
 
-def _payload_item(evidence_id: str, excerpt: str) -> "EvidencePayloadItem":
+def _payload_item(
+    evidence_id: str,
+    excerpt: str | None = None,
+    *,
+    content_state: str = "FULL_TEXT",
+    material_capability: str = "MATERIAL_CAPABLE",
+    evidence_role: str = "DIRECT_PRIMARY",
+) -> "EvidencePayloadItem":
     from catalyst_agents.attribution.context_pack import EvidencePayloadItem
     from catalyst_data.canonical.model import SourceClass
 
@@ -194,10 +201,10 @@ def _payload_item(evidence_id: str, excerpt: str) -> "EvidencePayloadItem":
         section_key="body",
         chunk_ordinal=1,
         source_class=SourceClass.REPORTED_NEWS,
-        evidence_role="DIRECT_PRIMARY",
+        evidence_role=evidence_role,
         eligible_at=_utc("2026-01-15T10:00:00Z"),
-        content_state="FULL_TEXT",
-        material_capability="MATERIAL_CAPABLE",
+        content_state=content_state,
+        material_capability=material_capability,
         independence_group_id=None,
         independence_status="UNKNOWN",
         content_hash="h" * 64,
@@ -259,6 +266,125 @@ def test_a1_packing_changes_rendered_messages():
     assert context_messages != critic_messages
     # None/default remains the production ContextPack renderer.
     assert _renderer_for_packing(context_draft) is _foundation_renderer
+
+
+def _draft_with_inventory(
+    packing_policy_version: str,
+    inventory: tuple,
+    included: tuple[str, ...],
+    excluded: tuple[str, ...],
+) -> "PackedContextDraft":
+    from catalyst_agents.attribution.context_pack_builder import PackedContextDraft
+    from catalyst_agents.attribution.move_profile import MoveProfile
+
+    return PackedContextDraft(
+        schema_version="context_pack_v1",
+        packing_policy_version=packing_policy_version,
+        run_id="run:1",
+        round=1,
+        temporal_identity=_temporal(),
+        data_runtime_identity=_runtime(),
+        context_budget=_budget(),
+        observation=MoveProfile(),
+        coverage_summary=_coverage(),
+        research_history=(),
+        evidence_inventory=inventory,
+        direct_primary_evidence=(),
+        primary_authority_evidence=(),
+        independent_reports=(),
+        lead_only_evidence=(),
+        structured_context=(),
+        deterministic_conflict_signals=(),
+        data_coverage_gaps=(),
+        capability_gaps=(),
+        retrieval_degradations=(),
+        included_evidence_ids=included,
+        excluded_evidence_ids=excluded,
+        truncation_metadata=(),
+        delta_evidence_ids=(),
+        prior_assessment_context=None,
+    )
+
+
+def test_foundation_renderer_inventory_lists_only_included_ids():
+    """Citable inventory is included_evidence_ids, never METADATA_ONLY rows.
+
+    The live c02 pack had a non-empty evidence_inventory of METADATA_ONLY
+    identities and empty included_evidence_ids; labeling those IDs as
+    ``inventory=`` made the model cite them and fail reference integrity.
+    """
+    from catalyst_agents.graph import _foundation_renderer
+
+    included = _payload_item("e_full", "issuer exhibit body")
+    meta = _payload_item(
+        "e_meta",
+        content_state="METADATA_ONLY",
+        material_capability="NOT_CAPABLE",
+        evidence_role="INDEPENDENT_REPORT",
+    )
+    draft = _draft_with_inventory(
+        "evidence_context_pack_v1",
+        inventory=(included, meta),
+        included=("e_full",),
+        excluded=("e_meta",),
+    )
+    messages = _foundation_renderer(draft)
+    inventory_lines = [
+        message.content
+        for message in messages
+        if message.content.startswith("inventory=")
+    ]
+    assert inventory_lines == ["inventory=e_full"]
+    assert all("e_meta" not in line for line in inventory_lines)
+    extra = [
+        message.content
+        for message in messages
+        if message.content.startswith("metadata_only_identities=")
+    ]
+    assert extra == ["metadata_only_identities=e_meta"]
+    assert not any("citable" in message.content.lower() and "e_meta" in message.content
+                   for message in messages)
+
+
+def test_foundation_renderer_empty_included_emits_inventory_none():
+    """Empty citable set is explicit ``inventory=NONE``. METADATA_ONLY
+    identities may appear as non-citable info, never as inventory."""
+    from catalyst_agents.graph import _foundation_renderer
+
+    meta_a = _payload_item(
+        "meta:a",
+        content_state="METADATA_ONLY",
+        material_capability="NOT_CAPABLE",
+        evidence_role="INDEPENDENT_REPORT",
+    )
+    meta_b = _payload_item(
+        "meta:b",
+        content_state="METADATA_ONLY",
+        material_capability="NOT_CAPABLE",
+        evidence_role="INDEPENDENT_REPORT",
+    )
+    draft = _draft_with_inventory(
+        "evidence_context_pack_v1",
+        inventory=(meta_a, meta_b),
+        included=(),
+        excluded=("meta:a", "meta:b"),
+    )
+    messages = _foundation_renderer(draft)
+    inventory_lines = [
+        message.content
+        for message in messages
+        if message.content.startswith("inventory=")
+    ]
+    assert inventory_lines == ["inventory=NONE"]
+    joined_inventory = " ".join(inventory_lines)
+    assert "meta:a" not in joined_inventory
+    assert "meta:b" not in joined_inventory
+    extra = [
+        message.content
+        for message in messages
+        if message.content.startswith("metadata_only_identities=")
+    ]
+    assert extra == ["metadata_only_identities=meta:a,meta:b"]
 
 
 # --- A5: observation builder behavior --------------------------------------

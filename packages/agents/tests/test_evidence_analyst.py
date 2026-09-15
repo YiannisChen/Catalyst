@@ -105,6 +105,7 @@ def _build_pack(
     run_id: str = "run:1",
     included: tuple[str, ...] = ("e1", "e2"),
     pack_sha256: str | None = None,
+    metadata_only_ids: tuple[str, ...] = (),
 ) -> EvidenceAnalystContextPack:
     """Build a minimal, valid persisted EvidenceAnalystContextPack (M4 schema)."""
     from catalyst_agents.attribution.context_pack import (
@@ -166,8 +167,15 @@ def _build_pack(
         parse_degraded_item_count=0,
         content_state_counts=(),
     )
-    inventory_items = tuple(
-        EvidencePayloadItem(
+    def _item(
+        evidence_id: str,
+        *,
+        content_state: str,
+        material_capability: str,
+        evidence_role: str,
+        source_class: str,
+    ) -> EvidencePayloadItem:
+        return EvidencePayloadItem(
             evidence_id=evidence_id,
             canonical_asset_id=f"asset:{evidence_id}",
             canonical_content_version_id=f"version:{evidence_id}",
@@ -175,15 +183,33 @@ def _build_pack(
             chunk_id=evidence_id,
             section_key="body",
             chunk_ordinal=1,
-            source_class="issuer_disclosure",
-            evidence_role="DIRECT_PRIMARY",
+            source_class=source_class,
+            evidence_role=evidence_role,
             eligible_at=temporal.cutoff_at,
-            content_state="FULL_TEXT",
-            material_capability="MATERIAL_CAPABLE",
+            content_state=content_state,
+            material_capability=material_capability,
             independence_status="KNOWN_GROUP",
             content_hash="c" * 64,
         )
+
+    inventory_items = tuple(
+        _item(
+            evidence_id,
+            content_state="FULL_TEXT",
+            material_capability="MATERIAL_CAPABLE",
+            evidence_role="DIRECT_PRIMARY",
+            source_class="issuer_disclosure",
+        )
         for evidence_id in included
+    ) + tuple(
+        _item(
+            evidence_id,
+            content_state="METADATA_ONLY",
+            material_capability="NOT_CAPABLE",
+            evidence_role="INDEPENDENT_REPORT",
+            source_class="reported_news",
+        )
+        for evidence_id in metadata_only_ids
     )
     return EvidenceAnalystContextPack(
         schema_version="1.0",
@@ -214,7 +240,7 @@ def _build_pack(
         capability_gaps=(),
         retrieval_degradations=(),
         included_evidence_ids=included,
-        excluded_evidence_ids=(),
+        excluded_evidence_ids=metadata_only_ids,
         truncation_metadata=(),
         delta_evidence_ids=(),
         context_pack_sha256=pack_sha256 or "a" * 64,
@@ -575,29 +601,75 @@ def _abstain_decision_dict() -> dict:
 
 
 def test_empty_inventory_valid_abstain_succeeds_one_logical_call() -> None:
-    """An empty authoritative inventory is valid: an evidence-free ABSTAIN
-    AnalystDecision succeeds with exactly one logical call."""
+    """An empty citable inventory is valid: the node takes the deterministic
+    evidence-free ABSTAIN path with zero provider dispatch."""
     store = InMemoryPackStore()
     _persist_pair(store, pack=_build_pack(included=()))
     llm = FakeAnalystProvider(_abstain_decision_dict)
     result = evidence_analyst({"run_id": "run:1"}, llm=llm, persistence=store,
                               prompt_template="t", schema=AnalystDecision)
-    assert llm.calls == 1
-    assert result["analyst_logical_calls"] == 1
-    assert result["analyst_provider_attempts"] == 1
+    assert llm.calls == 0
+    assert result["analyst_logical_calls"] == 0
+    assert result["analyst_provider_attempts"] == 0
+    assert result["analyst_attempts"] == ()
+    assert result["analyst_attempt_usages"] == ()
     assert result["analyst_decision"].research_decision.value == "ABSTAIN"
+    assert result["analyst_decision"].evidence_decisions == ()
+    assert result["analyst_decision"].candidate_hypotheses == ()
+    assert result["analyst_decision"].proposed_missing_evidence == ()
 
 
-def test_empty_inventory_evidence_ref_retries_once_then_model_schema_failure() -> None:
-    """Any evidence reference against an empty inventory enters the bounded
-    schema retry (max 2 provider attempts) and exhausts as MODEL_SCHEMA_FAILURE."""
+def test_empty_citable_inventory_with_metadata_only_rows_dispatches_nothing() -> None:
+    """Live c02 shape: non-empty METADATA_ONLY evidence_inventory, empty
+    included_evidence_ids. The Analyst provider is never called; the node
+    emits a contract-legal empty ABSTAIN with zero usage."""
+    store = InMemoryPackStore()
+    pack = _build_pack(
+        included=(),
+        metadata_only_ids=(
+            "0344648e6a45ec969cc7e9c5756818a7adb4a1e8bec03fd31611653adf032498"
+            ":news_v2:body:0001",
+            METADATA_ONLY_COVERAGE_ID,
+        ),
+    )
+    assert pack.evidence_inventory
+    assert pack.included_evidence_ids == ()
+    assert all(item.content_state == "METADATA_ONLY" for item in pack.evidence_inventory)
+    _persist_pair(store, pack=pack)
+    llm = FakeAnalystProvider(_valid_decision_dict)
+    result = evidence_analyst(
+        {"run_id": "run:1"},
+        llm=llm,
+        persistence=store,
+        prompt_template="t",
+        schema=AnalystDecision,
+    )
+    assert llm.calls == 0
+    assert result["analyst_logical_calls"] == 0
+    assert result["analyst_provider_attempts"] == 0
+    assert result["analyst_attempts"] == ()
+    assert result["analyst_attempt_usages"] == ()
+    decision = result["analyst_decision"]
+    assert decision.research_decision is ResearchDecision.ABSTAIN
+    assert decision.recommended_status is AttributionStatus.ABSTAIN
+    assert decision.evidence_decisions == ()
+    assert decision.candidate_hypotheses == ()
+    assert decision.proposed_missing_evidence == ()
+    assert decision.proposed_corrective_intents == ()
+
+
+def test_empty_inventory_evidence_ref_never_reaches_the_provider() -> None:
+    """Empty citable inventory does not dispatch, so a model that would cite
+    pack-external IDs never runs. Reference integrity stays closed for the
+    dispatched path (see the mixed-inventory test below)."""
     store = InMemoryPackStore()
     _persist_pair(store, pack=_build_pack(included=()))
     llm = FakeAnalystProvider(_valid_decision_dict)
-    with pytest.raises(ModelRoleCallError, match="MODEL_SCHEMA_FAILURE"):
-        evidence_analyst({"run_id": "run:1"}, llm=llm, persistence=store,
-                         prompt_template="t", schema=AnalystDecision)
-    assert llm.calls == 2
+    result = evidence_analyst({"run_id": "run:1"}, llm=llm, persistence=store,
+                              prompt_template="t", schema=AnalystDecision)
+    assert llm.calls == 0
+    assert result["analyst_decision"].research_decision is ResearchDecision.ABSTAIN
+    assert result["analyst_decision"].evidence_decisions == ()
 
 
 def test_caller_supplied_inventory_superset_fails_closed() -> None:
@@ -1038,8 +1110,8 @@ def test_json_mode_contract_is_appended_to_the_system_prompt_before_hashing() ->
 
 
 def test_generated_empty_example_parses_as_abstain_in_one_logical_call() -> None:
-    """The emitted example is itself a valid AnalystDecision: the live model
-    constrained to that shape completes as an evidence-free ABSTAIN."""
+    """The pinned empty-inventory example is the deterministic ABSTAIN the
+    empty-citable fast path emits, with zero provider calls."""
     store = InMemoryPackStore()
     _persist_pair(store, pack=_build_pack(included=()))
     llm = FakeAnalystProvider(_empty_inventory_example_dict)
@@ -1050,7 +1122,9 @@ def test_generated_empty_example_parses_as_abstain_in_one_logical_call() -> None
         prompt_template="t",
         schema=AnalystDecision,
     )
-    assert llm.calls == 1
+    assert llm.calls == 0
+    assert result["analyst_logical_calls"] == 0
+    assert result["analyst_provider_attempts"] == 0
     assert result["analyst_decision"].research_decision is ResearchDecision.ABSTAIN
     assert result["analyst_decision"].recommended_status is AttributionStatus.ABSTAIN
     assert (
@@ -1058,13 +1132,60 @@ def test_generated_empty_example_parses_as_abstain_in_one_logical_call() -> None
         is AttributionType.NO_MATERIAL_PUBLIC_CATALYST
     )
     assert result["analyst_decision"].evidence_decisions == ()
+    assert result["analyst_decision"].model_dump(mode="json") == (
+        _empty_inventory_example_dict()
+    )
 
 
-def test_empty_inventory_metadata_only_coverage_id_is_a_schema_failure() -> None:
-    """A METADATA_ONLY coverage row is not inventory: citing it is a bounded
-    schema failure after exactly two provider attempts."""
+def test_empty_inventory_metadata_only_coverage_id_is_never_dispatched() -> None:
+    """A METADATA_ONLY coverage row is not citable inventory. Empty included
+    IDs take the deterministic ABSTAIN path; the model never gets a chance
+    to cite the metadata-only identity."""
     store = InMemoryPackStore()
-    _persist_pair(store, pack=_build_pack(included=()))
+    _persist_pair(
+        store,
+        pack=_build_pack(included=(), metadata_only_ids=(METADATA_ONLY_COVERAGE_ID,)),
+    )
+    llm = FakeAnalystProvider(
+        lambda: {
+            "schema_version": "1.0",
+            "evidence_decisions": [
+                {
+                    "evidence_id": METADATA_ONLY_COVERAGE_ID,
+                    "disposition": "WEAK",
+                    "reason_code": "metadata_only",
+                }
+            ],
+            "candidate_hypotheses": [],
+            "research_decision": "ABSTAIN",
+            "recommended_status": "ABSTAIN",
+            "proposed_attribution_type": "NO_MATERIAL_PUBLIC_CATALYST",
+        }
+    )
+    result = evidence_analyst(
+        {"run_id": "run:1"},
+        llm=llm,
+        persistence=store,
+        prompt_template="t",
+        schema=AnalystDecision,
+    )
+    assert llm.calls == 0
+    assert result["analyst_decision"].research_decision is ResearchDecision.ABSTAIN
+    assert result["analyst_decision"].evidence_decisions == ()
+
+
+def test_metadata_only_id_outside_included_inventory_is_a_schema_failure() -> None:
+    """Reference integrity is not relaxed: when the Analyst IS dispatched,
+    citing a METADATA_ONLY identity that is not in included_evidence_ids is
+    still a bounded schema failure after exactly two provider attempts."""
+    store = InMemoryPackStore()
+    _persist_pair(
+        store,
+        pack=_build_pack(
+            included=("e1", "e2"),
+            metadata_only_ids=(METADATA_ONLY_COVERAGE_ID,),
+        ),
+    )
     llm = FakeAnalystProvider(
         lambda: {
             "schema_version": "1.0",
@@ -1154,7 +1275,7 @@ def test_json_mode_outbound_payload_carries_the_field_contract_offline() -> None
     )
 
     store = InMemoryPackStore()
-    _persist_pair(store, pack=_build_pack(included=()))
+    _persist_pair(store)
     result = evidence_analyst(
         {"run_id": "run:1"},
         llm=client,
@@ -1264,7 +1385,7 @@ def test_function_calling_outbound_payload_carries_the_decision_tool_offline() -
 
     client = _offline_capable_client(handler, method="function_calling")
     store = InMemoryPackStore()
-    _persist_pair(store, pack=_build_pack(included=()))
+    _persist_pair(store)
     result = evidence_analyst(
         {"run_id": "run:1"},
         llm=client,

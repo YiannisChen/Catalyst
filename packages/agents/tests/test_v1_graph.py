@@ -360,6 +360,59 @@ def test_v1_graph_abstain_path_terminates_valid() -> None:
     assert result.validated_claim_plan.status.value == "ABSTAIN"
 
 
+def test_v1_graph_metadata_only_empty_citable_inventory_skips_analyst() -> None:
+    """Live c02 shape through the production graph: retrieved rows are all
+    METADATA_ONLY, included_evidence_ids is empty, renderer emits
+    inventory=NONE, Analyst provider calls are 0, Writer still runs the
+    fixed LIMITATION path, and the run completes ABSTAIN."""
+    from dataclasses import replace
+
+    class MetadataOnlyRetriever(GraphRetriever):
+        def _evidence(self, chunk_id: str, rank: int):
+            return replace(
+                super()._evidence(chunk_id, rank),
+                content_state="METADATA_ONLY",
+                material_capability="NOT_CAPABLE",
+                content_text="",
+            )
+
+    analyst = GraphAnalystProvider(_ready_decision)
+    writer = GraphWriterProvider(
+        "OBSERVED_MOVE\nAAPL +9.5%.\nLIMITATIONS\nNo causal explanation was established from the available evidence."
+    )
+    kwargs = _graph_kwargs(analyst=analyst, writer=writer)
+    kwargs["retriever"] = MetadataOnlyRetriever()
+    persistence = kwargs["persistence"]
+    result = run_v1_graph(**kwargs)
+
+    assert analyst.calls == 0
+    assert writer.calls == 1
+    assert result.analyst_logical_calls == 0
+    assert result.analyst_provider_attempts == 0
+    assert result.writer_logical_calls == 1
+    assert result.logical_model_call_count == 1
+    assert result.context_pack.included_evidence_ids == ()
+    assert result.context_pack.evidence_inventory
+    assert all(
+        item.content_state == "METADATA_ONLY"
+        for item in result.context_pack.evidence_inventory
+    )
+    assert result.terminal_envelope["final_status"] == "ABSTAIN"
+    assert result.terminal_envelope["assured"] is True
+    assert result.validated_claim_plan.status.value == "ABSTAIN"
+    pair = persistence.load_pair(run_id="run:v1")
+    inventory_lines = [
+        message.content
+        for message in pair.rendered_messages
+        if message.content.startswith("inventory=")
+    ]
+    assert inventory_lines == ["inventory=NONE"]
+    assert all(
+        item.evidence_id not in " ".join(inventory_lines)
+        for item in result.context_pack.evidence_inventory
+    )
+
+
 def test_v1_graph_state_is_thin() -> None:
     analyst = GraphAnalystProvider(_ready_decision)
     writer = GraphWriterProvider(_writer_text_factory())

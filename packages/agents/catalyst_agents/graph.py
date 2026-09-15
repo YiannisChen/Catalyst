@@ -72,9 +72,34 @@ from catalyst_data.canonical.identity import DataRuntimeIdentity
 from catalyst_data.canonical.temporal import TemporalIdentity, utc_iso_z
 
 
+def _citable_inventory_line(draft: PackedContextDraft) -> str:
+    """Citable inventory is ``included_evidence_ids`` only.
+
+    METADATA_ONLY / excluded rows may exist in ``evidence_inventory`` as
+    identity records, but they are not citable and must not be labeled
+    ``inventory=``. An empty citable set is explicit ``inventory=NONE``.
+    """
+    if not draft.included_evidence_ids:
+        return "inventory=NONE"
+    return "inventory=" + ",".join(draft.included_evidence_ids)
+
+
+def _metadata_only_identities_line(draft: PackedContextDraft) -> str | None:
+    """Non-citable METADATA_ONLY identities, never labeled as inventory."""
+    included = set(draft.included_evidence_ids)
+    ids = tuple(
+        item.evidence_id
+        for item in draft.evidence_inventory
+        if item.content_state == "METADATA_ONLY" and item.evidence_id not in included
+    )
+    if not ids:
+        return None
+    return "metadata_only_identities=" + ",".join(ids)
+
+
 def _foundation_renderer(draft: PackedContextDraft) -> tuple[RenderMessage, ...]:
     """Deterministic fixture renderer; never includes context_pack_sha256."""
-    return (
+    messages = [
         RenderMessage(
             role="system",
             content="observation="
@@ -84,8 +109,7 @@ def _foundation_renderer(draft: PackedContextDraft) -> tuple[RenderMessage, ...]
         ),
         RenderMessage(
             role="system",
-            content="inventory="
-            + ",".join(item.evidence_id for item in draft.evidence_inventory),
+            content=_citable_inventory_line(draft),
         ),
         RenderMessage(
             role="system",
@@ -94,7 +118,11 @@ def _foundation_renderer(draft: PackedContextDraft) -> tuple[RenderMessage, ...]
                 draft.coverage_summary.model_dump(mode="json")
             ).decode("utf-8"),
         ),
-    )
+    ]
+    extra = _metadata_only_identities_line(draft)
+    if extra is not None:
+        messages.append(RenderMessage(role="system", content=extra))
+    return tuple(messages)
 
 
 def _critic_prefix_renderer(draft: PackedContextDraft) -> tuple[RenderMessage, ...]:

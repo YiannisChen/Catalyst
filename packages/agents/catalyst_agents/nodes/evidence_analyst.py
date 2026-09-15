@@ -101,6 +101,52 @@ _NESTED_DECISION_MODELS: tuple[tuple[str, Any], ...] = (
 )
 
 
+def _empty_citable_inventory_result(
+    *,
+    schema: type[AnalystDecision],
+    pair: Any,
+    hypothesis_policy_version: str | None,
+) -> dict[str, Any]:
+    """Deterministic evidence-free ABSTAIN when the citable inventory is empty.
+
+    Round 1 and the corrective round share this path: ``included_evidence_ids``
+    empty means there is nothing the Analyst may cite, so the node does not
+    dispatch a provider. The decision is the contract-legal empty ABSTAIN
+    (no evidence, candidates, or gaps); logical calls, provider attempts, and
+    usage are all zero. Writer LIMITATION still runs downstream.
+    """
+    example = _empty_inventory_example(schema)
+    if not example:
+        raise ModelSchemaFailure(
+            "empty citable inventory fast path has no legal AnalystDecision example"
+        )
+    decision = schema.model_validate(example)
+    schema_version = getattr(schema, "schema_version", "1.0")
+    if hypothesis_policy_version is not None:
+        schema_version = f"{schema_version}+hypothesis:{hypothesis_policy_version}"
+    semantic_input_hash = hashlib.sha256(
+        canonical_context_pack_json(
+            {
+                "fast_path": "empty_citable_inventory_v1",
+                "pack_sha256": pair.refs.pack_sha256,
+                "rendered_messages_sha256": pair.refs.rendered_messages_sha256,
+                "schema_version": schema_version,
+            }
+        )
+    ).hexdigest()
+    return {
+        "analyst_decision": decision,
+        "decision_hash": _decision_hash(decision),
+        "context_pack_sha256": pair.refs.pack_sha256,
+        "rendered_messages_sha256": pair.refs.rendered_messages_sha256,
+        "semantic_input_hash": semantic_input_hash,
+        "analyst_logical_calls": 0,
+        "analyst_provider_attempts": 0,
+        "analyst_attempts": (),
+        "analyst_attempt_usages": (),
+    }
+
+
 def _empty_inventory_example(schema: type[AnalystDecision]) -> dict[str, Any]:
     """Return the exact-field empty-inventory example for ``schema``.
 
@@ -436,14 +482,18 @@ def evidence_analyst(
     ``pair.pack.included_evidence_ids``. A caller-supplied ``pack_inventory_ids``
     override is rejected unless it is byte-for-byte equal to the persisted
     inventory. Missing pack or an enlarged override fail closed before any
-    provider call; an empty inventory is valid and permits an evidence-free
-    ABSTAIN decision (any evidence reference enters the bounded schema retry
-    and exhausts as MODEL_SCHEMA_FAILURE). When the admitted provider exposes a
-    native structured-output surface (``with_structured_output(schema)``) it is
-    invoked with the identical dictionary message payload on every attempt; an
-    admitted-but-broken surface fails closed with a typed capability error
-    (no silent raw-invoke fallback). Reference-integrity validation stays
-    inside the bounded identical-input retry boundary.
+    provider call. An empty citable inventory (``included_evidence_ids`` empty,
+    including a non-empty METADATA_ONLY ``evidence_inventory``) takes a
+    deterministic evidence-free ABSTAIN path with zero provider dispatch;
+    round 1 and the corrective round share that path. When the Analyst is
+    dispatched, any evidence reference outside the persisted included inventory
+    enters the bounded schema retry and exhausts as MODEL_SCHEMA_FAILURE.
+    When the admitted provider exposes a native structured-output surface
+    (``with_structured_output(schema)``) it is invoked with the identical
+    dictionary message payload on every attempt; an admitted-but-broken
+    surface fails closed with a typed capability error (no silent raw-invoke
+    fallback). Reference-integrity validation stays inside the bounded
+    identical-input retry boundary.
     """
     run_id = state.get("run_id")
     if not run_id:
@@ -465,6 +515,13 @@ def evidence_analyst(
         )
     inventory = set(persisted_inventory)
     rendered_messages = pair.rendered_messages
+
+    if not persisted_inventory:
+        return _empty_citable_inventory_result(
+            schema=schema,
+            pair=pair,
+            hypothesis_policy_version=hypothesis_policy_version,
+        )
 
     prompt = _prompt_template(prompt_path, prompt_template)
     schema_version = getattr(schema, "schema_version", "1.0")
