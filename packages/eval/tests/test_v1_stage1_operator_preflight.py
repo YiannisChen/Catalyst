@@ -522,6 +522,45 @@ def test_production_operator_factory_fails_closed_without_config(
         )
 
 
+def test_production_operator_factory_wires_index_manifest_path(
+    tmp_path, monkeypatch
+):
+    """The live operator must use the authoritative clean-import manifest."""
+    module = _load_cli()
+    for name in module._OPERATOR_REQUIRED_ENV:
+        monkeypatch.setenv(name, "approved")
+    manifest_path = tmp_path / "index_manifest.json"
+    manifest_path.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CATALYST_INDEX_MANIFEST_PATH", str(manifest_path))
+    captured = {}
+
+    class SpyLoader:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    import catalyst_agents.runtime.dependencies as dependencies
+
+    monkeypatch.setattr(dependencies, "RuntimeDependencyLoader", SpyLoader)
+    data_db, _digest = _make_runtime_db(tmp_path, name="q001-derivative.db")
+    adapter = module.build_operator_runner_adapter(
+        data_db_path=data_db,
+        runtime_db_path=tmp_path / "runtime.sqlite3",
+        composition_builder=lambda **kwargs: object(),
+        adapter_factory=lambda **kwargs: kwargs,
+    )
+    assert captured["index_manifest_path"] == manifest_path
+    from catalyst_agents.runtime.query_embedding import (
+        ProductionBgeM3QueryEmbeddingFactory,
+    )
+
+    assert isinstance(
+        captured["query_embedding_factory"],
+        ProductionBgeM3QueryEmbeddingFactory,
+    )
+    assert adapter["provider"] == "deepseek"
+    assert adapter["model_id"] == "deepseek-flash"
+
+
 def test_production_operator_factory_rejects_shared_data_and_runtime_db(
     tmp_path, monkeypatch
 ):

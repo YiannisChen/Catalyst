@@ -33,10 +33,18 @@ def _write_active_generation(
     *,
     table_name: str = "chunks__staging__abc",
     schema_version: str = "active_generation_v1",
+    index_manifest_id: str | None = None,
 ) -> None:
     lancedb_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": schema_version,
+        "table_name": table_name,
+        "chunk_count": 1,
+    }
+    if index_manifest_id is not None:
+        payload["index_manifest_id"] = index_manifest_id
     (lancedb_dir / "active_generation.json").write_text(
-        json.dumps({"schema_version": schema_version, "table_name": table_name, "chunk_count": 1})
+        json.dumps(payload)
     )
 
 
@@ -63,6 +71,36 @@ def test_resolves_table_name_from_active_generation(tmp_path, monkeypatch):
     assert db.opened == ["chunks__staging__abc"]
     assert deps.health["lancedb"]["table"] == "chunks__staging__abc"
     assert "active_generation" in deps.health["lancedb"]
+
+
+def test_resolves_promoted_table_from_pointer_bound_candidate_dir(
+    tmp_path, monkeypatch
+):
+    sqlite_path = tmp_path / "runtime.db"
+    _touch(sqlite_path)
+    lancedb_dir = tmp_path / "ldb"
+    index_manifest_id = "a" * 64
+    candidate_dir = lancedb_dir / "candidates" / index_manifest_id
+    candidate_dir.mkdir(parents=True)
+    _write_active_generation(
+        lancedb_dir,
+        table_name="candidate_aaaaaaaaaaaaaaaa",
+        index_manifest_id=index_manifest_id,
+    )
+    monkeypatch.setenv("CATALYST_LANCEDB_DIR", str(lancedb_dir))
+    db = FakeLanceDB()
+    connected: list[str] = []
+
+    def connect(path: str):
+        connected.append(path)
+        return db
+
+    deps = _loader(sqlite_path, connect).get_dependencies()
+    assert deps.health["status"] == "ready"
+    assert connected == [str(candidate_dir)]
+    assert deps.lancedb_dir == candidate_dir
+    assert deps.health["lancedb"]["authority_path"] == str(lancedb_dir)
+    assert deps.health["lancedb"]["path"] == str(candidate_dir)
 
 
 def test_fails_closed_when_active_generation_missing(tmp_path, monkeypatch):

@@ -29,6 +29,7 @@ SUPPORTED_MODELS: list[str] = [
 ]
 
 DEFAULT_MODEL: str = "gemini-2.5-flash-nothink"
+V1_MAX_OUTPUT_TOKENS: int = 2_000
 
 _PROVIDER_DEFAULTS: dict[str, str] = {
     "openai": "https://api.openai.com/v1",
@@ -160,7 +161,10 @@ def build_v1_llm(
         "temperature": 0.0,
         "max_retries": 0,
         "stream_usage": True,
+        "max_tokens": V1_MAX_OUTPUT_TOKENS,
     }
+    if provider == "deepseek" and resolved_model == "deepseek-flash":
+        client_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     if timeout_seconds is not None:
         client_kwargs["timeout"] = timeout_seconds
     client = ChatOpenAI(**client_kwargs)

@@ -133,6 +133,7 @@ class Stage1GateFailure(RuntimeError):
 # or a provider dispatch.
 _OPERATOR_REQUIRED_ENV = (
     "CATALYST_LANCEDB_DIR",
+    "CATALYST_INDEX_MANIFEST_PATH",
     "CATALYST_CORPUS_MANIFEST_ID",
     "CATALYST_INDEX_MANIFEST_ID",
     "CATALYST_SOURCE_BUNDLE_ID",
@@ -205,11 +206,17 @@ def build_operator_runner_adapter(
     build_loader = dependency_loader_builder
     if build_loader is None:
         from catalyst_agents.runtime.dependencies import RuntimeDependencyLoader
+        from catalyst_agents.runtime.query_embedding import (
+            ProductionBgeM3QueryEmbeddingFactory,
+        )
 
         def build_loader(*, sqlite_db_path: str | Path):  # type: ignore[misc]
+            manifest_path = os.environ.get("CATALYST_INDEX_MANIFEST_PATH", "").strip()
             return RuntimeDependencyLoader(
                 sqlite_db_path=sqlite_db_path,
                 require_identity_bound_runtime=True,
+                query_embedding_factory=ProductionBgeM3QueryEmbeddingFactory(),
+                index_manifest_path=(Path(manifest_path) if manifest_path else None),
             )
     make_adapter = adapter_factory
     if make_adapter is None:
@@ -249,6 +256,8 @@ def build_operator_runner_adapter(
     return make_adapter(
         composition=composition,
         db_path=resolved_runtime_db,
+        provider=os.environ.get("CATALYST_PROVIDER", "deepseek").strip(),
+        model_id=os.environ.get("CATALYST_MODEL_ID", "deepseek-flash").strip(),
         prepared_identity_ref=prepared_identity_ref,
         prepared_identity_hash=prepared_identity_hash,
         case_timeout_seconds=(

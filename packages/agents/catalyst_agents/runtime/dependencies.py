@@ -168,6 +168,7 @@ class RuntimeDependencyLoader:
                     message="all manager-approved retrieval identities are required",
                 )
 
+        health["lancedb"]["authority_path"] = str(lancedb_dir)
         health["lancedb"]["path"] = str(lancedb_dir)
 
         lancedb_table_name = self._resolve_lancedb_table_name(lancedb_dir, health)
@@ -177,6 +178,8 @@ class RuntimeDependencyLoader:
                 component="lancedb",
                 message=health["lancedb"]["message"],
             )
+        lancedb_storage_dir = self._resolve_lancedb_storage_dir(lancedb_dir, health)
+        health["lancedb"]["path"] = str(lancedb_storage_dir)
 
         if self.require_identity_bound_runtime:
             manifest_path = self.index_manifest_path or (lancedb_dir / "index_manifest.json")
@@ -200,7 +203,7 @@ class RuntimeDependencyLoader:
                 )
 
         try:
-            lancedb_db = self._lancedb_connect_factory(str(lancedb_dir))
+            lancedb_db = self._lancedb_connect_factory(str(lancedb_storage_dir))
             lancedb_table = lancedb_db.open_table(lancedb_table_name)
         except Exception as exc:
             return _failed_dependencies(
@@ -297,7 +300,7 @@ class RuntimeDependencyLoader:
 
         return RuntimeDependencies(
             sqlite_db_path=self.sqlite_db_path,
-            lancedb_dir=lancedb_dir,
+            lancedb_dir=lancedb_storage_dir,
             lancedb_table=lancedb_table,
             embedding_fn=embedding_fn,
             embedding_model=self.embedding_model,
@@ -349,6 +352,31 @@ class RuntimeDependencyLoader:
             table_name = payload.get("table_name")
             if not isinstance(table_name, str) or not table_name:
                 raise ValueError("active_generation.json missing table_name")
+            index_manifest_id = payload.get("index_manifest_id")
+            if index_manifest_id is not None:
+                if (
+                    not isinstance(index_manifest_id, str)
+                    or len(index_manifest_id) != 64
+                    or any(
+                        character not in "0123456789abcdef"
+                        for character in index_manifest_id
+                    )
+                ):
+                    raise ValueError("active_generation.json has invalid index_manifest_id")
+                if (
+                    self.require_identity_bound_runtime
+                    and index_manifest_id != self.index_manifest_id
+                ):
+                    raise ValueError("active_generation.json index_manifest_id mismatch")
+            if self.require_identity_bound_runtime:
+                expected_pointer_identities = {
+                    "corpus_manifest_id": self.requested_manifest_id,
+                    "source_bundle_id": self.source_bundle_id,
+                    "snapshot_id": self.snapshot_id,
+                }
+                for field, expected in expected_pointer_identities.items():
+                    if payload.get(field) != expected:
+                        raise ValueError(f"active_generation.json {field} mismatch")
         except Exception as exc:
             health["lancedb"]["status"] = "failed"
             health["lancedb"]["message"] = f"failed to read {active_path}: {exc}"
@@ -356,7 +384,24 @@ class RuntimeDependencyLoader:
 
         health["lancedb"]["active_generation"] = str(active_path)
         health["lancedb"]["table"] = table_name
+        if index_manifest_id is not None:
+            health["lancedb"]["index_manifest_id"] = index_manifest_id
         return table_name
+
+    def _resolve_lancedb_storage_dir(
+        self, lancedb_dir: Path, health: dict[str, Any]
+    ) -> Path:
+        """Resolve the pointer-bound storage directory used by V1 promotion.
+
+        V1 promotion atomically switches the pointer but intentionally leaves
+        the immutable table under ``candidates/<index_manifest_id>``. Legacy
+        self-contained generations continue to connect at the authority root.
+        """
+        index_manifest_id = health["lancedb"].get("index_manifest_id")
+        if not isinstance(index_manifest_id, str):
+            return lancedb_dir
+        candidate_dir = lancedb_dir / "candidates" / index_manifest_id
+        return candidate_dir if candidate_dir.is_dir() else lancedb_dir
 
 
 def _read_fts_index_version(db: Any) -> str:

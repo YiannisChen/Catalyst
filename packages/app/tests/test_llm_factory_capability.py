@@ -38,6 +38,20 @@ def test_build_v1_llm_neutralizes_provider_internal_retries_and_temperature() ->
     kwargs = chat_openai.call_args.kwargs
     assert kwargs["max_retries"] == 0
     assert kwargs["temperature"] == 0.0
+    assert kwargs["max_tokens"] == 2_000
+
+
+def test_build_v1_llm_configures_current_deepseek_non_thinking_model() -> None:
+    with patch("catalyst_app.llm_factory.ChatOpenAI") as chat_openai:
+        build_v1_llm(
+            "deepseek-flash",
+            provider="deepseek",
+            api_key="test-key",
+        )
+    kwargs = chat_openai.call_args.kwargs
+    assert kwargs["model"] == "deepseek-flash"
+    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert kwargs["max_tokens"] == 2_000
 
 
 def test_build_v1_llm_client_passes_capability_admission() -> None:
