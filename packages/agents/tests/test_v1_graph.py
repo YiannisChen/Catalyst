@@ -479,3 +479,36 @@ def test_control_cancellation_before_analyst_prevents_writer_dispatch() -> None:
         run_v1_graph(**kwargs)
     assert analyst.calls == 0
     assert writer.calls == 0
+
+
+def test_v1_graph_observation_cutoff_is_canonical_z(monkeypatch) -> None:
+    """The graph must hand the observation stage a canonical ``...Z`` cutoff.
+
+    ``TemporalIdentity.cutoff_at`` is already bound and is never recomputed
+    here; only its serialization was wrong. ``datetime.isoformat()`` renders
+    UTC as ``...+00:00``, which is not the canonical form the context layer
+    compares against its ``...Z`` rows. ``ObservationBuilder.build`` normalizes
+    defensively, but the graph must not emit the non-canonical form at all.
+    """
+    import catalyst_agents.graph as graph_module
+
+    real_builder = graph_module.ObservationBuilder
+    seen: list[str] = []
+
+    class _RecordingBuilder:
+        def __init__(self, *, provider, policy):
+            self._inner = real_builder(provider=provider, policy=policy)
+
+        def build(self, **kwargs):
+            seen.append(kwargs["cutoff"])
+            return self._inner.build(**kwargs)
+
+    monkeypatch.setattr(graph_module, "ObservationBuilder", _RecordingBuilder)
+
+    analyst = GraphAnalystProvider(_ready_decision)
+    writer = GraphWriterProvider(_writer_text_factory())
+    run_v1_graph(**_graph_kwargs(analyst=analyst, writer=writer))
+
+    assert seen, "the observation stage was never invoked"
+    assert seen[0] == "2026-01-15T21:00:00Z", seen[0]
+    assert "+00:00" not in seen[0]

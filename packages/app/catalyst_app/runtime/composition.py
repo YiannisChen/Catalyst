@@ -48,7 +48,7 @@ from catalyst_agents.runtime.pack_persistence import (
 )
 from catalyst_agents.runtime.provider_capability import CAPABILITY_REVISION
 from catalyst_data.canonical.identity import DataRuntimeIdentity
-from catalyst_data.canonical.temporal import TemporalIdentity
+from catalyst_data.canonical.temporal import TemporalIdentity, utc_iso_z
 
 from catalyst_app.events import (
     AssuranceCompletedPayload,
@@ -726,7 +726,7 @@ class ProductionRunAdapter:
                 temporal_identity=manifest.temporal_identity,
                 data_runtime_identity=resolved.data_runtime_identity,
                 ticker=self._load_ticker(run_id),
-                cutoff=manifest.temporal_identity.cutoff_at.isoformat(),
+                cutoff=utc_iso_z(manifest.temporal_identity.cutoff_at),
                 requested_manifest_id=resolved.data_runtime_identity.corpus_manifest_id,
                 observation_provider=resolved.observation_provider,
                 retriever=resolved.retriever,

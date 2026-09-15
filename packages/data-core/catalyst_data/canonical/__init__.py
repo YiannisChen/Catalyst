@@ -13,7 +13,7 @@ from catalyst_data.canonical.model import (
     TextEvidenceIdentity,
     source_role_for,
 )
-from catalyst_data.canonical.temporal import TemporalIdentity
+from catalyst_data.canonical.temporal import UTC_ISO_Z_FORMAT, TemporalIdentity, utc_iso_z
 
 __all__ = [
     "AssetType",
@@ -27,5 +27,7 @@ __all__ = [
     "StructuredEvidenceIdentity",
     "TemporalIdentity",
     "TextEvidenceIdentity",
+    "UTC_ISO_Z_FORMAT",
     "source_role_for",
+    "utc_iso_z",
 ]

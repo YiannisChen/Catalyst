@@ -69,7 +69,7 @@ from catalyst_agents.runtime.pack_persistence import (
 from catalyst_agents.runtime.token_budget import UTF8ByteUpperBoundCounter
 from catalyst_agents.state import FoundationGraphState, FoundationStage
 from catalyst_data.canonical.identity import DataRuntimeIdentity
-from catalyst_data.canonical.temporal import TemporalIdentity
+from catalyst_data.canonical.temporal import TemporalIdentity, utc_iso_z
 
 
 def _foundation_renderer(draft: PackedContextDraft) -> tuple[RenderMessage, ...]:
@@ -199,7 +199,7 @@ def build_foundation_graph(
     move_profile = observation_builder.build(
         ticker=ticker,
         session_date=temporal_identity.session_date,
-        cutoff=temporal_identity.cutoff_at.isoformat(),
+        cutoff=utc_iso_z(temporal_identity.cutoff_at),
         temporal_identity=temporal_identity,
         observation_policy_version=observation_policy_version,
     )

@@ -124,6 +124,7 @@ class FakeObservationProvider:
 class FakeRetriever:
     def __init__(self) -> None:
         self.calls = 0
+        self.cutoffs: list[str] = []
 
     def _evidence(self, chunk_id: str, rank: int) -> RetrievedEvidence:
         return RetrievedEvidence(
@@ -168,6 +169,7 @@ class FakeRetriever:
     def retrieve(self, query, *, ticker, cutoff, requested_manifest_id,
                  temporal_identity=None, top_k=8, candidate_depth=20):
         self.calls += 1
+        self.cutoffs.append(cutoff)
         return (self._evidence("e1", 1),)
 
 
@@ -686,3 +688,26 @@ def test_server_env_credential_uses_provider_env_key_not_fallback(
             )
         assert "sk-openai-provider-specific-123" not in blob
         assert "sk-aihubmix-fallback-must-not-leak" not in blob
+
+
+def test_composition_passes_canonical_z_cutoff_to_retrieval(tmp_path: Path) -> None:
+    """The composition must hand the retrieval boundary a canonical ``...Z`` cutoff.
+
+    ``TemporalIdentity.cutoff_at`` is already bound and is not recomputed here;
+    only its serialization was wrong. ``datetime.isoformat()`` renders UTC as
+    ``...+00:00``, which the retrieval contract rejects as ``invalid_cutoff``.
+    """
+    resolver = FakeGraphResolver()
+    app = _app(tmp_path, resolver=resolver)
+
+    with TestClient(app) as client:
+        create_resp = client.post("/api/live-runs", json=BODY)
+        assert create_resp.status_code == 200, create_resp.text
+        run_id = create_resp.json()["run_id"]
+        summary = _wait_for_terminal(client, run_id)
+        assert summary["lifecycle_status"] == "COMPLETED", summary
+
+    assert resolver.retriever.cutoffs, "retrieval was never invoked"
+    for observed in resolver.retriever.cutoffs:
+        assert observed == "2026-01-15T21:00:00Z", observed
+        assert "+00:00" not in observed
