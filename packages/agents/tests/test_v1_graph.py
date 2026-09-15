@@ -360,6 +360,71 @@ def test_v1_graph_abstain_path_terminates_valid() -> None:
     assert result.validated_claim_plan.status.value == "ABSTAIN"
 
 
+def _writer_role_bracket_abstain_factory(messages):
+    """Copy the production Writer prompt shape that live c05 emitted."""
+    import re
+
+    prompt = messages[0]["content"] if isinstance(messages[0], dict) else messages[0].content
+    claim_ids = re.findall(r"claim_id: ([A-Za-z0-9:_-]+)", prompt)
+    lines = [
+        "## OBSERVED_MOVE",
+        "AAPL +9.50% on 2026-01-15.",
+        "",
+        "## LIMITATIONS",
+        "No causal explanation was established from the available evidence.",
+    ]
+    for claim_id in claim_ids:
+        lines.append(f"- [LIMITATION] (claim_id: {claim_id}) Coverage gap: MISSING_PRIMARY_CONFIRMATION for COMPANY_PRIMARY.")
+    return "\n".join(lines)
+
+
+def test_v1_graph_abstain_writer_role_brackets_do_not_fail_assurance() -> None:
+    """Live c05 fingerprint: ABSTAIN Writer copies ``[LIMITATION] (claim_id: ...)``
+    from the prompt. Structural assurance must not treat the role tag as a
+    claim ID; the run completes ABSTAIN.
+    """
+    analyst = GraphAnalystProvider(_abstain_decision)
+    writer = GraphWriterProvider(_writer_role_bracket_abstain_factory)
+    result = run_v1_graph(**_graph_kwargs(analyst=analyst, writer=writer))
+    assert writer.calls == 1
+    assert "[LIMITATION]" in result.answer.text
+    assert "(claim_id:" in result.answer.text
+    assert result.terminal_envelope["assured"] is True
+    assert result.terminal_envelope["final_status"] == "ABSTAIN"
+    assert result.validated_claim_plan.status.value == "ABSTAIN"
+
+
+def _writer_prompt_format_sufficient_factory(evidence_id: str = "e1"):
+    import re
+
+    def factory(messages):
+        prompt = messages[0]["content"] if isinstance(messages[0], dict) else messages[0].content
+        match = re.search(r"claim_id: ([A-Za-z0-9:_-]+)", prompt)
+        claim_id = match.group(1) if match else "claim:1"
+        return (
+            "SUMMARY\n"
+            f"- [PRIMARY] (claim_id: {claim_id}) AAPL rose on record guidance. "
+            f"[citations: {evidence_id}]\n"
+            "CAUSAL_EXPLANATION\nGuidance raised forward revenue.\n"
+            "LIMITATIONS\nNone."
+        )
+
+    return factory
+
+
+def test_v1_graph_sufficient_writer_prompt_markers_pass_assurance() -> None:
+    """Writer prompt emits ``[PRIMARY] (claim_id: ...) [citations: e1]``.
+    Assurance must bind those as claim/citation markers, not the role tag.
+    """
+    analyst = GraphAnalystProvider(_ready_decision)
+    writer = GraphWriterProvider(_writer_prompt_format_sufficient_factory())
+    result = run_v1_graph(**_graph_kwargs(analyst=analyst, writer=writer))
+    assert "[PRIMARY]" in result.answer.text
+    assert "[citations: e1]" in result.answer.text
+    assert result.terminal_envelope["assured"] is True
+    assert result.terminal_envelope["final_status"] == "SUFFICIENT"
+
+
 def test_v1_graph_metadata_only_empty_citable_inventory_skips_analyst() -> None:
     """Live c02 shape through the production graph: retrieved rows are all
     METADATA_ONLY, included_evidence_ids is empty, renderer emits

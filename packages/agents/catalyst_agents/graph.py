@@ -764,17 +764,31 @@ def extract_answer_markers(answer_text: str) -> tuple[tuple[str, ...], tuple[str
     """Extract emitted citation and claim markers from the answer text.
 
     The Writer prompt requires bounded markers so deterministic assurance can
-    verify allowed subsets and same-run citation resolution.
+    verify allowed subsets and same-run citation resolution. Production Writer
+    lines are ``[ROLE] (claim_id: ID) ... [citations: e1,e2]``; ClaimRole
+    brackets are labels, not claim IDs. The legacy fixture form
+    ``[claim:1] (e1)`` remains accepted.
     """
     import re
 
-    citations = tuple(
-        sorted(set(re.findall(r"\(([A-Za-z0-9:_-]+)\)", answer_text)))
+    from catalyst_agents.attribution.claims import ClaimRole
+
+    role_markers = {role.value for role in ClaimRole}
+    claim_markers: set[str] = set(
+        re.findall(r"\(claim_id:\s*([A-Za-z0-9:_-]+)\)", answer_text)
     )
-    claim_markers = tuple(
-        sorted(set(re.findall(r"\[([A-Za-z0-9:_-]+)\]", answer_text)))
-    )
-    return citations, claim_markers
+    for raw in re.findall(r"\[([A-Za-z0-9:_-]+)\]", answer_text):
+        if raw in role_markers or raw.lower() == "citations":
+            continue
+        claim_markers.add(raw)
+    citations: set[str] = set()
+    for block in re.findall(r"\[citations:\s*([^\]]*)\]", answer_text):
+        for part in block.split(","):
+            token = part.strip()
+            if token:
+                citations.add(token)
+    citations.update(re.findall(r"\(([A-Za-z0-9:_-]+)\)", answer_text))
+    return tuple(sorted(citations)), tuple(sorted(claim_markers))
 
 
 def _observed_move_text(ticker: str, move_profile: MoveProfile, session_date: str) -> str:

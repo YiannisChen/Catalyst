@@ -229,3 +229,109 @@ def test_thin_finalizer_refuses_non_assured_envelope() -> None:
 
 def test_provisional_rendering_label_constant() -> None:
     assert PROVISIONAL_RENDERING == "PROVISIONAL_RENDERING"
+
+
+def test_extract_answer_markers_ignores_role_brackets_and_reads_claim_id() -> None:
+    """Live c05 Writer contract: role tags are [LIMITATION]/[PRIMARY], claim
+    identity is ``(claim_id: ...)``, and citations are ``[citations: ...]``.
+    Role brackets must not be treated as claim IDs.
+    """
+    from catalyst_agents.graph import extract_answer_markers
+
+    live_c05 = (
+        "## OBSERVED_MOVE\n\nTSLA moved -14.52% on 2026-07-23.\n\n"
+        "## LIMITATIONS\n\nNo cause was accepted for this move. The following "
+        "bounded evidence, coverage, and conflict limitations apply:\n\n"
+        "- [LIMITATION] (claim_id: claim:a20be42926fd9d57) Coverage gap: "
+        "MISSING_PRIMARY_CONFIRMATION for COMPANY_PRIMARY.\n"
+        "- [LIMITATION] (claim_id: claim:5c327a47e2c86e48) Coverage gap: "
+        "MISSING_SECTOR_CONTEXT for SECTOR_NEWS.\n"
+        "- [LIMITATION] (claim_id: claim:10e2a917d0cc0270) Coverage gap: "
+        "MISSING_MACRO_CONTEXT for MACRO_EVENT.\n"
+        "- [LIMITATION] (claim_id: claim:8d2fd09cc57be094) Coverage gap: "
+        "MARKET_STRUCTURE_UNSUPPORTED for MARKET_STRUCTURE."
+    )
+    citations, claims = extract_answer_markers(live_c05)
+    assert "LIMITATION" not in claims
+    assert "PRIMARY" not in claims
+    assert claims == (
+        "claim:10e2a917d0cc0270",
+        "claim:5c327a47e2c86e48",
+        "claim:8d2fd09cc57be094",
+        "claim:a20be42926fd9d57",
+    )
+    assert citations == ()
+
+    writer_prompt_format = (
+        "SUMMARY\n"
+        "- [PRIMARY] (claim_id: claim:1) AAPL rose on record guidance. "
+        "[citations: e1]\n"
+        "CAUSAL_EXPLANATION\nGuidance raised forward revenue.\n"
+        "LIMITATIONS\nNone."
+    )
+    citations, claims = extract_answer_markers(writer_prompt_format)
+    assert claims == ("claim:1",)
+    assert citations == ("e1",)
+    assert "PRIMARY" not in claims
+
+
+def test_extract_answer_markers_keeps_legacy_bracket_claim_and_paren_citation() -> None:
+    from catalyst_agents.graph import extract_answer_markers
+
+    citations, claims = extract_answer_markers(
+        "SUMMARY\nAAPL rose on record guidance. [claim:1] (e1)\n"
+        "CAUSAL_EXPLANATION\nGuidance raised forward revenue.\n"
+        "LIMITATIONS\nNone."
+    )
+    assert claims == ("claim:1",)
+    assert citations == ("e1",)
+
+
+def test_structural_assurance_accepts_writer_role_bracket_abstain_answer() -> None:
+    """c05 fingerprint through structural assurance: ABSTAIN answer copies the
+    Writer prompt's ``[LIMITATION] (claim_id: ...)`` lines. That must pass
+    claim_markers_subset when those claim IDs are permitted.
+    """
+    from catalyst_agents.graph import extract_answer_markers
+    from catalyst_agents.runtime.assurance.checks import derive_answer_output_hash
+
+    plan = _validated_plan()
+    plan = plan.model_copy(
+        update={
+            "status": AttributionStatus.ABSTAIN,
+            "claims": (),
+            "citation_map": (),
+            "permitted_claim_ids": ("claim:a20be42926fd9d57",),
+            "permitted_evidence_ids": (),
+            "required_limitations": (),
+        }
+    )
+    answer_text = (
+        "## OBSERVED_MOVE\nTSLA moved -14.52% on 2026-07-23.\n\n"
+        "## LIMITATIONS\n"
+        "- [LIMITATION] (claim_id: claim:a20be42926fd9d57) Coverage gap: "
+        "MISSING_PRIMARY_CONFIRMATION for COMPANY_PRIMARY.\n"
+    )
+    citations, claims = extract_answer_markers(answer_text)
+    artifacts = _artifacts(
+        answer_text=answer_text,
+        answer_text_sha256=derive_answer_output_hash(answer_text),
+        output_hash=derive_answer_output_hash(answer_text),
+        emitted_citations=citations,
+        emitted_claim_markers=claims,
+        permitted_claim_ids=plan.permitted_claim_ids,
+        permitted_evidence_ids=plan.permitted_evidence_ids,
+        required_sections=("OBSERVED_MOVE", "LIMITATIONS"),
+        required_limitations=(),
+        emitted_status="ABSTAIN",
+        emitted_attribution_type="EVIDENCE_BACKED_CAUSAL",
+        validated_status="ABSTAIN",
+        validated_attribution_type="EVIDENCE_BACKED_CAUSAL",
+        validated_plan=plan,
+        plan_hash=plan.plan_hash,
+        evidence_state_hash=plan.evidence_state_hash,
+    )
+    checks = run_structural_assurance("run:c05", artifacts)
+    failed = {check.check_name: check.detail for check in checks if check.status == "fail"}
+    assert failed == {}, failed
+    assert all(check.status == "pass" for check in checks)
