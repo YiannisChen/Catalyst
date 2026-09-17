@@ -292,9 +292,14 @@ def compute_attribution_metrics(
                 citation_cases.append(case_id)
                 evidence_supported += len(supported_units)
                 evidence_total += len(decision.citation_ids)
-            if decision.decision == "SUPPORT":
-                causal_relevant += 1
-            causal_total += 1
+            # LIMITATION/CONTEXT rows describe bounded runtime truth; they are
+            # not causal claims and must not be scored as unsupported causal
+            # evidence merely because their audit decision uses the shared
+            # vocabulary.  Only the causal ClaimRole rows participate here.
+            if claim.role in {"PRIMARY", "SECONDARY"}:
+                if decision.decision == "SUPPORT":
+                    causal_relevant += 1
+                causal_total += 1
             if claim.material:
                 material_total += 1
                 material_audited += 1

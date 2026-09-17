@@ -8,14 +8,19 @@ new facts.
 from __future__ import annotations
 
 import json
+import hashlib
+import sqlite3
+from pathlib import Path
 
 import pytest
 
 from catalyst_eval.v1_1.report import (
     ReportConflictError,
     _sum_known_metrics,
+    build_report_payload,
     render_report_markdown,
     scan_report_for_secrets,
+    validate_report_gate_evidence,
     write_report_json,
     write_report_markdown,
 )
@@ -112,3 +117,281 @@ def test_report_metric_aggregation_preserves_unknown_instead_of_zero():
     assert _sum_known_metrics([100, 200]) == 300
     assert _sum_known_metrics([100, None]) is None
     assert _sum_known_metrics([0, 2]) == 2
+
+
+def test_report_payload_requires_validated_gate_evidence():
+    with pytest.raises(ValueError, match="leakage/secret"):
+        build_report_payload(
+            eval_manifest=None,
+            gold_cases=(),
+            stratification={},
+            ledger=None,
+            audits=(),
+            execution_head_sha8="head",
+        )
+
+
+def _write_gate_evidence(tmp_path):
+    original_path = tmp_path / "leakage_scan.json"
+    derived_path = tmp_path / "derived_leakage_scan.json"
+    secret_path = tmp_path / "secret_scan.json"
+    runtime_db = tmp_path / "runtime.sqlite3"
+    original = {
+        "n": 2,
+        "findings": [
+            "trace:c04/diag.terminal.result_status: hidden oracle status",
+            "trace:c04/diag.terminal.status_ceiling: hidden oracle status",
+        ],
+    }
+    original_path.write_text(json.dumps(original, sort_keys=True), encoding="utf-8")
+    source_payload = {
+        "schema_version": "v1.1_run_diagnostics_v1",
+        "terminal": {"terminal_event_type": "run.completed"},
+    }
+    source_json = json.dumps(source_payload, sort_keys=True, separators=(",", ":"))
+    source_hash = hashlib.sha256(source_json.encode()).hexdigest()
+    derived = {
+        "schema_version": "m7_derived_leakage_scan_v2",
+        "derived": True,
+        "original_scan_path": str(original_path),
+        "original_scan_sha256": hashlib.sha256(original_path.read_bytes()).hexdigest(),
+        "original_scan_n": 2,
+        "n": 0,
+        "findings": [],
+        "c04_rendered_messages_findings": [],
+        "hidden_gold_boundary": [],
+        "model_visible_prompt": False,
+        "classifier": "verified_post_writer_run_diagnostics_terminal_status_exemption_v2",
+        "exemption_contract": {
+            "artifact_type": "run_diagnostics",
+            "post_writer_persisted": True,
+            "schema_version": "v1.1_run_diagnostics_v1",
+            "terminal_event_type": "run.completed",
+            "path_only_exemption": False,
+            "generic_or_model_visible_trace_same_fields": "reported",
+            "exempted_paths": ["terminal.result_status", "terminal.status_ceiling"],
+        },
+        "source_artifact": {
+            "artifact_id": "diagnostics:run-1",
+            "run_id": "run-1",
+            "event_seq": 3,
+            "artifact_type": "run_diagnostics",
+            "payload_hash": source_hash,
+            "schema_version": "v1.1_run_diagnostics_v1",
+            "terminal_event_type": "run.completed",
+            "post_writer_persisted": True,
+        },
+    }
+    derived_path.write_text(json.dumps(derived, sort_keys=True), encoding="utf-8")
+    secret_path.write_text(json.dumps({"findings": []}), encoding="utf-8")
+    conn = sqlite3.connect(runtime_db)
+    conn.executescript(
+        """
+        CREATE TABLE runs (run_id TEXT PRIMARY KEY, lifecycle_status TEXT NOT NULL);
+        CREATE TABLE run_events (
+            run_id TEXT NOT NULL, seq INTEGER NOT NULL, event_type TEXT NOT NULL,
+            PRIMARY KEY (run_id, seq)
+        );
+        CREATE TABLE run_artifacts (
+            artifact_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, event_seq INTEGER NOT NULL,
+            artifact_type TEXT NOT NULL, payload_hash TEXT NOT NULL, payload_json TEXT NOT NULL
+        );
+        """
+    )
+    conn.execute("INSERT INTO runs VALUES (?, ?)", ("run-1", "COMPLETED"))
+    conn.execute("INSERT INTO run_events VALUES (?, ?, ?)", ("run-1", 3, "run.completed"))
+    conn.execute(
+        "INSERT INTO run_artifacts VALUES (?, ?, ?, ?, ?, ?)",
+        ("diagnostics:run-1", "run-1", 3, "run_diagnostics", source_hash, source_json),
+    )
+    conn.commit()
+    conn.close()
+    return original_path, derived_path, secret_path, runtime_db
+
+
+def _write_handoff_manifest(tmp_path, original, secret, runtime_db, *, head="head", eval_id="eval"):
+    entries = []
+    for relative, path in (
+        ("report_inputs/leakage_scan.json", original),
+        ("report_inputs/secret_scan.json", secret),
+        ("runtime.sqlite3", runtime_db),
+    ):
+        entries.append(
+            {
+                "path": relative,
+                "bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    manifest = {
+        "schema_version": "m7_stage1_final_handoff_manifest_v1",
+        "head": head,
+        "eval_id": eval_id,
+        "file_count": len(entries),
+        "files": entries,
+        "missing_required": [],
+        "secret_scan_hits": [],
+    }
+    path = tmp_path / "final_handoff_manifest.json"
+    path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+    return path
+
+
+def _handoff_args(tmp_path, *, head="head", eval_id="eval"):
+    original, derived, secret, runtime_db = _write_gate_evidence(tmp_path)
+    handoff = _write_handoff_manifest(
+        tmp_path, original, secret, runtime_db, head=head, eval_id=eval_id
+    )
+    return original, derived, secret, runtime_db, handoff
+
+
+def _validate_with_handoff(original, derived, secret, runtime_db, handoff, *, expected_sha=None, expected_head="head", expected_eval_id="eval"):
+    return validate_report_gate_evidence(
+        leakage_scan_path=original,
+        derived_leakage_scan_path=derived,
+        secret_scan_path=secret,
+        runtime_db_path=runtime_db,
+        handoff_manifest_path=handoff,
+        handoff_manifest_sha256=expected_sha
+        or hashlib.sha256(handoff.read_bytes()).hexdigest(),
+        expected_execution_head=expected_head,
+        expected_eval_id=expected_eval_id,
+    )
+
+
+def test_report_gate_evidence_accepts_valid_handoff_manifest(tmp_path):
+    original, derived, secret, runtime_db, handoff = _handoff_args(tmp_path)
+    evidence = _validate_with_handoff(
+        original, derived, secret, runtime_db, handoff
+    )
+    assert evidence["handoff_manifest"]["file_hashes"] == {
+        "report_inputs/leakage_scan.json": hashlib.sha256(original.read_bytes()).hexdigest(),
+        "report_inputs/secret_scan.json": hashlib.sha256(secret.read_bytes()).hexdigest(),
+        "runtime.sqlite3": hashlib.sha256(runtime_db.read_bytes()).hexdigest(),
+    }
+
+
+def test_report_gate_evidence_rejects_wrong_expected_handoff_sha(tmp_path):
+    original, derived, secret, runtime_db, handoff = _handoff_args(tmp_path)
+    with pytest.raises(ValueError, match="handoff manifest SHA"):
+        _validate_with_handoff(
+            original, derived, secret, runtime_db, handoff, expected_sha="0" * 64
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    (
+        ("head", "head"),
+        ("eval_id", "eval_id"),
+        ("duplicate", "duplicate"),
+    ),
+)
+def test_report_gate_evidence_rejects_invalid_handoff_identity_and_inventory(tmp_path, mutation, match):
+    original, derived, secret, runtime_db, handoff = _handoff_args(tmp_path)
+    payload = json.loads(handoff.read_text(encoding="utf-8"))
+    if mutation == "head":
+        payload["head"] = "wrong-head"
+    elif mutation == "eval_id":
+        payload["eval_id"] = "wrong-eval"
+    else:
+        payload["files"].append(dict(payload["files"][0]))
+        payload["file_count"] += 1
+    handoff.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError, match=match):
+        _validate_with_handoff(original, derived, secret, runtime_db, handoff)
+
+
+@pytest.mark.parametrize("mutation", ("secret", "runtime", "leakage"))
+def test_report_gate_evidence_rejects_substituted_or_modified_handoff_files(tmp_path, mutation):
+    original, derived, secret, runtime_db, handoff = _handoff_args(tmp_path)
+    if mutation == "secret":
+        secret.write_bytes(b'{"findings":[]}\n')
+    elif mutation == "runtime":
+        with runtime_db.open("ab") as handle:
+            handle.write(b"substituted")
+    else:
+        original.write_text(json.dumps({"n": 0, "findings": []}), encoding="utf-8")
+    with pytest.raises(ValueError, match="handoff file"):
+        _validate_with_handoff(original, derived, secret, runtime_db, handoff)
+
+
+def test_report_gate_evidence_accepts_real_handoff_manifest():
+    repo = Path(__file__).resolve().parents[3]
+    output = repo / "data" / "eval_reports" / "v1_1_stage1_327b3eed"
+    evidence = validate_report_gate_evidence(
+        leakage_scan_path=output / "report_inputs" / "leakage_scan.json",
+        derived_leakage_scan_path=output / "derived" / "leakage_scan_after_terminal_status_exemption.json",
+        secret_scan_path=output / "report_inputs" / "secret_scan.json",
+        runtime_db_path=output / "runtime.sqlite3",
+        handoff_manifest_path=output / "final_handoff_manifest.json",
+        handoff_manifest_sha256="b745902af95e158d33ea68226b4991d933a3e3ed30887429571a3da39f5d6baf",
+        expected_execution_head="327b3eed6929b53b1c1b5ea7fd2c57fa1c7bec8e",
+        expected_eval_id="2792d333e7c01eb528fce77b5a54531343e6acdc2633212d2d3315fc97bb32cc",
+    )
+    assert evidence["handoff_manifest"]["sha256"] == "b745902af95e158d33ea68226b4991d933a3e3ed30887429571a3da39f5d6baf"
+
+
+def test_report_gate_evidence_is_identity_bound_and_clean(tmp_path):
+    original, derived, secret, runtime_db, handoff = _handoff_args(tmp_path)
+    evidence = validate_report_gate_evidence(
+        leakage_scan_path=original,
+        derived_leakage_scan_path=derived,
+        secret_scan_path=secret,
+        runtime_db_path=runtime_db,
+        handoff_manifest_path=handoff,
+        handoff_manifest_sha256=hashlib.sha256(handoff.read_bytes()).hexdigest(),
+        expected_execution_head="head",
+        expected_eval_id="eval",
+    )
+    assert evidence["leakage_scan"]["status"] == "PASS"
+    assert evidence["leakage_scan"]["original_count"] == 2
+    assert evidence["leakage_scan"]["model_visible_count"] == 0
+    assert evidence["secret_scan"] == {
+        "status": "PASS",
+        "count": 0,
+        "sha256": hashlib.sha256(secret.read_bytes()).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "original_hash",
+        "artifact_hash",
+        "schema",
+        "provenance",
+        "rendered_findings",
+        "hidden_gold",
+        "secret_findings",
+    ),
+)
+def test_report_gate_evidence_rejects_unverified_or_leaking_inputs(tmp_path, mutation):
+    original, derived, secret, runtime_db, handoff = _handoff_args(tmp_path)
+    payload = json.loads(derived.read_text(encoding="utf-8"))
+    if mutation == "original_hash":
+        payload["original_scan_sha256"] = "0" * 64
+    elif mutation == "artifact_hash":
+        payload["source_artifact"]["payload_hash"] = "0" * 64
+    elif mutation == "schema":
+        payload["exemption_contract"]["schema_version"] = "wrong"
+    elif mutation == "provenance":
+        payload["exemption_contract"]["post_writer_persisted"] = False
+    elif mutation == "rendered_findings":
+        payload["c04_rendered_messages_findings"] = ["leak"]
+    elif mutation == "hidden_gold":
+        payload["hidden_gold_boundary"] = ["leak"]
+    elif mutation == "secret_findings":
+        secret.write_text(json.dumps({"findings": ["secret"]}), encoding="utf-8")
+    derived.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    with pytest.raises(ValueError):
+        validate_report_gate_evidence(
+            leakage_scan_path=original,
+            derived_leakage_scan_path=derived,
+            secret_scan_path=secret,
+            runtime_db_path=runtime_db,
+            handoff_manifest_path=handoff,
+            handoff_manifest_sha256=hashlib.sha256(handoff.read_bytes()).hexdigest(),
+            expected_execution_head="head",
+            expected_eval_id="eval",
+        )

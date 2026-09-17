@@ -86,6 +86,7 @@ from catalyst_eval.v1_1.report import (
     build_report_payload,
     render_report_markdown,
     scan_report_for_secrets,
+    validate_report_gate_evidence,
     write_report_json,
     write_report_markdown,
 )
@@ -391,10 +392,44 @@ def _load_prepare_summary(output_dir: Path) -> dict[str, Any]:
     return summary
 
 
+def _resolve_checkout_benchmark_path(persisted_path: Path, filename: str) -> Path:
+    """Resolve a transferred cloud benchmark path without weakening identity."""
+    if persisted_path.is_file():
+        return persisted_path
+    checkout_path = (
+        Path(__file__).resolve().parents[1]
+        / "benchmarks"
+        / "v1_1"
+        / "stage1"
+        / filename
+    )
+    if (
+        persisted_path.as_posix().endswith(
+            f"/packages/eval/benchmarks/v1_1/stage1/{filename}"
+        )
+        and checkout_path.is_file()
+    ):
+        return checkout_path
+    raise Stage1OperatorError(
+        f"benchmark path missing at persisted path {persisted_path}"
+    )
+
+
 def _load_eval_manifest_and_cases(summary: dict[str, Any], output_dir: Path):
     manifest = EvalManifest.model_validate(summary["eval_manifest"])
-    dataset_manifest_path = Path(summary["dataset_manifest_path"])
+    dataset_manifest_path = _resolve_checkout_benchmark_path(
+        Path(summary["dataset_manifest_path"]), "manifest.json"
+    )
     dataset_manifest = _load_dataset_manifest(dataset_manifest_path)
+    identity = manifest.evaluation_identity
+    if dataset_manifest.get("dataset_id") != identity.dataset_id:
+        raise Stage1OperatorError(
+            "dataset manifest dataset_id does not match the EvalManifest"
+        )
+    if dataset_manifest.get("dataset_version") != identity.dataset_version:
+        raise Stage1OperatorError(
+            "dataset manifest dataset_version does not match the EvalManifest"
+        )
     cases = load_benchmark_cases(
         resolve_benchmark_cases_path(dataset_manifest, dataset_manifest_path),
         manifest=dataset_manifest,
@@ -1139,6 +1174,12 @@ def _report(
     manifest_out: Path | None,
     json_out: Path | None,
     markdown_out: Path | None,
+    leakage_scan: Path | None = None,
+    derived_leakage_scan: Path | None = None,
+    secret_scan: Path | None = None,
+    runtime_evidence_db: Path | None = None,
+    handoff_manifest: Path | None = None,
+    handoff_manifest_sha256: str | None = None,
     **__,
 ) -> int:
     if audit is None or not audit.is_file():
@@ -1150,9 +1191,37 @@ def _report(
         raise Stage1OperatorError(
             "report requires --manifest-out, --json-out, and --markdown-out"
         )
+    if handoff_manifest is None or handoff_manifest_sha256 is None:
+        raise Stage1OperatorError(
+            "report requires --handoff-manifest and --handoff-manifest-sha256"
+        )
     summary = _load_prepare_summary(output_dir)
     eval_manifest, cases = _load_eval_manifest_and_cases(summary, output_dir)
     eval_id = eval_manifest.evaluation_identity.eval_id
+    if summary.get("eval_id") != eval_id:
+        raise Stage1OperatorError(
+            "prepare summary eval_id does not match its EvalManifest"
+        )
+    expected_execution_head = summary.get("execution_head_sha256")
+    if not isinstance(expected_execution_head, str) or not expected_execution_head:
+        raise Stage1OperatorError("prepare summary execution identity is missing")
+    leakage_scan = leakage_scan or output_dir / "report_inputs" / "leakage_scan.json"
+    derived_leakage_scan = (
+        derived_leakage_scan
+        or output_dir / "derived" / "leakage_scan_after_terminal_status_exemption.json"
+    )
+    secret_scan = secret_scan or output_dir / "report_inputs" / "secret_scan.json"
+    runtime_evidence_db = runtime_evidence_db or output_dir / "runtime.sqlite3"
+    gate_evidence = validate_report_gate_evidence(
+        leakage_scan_path=leakage_scan,
+        derived_leakage_scan_path=derived_leakage_scan,
+        secret_scan_path=secret_scan,
+        runtime_db_path=runtime_evidence_db,
+        handoff_manifest_path=handoff_manifest,
+        handoff_manifest_sha256=handoff_manifest_sha256,
+        expected_execution_head=expected_execution_head,
+        expected_eval_id=eval_id,
+    )
     ledger_path = output_dir / LEDGER_FILENAME
     ledger = ExecutionLedger.load(ledger_path, expected_eval_id=eval_id)
     audits = load_output_audit(audit)
@@ -1165,11 +1234,15 @@ def _report(
     recorded_strat_path = summary.get("stratification_path")
     if recorded_strat_path:
         strat_payload = json.loads(
-            Path(recorded_strat_path).read_text(encoding="utf-8")
+            _resolve_checkout_benchmark_path(
+                Path(recorded_strat_path), "stratification.json"
+            ).read_text(encoding="utf-8")
         )
     else:
         dataset_manifest = _load_dataset_manifest(
-            Path(summary["dataset_manifest_path"])
+            _resolve_checkout_benchmark_path(
+                Path(summary["dataset_manifest_path"]), "manifest.json"
+            )
         )
         strat_payload = dataset_manifest.get("stratification")
         if not isinstance(strat_payload, Mapping):
@@ -1186,6 +1259,7 @@ def _report(
         execution_head_sha8=summary["execution_head_sha8"],
         max_provider_calls=summary.get("max_provider_calls"),
         max_cost_usd=summary.get("max_cost_usd"),
+        gate_evidence=gate_evidence,
     )
     findings = scan_report_for_secrets(payload)
     if findings:
@@ -1225,6 +1299,12 @@ def _all(
     q001_file_sha256: str | None,
     pricing: Path | None,
     runner_adapter_factory: Callable[[], Any] | None,
+    leakage_scan: Path | None = None,
+    derived_leakage_scan: Path | None = None,
+    secret_scan: Path | None = None,
+    runtime_evidence_db: Path | None = None,
+    handoff_manifest: Path | None = None,
+    handoff_manifest_sha256: str | None = None,
     **__,
 ) -> int:
     code = _prepare(
@@ -1258,6 +1338,12 @@ def _all(
         manifest_out=manifest_out,
         json_out=json_out,
         markdown_out=markdown_out,
+        leakage_scan=leakage_scan,
+        derived_leakage_scan=derived_leakage_scan,
+        secret_scan=secret_scan,
+        runtime_evidence_db=runtime_evidence_db,
+        handoff_manifest=handoff_manifest,
+        handoff_manifest_sha256=handoff_manifest_sha256,
     )
 
 
@@ -1311,6 +1397,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest-out", type=Path)
     parser.add_argument("--json-out", type=Path)
     parser.add_argument("--markdown-out", type=Path)
+    parser.add_argument(
+        "--leakage-scan", type=Path,
+        help="Original identity-bound leakage scan JSON (report input).",
+    )
+    parser.add_argument(
+        "--derived-leakage-scan", type=Path,
+        help="Derived leakage scan JSON with verified post-Writer proof.",
+    )
+    parser.add_argument(
+        "--secret-scan", type=Path,
+        help="Identity-bound secret scan JSON; findings must be empty.",
+    )
+    parser.add_argument(
+        "--runtime-evidence-db", type=Path,
+        help="Read-only runtime DB containing the bound run_diagnostics artifact.",
+    )
+    parser.add_argument(
+        "--handoff-manifest", type=Path,
+        help="Final identity-bound Stage-1 handoff manifest for report inputs.",
+    )
+    parser.add_argument(
+        "--handoff-manifest-sha256",
+        help="Explicit SHA-256 of --handoff-manifest; report fails closed on mismatch.",
+    )
     parser.add_argument(
         "--runtime-db",
         type=Path,
@@ -1402,6 +1512,12 @@ def main(
                 manifest_out=args.manifest_out,
                 json_out=args.json_out,
                 markdown_out=args.markdown_out,
+                leakage_scan=args.leakage_scan,
+                derived_leakage_scan=args.derived_leakage_scan,
+                secret_scan=args.secret_scan,
+                runtime_evidence_db=args.runtime_evidence_db,
+                handoff_manifest=args.handoff_manifest,
+                handoff_manifest_sha256=args.handoff_manifest_sha256,
             )
         if args.command == "all":
             return _all(
@@ -1420,6 +1536,12 @@ def main(
                 q001_file_sha256=args.q001_file_sha256,
                 pricing=args.pricing_json,
                 runner_adapter_factory=runner_adapter_factory,
+                leakage_scan=args.leakage_scan,
+                derived_leakage_scan=args.derived_leakage_scan,
+                secret_scan=args.secret_scan,
+                runtime_evidence_db=args.runtime_evidence_db,
+                handoff_manifest=args.handoff_manifest,
+                handoff_manifest_sha256=args.handoff_manifest_sha256,
             )
         raise Stage1OperatorError(f"unknown command {args.command!r}")
     except (Stage1OperatorError, Stage1CeilingExceeded) as exc:

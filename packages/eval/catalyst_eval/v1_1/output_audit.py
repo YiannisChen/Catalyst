@@ -32,6 +32,8 @@ AuditReasonCodeV1 = Literal[
     "citation_mismatch",
     "contradicted_by_evidence",
     "mechanism_unsubstantiated",
+    # Supports an observed runtime boundary fact, not causal evidence.
+    "runtime_limitation_verified",
 ]
 
 
@@ -77,6 +79,19 @@ class AuditClaimDecision(BaseModel):
             if set(self.supported_citation_ids) != set(self.citation_ids):
                 raise ValueError(
                     "SUPPORT requires every cited unit supported"
+                )
+        if self.reason_code == "runtime_limitation_verified":
+            if self.decision != "SUPPORT":
+                raise ValueError(
+                    "runtime_limitation_verified requires SUPPORT"
+                )
+            if self.material is not False:
+                raise ValueError(
+                    "runtime_limitation_verified requires material=false"
+                )
+            if self.citation_ids or self.supported_citation_ids:
+                raise ValueError(
+                    "runtime_limitation_verified requires no citations"
                 )
         return self
 
@@ -330,6 +345,24 @@ def validate_output_audit(
                 f"audit citation ids for claim {decision.claim_id!r} must "
                 f"exactly match the run output: audit="
                 f"{sorted(decision.citation_ids)} run={sorted(claim.citation_ids)}"
+            )
+        is_runtime_limitation = (
+            claim.role == "LIMITATION"
+            and claim.material is False
+            and not claim.citation_ids
+        )
+        if is_runtime_limitation and (
+            decision.decision != "SUPPORT"
+            or decision.reason_code != "runtime_limitation_verified"
+        ):
+            raise ValueError(
+                "non-material LIMITATION claims without citations require "
+                "decision=SUPPORT and reason_code=runtime_limitation_verified"
+            )
+        if decision.reason_code == "runtime_limitation_verified" and not is_runtime_limitation:
+            raise ValueError(
+                "runtime_limitation_verified is legal only for non-material "
+                "LIMITATION claims without citations"
             )
     return True
 

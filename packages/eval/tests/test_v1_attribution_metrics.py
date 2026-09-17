@@ -488,6 +488,47 @@ def test_empty_no_material_checks_record_not_exercised():
     assert as_dict["no_material_without_sanity"]["exercised"] is False
 
 
+def test_nonmaterial_limitation_without_citations_is_not_a_causal_claim():
+    """A runtime limitation is not unsupported causal evidence.
+
+    The human audit vocabulary's ``no_causal_support`` reason may describe why
+    a causal claim is not supported, but it must not turn a citation-free
+    LIMITATION statement into a causal-relevance denominator or an
+    ``UNSUPPORTED`` efficacy signal.
+    """
+    gold = _gold_rows()[0]
+    run = _run_output(
+        gold,
+        claims=(
+            RunClaimOutput(
+                claim_id="limitation-1",
+                material=False,
+                citation_ids=(),
+                role="LIMITATION",
+                statement="No causal explanation was established from the available evidence.",
+            ),
+        ),
+    )
+    audit = _audit(
+        gold,
+        run,
+        decisions=(
+            AuditClaimDecision(
+                claim_id="limitation-1",
+                material=False,
+                citation_ids=(),
+                decision="UNSUPPORTED",
+                reason_code="no_causal_support",
+            ),
+        ),
+    )
+
+    metrics = compute_attribution_metrics([run], [audit], [gold])
+
+    assert metrics.causal_relevance.denominator == 0
+    assert metrics.causal_relevance.value is None
+
+
 def test_output_audit_roundtrip_and_validation(tmp_path):
     gold_cases = _gold_rows()
     gold = gold_cases[0]

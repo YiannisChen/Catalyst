@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import sqlite3
 from dataclasses import replace
 from pathlib import Path
 
@@ -465,6 +466,114 @@ def _run_prepare(module, cli_env, out_dir: Path, **extra):
     return code, summary["eval_id"]
 
 
+def _write_report_gate_evidence(
+    base: Path, *, head: str | None = None, eval_id: str | None = None
+) -> None:
+    """Create a self-contained, identity-bound report evidence fixture."""
+    (base / "report_inputs").mkdir(parents=True, exist_ok=True)
+    (base / "derived").mkdir(parents=True, exist_ok=True)
+    original = base / "report_inputs" / "leakage_scan.json"
+    derived = base / "derived" / "leakage_scan_after_terminal_status_exemption.json"
+    secret = base / "report_inputs" / "secret_scan.json"
+    runtime = base / "runtime.sqlite3"
+    original_payload = {
+        "n": 2,
+        "findings": [
+            "trace:c04/diag.terminal.result_status: hidden oracle status",
+            "trace:c04/diag.terminal.status_ceiling: hidden oracle status",
+        ],
+    }
+    original.write_text(json.dumps(original_payload, sort_keys=True), encoding="utf-8")
+    diagnostics = {
+        "schema_version": "v1.1_run_diagnostics_v1",
+        "terminal": {"terminal_event_type": "run.completed"},
+    }
+    diagnostics_json = json.dumps(diagnostics, sort_keys=True, separators=(",", ":"))
+    diagnostics_sha = hashlib.sha256(diagnostics_json.encode()).hexdigest()
+    derived_payload = {
+        "schema_version": "m7_derived_leakage_scan_v2",
+        "derived": True,
+        "original_scan_path": str(original.resolve()),
+        "original_scan_sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
+        "original_scan_n": 2,
+        "n": 0,
+        "findings": [],
+        "c04_rendered_messages_findings": [],
+        "hidden_gold_boundary": [],
+        "model_visible_prompt": False,
+        "classifier": "verified_post_writer_run_diagnostics_terminal_status_exemption_v2",
+        "exemption_contract": {
+            "artifact_type": "run_diagnostics",
+            "post_writer_persisted": True,
+            "schema_version": "v1.1_run_diagnostics_v1",
+            "terminal_event_type": "run.completed",
+            "path_only_exemption": False,
+            "generic_or_model_visible_trace_same_fields": "reported",
+            "exempted_paths": ["terminal.result_status", "terminal.status_ceiling"],
+        },
+        "source_artifact": {
+            "artifact_id": "diagnostics:fixture",
+            "run_id": "run:fixture",
+            "event_seq": 3,
+            "artifact_type": "run_diagnostics",
+            "payload_hash": diagnostics_sha,
+            "schema_version": "v1.1_run_diagnostics_v1",
+            "terminal_event_type": "run.completed",
+            "post_writer_persisted": True,
+        },
+    }
+    derived.write_text(json.dumps(derived_payload, sort_keys=True), encoding="utf-8")
+    secret.write_text(json.dumps({"findings": []}), encoding="utf-8")
+    conn = sqlite3.connect(runtime)
+    conn.executescript(
+        """
+        CREATE TABLE runs (run_id TEXT PRIMARY KEY, lifecycle_status TEXT NOT NULL);
+        CREATE TABLE run_events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, event_type TEXT NOT NULL, PRIMARY KEY (run_id, seq));
+        CREATE TABLE run_artifacts (artifact_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, event_seq INTEGER NOT NULL, artifact_type TEXT NOT NULL, payload_hash TEXT NOT NULL, payload_json TEXT NOT NULL);
+        """
+    )
+    conn.execute("INSERT INTO runs VALUES (?, ?)", ("run:fixture", "COMPLETED"))
+    conn.execute("INSERT INTO run_events VALUES (?, ?, ?)", ("run:fixture", 3, "run.completed"))
+    conn.execute(
+        "INSERT INTO run_artifacts VALUES (?, ?, ?, ?, ?, ?)",
+        ("diagnostics:fixture", "run:fixture", 3, "run_diagnostics", diagnostics_sha, diagnostics_json),
+    )
+    conn.commit()
+    conn.close()
+    handoff_files = []
+    for relative, path in (
+        ("report_inputs/leakage_scan.json", original),
+        ("report_inputs/secret_scan.json", secret),
+        ("runtime.sqlite3", runtime),
+    ):
+        handoff_files.append(
+            {
+                "path": relative,
+                "bytes": path.stat().st_size,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    (base / "final_handoff_manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "m7_stage1_final_handoff_manifest_v1",
+                "head": head
+                or json.loads((base / "prepare_summary.json").read_text(encoding="utf-8"))[
+                    "execution_head_sha256"
+                ],
+                "eval_id": eval_id
+                or json.loads((base / "prepare_summary.json").read_text(encoding="utf-8"))["eval_id"],
+                "file_count": len(handoff_files),
+                "files": handoff_files,
+                "missing_required": [],
+                "secret_scan_hits": [],
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+
 # --- prepare ---------------------------------------------------------------
 
 
@@ -508,6 +617,37 @@ def test_cli_prepare_builds_real_eval_manifest_and_eval_id(cli_env):
     assert summary["case_count"] == 12
     assert summary["execution_head_sha8"]
     assert summary["comparability"] == "NON-COMPARABLE"
+
+
+def test_transferred_prepare_summary_resolves_checkout_dataset_manifest(cli_env):
+    """A transferred cloud summary must resolve its checkout-owned manifest."""
+    module = _load_cli()
+    repo = Path(__file__).resolve().parents[3]
+    out_dir = repo / "data" / "eval_reports" / "v1_1_stage1_327b3eed"
+    summary = json.loads((out_dir / "prepare_summary.json").read_text(encoding="utf-8"))
+    summary["dataset_manifest_path"] = (
+        "/root/catalyst-m7/20260915T110858Z/code/Catalyst/"
+        "packages/eval/benchmarks/v1_1/stage1/manifest.json"
+    )
+    manifest, cases = module._load_eval_manifest_and_cases(summary, out_dir)
+    assert manifest.evaluation_identity.dataset_id == "v1_1_stage1_q011"
+    assert len(cases) == 12
+
+
+def test_transferred_prepare_summary_resolves_checkout_stratification(cli_env):
+    """A transferred cloud summary must resolve its checkout strata file."""
+    module = _load_cli()
+    repo = Path(__file__).resolve().parents[3]
+    out_dir = repo / "data" / "eval_reports" / "v1_1_stage1_327b3eed"
+    summary = json.loads((out_dir / "prepare_summary.json").read_text(encoding="utf-8"))
+    summary["stratification_path"] = (
+        "/root/catalyst-m7/20260915T110858Z/code/Catalyst/"
+        "packages/eval/benchmarks/v1_1/stage1/stratification.json"
+    )
+    resolved = module._resolve_checkout_benchmark_path(
+        Path(summary["stratification_path"]), "stratification.json"
+    )
+    assert resolved == repo / "packages" / "eval" / "benchmarks" / "v1_1" / "stage1" / "stratification.json"
 
 
 # --- execute ---------------------------------------------------------------
@@ -809,6 +949,9 @@ def test_cli_report_publishes_real_gates_and_non_comparable(cli_env):
         )
         == 0
     )
+    _write_report_gate_evidence(out_dir)
+    handoff_path = out_dir / "final_handoff_manifest.json"
+    handoff_sha = hashlib.sha256(handoff_path.read_bytes()).hexdigest()
     audit_path = _valid_audit(cli_env, eval_id=eval_id)
     json_out = cli_env["tmp_path"] / "r.json"
     exit_code = module.main(
@@ -819,6 +962,8 @@ def test_cli_report_publishes_real_gates_and_non_comparable(cli_env):
             "--manifest-out", str(cli_env["tmp_path"] / "m.json"),
             "--json-out", str(json_out),
             "--markdown-out", str(cli_env["tmp_path"] / "r.md"),
+            "--handoff-manifest", str(handoff_path),
+            "--handoff-manifest-sha256", handoff_sha,
         ]
     )
     assert exit_code == 0
@@ -837,6 +982,38 @@ def test_cli_report_publishes_real_gates_and_non_comparable(cli_env):
     assert payload["attribution_metrics"]["no_material_without_sanity"]["exercised"] is False
     assert payload["comparability"] == "NON-COMPARABLE"
     assert payload["eval_id"] == eval_id
+    assert payload["gate_evidence"]["leakage_scan"]["status"] == "PASS"
+    assert payload["gate_evidence"]["leakage_scan"]["original_count"] == 2
+    assert payload["gate_evidence"]["leakage_scan"]["derived_count"] == 0
+    assert payload["gate_evidence"]["secret_scan"]["status"] == "PASS"
+    assert payload["handoff_manifest"]["head"] == json.loads(
+        (out_dir / "prepare_summary.json").read_text(encoding="utf-8")
+    )["execution_head_sha256"]
+    assert payload["handoff_manifest"]["eval_id"] == eval_id
+    assert payload["handoff_manifest"]["file_hashes"]["runtime.sqlite3"] == hashlib.sha256(
+        (out_dir / "runtime.sqlite3").read_bytes()
+    ).hexdigest()
+    first_json = json_out.read_bytes()
+    first_markdown = (cli_env["tmp_path"] / "r.md").read_bytes()
+    markdown_text = first_markdown.decode("utf-8")
+    assert "handoff_manifest_sha256:" in markdown_text
+    assert payload["handoff_manifest"]["file_hashes"]["report_inputs/leakage_scan.json"] in markdown_text
+    assert payload["handoff_manifest"]["file_hashes"]["report_inputs/secret_scan.json"] in markdown_text
+    assert payload["handoff_manifest"]["file_hashes"]["runtime.sqlite3"] in markdown_text
+    assert module.main(
+        [
+            "report",
+            "--output-dir", str(out_dir),
+            "--audit", str(audit_path),
+            "--manifest-out", str(cli_env["tmp_path"] / "m.json"),
+            "--json-out", str(json_out),
+            "--markdown-out", str(cli_env["tmp_path"] / "r.md"),
+            "--handoff-manifest", str(handoff_path),
+            "--handoff-manifest-sha256", handoff_sha,
+        ]
+    ) == 0
+    assert json_out.read_bytes() == first_json
+    assert (cli_env["tmp_path"] / "r.md").read_bytes() == first_markdown
 
     assert (cli_env["tmp_path"] / "r.md").read_text(encoding="utf-8").startswith(
         "# v1_1_stage1_report_v1"
@@ -857,6 +1034,9 @@ def test_cli_report_rejects_duplicate_completed_case_rows(cli_env):
         ],
         runner_adapter_factory=factory,
     ) == 0
+    _write_report_gate_evidence(out_dir)
+    handoff_path = out_dir / "final_handoff_manifest.json"
+    handoff_sha = hashlib.sha256(handoff_path.read_bytes()).hexdigest()
     ledger_path = out_dir / "execution_ledger.jsonl"
     ledger = ExecutionLedger.load(ledger_path, expected_eval_id=eval_id)
     ExecutionLedger(rows=(*ledger.rows, ledger.rows[0])).write(ledger_path)
@@ -867,6 +1047,8 @@ def test_cli_report_rejects_duplicate_completed_case_rows(cli_env):
             "--manifest-out", str(cli_env["tmp_path"] / "m.json"),
             "--json-out", str(cli_env["tmp_path"] / "r.json"),
             "--markdown-out", str(cli_env["tmp_path"] / "r.md"),
+            "--handoff-manifest", str(handoff_path),
+            "--handoff-manifest-sha256", handoff_sha,
         ]
     )
     assert exit_code == 2
@@ -886,6 +1068,9 @@ def test_cli_report_rejects_unknown_cost_in_completed_ledger(cli_env):
         ],
         runner_adapter_factory=factory,
     ) == 0
+    _write_report_gate_evidence(out_dir)
+    handoff_path = out_dir / "final_handoff_manifest.json"
+    handoff_sha = hashlib.sha256(handoff_path.read_bytes()).hexdigest()
     ledger = ExecutionLedger.load(out_dir / "execution_ledger.jsonl", expected_eval_id=eval_id)
     first = replace(ledger.rows[0], cost_usd=None)
     ExecutionLedger(rows=(first, *ledger.rows[1:])).write(
@@ -898,6 +1083,8 @@ def test_cli_report_rejects_unknown_cost_in_completed_ledger(cli_env):
             "--manifest-out", str(cli_env["tmp_path"] / "m.json"),
             "--json-out", str(cli_env["tmp_path"] / "r.json"),
             "--markdown-out", str(cli_env["tmp_path"] / "r.md"),
+            "--handoff-manifest", str(handoff_path),
+            "--handoff-manifest-sha256", handoff_sha,
         ]
     ) == 2
 
@@ -910,6 +1097,16 @@ def test_cli_all_orchestrates_full_pipeline(cli_env):
     code, eval_id = _run_prepare(module, cli_env, out_dir)
     assert code == 0
     audit_path = _valid_audit(cli_env, eval_id=eval_id)
+    evidence_dir = cli_env["tmp_path"] / "report-evidence"
+    _write_report_gate_evidence(
+        evidence_dir,
+        head=json.loads((out_dir / "prepare_summary.json").read_text(encoding="utf-8"))[
+            "execution_head_sha256"
+        ],
+        eval_id=eval_id,
+    )
+    handoff_path = evidence_dir / "final_handoff_manifest.json"
+    handoff_sha = hashlib.sha256(handoff_path.read_bytes()).hexdigest()
     factory, _ = _make_adapter_factory(cli_env)
     json_out = cli_env["tmp_path"] / "all.json"
     exit_code = module.main(
@@ -927,6 +1124,12 @@ def test_cli_all_orchestrates_full_pipeline(cli_env):
             "--manifest-out", str(cli_env["tmp_path"] / "m.json"),
             "--json-out", str(json_out),
             "--markdown-out", str(cli_env["tmp_path"] / "all.md"),
+            "--leakage-scan", str(evidence_dir / "report_inputs" / "leakage_scan.json"),
+            "--derived-leakage-scan", str(evidence_dir / "derived" / "leakage_scan_after_terminal_status_exemption.json"),
+            "--secret-scan", str(evidence_dir / "report_inputs" / "secret_scan.json"),
+            "--runtime-evidence-db", str(evidence_dir / "runtime.sqlite3"),
+            "--handoff-manifest", str(handoff_path),
+            "--handoff-manifest-sha256", handoff_sha,
         ],
         runner_adapter_factory=factory,
     )

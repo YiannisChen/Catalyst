@@ -44,8 +44,21 @@ def _gold(**overrides) -> GoldenCase:
     return GoldenCase.model_validate(row)
 
 
-def _artifact(path: str, payload, *, kind: str = "prompt") -> RunArtifactInput:
-    return RunArtifactInput(path=path, kind=kind, payload=payload)
+def _artifact(
+    path: str,
+    payload,
+    *,
+    kind: str = "prompt",
+    artifact_type: str | None = None,
+    post_writer_persisted: bool = False,
+) -> RunArtifactInput:
+    return RunArtifactInput(
+        path=path,
+        kind=kind,
+        payload=payload,
+        artifact_type=artifact_type,
+        post_writer_persisted=post_writer_persisted,
+    )
 
 
 def test_clean_prompt_with_served_evidence_passes():
@@ -163,6 +176,149 @@ def test_output_status_is_not_flagged_as_oracle():
     gold = _gold()
     findings = scan_run_for_gold(
         [_artifact("output:final", {"status": "SUFFICIENT"}, kind="output")],
+        gold,
+    )
+    assert findings == []
+
+
+def _live_c04_run_diagnostics_terminal(
+    *,
+    result_status: str,
+    status_ceiling: str,
+    schema_version: str = "v1.1_run_diagnostics_v1",
+    terminal_event_type: str = "run.completed",
+) -> dict:
+    """Post-Writer diagnostics envelope (v1.1_run_diagnostics_v1 terminal).
+
+    Matches the live c04 `run_diagnostics.terminal` object keys. Values are
+    supplied by the test so a matching gold oracle_status can reproduce the
+    scanner false positive without copying hidden-gold labels.
+    """
+    return {
+        "schema_version": schema_version,
+        "terminal": {
+            "result_status": result_status,
+            "status_ceiling": status_ceiling,
+            "terminal_event_type": terminal_event_type,
+            "attribution_type": "EVIDENCE_BACKED_CAUSAL",
+            "refusal_reason": None,
+            "refusal_reason_available": False,
+        },
+    }
+
+
+def test_run_diagnostics_terminal_status_is_not_oracle_leakage():
+    """Live c04 fingerprint: scanner kind=trace on post-Writer diagnostics.
+
+    `terminal.result_status` / `terminal.status_ceiling` are runtime
+    conclusions persisted at run.completed, not model-visible gold. Matching
+    the gold oracle_status string must not flag them.
+    """
+    gold = _gold(oracle_status="ABSTAIN")
+    findings = scan_run_for_gold(
+        [
+            _artifact(
+                "c04/diag",
+                _live_c04_run_diagnostics_terminal(
+                    result_status="ABSTAIN", status_ceiling="ABSTAIN"
+                ),
+                kind="trace",
+                artifact_type="run_diagnostics",
+                post_writer_persisted=True,
+            )
+        ],
+        gold,
+    )
+    assert not any("oracle status" in f for f in findings)
+
+
+def test_same_terminal_fields_in_generic_trace_are_still_flagged():
+    gold = _gold(oracle_status="ABSTAIN")
+    findings = scan_run_for_gold(
+        [
+            _artifact(
+                "trace:debug",
+                _live_c04_run_diagnostics_terminal(
+                    result_status="ABSTAIN", status_ceiling="ABSTAIN"
+                ),
+                kind="trace",
+                artifact_type="run_diagnostics",
+            )
+        ],
+        gold,
+    )
+    assert findings
+    assert any("oracle status" in f for f in findings)
+    assert all("ABSTAIN" not in f for f in findings)
+
+
+def test_terminal_field_path_alone_cannot_exempt_trace():
+    gold = _gold(oracle_status="ABSTAIN")
+    findings = scan_run_for_gold(
+        [
+            _artifact(
+                "trace:debug",
+                _live_c04_run_diagnostics_terminal(
+                    result_status="ABSTAIN", status_ceiling="ABSTAIN"
+                ),
+                kind="trace",
+                artifact_type="run_diagnostics",
+                post_writer_persisted=False,
+            )
+        ],
+        gold,
+    )
+    assert any("oracle status" in f for f in findings)
+
+
+@pytest.mark.parametrize(
+    ("schema_version", "terminal_event_type"),
+    [
+        ("v1.1_run_diagnostics_v0", "run.completed"),
+        ("v1.1_run_diagnostics_v1", "run.failed"),
+    ],
+)
+def test_runtime_exemption_requires_schema_and_completed_event(
+    schema_version: str, terminal_event_type: str
+):
+    gold = _gold(oracle_status="ABSTAIN")
+    findings = scan_run_for_gold(
+        [
+            _artifact(
+                "c04/diag",
+                _live_c04_run_diagnostics_terminal(
+                    result_status="ABSTAIN",
+                    status_ceiling="ABSTAIN",
+                    schema_version=schema_version,
+                    terminal_event_type=terminal_event_type,
+                ),
+                kind="trace",
+                artifact_type="run_diagnostics",
+                post_writer_persisted=True,
+            )
+        ],
+        gold,
+    )
+    assert any("oracle status" in f for f in findings)
+
+
+def test_rendered_messages_without_oracle_status_stay_clean():
+    gold = _gold(oracle_status="ABSTAIN")
+    findings = scan_run_for_gold(
+        [
+            _artifact(
+                "c04/rendered_messages",
+                {
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": "inventory=NONE\nobservation=move_profile",
+                        }
+                    ]
+                },
+                kind="prompt",
+            )
+        ],
         gold,
     )
     assert findings == []

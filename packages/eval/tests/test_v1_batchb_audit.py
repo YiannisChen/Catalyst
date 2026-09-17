@@ -114,6 +114,108 @@ def test_audit_decision_uses_typed_vocabulary():
         )
 
 
+def test_runtime_limitation_reason_is_typed_and_role_bound():
+    gold = _gold()
+    limitation = RunClaimOutput(
+        claim_id="limitation-1",
+        material=False,
+        citation_ids=(),
+        role="LIMITATION",
+        statement="The runtime could not establish causal attribution.",
+    )
+    run = _run(gold, claims=(limitation,))
+    audit = _audit(
+        gold,
+        run,
+        decisions=(
+            AuditClaimDecision(
+                claim_id="limitation-1",
+                material=False,
+                citation_ids=(),
+                decision="SUPPORT",
+                reason_code="runtime_limitation_verified",
+            ),
+        ),
+    )
+    assert validate_output_audit(audit, run, gold, eval_id="eval:stage1:v1")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {"material": True},
+        {"citation_ids": ("e1",)},
+        {"decision": "PARTIAL_SUPPORT"},
+        {"decision": "UNSUPPORTED"},
+    ),
+)
+def test_runtime_limitation_reason_rejects_invalid_decision_combinations(kwargs):
+    values = {
+        "claim_id": "limitation-1",
+        "material": False,
+        "citation_ids": (),
+        "decision": "SUPPORT",
+        "reason_code": "runtime_limitation_verified",
+    }
+    values.update(kwargs)
+    with pytest.raises(ValueError):
+        AuditClaimDecision(**values)
+
+
+def test_runtime_limitation_reason_rejects_non_limitation_role():
+    gold = _gold()
+    claim = RunClaimOutput(
+        claim_id="context-1",
+        material=False,
+        citation_ids=(),
+        role="CONTEXT",
+        statement="A runtime context fact.",
+    )
+    run = _run(gold, claims=(claim,))
+    audit = _audit(
+        gold,
+        run,
+        decisions=(
+            AuditClaimDecision(
+                claim_id="context-1",
+                material=False,
+                citation_ids=(),
+                decision="SUPPORT",
+                reason_code="runtime_limitation_verified",
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="LIMITATION"):
+        validate_output_audit(audit, run, gold, eval_id="eval:stage1:v1")
+
+
+def test_nonmaterial_limitation_cannot_use_non_runtime_audit_reason():
+    gold = _gold()
+    claim = RunClaimOutput(
+        claim_id="limitation-1",
+        material=False,
+        citation_ids=(),
+        role="LIMITATION",
+        statement="The runtime limitation is observable.",
+    )
+    run = _run(gold, claims=(claim,))
+    audit = _audit(
+        gold,
+        run,
+        decisions=(
+            AuditClaimDecision(
+                claim_id="limitation-1",
+                material=False,
+                citation_ids=(),
+                decision="SUPPORT",
+                reason_code="no_causal_support",
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="runtime_limitation_verified"):
+        validate_output_audit(audit, run, gold, eval_id="eval:stage1:v1")
+
+
 def test_output_audit_rejects_claims_with_missing_truth_fields():
     gold = _gold()
     row = SimpleNamespace(

@@ -126,6 +126,10 @@ def test_cli_help_describes_benchmark_inputs():
     help_text = module.build_parser().format_help()
     assert "Benchmark dataset manifest" in help_text
     assert "Benchmark stratification" in help_text
+    assert "--derived-leakage-scan" in help_text
+    assert "--runtime-evidence-db" in help_text
+    assert "--handoff-manifest" in help_text
+    assert "--handoff-manifest-sha256" in help_text
 
 
 def test_cli_execute_refuses_incompatible_ledger(cli_env, monkeypatch):

@@ -165,6 +165,39 @@ Owner: implementation Codex for generation; Codex for final acceptance and tag.
 6. Stop for Codex review. Codex verifies exact commits, tests, identities, budgets, case results, hard gates, comparability, files, and Git status.
 7. Only after that review may Codex create annotated tag `v1.1-m7-stage1` and declare M7 complete. M8 starts from the reviewed integration point, not from an unreviewed worktree.
 
+### Report integrity evidence (required at Phase E)
+
+The `report` command must receive the original leakage scan, the derived
+post-Writer leakage scan, the identity-bound read-only runtime DB, and the
+secret scan. It verifies the original scan SHA, derived-to-original binding,
+exact `run_diagnostics` schema/artifact identity, post-Writer provenance,
+`run.completed` lifecycle, empty `rendered_messages` and hidden-gold findings,
+and empty secret findings. Missing evidence, hash/schema/provenance mismatch,
+or any real finding is a hard stop. The canonical JSON and deterministic
+Markdown include both scan statuses, counts, hashes, the original
+false-positive disposition, and model-visible leakage count; repeat
+generation must be byte-identical.
+
+The authoritative invocation supplies these paths explicitly. All commands use
+the checkout's `.venv/bin/python` and hermetic import settings; the package
+path order shown below is the M7 eval-first order used for report generation:
+
+```text
+cd /Users/yiannischen/Desktop/Catalyst-v1.1-m7
+env PYTHONNOUSERSITE=1 \
+  PYTHONPATH=/Users/yiannischen/Desktop/Catalyst-v1.1-m7/packages/eval:/Users/yiannischen/Desktop/Catalyst-v1.1-m7/packages/agents:/Users/yiannischen/Desktop/Catalyst-v1.1-m7/packages/app:/Users/yiannischen/Desktop/Catalyst-v1.1-m7/packages/data-core \
+  .venv/bin/python packages/eval/scripts/run_v1_1_stage1.py report \
+  --output-dir <runtime-output> --audit <human-audit.jsonl> \
+  --manifest-out <eval-manifest.json> --json-out <report.json> \
+  --markdown-out <report.md> \
+  --leakage-scan <report_inputs/leakage_scan.json> \
+  --derived-leakage-scan <derived/leakage_scan_after_terminal_status_exemption.json> \
+  --secret-scan <report_inputs/secret_scan.json> \
+  --runtime-evidence-db <runtime.sqlite3> \
+  --handoff-manifest <final_handoff_manifest.json> \
+  --handoff-manifest-sha256 <explicit-handoff-manifest-sha256>
+```
+
 ### Non-secret pricing input (`--pricing-json`)
 
 At execute time the operator supplies the identity-bound prices and bounded

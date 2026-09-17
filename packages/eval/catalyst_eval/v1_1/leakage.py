@@ -27,11 +27,20 @@ ArtifactKind = Literal["prompt", "state", "trace", "output", "artifact"]
 
 @dataclass(frozen=True)
 class RunArtifactInput:
-    """One production artifact under scan, classified by model visibility."""
+    """One production artifact under scan, classified by model visibility.
+
+    ``post_writer_persisted`` is an explicit provenance assertion supplied by
+    the runtime-artifact loader after it has confirmed that this is the
+    ``run_diagnostics`` artifact published with the post-Writer terminal
+    transaction.  It is deliberately not inferred from a path or a trace
+    kind: generic/model-visible traces must remain subject to the gold scan.
+    """
 
     path: str
     kind: ArtifactKind
     payload: Any
+    artifact_type: str | None = None
+    post_writer_persisted: bool = False
 
 
 _FORBIDDEN_IMPORT_RE = re.compile(
@@ -63,6 +72,36 @@ _FORBIDDEN_FIELD_NAMES = frozenset(
 # Statuses are hidden when they sit in a prompt/state/trace; the model's own
 # output status is the runtime conclusion and is not oracle leakage.
 _INPUT_KINDS = frozenset({"prompt", "state", "trace"})
+
+# Post-Writer `run_diagnostics.terminal` fields persisted at run.completed.
+# They are runtime conclusions, not model-visible gold (live c04 false positive).
+_RUNTIME_TERMINAL_STATUS_LEAVES = frozenset(
+    {"terminal.result_status", "terminal.status_ceiling"}
+)
+
+
+def _is_verified_post_writer_run_diagnostics(
+    artifact: RunArtifactInput,
+) -> bool:
+    """Return true only for a verified terminal diagnostics artifact.
+
+    The three independent bindings are intentional: artifact type/provenance
+    comes from the persistence boundary, while schema and terminal event are
+    checked from the persisted payload itself.  Field paths alone are never a
+    reason to exempt a model-visible trace.
+    """
+    if artifact.artifact_type != "run_diagnostics":
+        return False
+    if artifact.post_writer_persisted is not True:
+        return False
+    if not isinstance(artifact.payload, dict):
+        return False
+    if artifact.payload.get("schema_version") != "v1.1_run_diagnostics_v1":
+        return False
+    terminal = artifact.payload.get("terminal")
+    return isinstance(terminal, dict) and (
+        terminal.get("terminal_event_type") == "run.completed"
+    )
 
 
 def _iter_nodes(value: Any) -> Iterable[tuple[str, Any]]:
@@ -124,7 +163,16 @@ def scan_run_for_gold(
 
         # 2. Hidden oracle status/refusal values in model-visible inputs.
         if artifact.kind in _INPUT_KINDS:
+            verified_post_writer_diagnostics = (
+                _is_verified_post_writer_run_diagnostics(artifact)
+            )
             for path, text in _iter_strings(artifact.payload):
+                if (
+                    verified_post_writer_diagnostics
+                    and ".".join(path.split(".")[-2:])
+                    in _RUNTIME_TERMINAL_STATUS_LEAVES
+                ):
+                    continue
                 if gold_case.oracle_status and gold_case.oracle_status in text:
                     _report("hidden oracle status", path)
                 if gold_case.expected_refusal_reason and (
