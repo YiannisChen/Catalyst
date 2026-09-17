@@ -287,7 +287,7 @@ class GateResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     gate_id: str
-    passed: bool
+    passed: bool | None
     detail: str | None = None
 
 

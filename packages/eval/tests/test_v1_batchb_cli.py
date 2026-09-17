@@ -527,17 +527,54 @@ def _write_report_gate_evidence(
     conn = sqlite3.connect(runtime)
     conn.executescript(
         """
-        CREATE TABLE runs (run_id TEXT PRIMARY KEY, lifecycle_status TEXT NOT NULL);
-        CREATE TABLE run_events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, event_type TEXT NOT NULL, PRIMARY KEY (run_id, seq));
+        CREATE TABLE runs (
+            run_id TEXT PRIMARY KEY,
+            lifecycle_status TEXT NOT NULL,
+            run_manifest_id TEXT NOT NULL,
+            manifest_hash TEXT NOT NULL
+        );
+        CREATE TABLE run_events (
+            run_id TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            occurred_at TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            PRIMARY KEY (run_id, seq)
+        );
         CREATE TABLE run_artifacts (artifact_id TEXT PRIMARY KEY, run_id TEXT NOT NULL, event_seq INTEGER NOT NULL, artifact_type TEXT NOT NULL, payload_hash TEXT NOT NULL, payload_json TEXT NOT NULL);
         """
     )
-    conn.execute("INSERT INTO runs VALUES (?, ?)", ("run:fixture", "COMPLETED"))
-    conn.execute("INSERT INTO run_events VALUES (?, ?, ?)", ("run:fixture", 3, "run.completed"))
+    conn.execute(
+        "INSERT INTO runs VALUES (?, ?, ?, ?)",
+        ("run:fixture", "COMPLETED", "manifest:fixture", "d" * 64),
+    )
+    conn.execute(
+        "INSERT INTO run_events VALUES (?, ?, ?, ?)",
+        ("run:fixture", 3, "2026-08-19T00:00:00+00:00", "run.completed"),
+    )
     conn.execute(
         "INSERT INTO run_artifacts VALUES (?, ?, ?, ?, ?, ?)",
         ("diagnostics:fixture", "run:fixture", 3, "run_diagnostics", diagnostics_sha, diagnostics_json),
     )
+    for index, case in enumerate(make_stage1_cases(), start=1):
+        case_id = case["case_id"]
+        conn.execute(
+            "INSERT INTO runs VALUES (?, ?, ?, ?)",
+            (
+                f"run:{case_id}",
+                "COMPLETED",
+                f"manifest:{case_id}",
+                _manifest_hash(case_id),
+            ),
+        )
+        conn.execute(
+            "INSERT INTO run_events VALUES (?, ?, ?, ?)",
+            (
+                f"run:{case_id}",
+                1,
+                f"2026-08-19T00:00:{index:02d}+00:00",
+                "run.completed",
+            ),
+        )
     conn.commit()
     conn.close()
     handoff_files = []

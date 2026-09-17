@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+import importlib.util
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -394,4 +396,140 @@ def test_report_gate_evidence_rejects_unverified_or_leaking_inputs(tmp_path, mut
             handoff_manifest_sha256=hashlib.sha256(handoff.read_bytes()).hexdigest(),
             expected_execution_head="head",
             expected_eval_id="eval",
+        )
+
+
+def _load_stage1_cli():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "run_v1_1_stage1.py"
+    spec = importlib.util.spec_from_file_location("stage1_report_cli", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_real_c01_c12_report_appends_observed_manifest_outcome(tmp_path):
+    """The authoritative 12-case report path appends observed bindings once."""
+    repo = Path(__file__).resolve().parents[3]
+    output = repo / "data" / "eval_reports" / "v1_1_stage1_327b3eed"
+    module = _load_stage1_cli()
+    audit = repo / "data" / "baseline" / "reports" / (
+        "v1_1_stage1_327b3eed_output_audit.jsonl"
+    )
+    manifest_out = tmp_path / "eval_manifest.json"
+    report_json = tmp_path / "report.json"
+    report_md = tmp_path / "report.md"
+    argv = [
+        "report",
+        "--output-dir", str(output),
+        "--audit", str(audit),
+        "--manifest-out", str(manifest_out),
+        "--json-out", str(report_json),
+        "--markdown-out", str(report_md),
+        "--leakage-scan", str(output / "report_inputs" / "leakage_scan.json"),
+        "--derived-leakage-scan", str(
+            output / "derived" / "leakage_scan_after_terminal_status_exemption.json"
+        ),
+        "--secret-scan", str(output / "report_inputs" / "secret_scan.json"),
+        "--runtime-evidence-db", str(output / "runtime.sqlite3"),
+        "--handoff-manifest", str(output / "final_handoff_manifest.json"),
+        "--handoff-manifest-sha256",
+        "b745902af95e158d33ea68226b4991d933a3e3ed30887429571a3da39f5d6baf",
+    ]
+    assert module.main(argv) == 1
+    manifest = json.loads(manifest_out.read_text(encoding="utf-8"))
+    report = json.loads(report_json.read_text(encoding="utf-8"))
+    outcome = manifest["outcome"]
+    assert outcome is not None
+    assert all(
+        not refs for refs in manifest["run_artifact_identity"].values()
+    )
+    expected_case_ids = [f"c{i:02d}" for i in range(1, 13)]
+    refs = outcome["per_case_result_refs"]
+    bindings = outcome["observed_run_artifact_identity"]["run_manifest_bindings"]
+    assert [ref["case_id"] for ref in refs] == expected_case_ids
+    assert len(bindings) == len(refs) == 12
+    assert [ref["run_manifest_id"] for ref in refs] == [
+        binding["run_manifest_id"] for binding in bindings
+    ]
+    assert [ref["run_manifest_hash"] for ref in refs] == [
+        binding["run_manifest_hash"] for binding in bindings
+    ]
+    for ref, binding in zip(refs, bindings):
+        assert ref["result_artifact_id"]
+        assert ref["run_manifest_id"] == binding["run_manifest_id"]
+    observed_identity = outcome["observed_run_artifact_identity"]
+    assert len(observed_identity["context_pack_refs"]) == 12
+    assert len(observed_identity["claim_plan_refs"]) == 12
+    assert len(observed_identity["assurance_refs"]) == 12
+    assert outcome["latency_tokens_cost"] == {
+        "total_latency_ms": report["latency_ms"],
+        "total_tokens": report["tokens"],
+        "total_cost": report["cost_usd"],
+    }
+    aggregate_by_id = {
+        metric["metric_id"]: metric for metric in outcome["aggregate_metrics"]
+    }
+    canonical_metrics = {}
+    for section in ("attribution_metrics", "trajectory_metrics", "retrieval_metrics"):
+        canonical_metrics.update(report[section])
+    for metric in canonical_metrics.values():
+        if metric["denominator"] <= 0:
+            assert metric["metric_id"] not in aggregate_by_id
+            continue
+        observed = aggregate_by_id[metric["metric_id"]]
+        for field in (
+            "numerator", "denominator", "eligible_count", "excluded_count",
+            "non_scorable_count",
+        ):
+            assert observed[field] == metric[field]
+        assert observed["hard_gate_passed"] == metric.get("gate_passed")
+    assert {
+        gate["gate_id"]: gate["passed"] for gate in outcome["gate_results"]
+    } == report["hard_gates"]
+    assert outcome["completed_at"] == "2026-09-15T18:03:09.523892Z"
+    first_outputs = (manifest_out.read_bytes(), report_json.read_bytes(), report_md.read_bytes())
+    assert module.main(argv) == 1
+    assert (manifest_out.read_bytes(), report_json.read_bytes(), report_md.read_bytes()) == first_outputs
+
+
+def test_real_report_outcome_rejects_invalid_persisted_bindings():
+    """The observed outcome builder rejects all malformed ledger binding shapes."""
+    repo = Path(__file__).resolve().parents[3]
+    output = repo / "data" / "eval_reports" / "v1_1_stage1_327b3eed"
+    module = _load_stage1_cli()
+    summary = module._load_prepare_summary(output)
+    eval_manifest, _ = module._load_eval_manifest_and_cases(summary, output)
+    ledger = module.ExecutionLedger.load(
+        output / "execution_ledger.jsonl",
+        expected_eval_id=eval_manifest.evaluation_identity.eval_id,
+    )
+    report = json.loads(
+        (repo / "data" / "baseline" / "reports" / "v1_1_stage1_327b3eed.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    runtime_db = output / "runtime.sqlite3"
+    rows = list(ledger.rows)
+    with pytest.raises(ValueError, match="ordered|case"):
+        module._build_observed_eval_outcome(
+            eval_manifest, module.ExecutionLedger(rows=tuple(reversed(rows))), report, runtime_db
+        )
+    with pytest.raises(ValueError, match="duplicate|case"):
+        module._build_observed_eval_outcome(
+            eval_manifest, module.ExecutionLedger(rows=(rows[0], *rows)), report, runtime_db
+        )
+    with pytest.raises(ValueError, match="identity|manifest|binding|checksum"):
+        module._build_observed_eval_outcome(
+            eval_manifest,
+            module.ExecutionLedger(rows=(replace(rows[0], run_manifest_id="manifest:wrong"), *rows[1:])),
+            report,
+            runtime_db,
+        )
+    with pytest.raises(ValueError, match="artifact ref"):
+        module._build_observed_eval_outcome(
+            eval_manifest,
+            module.ExecutionLedger(rows=(replace(rows[0], context_pack_ref=None), *rows[1:])),
+            report,
+            runtime_db,
         )

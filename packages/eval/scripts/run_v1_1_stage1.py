@@ -48,10 +48,13 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import math
 import os
 import re
+import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -67,11 +70,19 @@ from catalyst_eval.v1_1.loader import (
 )
 from catalyst_eval.v1_1.manifest import (
     AgentPolicyIdentity,
+    CaseResultRef,
     CodeProviderIdentity,
     DataRuntimeIdentityReference,
+    EvalArtifactRef,
     EvalManifest,
+    EvalOutcome,
+    GateResult,
+    LatencyTokensCost,
+    MetricAggregate,
     MetricContract,
     RetrievalPolicyIdentity,
+    RunArtifactIdentity,
+    RunManifestBinding,
 )
 from catalyst_eval.v1_1.manifest_builder import (
     EligibleExperimentInput,
@@ -121,6 +132,214 @@ class Stage1CeilingExceeded(Stage1OperatorError):
 
 class Stage1GateFailure(RuntimeError):
     pass
+
+
+def _parse_persisted_utc(value: Any, *, label: str) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{label} is missing from persisted evidence")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{label} is not a valid ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{label} must be timezone-aware")
+    return parsed.astimezone(timezone.utc)
+
+
+def _persisted_completion_time(
+    ledger: ExecutionLedger, rows: Sequence[LedgerRow], runtime_db: Path
+) -> datetime:
+    """Return the latest persisted run.completed timestamp for all cases."""
+    if not runtime_db.is_file():
+        raise ValueError(f"runtime evidence DB is missing: {runtime_db}")
+    times: list[datetime] = []
+    try:
+        with sqlite3.connect(
+            f"file:{runtime_db.resolve()}?mode=ro&immutable=1", uri=True
+        ) as conn:
+            conn.row_factory = sqlite3.Row
+            for row in rows:
+                runtime_run = conn.execute(
+                    "SELECT run_id, run_manifest_id, manifest_hash, "
+                    "lifecycle_status FROM runs WHERE run_manifest_id = ?",
+                    (row.run_manifest_id,),
+                ).fetchone()
+                if runtime_run is None:
+                    raise ValueError(
+                        f"runtime run binding is missing for case {row.case_id!r}"
+                    )
+                if (
+                    runtime_run["run_manifest_id"] != row.run_manifest_id
+                    or runtime_run["manifest_hash"] != row.run_manifest_hash
+                    or runtime_run["lifecycle_status"] != "COMPLETED"
+                ):
+                    raise ValueError(
+                        f"runtime run identity/lifecycle mismatch for case {row.case_id!r}"
+                    )
+                completed_events = conn.execute(
+                    "SELECT occurred_at FROM run_events "
+                    "WHERE run_id = ? AND event_type = 'run.completed' "
+                    "ORDER BY seq",
+                    (runtime_run["run_id"],),
+                ).fetchall()
+                if len(completed_events) != 1:
+                    raise ValueError(
+                        f"case {row.case_id!r} must have exactly one persisted "
+                        "run.completed event"
+                    )
+                times.append(
+                    _parse_persisted_utc(
+                        completed_events[0]["occurred_at"],
+                        label=f"run.completed for {row.case_id}",
+                    )
+                )
+    except sqlite3.Error as exc:
+        raise ValueError("runtime completion evidence could not be read immutably") from exc
+    if len(times) != len(rows):
+        raise ValueError("persisted completion evidence does not cover all cases")
+    return max(times)
+
+
+def _build_observed_eval_outcome(
+    eval_manifest: EvalManifest,
+    ledger: ExecutionLedger,
+    report_payload: Mapping[str, Any],
+    runtime_db: Path,
+) -> EvalOutcome:
+    """Build the append-only observed outcome from ledger and report facts."""
+    eval_id = eval_manifest.evaluation_identity.eval_id
+    expected_case_ids = list(eval_manifest.evaluation_identity.ordered_case_ids)
+    persisted_rows = [row for row in ledger.rows if row.eval_id == eval_id]
+    observed_case_ids = [row.case_id for row in persisted_rows]
+    if observed_case_ids != expected_case_ids:
+        raise ValueError(
+            "persisted ledger cases must match ordered_case_ids exactly: "
+            f"expected {expected_case_ids}, observed {observed_case_ids}"
+        )
+    for row in persisted_rows:
+        if not row.identity_valid or row.terminal_status != "COMPLETED":
+            raise ValueError(
+                f"case {row.case_id!r} is not an identity-valid COMPLETED row"
+            )
+        if not _SHA256_RE.fullmatch(row.result_artifact_hash):
+            raise ValueError(f"case {row.case_id!r} result artifact hash is invalid")
+
+    bindings: list[RunManifestBinding] = []
+    result_refs: list[CaseResultRef] = []
+    context_refs: list[EvalArtifactRef] = []
+    claim_refs: list[EvalArtifactRef] = []
+    assurance_refs: list[EvalArtifactRef] = []
+    for row in persisted_rows:
+        refs: list[EvalArtifactRef] = []
+        for label, raw_ref in (
+            ("context pack", row.context_pack_ref),
+            ("claim plan", row.claim_plan_ref),
+            ("assurance", row.assurance_ref),
+        ):
+            if not isinstance(raw_ref, Mapping):
+                raise ValueError(f"case {row.case_id!r} artifact ref missing: {label}")
+            ref = EvalArtifactRef.model_validate(dict(raw_ref))
+            if not isinstance(ref.artifact_id, str) or not ref.artifact_id:
+                raise ValueError(f"case {row.case_id!r} artifact ref invalid: {label}")
+            refs.append(ref)
+        context_refs.append(refs[0])
+        claim_refs.append(refs[1])
+        assurance_refs.append(refs[2])
+        bindings.append(
+            RunManifestBinding(
+                run_manifest_id=row.run_manifest_id,
+                run_manifest_hash=row.run_manifest_hash,
+            )
+        )
+        result_refs.append(
+            CaseResultRef(
+                case_id=row.case_id,
+                run_manifest_id=row.run_manifest_id,
+                run_manifest_hash=row.run_manifest_hash,
+                result_artifact_id=row.result_artifact_id,
+            )
+        )
+
+    aggregates: list[MetricAggregate] = []
+    for section_name in (
+        "attribution_metrics",
+        "trajectory_metrics",
+        "retrieval_metrics",
+    ):
+        section = report_payload.get(section_name)
+        if not isinstance(section, Mapping):
+            raise ValueError(f"report metric section is missing: {section_name}")
+        for metric in section.values():
+            if not isinstance(metric, Mapping):
+                raise ValueError(f"report metric in {section_name} is invalid")
+            metric_id = metric.get("metric_id")
+            if not isinstance(metric_id, str) or not metric_id:
+                raise ValueError("report metric_id is missing")
+            denominator = metric.get("denominator")
+            if (
+                not isinstance(denominator, int)
+                or isinstance(denominator, bool)
+                or denominator < 0
+            ):
+                raise ValueError(f"report denominator is invalid for {metric_id}")
+            if denominator == 0:
+                continue
+            aggregates.append(
+                MetricAggregate(
+                    metric_id=metric_id,
+                    numerator=metric["numerator"],
+                    denominator=denominator,
+                    eligible_count=metric["eligible_count"],
+                    excluded_count=metric["excluded_count"],
+                    non_scorable_count=metric["non_scorable_count"],
+                    hard_gate_passed=metric.get("gate_passed"),
+                )
+            )
+
+    hard_gates = report_payload.get("hard_gates")
+    if not isinstance(hard_gates, Mapping) or not hard_gates:
+        raise ValueError("report hard_gates are missing")
+    gate_results = []
+    for gate_id, passed in hard_gates.items():
+        if not isinstance(gate_id, str) or not gate_id:
+            raise ValueError("report gate_id is invalid")
+        if passed is not None and not isinstance(passed, bool):
+            raise ValueError(f"report gate result is invalid: {gate_id}")
+        gate_results.append(GateResult(gate_id=gate_id, passed=passed))
+
+    total_latency = report_payload.get("latency_ms")
+    total_tokens = report_payload.get("tokens")
+    total_cost = report_payload.get("cost_usd")
+    if (
+        not isinstance(total_latency, int)
+        or isinstance(total_latency, bool)
+        or total_latency < 0
+        or not isinstance(total_tokens, int)
+        or isinstance(total_tokens, bool)
+        or total_tokens < 0
+        or not isinstance(total_cost, (int, float))
+        or isinstance(total_cost, bool)
+        or not math.isfinite(float(total_cost))
+        or total_cost < 0
+    ):
+        raise ValueError("report totals are missing or invalid")
+    return EvalOutcome(
+        completed_at=_persisted_completion_time(ledger, persisted_rows, runtime_db),
+        observed_run_artifact_identity=RunArtifactIdentity(
+            run_manifest_bindings=tuple(bindings),
+            context_pack_refs=tuple(context_refs),
+            claim_plan_refs=tuple(claim_refs),
+            assurance_refs=tuple(assurance_refs),
+        ),
+        per_case_result_refs=tuple(result_refs),
+        aggregate_metrics=tuple(aggregates),
+        latency_tokens_cost=LatencyTokensCost(
+            total_latency_ms=total_latency,
+            total_tokens=total_tokens,
+            total_cost=float(total_cost),
+        ),
+        gate_results=tuple(gate_results),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1261,13 +1480,20 @@ def _report(
         max_cost_usd=summary.get("max_cost_usd"),
         gate_evidence=gate_evidence,
     )
+    observed_outcome = _build_observed_eval_outcome(
+        eval_manifest,
+        ledger,
+        payload,
+        runtime_evidence_db,
+    )
+    observed_manifest = eval_manifest.append_outcome(observed_outcome)
     findings = scan_report_for_secrets(payload)
     if findings:
         raise Stage1GateFailure(
             f"report contains secret-shaped text: {findings[:5]}"
         )
     write_report_json(json_out, payload)
-    write_report_json(manifest_out, eval_manifest.model_dump(mode="json"))
+    write_report_json(manifest_out, observed_manifest.model_dump(mode="json"))
     write_report_markdown(markdown_out, render_report_markdown(payload))
     print(f"report sealed: {json_out}")
     if payload.get("gates_passed") is not True:

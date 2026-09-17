@@ -332,6 +332,11 @@ def test_metric_contract_counts_are_non_negative() -> None:
         )  # denominator zero rejected
 
 
+def test_gate_result_preserves_unexercised_gate_as_null() -> None:
+    gate = GateResult(gate_id="unexercised", passed=None)
+    assert gate.passed is None
+
+
 def test_outcome_is_append_once() -> None:
     manifest = EvalManifest(**_manifest())
     assert manifest.outcome is None
