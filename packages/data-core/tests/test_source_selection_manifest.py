@@ -124,3 +124,45 @@ def test_manifest_rejects_invalid_class_time_ticker_and_duplicates(tmp_path):
     (tmp_path / "bodies" / "doc-2.txt").unlink()
     with pytest.raises(ValueError, match="duplicate body identity"):
         load_source_selection_manifest(_write(tmp_path, payload), body_root=tmp_path)
+
+
+def test_empty_sealed_selection_is_a_derivative_only_rebuild(tmp_path):
+    """``documents: []`` is a valid seal: rebuild, ingest nothing new."""
+    payload = {
+        "schema_version": "v1_1_source_selection_v1",
+        "selection_policy_id": SELECTION_POLICY_ID,
+        "documents": [],
+    }
+    path = _write(tmp_path, payload)
+    manifest = load_source_selection_manifest(path, body_root=tmp_path)
+    assert manifest.documents == ()
+    assert manifest.source_selection_id == source_selection_id(payload)
+    # The empty seal is stable and never depends on the body root.
+    other = load_source_selection_manifest(
+        _write(tmp_path, payload), body_root=tmp_path / "elsewhere"
+    )
+    assert other.source_selection_id == manifest.source_selection_id
+    assert manifest.source_selection_id != source_selection_id(valid_manifest(tmp_path))
+
+
+def test_optional_public_document_identity_is_validated(tmp_path):
+    payload = valid_manifest(tmp_path)
+    document = payload["documents"][0]
+    document["filing_accession"] = "0000731766-26-000025"
+    document["document_role"] = "exhibit_99_1"
+    document["title"] = "UnitedHealth Group Q4 2025 Exhibit 99.1"
+    manifest = load_source_selection_manifest(_write(tmp_path, payload), body_root=tmp_path)
+    selected = manifest.documents[0]
+    assert selected.filing_accession == "0000731766-26-000025"
+    assert selected.document_role == "exhibit_99_1"
+    assert selected.title == "UnitedHealth Group Q4 2025 Exhibit 99.1"
+
+    for bad_key, bad_value in (
+        ("filing_accession", "731766-26-25"),
+        ("document_role", "Exhibit 99.1"),
+        ("title", "   "),
+    ):
+        broken = valid_manifest(tmp_path)
+        broken["documents"][0][bad_key] = bad_value
+        with pytest.raises(ValueError):
+            load_source_selection_manifest(_write(tmp_path, broken), body_root=tmp_path)

@@ -205,12 +205,14 @@ def _seal_git_revision(benchmark_path: Path, q005_path: Path) -> str:
     return benchmark_revision
 
 
-def _bind_source_selection(args: argparse.Namespace) -> dict[str, Any]:
-    """Load, re-hash, and bind the sealed class-based source selection.
+def _load_source_selection(args: argparse.Namespace) -> tuple[Any, str, Path]:
+    """Load, re-hash, and pin the sealed class-based source selection.
 
     ``prepare`` consumes only general public documents; the manifest identity
     is recorded in the preparation evidence (and, when a new candidate is
-    staged, in its header). Stage-1 gold paths are never accepted here.
+    staged, in its header). Stage-1 gold paths are never accepted here. An
+    empty ``documents`` list is a valid sealed selection meaning "rebuild from
+    the hash-bound bodies already in this derivative; ingest nothing new".
     """
     from catalyst_data.canonical.source_selection import load_source_selection_manifest
 
@@ -230,12 +232,41 @@ def _bind_source_selection(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(
             "--expected-source-selection-sha256 does not match the source-selection manifest"
         )
+    return manifest, digest, body_root
+
+
+def _source_selection_summary(manifest: Any, digest: str) -> dict[str, Any]:
+    """Evidence summary: identity only, never a local filesystem root."""
     return {
         "selection_policy_id": manifest.selection_policy_id,
         "source_selection_id": manifest.source_selection_id,
         "manifest_sha256": digest,
         "document_count": len(manifest.documents),
     }
+
+
+def _step_source_ingest(
+    conn: sqlite3.Connection, *, manifest: Any, body_root: Path
+) -> dict[str, Any]:
+    """INGEST sealed bodies into canonical BEFORE ``stage_corpus_candidate``.
+
+    An empty sealed selection performs no write (derivative-only rebuild).
+    """
+    from catalyst_data.canonical.source_ingest import (
+        ingest_source_selection_documents,
+    )
+
+    if not manifest.documents:
+        return {
+            "ingest_policy_id": "general-public-fulltext-ingest-v1",
+            "document_count": 0,
+            "body_bytes": 0,
+            "documents": [],
+        }
+    result = ingest_source_selection_documents(
+        conn, manifest=manifest, body_root=body_root
+    )
+    return result.as_dict()
 
 
 def _decode_payload(content_raw: bytes) -> Any:
@@ -617,14 +648,21 @@ def _sha256_file(path: Path) -> str:
 
 
 def _prepare_resume(
-    args: argparse.Namespace, *, source_selection: dict[str, Any] | None = None
+    args: argparse.Namespace,
+    *,
+    source_selection: dict[str, Any] | None = None,
+    selection_manifest: Any | None = None,
 ) -> dict[str, Any]:
     """Resume reconciliation + candidate bundle + FTS for an existing build.
 
     L4 order: L1 bind/validate -> additive schema ensure -> read-only audit ->
     real DATA-01 -> gate check -> resume_candidate_reconciliation ->
     export_candidate_source_bundle (M3-9) -> build_candidate_fts (M3-10) ->
-    verify_source_bundle -> preparation evidence. Forbidden seams are never
+    verify_source_bundle -> preparation evidence.
+
+    The sealed source selection is bound for evidence but never re-ingested
+    here: resume must not mutate the canonical projection of a build that is
+    already mid-reconciliation. Forbidden seams are never
     called: derivative migration, accepted time, sec reparse, news persistence,
     backfill, dedup, stage_corpus_candidate, recover_primary, canonical records,
     _manifest_phase, _cutover, retrieval FTS5 builder, _build_id.
@@ -649,6 +687,9 @@ def _prepare_resume(
     evidence_path = _resolve_required(
         args.preparation_evidence, label="--preparation-evidence"
     )
+    selection_body_root = _resolve_required(
+        args.source_document_root, label="--source-document-root"
+    )
     snapshot_id = _validate_hex64(args.snapshot_id, label="--snapshot-id")
     probe_report_id = _validate_hex64(
         args.probe_report_id, label="--probe-report-id"
@@ -658,8 +699,10 @@ def _prepare_resume(
     )
     build_id = _validate_hex64(args.resume_build_id, label="--resume-build-id")
     git_revision = _seal_git_revision(benchmark, q005)
-    if source_selection is None:
-        source_selection = _bind_source_selection(args)
+    if source_selection is None or selection_manifest is None:
+        manifest, digest, _ = _load_source_selection(args)
+        selection_manifest = manifest
+        source_selection = _source_selection_summary(manifest, digest)
 
     flags = {"deadline": False, "operator_interrupt": False}
     previous_handlers: dict[int, Any] = {}
@@ -715,6 +758,7 @@ def _prepare_resume(
             "snapshot_id": snapshot_id,
             "probe_report_id": probe_report_id,
             "postbuild_readiness_id": postbuild_readiness_id,
+            "source_selection": source_selection,
         }
         evidence["audit"] = _step_audit(conn)
         evidence["data01"] = _step_data01(conn, benchmark, q005, git_revision)
@@ -796,10 +840,17 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         args.postbuild_readiness_id, label="--postbuild-readiness-id"
     )
     git_revision = _seal_git_revision(benchmark, q005)
-    source_selection = _bind_source_selection(args)
+    selection_manifest, selection_digest, selection_body_root = _load_source_selection(
+        args
+    )
+    source_selection = _source_selection_summary(
+        selection_manifest, selection_digest
+    )
 
     if args.resume_build_id is not None:
-        return _prepare_resume(args, source_selection=source_selection)
+        return _prepare_resume(
+            args, source_selection=source_selection, selection_manifest=selection_manifest
+        )
 
     if args.dry_run:
         return {
@@ -831,6 +882,12 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         evidence["sec_reparse"] = _step_sec_reparse(conn)
         evidence["news_persistence"] = _step_news_persistence(conn)
         evidence["m35b_backfill"] = _step_m35b_backfill(conn)
+        # Ingest sealed bodies into canonical BEFORE stage_corpus_candidate.
+        # Backfill runs first so a sealed SEC exhibit binds to the canonical
+        # filing asset that the general projection already owns.
+        evidence["source_ingest"] = _step_source_ingest(
+            conn, manifest=selection_manifest, body_root=selection_body_root
+        )
         evidence["dedup_independence"] = _step_m36_dedup(conn)
         evidence["audit"] = _step_audit(conn)
         evidence["data01"] = _step_data01(conn, benchmark, q005, git_revision)

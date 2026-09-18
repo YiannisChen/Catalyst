@@ -12,6 +12,10 @@ benchmark membership audit runs:
   rejected recursively anywhere in the payload;
 * the sealed identity excludes ``generated_at`` and every local filesystem
   root, so re-sealing the same documents is byte-identical;
+* ``documents: []`` is a valid sealed selection meaning "rebuild from the
+  hash-bound bodies already present in this derivative; ingest nothing new";
+  a non-empty list is ingested into the canonical registry before a candidate
+  is staged (``catalyst_data.canonical.source_ingest``);
 * every body below the caller-supplied ``body_root`` is re-hashed on load.
 
 Loading is read-only: no SQLite access happens here.
@@ -78,8 +82,16 @@ _DOCUMENT_KEYS = frozenset(
         "provider",
         "publisher",
         "tickers",
+        # Optional public document identity. Never benchmark semantics:
+        # these are the document's own declared title and SEC filing identity.
+        "title",
+        "filing_accession",
+        "document_role",
     }
 )
+
+_ACCESSION = re.compile(r"[0-9]{10}-[0-9]{2}-[0-9]{6}\Z")
+_DOCUMENT_ROLE = re.compile(r"[a-z0-9_.\-]{1,64}\Z")
 
 _UTC_ISO_Z = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -104,6 +116,9 @@ class SelectedDocument:
     provider: str
     publisher: str
     tickers: tuple[str, ...]
+    title: str | None = None
+    filing_accession: str | None = None
+    document_role: str | None = None
 
     def identity_payload(self) -> dict[str, Any]:
         return {
@@ -117,6 +132,9 @@ class SelectedDocument:
             "provider": self.provider,
             "publisher": self.publisher,
             "tickers": list(self.tickers),
+            "title": self.title,
+            "filing_accession": self.filing_accession,
+            "document_role": self.document_role,
         }
 
 
@@ -240,6 +258,30 @@ def _validate_document(
             )
         tickers.append(ticker)
 
+    title = document.get("title")
+    if title is not None and (not isinstance(title, str) or not title.strip()):
+        raise ValueError(
+            f"source-selection document {where} title must be a non-empty string"
+        )
+    filing_accession = document.get("filing_accession")
+    if filing_accession is not None and (
+        not isinstance(filing_accession, str)
+        or _ACCESSION.fullmatch(filing_accession) is None
+    ):
+        raise ValueError(
+            f"source-selection document {where} filing_accession must be a "
+            "dashed SEC accession (##########-##-######)"
+        )
+    document_role = document.get("document_role")
+    if document_role is not None and (
+        not isinstance(document_role, str)
+        or _DOCUMENT_ROLE.fullmatch(document_role) is None
+    ):
+        raise ValueError(
+            f"source-selection document {where} document_role must be a "
+            "lowercase SEC document type"
+        )
+
     body_file = _resolve_body(body_root, body_path, where=where)
     digest = hashlib.sha256(body_file.read_bytes()).hexdigest()
     if digest != body_sha256:
@@ -258,6 +300,9 @@ def _validate_document(
         provider=provider,
         publisher=publisher,
         tickers=tuple(tickers),
+        title=title.strip() if isinstance(title, str) else None,
+        filing_accession=filing_accession,
+        document_role=document_role,
     )
 
 
@@ -307,6 +352,20 @@ def source_selection_id(
                 provider=str(document.get("provider", "")),
                 publisher=str(document.get("publisher", "")),
                 tickers=tuple(str(item) for item in document.get("tickers") or ()),
+                title=(
+                    str(document["title"]) if document.get("title") is not None
+                    else None
+                ),
+                filing_accession=(
+                    str(document["filing_accession"])
+                    if document.get("filing_accession") is not None
+                    else None
+                ),
+                document_role=(
+                    str(document["document_role"])
+                    if document.get("document_role") is not None
+                    else None
+                ),
             )
         )
     policy = payload.get("selection_policy_id")
@@ -346,8 +405,11 @@ def load_source_selection_manifest(
         if not isinstance(generated_at, str) or _UTC_ISO_Z.fullmatch(generated_at) is None:
             raise ValueError("source-selection generated_at must be UTC ISO Z")
     raw_documents = payload.get("documents")
-    if not isinstance(raw_documents, (list, tuple)) or not raw_documents:
-        raise ValueError("source-selection manifest requires a non-empty documents list")
+    if not isinstance(raw_documents, (list, tuple)):
+        raise ValueError(
+            "source-selection manifest requires a documents list "
+            "(an empty list seals a derivative-only rebuild)"
+        )
     root = Path(body_root)
     documents: list[SelectedDocument] = []
     seen_urls: set[str] = set()
