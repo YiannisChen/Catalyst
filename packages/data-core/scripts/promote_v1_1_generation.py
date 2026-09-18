@@ -205,6 +205,39 @@ def _seal_git_revision(benchmark_path: Path, q005_path: Path) -> str:
     return benchmark_revision
 
 
+def _bind_source_selection(args: argparse.Namespace) -> dict[str, Any]:
+    """Load, re-hash, and bind the sealed class-based source selection.
+
+    ``prepare`` consumes only general public documents; the manifest identity
+    is recorded in the preparation evidence (and, when a new candidate is
+    staged, in its header). Stage-1 gold paths are never accepted here.
+    """
+    from catalyst_data.canonical.source_selection import load_source_selection_manifest
+
+    manifest_path = _resolve_required(
+        args.source_selection_manifest, label="--source-selection-manifest"
+    )
+    body_root = _resolve_required(
+        args.source_document_root, label="--source-document-root"
+    )
+    manifest = load_source_selection_manifest(manifest_path, body_root=body_root)
+    digest = _sha256_file(manifest_path)
+    expected = _validate_hex64(
+        args.expected_source_selection_sha256,
+        label="--expected-source-selection-sha256",
+    )
+    if digest != expected:
+        raise ValueError(
+            "--expected-source-selection-sha256 does not match the source-selection manifest"
+        )
+    return {
+        "selection_policy_id": manifest.selection_policy_id,
+        "source_selection_id": manifest.source_selection_id,
+        "manifest_sha256": digest,
+        "document_count": len(manifest.documents),
+    }
+
+
 def _decode_payload(content_raw: bytes) -> Any:
     try:
         decoded = zlib.decompress(content_raw)
@@ -502,6 +535,7 @@ def _step_corpus_candidate(
     snapshot_id: str,
     probe_report_id: str,
     postbuild_readiness_id: str,
+    source_selection_id: str | None = None,
 ) -> dict[str, Any]:
     from catalyst_data.corpus.streaming_publication import (
         build_candidate_fts,
@@ -516,6 +550,7 @@ def _step_corpus_candidate(
         snapshot_id=snapshot_id,
         probe_report_id=probe_report_id,
         postbuild_readiness_id=postbuild_readiness_id,
+        source_selection_id=source_selection_id,
     )
     lexical = build_candidate_fts(conn, build_id=candidate.build_id)
     return {
@@ -581,7 +616,9 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _prepare_resume(args: argparse.Namespace) -> dict[str, Any]:
+def _prepare_resume(
+    args: argparse.Namespace, *, source_selection: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Resume reconciliation + candidate bundle + FTS for an existing build.
 
     L4 order: L1 bind/validate -> additive schema ensure -> read-only audit ->
@@ -621,6 +658,8 @@ def _prepare_resume(args: argparse.Namespace) -> dict[str, Any]:
     )
     build_id = _validate_hex64(args.resume_build_id, label="--resume-build-id")
     git_revision = _seal_git_revision(benchmark, q005)
+    if source_selection is None:
+        source_selection = _bind_source_selection(args)
 
     flags = {"deadline": False, "operator_interrupt": False}
     previous_handlers: dict[int, Any] = {}
@@ -757,9 +796,10 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
         args.postbuild_readiness_id, label="--postbuild-readiness-id"
     )
     git_revision = _seal_git_revision(benchmark, q005)
+    source_selection = _bind_source_selection(args)
 
     if args.resume_build_id is not None:
-        return _prepare_resume(args)
+        return _prepare_resume(args, source_selection=source_selection)
 
     if args.dry_run:
         return {
@@ -770,6 +810,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
             "snapshot_id": snapshot_id,
             "probe_report_id": probe_report_id,
             "postbuild_readiness_id": postbuild_readiness_id,
+            "source_selection": source_selection,
         }
 
     conn = _open_derivative(derivative)
@@ -783,6 +824,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
             "snapshot_id": snapshot_id,
             "probe_report_id": probe_report_id,
             "postbuild_readiness_id": postbuild_readiness_id,
+            "source_selection": source_selection,
         }
         evidence["derivative"] = _step_derivative_migration(conn, derivative)
         evidence["accepted_time"] = _step_accepted_time(conn, q005)
@@ -803,6 +845,7 @@ def _prepare(args: argparse.Namespace) -> dict[str, Any]:
             snapshot_id=snapshot_id,
             probe_report_id=probe_report_id,
             postbuild_readiness_id=postbuild_readiness_id,
+            source_selection_id=source_selection["source_selection_id"],
         )
         evidence["candidate"] = candidate
         evidence["bundle"] = _step_bundle_export(conn, candidate)
@@ -1150,6 +1193,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     prepare.add_argument("--q005-approval", required=True, type=Path)
     prepare.add_argument("--source-bundle-output-root", required=True, type=Path)
     prepare.add_argument("--preparation-evidence", required=True, type=Path)
+    prepare.add_argument(
+        "--source-selection-manifest", required=True, type=Path,
+        help=(
+            "Sealed general-public-fulltext-v1 source-selection manifest. "
+            "Never a Stage-1 cases.jsonl / gold path."
+        ),
+    )
+    prepare.add_argument(
+        "--source-document-root", required=True, type=Path,
+        help="Root directory containing the manifest's hash-bound document bodies.",
+    )
+    prepare.add_argument(
+        "--expected-source-selection-sha256", required=True,
+        help="Pinned SHA-256 of the source-selection manifest file bytes.",
+    )
     prepare.add_argument("--snapshot-id", required=True)
     prepare.add_argument("--probe-report-id", required=True)
     prepare.add_argument("--postbuild-readiness-id", required=True)

@@ -52,6 +52,48 @@ def _derivative(tmp_path: Path) -> Path:
     return db
 
 
+def _source_selection(tmp_path: Path) -> tuple[Path, Path, str]:
+    """Sealed class-based source selection (M8-A) with one hash-bound body."""
+    import hashlib
+
+    root = tmp_path / "source_selection"
+    bodies = root / "bodies"
+    bodies.mkdir(parents=True, exist_ok=True)
+    body = bodies / "doc-1.txt"
+    body.write_text("material filing body", encoding="utf-8")
+    payload = {
+        "schema_version": "v1_1_source_selection_v1",
+        "selection_policy_id": "general-public-fulltext-v1",
+        "documents": [
+            {
+                "canonical_url": "https://www.sec.gov/example-8k",
+                "source_class": "issuer_disclosure",
+                "source_published_at": "2025-05-01T20:00:00Z",
+                "eligible_at": "2025-05-01T20:00:00Z",
+                "fetched_at": "2025-05-02T00:00:00Z",
+                "body_sha256": hashlib.sha256(body.read_bytes()).hexdigest(),
+                "body_path": "bodies/doc-1.txt",
+                "provider": "sec",
+                "publisher": "sec",
+                "tickers": ["AAPL"],
+            }
+        ],
+    }
+    manifest = root / "source_selection.json"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    return manifest, root, digest
+
+
+def _source_selection_args(tmp_path: Path) -> list[str]:
+    manifest, root, digest = _source_selection(tmp_path)
+    return [
+        "--source-selection-manifest", str(manifest),
+        "--source-document-root", str(root),
+        "--expected-source-selection-sha256", digest,
+    ]
+
+
 def _prepare_argv(tmp_path: Path, *, dry_run: bool = False) -> list[str]:
     bench, q005 = _seal_files(tmp_path)
     argv = [
@@ -65,6 +107,7 @@ def _prepare_argv(tmp_path: Path, *, dry_run: bool = False) -> list[str]:
         "--probe-report-id", "8" * 64,
         "--postbuild-readiness-id", "9" * 64,
         "--expected-implementation-head", HEAD,
+        *_source_selection_args(tmp_path),
     ]
     if dry_run:
         argv.append("--dry-run")
@@ -716,7 +759,7 @@ def test_prepare_requires_certified_identity_flags(tmp_path):
         "--source-bundle-output-root", str(tmp_path / "bundles"),
         "--preparation-evidence", str(tmp_path / "preparation_evidence.json"),
         "--expected-implementation-head", HEAD,
-    ]
+    ] + _source_selection_args(tmp_path)
     with pytest.raises(SystemExit):
         module._parse_args(argv)
 
@@ -1408,6 +1451,7 @@ def _resume_argv(tmp_path: Path, *, dry_run: bool = False) -> list[str]:
         "--postbuild-readiness-id", "9" * 64,
         "--expected-implementation-head", HEAD,
         "--resume-build-id", "a" * 64,
+        *_source_selection_args(tmp_path),
     ]
     if dry_run:
         argv.append("--dry-run")
@@ -1808,3 +1852,95 @@ def test_prepare_parser_accepts_reconciliation_deadline_seconds(tmp_path):
                 _prepare_argv(tmp_path)
                 + ["--reconciliation-deadline-seconds", bad]
             )
+
+
+# ===================== M8-A source-selection binding =====================
+
+def test_prepare_binds_source_selection_into_evidence_and_candidate(
+    tmp_path, monkeypatch, capsys
+):
+    from catalyst_data.canonical.source_selection import (
+        load_source_selection_manifest,
+    )
+
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda repo: HEAD)
+    argv = _prepare_argv(tmp_path)
+    monkeypatch.setattr(
+        module, "_step_derivative_migration", lambda *a, **k: {"user_version": 14}
+    )
+    monkeypatch.setattr(module, "_step_accepted_time", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_step_sec_reparse", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_step_news_persistence", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_step_m35b_backfill", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_step_m36_dedup", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_step_audit", lambda *a, **k: {})
+    monkeypatch.setattr(
+        module, "_step_data01", lambda *a, **k: {"gate_passed": True}
+    )
+    captured: dict = {}
+
+    def candidate_step(*a, **k):
+        captured.update(k)
+        return {
+            "build_id": "b" * 64,
+            "corpus_manifest_id": "1" * 64,
+            "chunk_count": 2,
+            "lexical_digest": "d" * 64,
+            "source_bundle_id": "2" * 64,
+            "source_bundle_path": str(tmp_path / "bundle"),
+        }
+
+    monkeypatch.setattr(module, "_step_corpus_candidate", candidate_step)
+    monkeypatch.setattr(module, "_step_bundle_export", lambda *a, **k: {})
+
+    rc = module.main(argv)
+    assert rc == 0
+    capsys.readouterr()
+    manifest_path = Path(argv[argv.index("--source-selection-manifest") + 1])
+    root = Path(argv[argv.index("--source-document-root") + 1])
+    manifest = load_source_selection_manifest(manifest_path, body_root=root)
+    assert captured["source_selection_id"] == manifest.source_selection_id
+    evidence = json.loads(
+        Path(argv[argv.index("--preparation-evidence") + 1]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert evidence["source_selection"]["source_selection_id"] == (
+        manifest.source_selection_id
+    )
+    assert evidence["source_selection"]["selection_policy_id"] == (
+        "general-public-fulltext-v1"
+    )
+    assert evidence["source_selection"]["document_count"] == 1
+
+
+def test_prepare_rejects_stage1_gold_paths_and_manifest_mismatch(
+    tmp_path, monkeypatch, capsys
+):
+    module = _load_script()
+    monkeypatch.setattr(module, "_git_head", lambda repo: HEAD)
+    for gold_flag in ("--cases", "--expected-primary", "--cases-jsonl"):
+        with pytest.raises(SystemExit):
+            module._parse_args(
+                _prepare_argv(tmp_path) + [gold_flag, str(tmp_path / "cases.jsonl")]
+            )
+
+    argv = _prepare_argv(tmp_path)
+    argv[argv.index("--expected-source-selection-sha256") + 1] = "f" * 64
+    rc = module.main(argv)
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "source-selection" in payload["error"]
+
+    # A tampered body must also fail before any step runs.
+    argv = _prepare_argv(tmp_path)
+    manifest_path = Path(argv[argv.index("--source-selection-manifest") + 1])
+    (manifest_path.parent / "bodies" / "doc-1.txt").write_text(
+        "tampered body", encoding="utf-8"
+    )
+    rc = module.main(argv)
+    assert rc == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert "body hash mismatch" in payload["error"]

@@ -2770,6 +2770,7 @@ def stage_corpus_candidate(
     snapshot_id: str,
     probe_report_id: str,
     postbuild_readiness_id: str,
+    source_selection_id: str | None = None,
 ) -> InactiveCorpusCandidate:
     """Stage an inactive corpus candidate from canonical projection.
 
@@ -2800,6 +2801,11 @@ def stage_corpus_candidate(
         "tokenizer_revision": TOKENIZER_REVISION,
         "embedding_revision_or_null": BGE_M3_REVISION,
     }
+    if source_selection_id is not None:
+        # M8-A: the candidate is bound to the sealed class-based source
+        # selection. The inventory digest ignores this key, so only the build
+        # identity changes and existing callers that omit it are unchanged.
+        header["source_selection_id"] = source_selection_id
     build_id = _build_id(header)
     now = _utc_now()
     ensure_streaming_publication_schema(conn)
