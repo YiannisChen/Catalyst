@@ -290,3 +290,56 @@ def test_sec_document_without_matching_filing_fails_closed(tmp_path):
             )
     finally:
         conn.close()
+
+
+def test_first_party_html_body_is_extracted_not_stored_raw(tmp_path):
+    """Archive HTML (whitehouse.gov/cms.gov style) must become citable text."""
+    from catalyst_data.canonical.source_ingest import _first_party_body_text
+
+    html = (
+        "<html><head><title>Joint Statement</title></head><body>"
+        + "<p>China will take measures and the United States will act "
+        "accordingly, including a suspension of the tariff escalation.</p>" * 8
+        + "</body></html>"
+    )
+    text = _first_party_body_text(html.encode("utf-8"))
+    assert isinstance(text, str)
+    assert "<p>" not in text and "<html>" not in text
+    assert "China will take measures" in text
+    # Plain text bodies are never run through the HTML extractor.
+    assert _first_party_body_text(b"plain body text\n") == "plain body text\n"
+
+
+def test_news_document_from_html_archive_mints_full_text(tmp_path):
+    conn = _conn(tmp_path)
+    try:
+        body = (
+            "<html><body>"
+            + "<p>Both sides said they would keep consulting on the channel and "
+            "the suspension covers the tariff escalation announced in April.</p>" * 8
+            + "</body></html>"
+        )
+        path, root = _manifest(
+            tmp_path,
+            [
+                _document(
+                    tmp_path,
+                    url=NEWS_URL,
+                    body=body,
+                    title=NEWS_TITLE,
+                    publisher="The White House",
+                )
+            ],
+        )
+        manifest = load_source_selection_manifest(path, body_root=root)
+        result = ingest_source_selection_documents(
+            conn, manifest=manifest, body_root=root
+        )
+        assert result.documents[0].content_state == "FULL_TEXT"
+        stored = conn.execute(
+            "SELECT subtype_metadata FROM canonical_assets WHERE asset_id=?",
+            (result.documents[0].asset_id,),
+        ).fetchone()[0]
+        assert "<p>" not in stored
+    finally:
+        conn.close()

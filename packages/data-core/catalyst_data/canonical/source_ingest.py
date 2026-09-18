@@ -64,6 +64,11 @@ _SEC_ARCHIVES = re.compile(
     r"^https://www\.sec\.gov/Archives/edgar/data/[0-9]+/([0-9]{18})/([^/?#]+)$"
 )
 _EXHIBIT99 = re.compile(r"(?i)(?:^|[-_])ex[-_]?99")
+# First-party archive bodies (whitehouse.gov, cms.gov, ...) are HTML pages; the
+# repo's own extractor owns text recovery, exactly like SEC documents.
+_HTML_MARKERS = re.compile(
+    r"(?i)<\s*(?:!doctype\s+html|html[\s>]|head[\s>]|body[\s>]|p[\s>]|div[\s>])"
+)
 
 
 class SourceIngestError(RuntimeError):
@@ -128,6 +133,30 @@ def _content_hash_for_state(content_state: str, **fields: object) -> str:
     payload: dict[str, object] = {"content_state": content_state}
     payload.update(fields)
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
+
+
+def _first_party_body_text(raw: bytes | str) -> str:
+    """Recover the citable body text of a sealed public document body.
+
+    HTML archive bytes go through the repository extractor (the same one the
+    SEC path uses); anything else is treated as already-extracted text.
+    """
+    from catalyst_data.sec.extract import extract_document_text
+
+    text = raw.decode("utf-8", "replace")
+    if _HTML_MARKERS.search(text[:4096]) is None:
+        return text
+    outcome = extract_document_text(
+        raw,
+        content_type="text/html",
+        is_primary=False,
+        parser_version=SEC_NORMALIZER_VERSION,
+    )
+    if outcome.status != "success" or not (outcome.text or "").strip():
+        raise SourceIngestError(
+            f"first-party HTML body extraction failed ({outcome.status})"
+        )
+    return outcome.text
 
 
 def _news_article_id(document: SelectedDocument) -> str:
@@ -370,7 +399,7 @@ def _ingest_public_news(
             "identity",
         ),
     )
-    body_text = raw.decode("utf-8")
+    body_text = _first_party_body_text(raw)
     recovery = recover_body(
         {
             "title": document.title,

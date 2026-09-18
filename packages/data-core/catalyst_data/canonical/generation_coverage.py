@@ -402,19 +402,15 @@ def audit_generation_coverage(
     )
     filing_chunk_count = 0
     if build_id is not None:
-        chunk_ids = tuple(
-            chunk_id for chunks in candidate_by_asset.values() for chunk_id in chunks
+        # Whole-build count: an IN(...) list of every candidate chunk id blows
+        # the SQLite variable limit on a real (500k-chunk) candidate.
+        filing_chunk_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM corpus_build_chunks WHERE build_id=? "
+                "AND chunk_profile_version LIKE 'filing%'",
+                (build_id,),
+            ).fetchone()[0]
         )
-        if chunk_ids:
-            placeholders = ",".join("?" for _ in chunk_ids)
-            filing_chunk_count = int(
-                conn.execute(
-                    "SELECT COUNT(*) FROM corpus_build_chunks WHERE build_id=? "
-                    "AND chunk_profile_version LIKE 'filing%' AND chunk_id IN "
-                    f"({placeholders})",
-                    (build_id, *chunk_ids),
-                ).fetchone()[0]
-            )
 
     evidence_ids = tuple(dict.fromkeys(expected_evidence_ids))
     resolved_chunks = _evidence_chunk_states(
