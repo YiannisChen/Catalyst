@@ -182,6 +182,7 @@ def test_prepare_dry_run_never_mutates(tmp_path, monkeypatch, capsys):
         "_step_sec_reparse",
         "_step_news_persistence",
         "_step_m35b_backfill",
+        "_step_source_ingest",
         "_step_m36_dedup",
         "_step_audit",
         "_step_data01",
@@ -298,7 +299,7 @@ def test_rollback_subcommand_invokes_rollback_v1_generation(tmp_path, monkeypatc
     assert json.loads(out)["ok"] is True
 
 
-def test_prepare_runs_ten_steps_in_order_and_never_touches_pointers(
+def test_prepare_runs_steps_in_order_and_never_touches_pointers(
     tmp_path, monkeypatch, capsys
 ):
     module = _load_script()
@@ -329,6 +330,7 @@ def test_prepare_runs_ten_steps_in_order_and_never_touches_pointers(
             "_step_sec_reparse",
             "_step_news_persistence",
             "_step_m35b_backfill",
+            "_step_source_ingest",
             "_step_m36_dedup",
             "_step_audit",
             "_step_data01",
@@ -368,13 +370,14 @@ def test_prepare_runs_ten_steps_in_order_and_never_touches_pointers(
         "_step_sec_reparse",
         "_step_news_persistence",
         "_step_m35b_backfill",
+        "_step_source_ingest",
         "_step_m36_dedup",
         "_step_audit",
         "_step_data01",
         "_step_corpus_candidate",
         "_step_bundle_export",
     ]
-    assert len(order) == 10
+    assert len(order) == 11
     assert derivative.read_bytes() == before
     assert json.loads(out)["ok"] is True
     evidence_path = Path(argv[argv.index("--preparation-evidence") + 1])
@@ -852,6 +855,7 @@ def test_prepare_fails_closed_when_data01_gate_false(tmp_path, monkeypatch, caps
         "_step_sec_reparse",
         "_step_news_persistence",
         "_step_m35b_backfill",
+        "_step_source_ingest",
         "_step_m36_dedup",
         "_step_audit",
     ):
@@ -1873,6 +1877,7 @@ def test_prepare_binds_source_selection_into_evidence_and_candidate(
     monkeypatch.setattr(module, "_step_sec_reparse", lambda *a, **k: {})
     monkeypatch.setattr(module, "_step_news_persistence", lambda *a, **k: {})
     monkeypatch.setattr(module, "_step_m35b_backfill", lambda *a, **k: {})
+    monkeypatch.setattr(module, "_step_source_ingest", lambda *a, **k: {})
     monkeypatch.setattr(module, "_step_m36_dedup", lambda *a, **k: {})
     monkeypatch.setattr(module, "_step_audit", lambda *a, **k: {})
     monkeypatch.setattr(
