@@ -8,12 +8,23 @@ under `docs/archive/`.
 
 | Priority | Document | Role |
 | --- | --- | --- |
-| 0 | `2026-08-09-catalyst-post-gpu-handoff.md` | Current verified state and next-session entry point after GPU embedding/import |
-| 1 | `2026-08-06-b6-g-cloud-execution-runbook.md` | Authorized GPU embedding + LanceDB import operator playbook |
-| 1.5 | `2026-08-08-post-import-completion-plan.md` | Post-import plan (INDEX_READY_B6_INCOMPLETE; MANAGER_PLAN_COMPLETE → Wave1 T1–T3) |
-| 2 | `2026-08-06-protected-artifact-ci.md` | Protected DB marker / strict CI contract |
-| 3 | `2026-07-21-b2-b7-technical-contracts.md` | Cross-package binding contracts |
-| 4 | `2026-07-21-catalyst-roadmap.md` | High-level B2–B7 roadmap |
+| 0 | `2026-09-18-m8-executor-lock.md` | Binding Codex/operator lock: paths, source policy, test cap, git, quality gates |
+| 0.1 | `2026-09-18-m8-dscodex-prompt-guide.md` | Short copy-paste prompts P0–P5; one at a time |
+| 0.2 | `2026-09-18-catalyst-v1.1-m8-causal-quality-recovery-design.md` | Approved M8 ordering and architecture amendment after the sealed M7 attribution failure |
+| 0.5 | `2026-09-18-catalyst-v1.1-m8-causal-quality-recovery.md` | Executable M8-0/A–D plan; TDD steps optional under the executor lock |
+| 0.75 | `2026-08-19-catalyst-v1.1-m8-cleanup-release-candidate.md` | M8-E cleanup plan; blocked until M8-D; out of the first Codex campaign |
+| 1 | `2026-08-09-catalyst-post-gpu-handoff.md` | Historical verified state after the earlier GPU embedding/import |
+| 2 | `2026-08-06-b6-g-cloud-execution-runbook.md` | Historical GPU embedding + LanceDB import operator playbook |
+| 3 | `2026-08-08-post-import-completion-plan.md` | Historical post-import plan (INDEX_READY_B6_INCOMPLETE; MANAGER_PLAN_COMPLETE → Wave1 T1–T3) |
+| 4 | `2026-08-06-protected-artifact-ci.md` | Protected DB marker / strict CI contract |
+| 5 | `2026-07-21-b2-b7-technical-contracts.md` | Cross-package binding contracts |
+| 6 | `2026-07-21-catalyst-roadmap.md` | High-level B2–B7 roadmap |
+
+The older B2-B7 handoff/runbooks remain historical and subsystem authorities,
+but they are not the current milestone entry point. Current filesystem commands
+use `/Users/yiannischen/Desktop/Catalyst` and its Desktop-rooted milestone
+worktrees; historical `/Users/yiannischen/Projects/...` paths are provenance
+only.
 
 ## Package plans (B2–B7)
 
