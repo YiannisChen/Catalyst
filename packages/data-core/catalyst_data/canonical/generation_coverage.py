@@ -41,6 +41,7 @@ FTS_READY_STATES = frozenset(
         CoverageState.DENSE_READY,
     }
 )
+_FTS_READY_VALUES = frozenset(state.value for state in FTS_READY_STATES)
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,26 @@ class GenerationCoverageReport:
     def state_for(self, document_id: str) -> CoverageState:
         return self.rows[document_id].state
 
+    def expected_evidence_summary(self) -> dict[str, Any]:
+        """``19/19``-style counts for the post-seal evidence audit input."""
+        unresolved = sorted(
+            key for key, value in self.expected_evidence.items() if value == "UNRESOLVED"
+        )
+        not_ready = sorted(
+            key
+            for key, value in self.expected_evidence.items()
+            if value != "UNRESOLVED" and value not in _FTS_READY_VALUES
+        )
+        ready = sum(
+            1 for value in self.expected_evidence.values() if value in _FTS_READY_VALUES
+        )
+        return {
+            "expected_count": len(self.expected_evidence),
+            "full_text_fts_ready": ready,
+            "unresolved_ids": unresolved,
+            "not_full_text_or_not_indexed_ids": not_ready,
+        }
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "schema_version": self.schema_version,
@@ -90,6 +111,7 @@ class GenerationCoverageReport:
             "candidate_filing_chunk_count": self.candidate_filing_chunk_count,
             "rows": {key: row.as_dict() for key, row in sorted(self.rows.items())},
             "expected_evidence": dict(sorted(self.expected_evidence.items())),
+            "expected_evidence_summary": self.expected_evidence_summary(),
             "report_digest": self.report_digest,
         }
 
@@ -197,6 +219,72 @@ def _embedded_chunk_ids(conn: sqlite3.Connection) -> frozenset[str]:
         "SELECT chunk_id FROM index_state WHERE status='embedded'"
     ).fetchall()
     return frozenset(str(row[0]) for row in rows)
+
+
+
+def _evidence_chunk_states(
+    conn: sqlite3.Connection,
+    *,
+    build_id: str | None,
+    corpus_manifest_id: str,
+    chunk_ids: Iterable[str],
+) -> dict[str, tuple[str | None, str | None, str, bool, bool]]:
+    """Resolve expected *evidence (chunk) ids* to their build-scoped chunk.
+
+    Returns ``{chunk_id: (document_id, canonical_asset_id, content_state,
+    has_body, fts_indexed)}``. The M8-A gate is expressed in chunk ids, so the
+    audit must resolve the exact chunk, not only the parent asset identity.
+    Chunks that are not present anywhere are simply absent from the mapping.
+    """
+    ids = tuple(dict.fromkeys(chunk_ids))
+    if not ids:
+        return {}
+    placeholders = ",".join("?" for _ in ids)
+    if build_id is not None and _table_exists(conn, "corpus_build_chunks"):
+        rows = conn.execute(
+            "SELECT chunk_id, corpus_document_id, canonical_asset_id, "
+            "content_state, content_text FROM corpus_build_chunks "
+            f"WHERE build_id=? AND chunk_id IN ({placeholders})",
+            (build_id, *ids),
+        ).fetchall()
+        fts_ids: frozenset[str] = frozenset()
+        if _table_exists(conn, "corpus_build_chunks_fts"):
+            fts_ids = frozenset(
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT chunk_id FROM corpus_build_chunks_fts "
+                    f"WHERE build_id=? AND chunk_id IN ({placeholders})",
+                    (build_id, *ids),
+                ).fetchall()
+            )
+    else:
+        from catalyst_data.corpus.streaming_publication import served_chunks_relation
+
+        relation = served_chunks_relation(conn)
+        rows = conn.execute(
+            "SELECT chunk_id, document_id, NULL, content_state, content_text "
+            f"FROM {relation} WHERE manifest_id=? AND chunk_id IN ({placeholders})",
+            (corpus_manifest_id, *ids),
+        ).fetchall()
+        fts_ids = frozenset(
+            str(row[0])
+            for row in conn.execute(
+                "SELECT chunk_id FROM corpus_chunks_fts "
+                f"WHERE chunk_id IN ({placeholders})",
+                ids,
+            ).fetchall()
+        )
+    resolved: dict[str, tuple[str | None, str | None, str, bool, bool]] = {}
+    for row in rows:
+        text = row[4]
+        resolved[str(row[0])] = (
+            str(row[1]) if row[1] is not None else None,
+            str(row[2]) if row[2] is not None else None,
+            str(row[3] or ""),
+            text is not None and bool(str(text).strip()),
+            str(row[0]) in fts_ids,
+        )
+    return resolved
 
 
 def _classify(
@@ -328,13 +416,41 @@ def audit_generation_coverage(
                 ).fetchone()[0]
             )
 
+    evidence_ids = tuple(dict.fromkeys(expected_evidence_ids))
+    resolved_chunks = _evidence_chunk_states(
+        conn,
+        build_id=build_id,
+        corpus_manifest_id=corpus_manifest_id,
+        chunk_ids=evidence_ids,
+    )
+    resolved_asset_states = _canonical_states(
+        conn,
+        (asset for _, asset, _, _, _ in resolved_chunks.values() if asset),
+    )
     expected: dict[str, str] = {}
-    for evidence_id in dict.fromkeys(expected_evidence_ids):
+    for evidence_id in evidence_ids:
         row = rows.get(evidence_id)
-        if row is None:
-            expected[evidence_id] = "UNRESOLVED"
-        else:
+        if row is not None:
             expected[evidence_id] = row.state.value
+            continue
+        chunk = resolved_chunks.get(evidence_id)
+        if chunk is None:
+            expected[evidence_id] = "UNRESOLVED"
+            continue
+        _document_id, asset_id, content_state, has_body, fts_indexed = chunk
+        asset_state = resolved_asset_states.get(asset_id) if asset_id else None
+        if content_state == FULL_TEXT and has_body:
+            expected[evidence_id] = (
+                CoverageState.CANDIDATE_FTS_READY.value
+                if fts_indexed
+                else CoverageState.CANDIDATE_NOT_FTS_INDEXED.value
+            )
+        elif asset_state is not None and asset_state != FULL_TEXT:
+            expected[evidence_id] = CoverageState.NOT_FULL_TEXT.value
+        elif build_id is not None:
+            expected[evidence_id] = CoverageState.OMITTED_FROM_BUILD.value
+        else:
+            expected[evidence_id] = CoverageState.SERVED_NOT_FTS_INDEXED.value
 
     digest_payload = {
         "schema_version": SCHEMA_VERSION,

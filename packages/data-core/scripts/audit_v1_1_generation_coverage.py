@@ -100,7 +100,9 @@ def main(argv: list[str] | None = None) -> int:
                 "build_id": report.build_id,
                 "counts": dict(report.counts),
                 "full_text_count": report.full_text_count,
+                "candidate_filing_chunk_count": report.candidate_filing_chunk_count,
                 "row_count": len(report.rows),
+                "expected_evidence": report.expected_evidence_summary(),
             }
         ).decode("utf-8")
     )

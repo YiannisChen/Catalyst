@@ -231,3 +231,38 @@ def test_cli_publishes_canonical_digest_without_absolute_paths(tmp_path):
     ).encode("utf-8")
     assert str(tmp_path) not in raw.decode("utf-8")
     assert payload["rows"]["doc-full"]["state"] == "CANDIDATE_FTS_READY"
+
+
+def test_expected_evidence_chunk_ids_resolve_to_chunk_coverage(tmp_path):
+    """The post-seal audit input is chunk ids; it must resolve to chunk state."""
+    conn = _fixture(tmp_path)
+    try:
+        report = audit_generation_coverage(
+            conn,
+            corpus_manifest_id=CANDIDATE_MANIFEST,
+            build_id=CANDIDATE_BUILD,
+            expected_evidence_ids=(
+                "doc-full-1",        # candidate chunk, candidate FTS indexed
+                "doc-candidate-1",   # candidate chunk, not FTS indexed
+                "doc-meta-1",        # never built
+                "doc-full",          # an asset id still resolves directly
+                "unknown-chunk",     # nothing owns it
+            ),
+        )
+        summary = report.expected_evidence_summary()
+        assert report.expected_evidence["doc-full-1"] == (
+            CoverageState.CANDIDATE_FTS_READY.value
+        )
+        assert report.expected_evidence["doc-candidate-1"] == (
+            CoverageState.CANDIDATE_NOT_FTS_INDEXED.value
+        )
+        assert report.expected_evidence["doc-meta-1"] == "UNRESOLVED"
+        assert report.expected_evidence["doc-full"] == (
+            CoverageState.CANDIDATE_FTS_READY.value
+        )
+        assert report.expected_evidence["unknown-chunk"] == "UNRESOLVED"
+        assert summary["expected_count"] == 5
+        assert summary["full_text_fts_ready"] == 2
+        assert summary["unresolved_ids"] == ["doc-meta-1", "unknown-chunk"]
+    finally:
+        conn.close()
