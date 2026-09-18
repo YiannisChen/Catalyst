@@ -50,6 +50,21 @@ class RecoveryRetrievalError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class CandidateHit:
+    """One candidate-FTS hit plus its measured eligibility flags.
+
+    The flags are measured from the returned hit (``available_at`` vs the case
+    cutoff, ticker association and searchable status of the exact build-scoped
+    chunk), never assumed. They are the input to the M8-B ticker/cutoff
+    violation gate.
+    """
+
+    chunk_id: str
+    ticker_eligible: bool = True
+    cutoff_eligible: bool = True
+
+
+@dataclass(frozen=True)
 class RankedCase:
     case_id: str
     question: str
@@ -210,6 +225,43 @@ def _citable_chunk_ids(
     return tuple(chunk_id for chunk_id in unique if chunk_id in present)
 
 
+def _build_scoped_eligibility(
+    conn: sqlite3.Connection, *, build_id: str, chunk_ids: Sequence[str]
+) -> dict[str, tuple[str, tuple[str, ...], str, str]]:
+    """Exact build-scoped chunk metadata for returned hits.
+
+    Returns ``{chunk_id: (available_at, tickers, status, eligibility)}``. A
+    chunk absent from the exact inactive build is simply not in the mapping,
+    and the caller records it as a ticker violation, exactly like the served
+    ``post_import.lexical_audit`` boundary does.
+    """
+    unique = tuple(dict.fromkeys(chunk_ids))
+    if not unique:
+        return {}
+    placeholders = ",".join("?" for _ in unique)
+    rows = conn.execute(
+        "SELECT chunk_id, available_at, status, eligibility, ticker_associations "
+        f"FROM corpus_build_chunks WHERE build_id=? AND chunk_id IN ({placeholders})",
+        (build_id, *unique),
+    ).fetchall()
+    resolved: dict[str, tuple[str, tuple[str, ...], str, str]] = {}
+    for row in rows:
+        raw_tickers = row[4]
+        try:
+            tickers = json.loads(raw_tickers) if raw_tickers else []
+        except (TypeError, json.JSONDecodeError):
+            tickers = []
+        if not isinstance(tickers, list):
+            tickers = []
+        resolved[str(row[0])] = (
+            str(row[1] or ""),
+            tuple(str(item) for item in tickers),
+            str(row[2] or ""),
+            str(row[3] or ""),
+        )
+    return resolved
+
+
 def default_retrieve(
     conn: sqlite3.Connection,
     *,
@@ -217,11 +269,16 @@ def default_retrieve(
     build_id: str,
     top_k: int,
     candidate_depth: int,
-) -> Callable[[Mapping[str, str]], Sequence[str]]:
-    """Pointer-free candidate lexical retrieval bound to one inactive build."""
+) -> Callable[[Mapping[str, str]], Sequence[CandidateHit]]:
+    """Pointer-free candidate lexical retrieval bound to one inactive build.
+
+    Returns measured :class:`CandidateHit` values so the ranking layer fills
+    the ticker/cutoff violation fields from the actual returned hits.
+    """
+    from catalyst_data.corpus.streaming_publication import SEARCHABLE_STATUSES
     from catalyst_data.retrieval.fts5 import retrieve_lexical
 
-    def _retrieve(query: Mapping[str, str]) -> Sequence[str]:
+    def _retrieve(query: Mapping[str, str]) -> Sequence[CandidateHit]:
         result = retrieve_lexical(
             conn,
             query["question"],
@@ -233,25 +290,84 @@ def default_retrieve(
             session_date=query["session_date"],
             inactive_build_id=build_id,
         )
-        return tuple(item.chunk_id for item in result.results)
+        chunk_ids = tuple(item.chunk_id for item in result.results)
+        eligibility = _build_scoped_eligibility(
+            conn, build_id=build_id, chunk_ids=chunk_ids
+        )
+        hits: list[CandidateHit] = []
+        for item in result.results:
+            row = eligibility.get(item.chunk_id)
+            if row is None:
+                ticker_eligible = False
+                available_at = str(item.available_at or "")
+            else:
+                available_at, tickers, status, eligibility_state = row
+                ticker_eligible = (
+                    query["ticker"] in tickers
+                    and status in SEARCHABLE_STATUSES
+                    and eligibility_state == "eligible"
+                )
+            hits.append(
+                CandidateHit(
+                    chunk_id=item.chunk_id,
+                    ticker_eligible=ticker_eligible,
+                    # An unknown timestamp is not a measured cutoff violation;
+                    # the ticker flag already fails that hit closed.
+                    cutoff_eligible=(
+                        not available_at or available_at <= query["cutoff"]
+                    ),
+                )
+            )
+        return tuple(hits)
 
     return _retrieve
+
+
+def _candidate_lexical_digest(conn: sqlite3.Connection, *, build_id: str) -> str:
+    """The candidate build's own lexical digest (never ``None`` for a gate run)."""
+    row = conn.execute(
+        "SELECT lexical_digest FROM corpus_publication_builds WHERE build_id=?",
+        (build_id,),
+    ).fetchone()
+    digest = str(row[0]) if row is not None and row[0] else ""
+    if not digest:
+        raise RecoveryRetrievalError(
+            "candidate build has no lexical_digest; refusing to score it"
+        )
+    return digest
+
+
+def _as_hits(raw: Sequence[object]) -> tuple[CandidateHit, ...]:
+    """Accept measured hits, or plain chunk-id strings from a test retriever."""
+    hits: list[CandidateHit] = []
+    for item in raw:
+        if isinstance(item, CandidateHit):
+            hits.append(item)
+        else:
+            hits.append(CandidateHit(chunk_id=str(item)))
+    return tuple(hits)
 
 
 def rank_cases(
     *,
     cases: Sequence[GoldenCase],
-    retrieve: Callable[[Mapping[str, str]], Sequence[str]],
+    retrieve: Callable[[Mapping[str, str]], Sequence[object]],
     conn: sqlite3.Connection,
     corpus_manifest_id: str,
     build_id: str,
     top_k: int = 8,
 ) -> tuple[RankedCase, ...]:
-    """Freeze ranked identities BEFORE any gold field is read."""
+    """Freeze ranked identities BEFORE any gold field is read.
+
+    Ticker and cutoff violations are measured from the frozen top-k hits, so a
+    retrieval that returns an ineligible chunk fails the M8-B gate instead of
+    silently scoring zero violations.
+    """
     ranked_cases: list[RankedCase] = []
     for case in cases:
         query = case_query(case)
-        ranked = tuple(retrieve(query))[:top_k]
+        ranked_hits = _as_hits(tuple(retrieve(query)))[:top_k]
+        ranked = tuple(hit.chunk_id for hit in ranked_hits)
         pool = _pool_manifest(
             case_id=case.case_id,
             ranked=ranked,
@@ -270,8 +386,12 @@ def rank_cases(
                 pool=pool,
                 ranked_evidence_ids=ranked,
                 included_evidence_ids=included,
-                ticker_violations=(),
-                cutoff_violations=(),
+                ticker_violations=tuple(
+                    hit.chunk_id for hit in ranked_hits if not hit.ticker_eligible
+                ),
+                cutoff_violations=tuple(
+                    hit.chunk_id for hit in ranked_hits if not hit.cutoff_eligible
+                ),
             )
         )
     return tuple(ranked_cases)
@@ -358,6 +478,7 @@ def run_candidate_fts_retrieval(
     uri = f"{path.resolve().as_uri()}?mode=ro&immutable=1"
     conn = sqlite3.connect(uri, uri=True)
     try:
+        fts_digest = _candidate_lexical_digest(conn, build_id=build_id)
         retrieve_fn = retrieve or default_retrieve(
             conn,
             corpus_manifest_id=corpus_manifest_id,
@@ -407,7 +528,7 @@ def run_candidate_fts_retrieval(
         schema_version=SCHEMA_VERSION,
         corpus_manifest_id=corpus_manifest_id,
         build_id=build_id,
-        fts_digest=None,
+        fts_digest=fts_digest,
         case_list_sha256=hashlib.sha256(
             _canonical_bytes([case.case_id for case in cases])
         ).hexdigest(),
@@ -424,6 +545,7 @@ def run_candidate_fts_retrieval(
 
 __all__ = [
     "CALLABLE_CASE_FIELDS",
+    "CandidateHit",
     "CITABLE_STATES",
     "M8B_GATES",
     "RankedCase",

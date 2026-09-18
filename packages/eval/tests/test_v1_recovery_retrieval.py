@@ -19,6 +19,7 @@ from tests.v1_1_fixtures import make_case
 
 BUILD_ID = "b" * 64
 MANIFEST_ID = "c" * 64
+LEXICAL_DIGEST = "f" * 64
 
 
 def _case(case_id: str, *, primary: tuple[str, ...], evidence: tuple[str, ...]):
@@ -36,16 +37,41 @@ def _case(case_id: str, *, primary: tuple[str, ...], evidence: tuple[str, ...]):
     )
 
 
-def _conn(tmp_path: Path, chunk_ids: dict[str, str]) -> sqlite3.Connection:
+def _conn(
+    tmp_path: Path,
+    chunk_ids: dict[str, str],
+    *,
+    available_at: str = "2025-05-01T12:00:00Z",
+    eligible: bool = True,
+) -> sqlite3.Connection:
     conn = sqlite3.connect(tmp_path / "derivative.db")
+    conn.execute("DROP TABLE IF EXISTS corpus_build_chunks")
+    conn.execute("DROP TABLE IF EXISTS corpus_publication_builds")
     conn.execute(
         "CREATE TABLE corpus_build_chunks (build_id TEXT, chunk_id TEXT, "
-        "content_state TEXT, content_text TEXT)"
+        "content_state TEXT, content_text TEXT, available_at TEXT, "
+        "ticker_associations TEXT, status TEXT, eligibility TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE corpus_publication_builds (build_id TEXT, lexical_digest TEXT)"
+    )
+    conn.execute(
+        "INSERT INTO corpus_publication_builds VALUES (?,?)",
+        (BUILD_ID, LEXICAL_DIGEST),
     )
     for chunk_id, state in chunk_ids.items():
         conn.execute(
-            "INSERT INTO corpus_build_chunks VALUES (?,?,?,?)",
-            (BUILD_ID, chunk_id, state, "body" if state == "FULL_TEXT" else None),
+            "INSERT INTO corpus_build_chunks VALUES (?,?,?,?,?,?,?,?)",
+            (
+                BUILD_ID,
+                chunk_id,
+                state,
+                "body" if state == "FULL_TEXT" else None,
+                available_at,
+                '["AAPL"]',
+                "active",
+                "eligible" if eligible else "ineligible",
+            ),
         )
     conn.commit()
     return conn
@@ -199,3 +225,69 @@ def test_benchmark_cases_fixture_covers_twelve_cases():
     from tests.v1_1_fixtures import make_stage1_cases
 
     assert len(make_stage1_cases()) == 12
+
+
+def test_ranked_case_violations_are_filled_from_the_returned_hits(tmp_path):
+    from catalyst_eval.v1_1.recovery_retrieval import CandidateHit
+
+    cases = [_case("c01", primary=("e1",), evidence=("e1",))]
+    conn = _conn(tmp_path, {"e1": "FULL_TEXT"})
+    try:
+        ranked = rank_cases(
+            cases=cases,
+            retrieve=lambda query: (
+                CandidateHit(chunk_id="e1"),
+                CandidateHit(
+                    chunk_id="e-late", cutoff_eligible=False
+                ),
+                CandidateHit(chunk_id="e-other-ticker", ticker_eligible=False),
+            ),
+            conn=conn,
+            corpus_manifest_id=MANIFEST_ID,
+            build_id=BUILD_ID,
+        )
+    finally:
+        conn.close()
+    case = ranked[0]
+    assert case.ranked_evidence_ids == ("e1", "e-late", "e-other-ticker")
+    assert case.cutoff_violations == ("e-late",)
+    assert case.ticker_violations == ("e-other-ticker",)
+    assert case.ticker_violations and case.cutoff_violations
+
+
+def test_fts_digest_is_the_candidate_lexical_digest(tmp_path):
+    from catalyst_eval.v1_1.recovery_retrieval import RecoveryRetrievalError
+
+    cases = [_case("c01", primary=("e-primary",), evidence=("e-primary",))]
+    conn = _conn(tmp_path, {"e-primary": "FULL_TEXT"})
+    try:
+        report = run_candidate_fts_retrieval(
+            db_path=tmp_path / "derivative.db",
+            corpus_manifest_id=MANIFEST_ID,
+            build_id=BUILD_ID,
+            cases=cases,
+            retrieve=lambda query: ("e-primary",),
+        )
+        assert report.fts_digest == LEXICAL_DIGEST
+        assert report.as_dict()["fts_digest"] == LEXICAL_DIGEST
+    finally:
+        conn.close()
+
+    conn = _conn(tmp_path, {"e-primary": "FULL_TEXT"})
+    try:
+        conn.execute("UPDATE corpus_publication_builds SET lexical_digest=''")
+        conn.commit()
+        try:
+            run_candidate_fts_retrieval(
+                db_path=tmp_path / "derivative.db",
+                corpus_manifest_id=MANIFEST_ID,
+                build_id=BUILD_ID,
+                cases=cases,
+                retrieve=lambda query: ("e-primary",),
+            )
+        except RecoveryRetrievalError as exc:
+            assert "lexical_digest" in str(exc)
+        else:  # pragma: no cover - fail closed is required
+            raise AssertionError("missing candidate lexical_digest must fail closed")
+    finally:
+        conn.close()
