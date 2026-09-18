@@ -332,6 +332,7 @@ def build_report_payload(
     max_provider_calls: int | None = None,
     max_cost_usd: float | None = None,
     gate_evidence: Mapping[str, Any] | None = None,
+    recovery_gate_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compute the real Stage-1 report payload from sealed inputs only.
 
@@ -507,7 +508,7 @@ def build_report_payload(
         value is True for value in hard_gates.values()
     )
 
-    return {
+    payload: dict[str, Any] = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "eval_id": eval_id,
         "dataset_id": eval_manifest.evaluation_identity.dataset_id,
@@ -537,6 +538,17 @@ def build_report_payload(
         "retrieval_metrics": retrieval.as_dict(),
         "gate_evidence": dict(gate_evidence),
     }
+    if recovery_gate_evidence is not None:
+        # M8 recovery gates are additive and never rewrite the M7 metrics or
+        # STAGE1_RETRIEVAL_GATES: the section is present only when the caller
+        # (M8-C/M8-D) supplies the ordered recovery case results.
+        from catalyst_eval.v1_1.recovery_gates import recovery_report_section
+
+        payload["recovery_gates"] = recovery_report_section(
+            mode=str(recovery_gate_evidence["mode"]),
+            case_results=recovery_gate_evidence["case_results"],
+        )
+    return payload
 
 
 def report_bytes(payload: Mapping[str, Any]) -> bytes:

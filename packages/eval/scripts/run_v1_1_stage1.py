@@ -363,6 +363,106 @@ _OPERATOR_REQUIRED_ENV = (
 )
 
 
+import hashlib
+
+RETRIEVAL_MODE_PRODUCTION = "production"
+RETRIEVAL_MODE_CANDIDATE_FTS = "candidate-fts"
+
+_CANDIDATE_MODE_REQUIRED = (
+    "candidate_build_id",
+    "candidate_corpus_manifest_id",
+    "recovery_retrieval_report",
+    "recovery_retrieval_report_sha256",
+)
+
+
+def _load_recovery_retrieval_report(
+    path: str | Path | None, expected_sha256: str | None
+) -> dict[str, Any]:
+    """Load the M8-B report and fail closed unless it passed and matches."""
+    if path is None or expected_sha256 is None:
+        raise Stage1OperatorError(
+            "candidate-fts retrieval requires --recovery-retrieval-report and "
+            "--recovery-retrieval-report-sha256"
+        )
+    report_path = Path(path)
+    if not report_path.is_file():
+        raise Stage1OperatorError("recovery retrieval report not found")
+    raw = report_path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != str(expected_sha256):
+        raise Stage1OperatorError(
+            "--recovery-retrieval-report-sha256 does not match the report bytes"
+        )
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise Stage1OperatorError(f"recovery retrieval report is invalid: {exc}") from exc
+    if payload.get("schema_version") != "v1_1_recovery_retrieval_v1":
+        raise Stage1OperatorError("recovery retrieval report schema mismatch")
+    if payload.get("gate_passed") is not True:
+        raise Stage1OperatorError(
+            "candidate-fts execution requires a passing M8-B recovery retrieval report"
+        )
+    return payload
+
+
+class _CandidateDependencyLoader:
+    """Eval-only dependency loader: candidate FTS retriever, no dense identity.
+
+    The M8-C probe runs the unchanged agents/ContextPack/Analyst path against a
+    candidate-FTS-only retriever. There is deliberately no LanceDB table, no
+    embedding model, and no index manifest: the run is a development diagnostic
+    with no dense identity and never resolves the production runtime tuple.
+    """
+
+    def __init__(self, *, adapter: Any) -> None:
+        from catalyst_agents.runtime.dependencies import RuntimeDependencies
+
+        self._adapter = adapter
+        self._health = {
+            "status": "ready",
+            "retrieval": {
+                "status": "ready",
+                "mode": RETRIEVAL_MODE_CANDIDATE_FTS,
+                "build_id": adapter.identity.build_id,
+                "corpus_manifest_id": adapter.identity.corpus_manifest_id,
+                "dense": "absent",
+            },
+            "dense": {"status": "absent", "reason": "candidate_fts_probe"},
+            "errors": [],
+        }
+        self._dependencies = RuntimeDependencies(
+            sqlite_db_path=Path(adapter._db_path),
+            lancedb_dir=Path(adapter._db_path).parent,
+            lancedb_table=None,
+            embedding_fn=lambda _text: [],
+            embedding_model="none",
+            embedding_dim=None,
+            reranker=None,
+            reranker_model="none",
+            default_model=None,
+            health=self._health,
+            retriever=adapter,
+            requested_manifest_id=adapter.identity.corpus_manifest_id,
+            index_manifest_id=None,
+            data_runtime_identity=None,
+        )
+
+    def get_dependencies(self, **_kwargs: Any) -> Any:
+        return self._dependencies
+
+    def health(self) -> dict[str, Any]:
+        return dict(self._health)
+
+
+def _candidate_dependency_loader_builder(*, adapter: Any) -> Callable[..., Any]:
+    def _build(*, sqlite_db_path: str | Path) -> Any:  # noqa: ARG001
+        return _CandidateDependencyLoader(adapter=adapter)
+
+    return _build
+
+
 def build_operator_runner_adapter(
     *,
     data_db_path: str | Path,
@@ -520,6 +620,7 @@ def _build_adapter(
     case_timeout_seconds: float | None,
     provider_budget: Any,
     runner_adapter_factory: Callable[..., Any] | None,
+    dependency_loader_builder: Callable[..., Any] | None = None,
 ) -> Any:
     """Invoke the runner adapter factory with the accepted operator bindings.
 
@@ -536,6 +637,7 @@ def _build_adapter(
         "prepared_identity_hash": prepared_identity_hash,
         "case_timeout_seconds": case_timeout_seconds,
         "provider_budget": provider_budget,
+        "dependency_loader_builder": dependency_loader_builder,
     }
     try:
         parameters = inspect.signature(factory).parameters
@@ -1205,6 +1307,12 @@ def _execute_impl(
     max_cost_usd: float | None,
     pricing: Path | None,
     runner_adapter_factory: Callable[[], Any] | None,
+    retrieval_mode: str = RETRIEVAL_MODE_PRODUCTION,
+    candidate_build_id: str | None = None,
+    candidate_corpus_manifest_id: str | None = None,
+    candidate_fts_digest: str | None = None,
+    recovery_retrieval_report: Path | None = None,
+    recovery_retrieval_report_sha256: str | None = None,
     **__,
 ) -> int:
     if max_provider_calls is None or max_cost_usd is None:
@@ -1251,6 +1359,47 @@ def _execute_impl(
         max_cost_usd=max_cost_usd,
         pricing=pricing,
     )
+    dependency_loader_builder: Callable[..., Any] | None = None
+    if retrieval_mode == RETRIEVAL_MODE_CANDIDATE_FTS:
+        # Explicit eval-only diagnostic mode: candidate FTS only, no dense
+        # identity, and a passing M8-B report bound to the exact build.
+        missing = [
+            name
+            for name in _CANDIDATE_MODE_REQUIRED
+            if not str(locals().get(name) or "").strip()
+        ]
+        if missing:
+            raise Stage1OperatorError(
+                "candidate-fts execution requires: " + ", ".join(sorted(missing))
+            )
+        report = _load_recovery_retrieval_report(
+            recovery_retrieval_report, recovery_retrieval_report_sha256
+        )
+        if report.get("build_id") != candidate_build_id:
+            raise Stage1OperatorError(
+                "M8-B report build_id does not match --candidate-build-id"
+            )
+        if report.get("corpus_manifest_id") != candidate_corpus_manifest_id:
+            raise Stage1OperatorError(
+                "M8-B report corpus_manifest_id does not match "
+                "--candidate-corpus-manifest-id"
+            )
+        from catalyst_eval.v1_1.candidate_lexical_adapter import (
+            CandidateLexicalAdapter,
+        )
+
+        candidate_adapter = CandidateLexicalAdapter(
+            db_path=data_db,
+            corpus_manifest_id=candidate_corpus_manifest_id,
+            build_id=candidate_build_id,
+            expected_fts_digest=candidate_fts_digest,
+        )
+        dependency_loader_builder = _candidate_dependency_loader_builder(
+            adapter=candidate_adapter
+        )
+    elif retrieval_mode != RETRIEVAL_MODE_PRODUCTION:
+        raise Stage1OperatorError(f"unknown retrieval mode {retrieval_mode!r}")
+
     adapter = _build_adapter(
         data_db_path=data_db,
         runtime_db_path=runtime_write_db_path,
@@ -1259,6 +1408,7 @@ def _execute_impl(
         case_timeout_seconds=summary.get("case_timeout_seconds"),
         provider_budget=provider_budget,
         runner_adapter_factory=runner_adapter_factory,
+        dependency_loader_builder=dependency_loader_builder,
     )
 
     attempts_by_case: dict[str, int] = {}
@@ -1690,6 +1840,21 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--retrieval-mode",
+        choices=(RETRIEVAL_MODE_PRODUCTION, RETRIEVAL_MODE_CANDIDATE_FTS),
+        default=RETRIEVAL_MODE_PRODUCTION,
+        help=(
+            "Retrieval boundary for execute/all. 'candidate-fts' is an "
+            "eval-only development diagnostic that reads one inactive "
+            "candidate build and requires a passing M8-B report."
+        ),
+    )
+    parser.add_argument("--candidate-build-id", default=None)
+    parser.add_argument("--candidate-corpus-manifest-id", default=None)
+    parser.add_argument("--candidate-fts-digest", default=None)
+    parser.add_argument("--recovery-retrieval-report", type=Path, default=None)
+    parser.add_argument("--recovery-retrieval-report-sha256", default=None)
+    parser.add_argument(
         "--q001-file-sha256",
         default=None,
         help=(
@@ -1699,6 +1864,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     return parser
+
+
+def _retrieval_mode_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    """Retrieval-boundary bindings passed to execute/all only."""
+    return {
+        "retrieval_mode": args.retrieval_mode,
+        "candidate_build_id": args.candidate_build_id,
+        "candidate_corpus_manifest_id": args.candidate_corpus_manifest_id,
+        "candidate_fts_digest": args.candidate_fts_digest,
+        "recovery_retrieval_report": args.recovery_retrieval_report,
+        "recovery_retrieval_report_sha256": args.recovery_retrieval_report_sha256,
+    }
 
 
 def main(
@@ -1728,6 +1905,7 @@ def main(
                 max_cost_usd=args.max_cost_usd,
                 pricing=args.pricing_json,
                 runner_adapter_factory=runner_adapter_factory,
+                **_retrieval_mode_kwargs(args),
             )
         if args.command == "audit":
             return _audit(output_dir=args.output_dir, audit=args.audit)
@@ -1768,6 +1946,7 @@ def main(
                 runtime_evidence_db=args.runtime_evidence_db,
                 handoff_manifest=args.handoff_manifest,
                 handoff_manifest_sha256=args.handoff_manifest_sha256,
+                **_retrieval_mode_kwargs(args),
             )
         raise Stage1OperatorError(f"unknown command {args.command!r}")
     except (Stage1OperatorError, Stage1CeilingExceeded) as exc:

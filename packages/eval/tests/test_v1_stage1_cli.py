@@ -200,3 +200,74 @@ def test_cli_prepare_empty_a3_a4_creates_no_eligible_experiments(cli_env):
     assert exit_code == 0
     summary = json.loads((out_dir / "prepare_summary.json").read_text(encoding="utf-8"))
     assert summary["eval_manifest"]["eligible_experiments"] == []
+
+
+# ---- M8-C: eval-only candidate-fts retrieval mode -------------------------
+
+def _stage1_cli():
+    script = Path(__file__).resolve().parents[1] / "scripts" / "run_v1_1_stage1.py"
+    spec = importlib.util.spec_from_file_location("run_v1_1_stage1", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_candidate_fts_mode_requires_passing_recovery_report(tmp_path, capsys):
+    module = _stage1_cli()
+    with pytest.raises(module.Stage1OperatorError, match="requires"):
+        module._load_recovery_retrieval_report(None, None)
+
+    report = tmp_path / "recovery.json"
+    report.write_text(
+        json.dumps(
+            {
+                "schema_version": "v1_1_recovery_retrieval_v1",
+                "gate_passed": False,
+                "build_id": "b" * 64,
+                "corpus_manifest_id": "c" * 64,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(report.read_bytes()).hexdigest()
+    with pytest.raises(module.Stage1OperatorError, match="passing M8-B"):
+        module._load_recovery_retrieval_report(report, digest)
+    with pytest.raises(module.Stage1OperatorError, match="sha256"):
+        module._load_recovery_retrieval_report(report, "0" * 64)
+
+    passing = json.loads(report.read_text(encoding="utf-8"))
+    passing["gate_passed"] = True
+    report.write_text(json.dumps(passing, sort_keys=True), encoding="utf-8")
+    digest = hashlib.sha256(report.read_bytes()).hexdigest()
+    payload = module._load_recovery_retrieval_report(report, digest)
+    assert payload["build_id"] == "b" * 64
+
+    # A candidate-fts execute run still fails closed on the operator bindings.
+    output = tmp_path / "out"
+    output.mkdir()
+    missing = module.main(
+        [
+            "execute",
+            "--output-dir", str(output),
+            "--max-provider-calls", "12",
+            "--max-cost-usd", "10",
+            "--retrieval-mode", "candidate-fts",
+        ]
+    )
+    assert missing == module.EXIT_CONTRACT_ERROR
+    assert capsys.readouterr().err
+
+
+def test_production_mode_is_the_default_and_has_no_candidate_kwargs(tmp_path):
+    module = _stage1_cli()
+    args = module.build_parser().parse_args(["execute"])
+    assert args.retrieval_mode == "production"
+    kwargs = module._retrieval_mode_kwargs(args)
+    assert kwargs["retrieval_mode"] == "production"
+    assert all(
+        kwargs[key] is None
+        for key in kwargs
+        if key != "retrieval_mode"
+    )
