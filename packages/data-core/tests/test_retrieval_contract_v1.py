@@ -107,7 +107,12 @@ def test_retrieve_hybrid_reranked_emits_v1_contract(tmp_path, monkeypatch):
         assert hit.content_version_id
         assert hit.corpus_document_id
         assert hit.chunk_id == hit.evidence_id
-        assert hit.content_state == "FULL_TEXT"
+        assert hit.content_state in {"FULL_TEXT", "METADATA_ONLY", "TITLE_ONLY"}
+        assert hit.material_capability == {
+            "FULL_TEXT": "MATERIAL_CAPABLE",
+            "TITLE_ONLY": "LEAD_ONLY",
+            "METADATA_ONLY": "NOT_CAPABLE",
+        }[hit.content_state]
         assert hit.source_class
         assert hit.eligible_at
         assert hit.parse_quality
@@ -344,23 +349,35 @@ def _reranked_hits(tmp_path, monkeypatch, **kwargs):
 def test_v1_hit_carries_full_data_owned_metadata(tmp_path, monkeypatch):
     """Every reranked hit carries the complete data-owned V1.1 metadata and no
     hardcoded fixture provider/ticker values (M4-0 amendment §1.3/§1.5)."""
-    _, _, result = _reranked_hits(tmp_path, monkeypatch)
+    conn, _, result = _reranked_hits(tmp_path, monkeypatch)
     assert result.hits
+    by_type = {}
     for hit in result.hits:
+        by_type.setdefault(hit.asset_type, []).append(hit)
         assert hit.section_key is not None
         assert hit.chunk_ordinal == 1
-        assert hit.asset_type in {"NEWS", "FILING"}
         assert hit.content_hash and len(hit.content_hash) == 64
+        assert hit.canonical_url
+        assert hit.ticker_scope == ("AAPL",)
+    assert set(by_type) == {"NEWS", "FILING"}
+    for hit in by_type["FILING"]:
+        assert hit.content_state == "FULL_TEXT"
         assert hit.material_capability == "MATERIAL_CAPABLE"
         assert hit.serving_status == "body_candidate"
-        assert hit.temporal_precision in {"publication_time", "accepted_time"}
-        assert hit.independence_group_id is not None
-        assert hit.canonical_url
-        assert hit.evidence_role in {"INDEPENDENT_REPORT", "DIRECT_PRIMARY"}
-        assert hit.provider != "fixture"
-        assert hit.provider in {"polygon", "sec"}
-        assert hit.publisher is None or hit.publisher == "Fixture News"
-        assert hit.ticker_scope == ("AAPL",)  # real association from canonical row
+        assert hit.provider == "sec"
+        assert hit.source_class == "official_government"
+        assert hit.evidence_role == "PRIMARY_AUTHORITY"
+        assert hit.temporal_precision == "accepted_time"
+        assert hit.independence_group_id is None
+    for hit in by_type["NEWS"]:
+        assert hit.content_state == "METADATA_ONLY"
+        assert hit.material_capability == "NOT_CAPABLE"
+        assert hit.serving_status == "lead_candidate"
+        assert hit.provider == "finnhub"
+        assert hit.source_class == "reported_news"
+        assert hit.evidence_role == "INDEPENDENT_REPORT"
+        assert hit.temporal_precision == "publication_time"
+        assert hit.independence_group_id is None
 
 
 

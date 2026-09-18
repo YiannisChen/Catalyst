@@ -48,7 +48,7 @@ from catalyst_agents.runtime.pack_persistence import (
 )
 from catalyst_agents.runtime.provider_capability import CAPABILITY_REVISION
 from catalyst_data.canonical.identity import DataRuntimeIdentity
-from catalyst_data.canonical.temporal import TemporalIdentity
+from catalyst_data.canonical.temporal import TemporalIdentity, utc_iso_z
 
 from catalyst_app.events import (
     AssuranceCompletedPayload,
@@ -68,6 +68,7 @@ from catalyst_app.persistence.events import (
     TerminalRunError,
     payload_sha256,
 )
+from catalyst_app.public_text import validate_safe_public_text
 from catalyst_app.runtime.admission import (
     AdmissionController,
     AdmissionRequest,
@@ -90,6 +91,13 @@ from catalyst_app.runtime.stream_bridge import StreamBridge
 from catalyst_app.runtime_credential_store import RuntimeCredentialStore
 
 TIMEOUT_FAILURE_CODE = "TIMEOUT"
+
+# Durable provider-accounting artifact type/schema. Published by the run
+# adapter after any provider work so a FAILED/CANCELLED/TIMEOUT run keeps the
+# calls/cost it actually consumed; the eval-side adapter reads it instead of
+# defaulting a failed case to zero.
+PROVIDER_ACCOUNTING_ARTIFACT_TYPE = "run_provider_accounting"
+PROVIDER_ACCOUNTING_SCHEMA_VERSION = "v1.1_run_provider_accounting_v1"
 
 
 class RuntimeUnavailableError(RuntimeError):
@@ -659,6 +667,7 @@ class ProductionRunAdapter:
         cancellation: CancellationController,
         credential_store: RuntimeCredentialStore,
         graph_resolver: GraphRuntimeResolver,
+        provider_budget: Any | None = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.events = events
@@ -667,6 +676,8 @@ class ProductionRunAdapter:
         self.cancellation = cancellation
         self.credential_store = credential_store
         self.graph_resolver = graph_resolver
+        self.provider_budget = provider_budget
+        self._accounting_persisted: set[str] = set()
         self.last_deadline_epoch_ms: int | None = None
 
     def __call__(self, run_id: str, timeout_seconds: float) -> dict[str, Any]:
@@ -692,8 +703,10 @@ class ProductionRunAdapter:
         # Fail fast before any stage event or provider dispatch when
         # cancellation/deadline already won while the run was queued.
         if token.requested or self._is_cancel_requested(run_id):
+            self._persist_provider_accounting(run_id)
             return self._acknowledge_cancelled(run_id)
         if self._past_deadline(deadline_epoch_ms):
+            self._persist_provider_accounting(run_id)
             return self._terminalize_timeout(run_id)
         self._append_stage_started(run_id, "research", round=1)
         bridge = StreamBridge(db_path=self.db_path, events=self.events, run_id=run_id)
@@ -706,11 +719,15 @@ class ProductionRunAdapter:
             )
             resolved = self.graph_resolver.resolve(manifest, boundary)
             result = run_v1_graph(
+                provider_budget=self.provider_budget,
+                provider_identity=boundary.provider,
+                analyst_model_identity=manifest.analyst_model_id,
+                writer_model_identity=manifest.writer_model_id,
                 run_id=run_id,
                 temporal_identity=manifest.temporal_identity,
                 data_runtime_identity=resolved.data_runtime_identity,
                 ticker=self._load_ticker(run_id),
-                cutoff=manifest.temporal_identity.cutoff_at.isoformat(),
+                cutoff=utc_iso_z(manifest.temporal_identity.cutoff_at),
                 requested_manifest_id=resolved.data_runtime_identity.corpus_manifest_id,
                 observation_provider=resolved.observation_provider,
                 retriever=resolved.retriever,
@@ -738,18 +755,33 @@ class ProductionRunAdapter:
             raise_if_control_expired(control)
             self._persist_result_artifacts(run_id, result, bridge)
             raise_if_control_expired(control)
+            diagnostics = self._build_run_diagnostics(
+                run_id=run_id,
+                manifest=manifest,
+                resolved=resolved,
+                result=result,
+            )
             return self._terminalize_completed(
-                run_id, result, bridge, started_monotonic=started_monotonic
+                run_id,
+                result,
+                bridge,
+                started_monotonic=started_monotonic,
+                diagnostics=diagnostics,
             )
         except RunCancelledError:
+            self._persist_provider_accounting(run_id)
             return self._acknowledge_cancelled(run_id)
         except RunDeadlineExceededError:
+            self._persist_provider_accounting(run_id)
             return self._terminalize_timeout(run_id)
         except BaseException as exc:
             if token.requested or self._is_cancel_requested(run_id):
+                self._persist_provider_accounting(run_id)
                 return self._acknowledge_cancelled(run_id)
             if self._past_deadline(deadline_epoch_ms):
+                self._persist_provider_accounting(run_id)
                 return self._terminalize_timeout(run_id)
+            self._persist_provider_accounting(run_id)
             raise
         finally:
             self.credential_store.remove(run_id)
@@ -950,6 +982,137 @@ class ProductionRunAdapter:
                 artifact_payloads=claim_artifacts,
             )
 
+    def _build_run_diagnostics(
+        self,
+        *,
+        run_id: str,
+        manifest: Any,
+        resolved: Any,
+        result: Any,
+    ) -> Any:
+        """Assemble the observed diagnostics artifact for one completed run.
+
+        Retrieval facts come from the graph's own retrieval execution; provider
+        accounting comes from the shared budget guard when one is bound and
+        from the graph's recorded logical/attempt counts otherwise. Nothing is
+        invented: an unobserved fact stays ``None``/``unavailable``.
+        """
+        from catalyst_agents.observability import (
+            ProviderAccountingDiagnostics,
+            build_run_diagnostics,
+            unavailable_retrieval_diagnostics,
+        )
+
+        identity = resolved.data_runtime_identity
+        retrieval = getattr(result, "retrieval_diagnostics", None)
+        if retrieval is None:
+            retrieval = unavailable_retrieval_diagnostics(identity)
+
+        cost_usd: float | None = None
+        cost_method: str = "unavailable"
+        if self.provider_budget is not None:
+            # The per-case view is the run's own accounting; the cumulative
+            # guard view spans every case in the process.
+            snapshot = self.provider_budget.case_snapshot()
+            cost_usd = snapshot.get("case_used_cost_usd")
+            cost_method = str(snapshot.get("cost_method") or "unavailable")
+            if cost_usd is None or cost_method == "unavailable":
+                cost_usd, cost_method = None, "unavailable"
+        provider = ProviderAccountingDiagnostics(
+            analyst_logical_calls=int(getattr(result, "analyst_logical_calls", 0)),
+            analyst_provider_attempts=int(
+                getattr(result, "analyst_provider_attempts", 0)
+            ),
+            writer_logical_calls=int(getattr(result, "writer_logical_calls", 0)),
+            writer_provider_attempts=int(
+                getattr(result, "writer_provider_attempts", 0)
+            ),
+            total_tokens_in=getattr(result, "reported_input_tokens", None),
+            total_tokens_out=getattr(result, "reported_output_tokens", None),
+            cost_usd=cost_usd,
+            cost_method=cost_method,
+        )
+        return build_run_diagnostics(
+            result=result,
+            run_id=run_id,
+            retrieval=retrieval,
+            provider=provider,
+            data_runtime_identity_ref=manifest.data_runtime_identity_ref,
+            data_runtime_identity=identity,
+        )
+
+    def _persist_provider_accounting(self, run_id: str) -> None:
+        """Persist the run's consumed provider accounting as a durable artifact.
+
+        FAILED/CANCELLED/TIMEOUT runs never reach the completed diagnostics
+        publication, but the provider attempts they already dispatched are
+        real consumption. The guard's per-case view is the authoritative
+        record of what was reserved and settled, so it is written to the run's
+        own runtime database before the terminal event. Idempotent per run and
+        a no-op when no budget guard is bound or nothing was consumed.
+        """
+        if self.provider_budget is None:
+            return
+        if run_id in self._accounting_persisted:
+            return
+        snapshot = self.provider_budget.case_snapshot()
+        role_accounting = snapshot.get("case_role_accounting") or {}
+
+        def role_value(role: str, field: str) -> int:
+            values = role_accounting.get(role) or {}
+            return int(values.get(field) or 0)
+
+        analyst_logical_calls = role_value("evidence_analyst", "logical_calls")
+        analyst_provider_attempts = role_value(
+            "evidence_analyst", "provider_attempts"
+        )
+        writer_logical_calls = role_value("streaming_writer", "logical_calls")
+        writer_provider_attempts = role_value(
+            "streaming_writer", "provider_attempts"
+        )
+        payload = {
+            "schema_version": PROVIDER_ACCOUNTING_SCHEMA_VERSION,
+            "run_id": run_id,
+            "provider": {
+                "analyst_logical_calls": analyst_logical_calls,
+                "analyst_provider_attempts": analyst_provider_attempts,
+                "writer_logical_calls": writer_logical_calls,
+                "writer_provider_attempts": writer_provider_attempts,
+                "total_tokens_in": None,
+                "total_tokens_out": None,
+                "cost_usd": snapshot.get("case_used_cost_usd"),
+                "cost_method": str(snapshot.get("cost_method") or "unavailable"),
+                "roles": {
+                    role: dict(values)
+                    for role, values in role_accounting.items()
+                },
+            },
+            "provider_calls": int(snapshot.get("case_used_provider_calls") or 0),
+            "cost_usd": snapshot.get("case_used_cost_usd"),
+            "cost_method": str(snapshot.get("cost_method") or "unavailable"),
+            "outstanding_cost_usd": snapshot.get("case_outstanding_cost_usd"),
+        }
+        try:
+            self.events.append(
+                run_id=run_id,
+                event_type=RunEventType.STAGE_STARTED,
+                stage="PROVIDER_ACCOUNTING",
+                payload=StageStartedPayload(stage="provider_accounting", round=1),
+                artifact_payloads=[
+                    ArtifactPayload(
+                        artifact_id=f"provider-accounting:{run_id}",
+                        artifact_type=PROVIDER_ACCOUNTING_ARTIFACT_TYPE,
+                        payload=payload,
+                    )
+                ],
+            )
+        except TerminalRunError:
+            # The run already terminalized (the completed path publishes its
+            # accounting inside diagnostics); the durable record exists.
+            self._accounting_persisted.add(run_id)
+            return
+        self._accounting_persisted.add(run_id)
+
     def _terminalize_completed(
         self,
         run_id: str,
@@ -957,6 +1120,7 @@ class ProductionRunAdapter:
         bridge: StreamBridge,
         *,
         started_monotonic: float,
+        diagnostics: Any | None = None,
     ) -> dict[str, Any]:
         final_status = result.validated_claim_plan.status.value
         final_type = result.validated_claim_plan.attribution_type.value
@@ -982,6 +1146,18 @@ class ProductionRunAdapter:
                 },
             ),
         ]
+        if diagnostics is not None:
+            # Published in the same terminal transaction as assurance +
+            # run.completed, so the diagnostics are bound to the terminal
+            # sequence and to the run's runtime identity.
+            terminal_artifacts.append(
+                ArtifactPayload(
+                    artifact_id=f"diagnostics:{run_id}",
+                    artifact_type="run_diagnostics",
+                    payload=diagnostics.model_dump(mode="json"),
+                    schema_version="v1",
+                )
+            )
         try:
             self.claimer.terminalize(
                 run_id=run_id,
@@ -1012,6 +1188,11 @@ class ProductionRunAdapter:
                 RunLifecycleStatus.CANCEL_REQUESTED,
                 RunLifecycleStatus.CANCELLED,
             ):
+                # The completion transaction lost to cancellation. Preserve
+                # the provider work already consumed before acknowledging the
+                # terminal cancellation; otherwise a real charge disappears
+                # behind a CANCELLED status.
+                self._persist_provider_accounting(run_id)
                 return self._acknowledge_cancelled(run_id)
             raise
         return {"run_id": run_id, "status": "COMPLETED"}
@@ -1077,16 +1258,28 @@ def build_runtime_composition(
     graph_resolver: GraphRuntimeResolver | None = None,
     manifest_factory: ManifestFactory | None = None,
     run_adapter: RunAdapter | None = None,
+    provider_budget: Any | None = None,
     admission_slots: int = DEFAULT_ADMISSION_SLOTS,
     max_workers: int = DEFAULT_MAX_WORKERS,
     shutdown_grace_seconds: float = DEFAULT_SHUTDOWN_GRACE_SECONDS,
+    experiment_override: Any | None = None,
 ) -> RuntimeComposition:
     """Build the single app-owned runtime composition.
 
     External boundaries (dependency loader, credential store, graph resolver,
     manifest factory, run adapter) may be injected for deterministic tests;
     the production defaults are the repository-owned implementations.
+
+    ``experiment_override`` is eval-owned (M7-7): production composition
+    rejects any non-None override so eval seams can never leak into the
+    production runtime.
     """
+    if experiment_override is not None:
+        raise ValueError(
+            "production composition rejects eval experiment overrides; "
+            "eval-only policy seams are recorded in the eval manifest, never "
+            "in the production run manifest"
+        )
     from catalyst_app.dependencies import (
         get_credential_store,
         get_runtime_dependency_loader,
@@ -1122,8 +1315,12 @@ def build_runtime_composition(
             RunLifecycleStatus.CANCELLED,
         }
 
-    def failure_handler(run_id: str, code: str) -> None:
-        _default_failure_handler(events, claimer)(run_id, code)
+    terminal_failure_handler = _default_failure_handler(events, claimer)
+
+    def failure_handler(
+        run_id: str, code: str, exc: BaseException | None = None
+    ) -> None:
+        terminal_failure_handler(run_id, code, exc)
 
     adapter = run_adapter or ProductionRunAdapter(
         db_path=path,
@@ -1133,6 +1330,7 @@ def build_runtime_composition(
         cancellation=cancellation,
         credential_store=store,
         graph_resolver=resolver,
+        provider_budget=provider_budget,
     )
     executor = RunExecutor(
         admission_slots=admission_slots,
@@ -1167,10 +1365,39 @@ def build_runtime_composition(
     )
 
 
+def _sanitized_failure_message(exc: BaseException | None) -> str | None:
+    """Public diagnostic text for a crashed run: ``ExceptionType: first line``.
+
+    Fail-closed sanitization: the candidate must pass
+    ``validate_safe_public_text`` (bounded length, no secret/raw-provider
+    patterns). When it does not, the exception type alone is persisted as the
+    typed code; when even that is unusable the generic executor code is used.
+    No key, header, or raw provider body can reach the durable public field.
+    """
+    if exc is None:
+        return None
+    type_name = type(exc).__name__ or "Exception"
+    first_line = " ".join((str(exc).splitlines() or [""])[0].split())
+    candidates = []
+    if first_line:
+        candidates.append(f"{type_name}: {first_line[:240]}")
+    candidates.append(type_name)
+    candidates.append("EXECUTOR_FAILURE")
+    for candidate in candidates:
+        try:
+            validate_safe_public_text(candidate)
+        except ValueError:
+            continue
+        return candidate
+    return None
+
+
 def _default_failure_handler(events: EventRepository, claimer: RunClaimer):
     """Terminalize a run as FAILED when the adapter crashes mid-run."""
 
-    def handler(run_id: str, code: str) -> None:
+    def handler(
+        run_id: str, code: str, exc: BaseException | None = None
+    ) -> None:
         lifecycle = claimer.current_lifecycle(run_id)
         if lifecycle is None or lifecycle not in (
             RunLifecycleStatus.ACCEPTED,
@@ -1188,6 +1415,7 @@ def _default_failure_handler(events: EventRepository, claimer: RunClaimer):
                 failure_code=code,
                 stage="EXECUTION",
                 retryable=True,
+                safe_message=_sanitized_failure_message(exc),
             ),
             lifecycle_update=(lifecycle, RunLifecycleStatus.FAILED),
         )
@@ -1201,6 +1429,8 @@ __all__ = [
     "ProductionRunAdapter",
     "ResolvedGraphRuntime",
     "RunArtifactsPackPersistence",
+    "PROVIDER_ACCOUNTING_ARTIFACT_TYPE",
+    "PROVIDER_ACCOUNTING_SCHEMA_VERSION",
     "RunBoundary",
     "RuntimeComposition",
     "RuntimeUnavailableError",

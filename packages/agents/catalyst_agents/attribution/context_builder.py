@@ -372,6 +372,7 @@ class ObservationBuilder:
         session_date: str,
         cutoff: str,
         temporal_identity: Any = None,
+        observation_policy_version: str | None = None,
     ) -> MoveProfile:
         """Build the MoveProfile under the validated TemporalIdentity.
 
@@ -509,6 +510,22 @@ class ObservationBuilder:
         macro_flags = self._window_filtered_macro_flags(
             inputs.scheduled_macro_flags, temporal_identity
         )
+        # A5 behavioral seam: ``context_builder_v1_limited`` returns a limited
+        # observation (returns/coverage only, no peer/volume/comove context);
+        # ``move_profile_v1`` (and None) is the MoveProfile-aware production
+        # observation.
+        if observation_policy_version == "context_builder_v1_limited":
+            return MoveProfile(
+                target_return=target_return,
+                prior_session_return=prior_return,
+                gap_return=gap_return,
+                market_return=market_return,
+                sector_return=sector_return,
+                market_adjusted_return=market_adjusted,
+                sector_adjusted_return=sector_adjusted,
+                coverage_flags=tuple(sorted(coverage_flags)),
+                degraded_fields=tuple(degraded_fields),
+            )
         return MoveProfile(
             target_return=target_return,
             prior_session_return=prior_return,

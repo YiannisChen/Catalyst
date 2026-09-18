@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 import time
+from types import SimpleNamespace
 from pathlib import Path
 
 from catalyst_app.persistence.connect import open_rw
@@ -171,3 +172,45 @@ def test_acknowledge_cancelled_durable_failure_propagates_to_failed(tmp_path: Pa
             (run_id,),
         ).fetchone()[0]
     assert cancelled == 0
+
+
+def test_completion_cancel_race_persists_accounting_before_ack(tmp_path: Path) -> None:
+    """A completion losing to cancellation snapshots accounting first."""
+    from catalyst_app.persistence.events import IllegalLifecycleTransitionError
+    from catalyst_app.lifecycle import RunLifecycleStatus
+
+    db_path = tmp_path / "runtime.db"
+    _fixture_db(db_path)
+    run_id = "run:fault:completion-cancel-race"
+    _seed_accepted_run(db_path, run_id)
+    composition = _composition(tmp_path)
+    adapter = composition.run_adapter
+
+    class RaceClaimer:
+        def terminalize(self, **kwargs):
+            raise IllegalLifecycleTransitionError("cancellation won")
+
+        def current_lifecycle(self, _run_id):
+            return RunLifecycleStatus.CANCEL_REQUESTED
+
+    adapter.claimer = RaceClaimer()
+    persisted: list[str] = []
+    acknowledged: list[str] = []
+    adapter._persist_provider_accounting = lambda value: persisted.append(value)
+    adapter._acknowledge_cancelled = lambda value: acknowledged.append(value) or {
+        "run_id": value, "status": "CANCELLED"
+    }
+    plan = SimpleNamespace(
+        status=SimpleNamespace(value="SUFFICIENT"),
+        attribution_type=SimpleNamespace(value="EVIDENCE_BACKED_CAUSAL"),
+    )
+    result = SimpleNamespace(validated_claim_plan=plan, assurance_checks=())
+    bridge = SimpleNamespace(assured_envelope=lambda: {})
+
+    returned = adapter._terminalize_completed(
+        run_id, result, bridge, started_monotonic=time.monotonic()
+    )
+
+    assert returned["status"] == "CANCELLED"
+    assert persisted == [run_id]
+    assert acknowledged == [run_id]

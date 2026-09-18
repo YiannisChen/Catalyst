@@ -7,7 +7,7 @@ ordering semantics stay unambiguous (data-core TSD §7).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -51,4 +51,25 @@ class TemporalIdentity(NoUncheckedCopyUpdates, BaseModel):
         return self.information_window_start_at <= eligible_at <= self.cutoff_at
 
 
-__all__ = ["TemporalIdentity"]
+UTC_ISO_Z_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
+
+
+def utc_iso_z(value: datetime) -> str:
+    """Serialize a datetime as canonical second-resolution UTC ``...Z``.
+
+    This is the only canonical rendering used at the retrieval/context
+    boundary. ``datetime.isoformat()`` renders UTC as ``...+00:00``, which the
+    retrieval contract rejects as ``invalid_cutoff`` and which mis-orders
+    against the canonical ``...Z`` timestamps persisted in SQLite when compared
+    as strings.
+
+    The value is not reinterpreted: it is converted to UTC and rendered at
+    second resolution. Naive datetimes are rejected so a local wall-clock time
+    can never be silently treated as UTC.
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("utc_iso_z requires a timezone-aware datetime")
+    return value.astimezone(timezone.utc).strftime(UTC_ISO_Z_FORMAT)
+
+
+__all__ = ["TemporalIdentity", "UTC_ISO_Z_FORMAT", "utc_iso_z"]

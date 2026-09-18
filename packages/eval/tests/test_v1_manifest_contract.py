@@ -170,10 +170,37 @@ def _experiment(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def _result_ref(case_id: str, run_id: str = "run:1") -> dict[str, Any]:
+    return {
+        "case_id": case_id,
+        "run_manifest_id": f"manifest:{run_id}:{case_id}",
+        "run_manifest_hash": "b" * 64,
+        "result_artifact_id": f"result:{run_id}:{case_id}",
+    }
+
+
 def _outcome(**overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "completed_at": _utc("2026-01-08T09:00:00Z"),
-        "per_case_result_refs": (),
+        "observed_run_artifact_identity": {
+            "run_manifest_bindings": (
+                {
+                    "run_manifest_id": "manifest:run:1:stage1-001",
+                    "run_manifest_hash": "b" * 64,
+                },
+                {
+                    "run_manifest_id": "manifest:run:1:stage1-002",
+                    "run_manifest_hash": "b" * 64,
+                },
+            ),
+            "context_pack_refs": (),
+            "claim_plan_refs": (),
+            "assurance_refs": (),
+        },
+        "per_case_result_refs": (
+            _result_ref("stage1-001"),
+            _result_ref("stage1-002"),
+        ),
         "aggregate_metrics": (
             MetricAggregate(
                 metric_id="citation_correctness",
@@ -303,6 +330,11 @@ def test_metric_contract_counts_are_non_negative() -> None:
             excluded_count=0,
             non_scorable_count=0,
         )  # denominator zero rejected
+
+
+def test_gate_result_preserves_unexercised_gate_as_null() -> None:
+    gate = GateResult(gate_id="unexercised", passed=None)
+    assert gate.passed is None
 
 
 def test_outcome_is_append_once() -> None:

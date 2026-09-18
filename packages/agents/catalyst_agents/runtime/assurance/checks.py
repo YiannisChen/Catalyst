@@ -156,8 +156,16 @@ def run_structural_assurance(run_id: str, artifacts: dict[str, Any]) -> list[Ass
     )
 
     sections_ok = all(section in answer_upper for section in required_sections)
+
+    def _limitation_haystack(value: str) -> str:
+        # Writer markdown wrappers (``**bold**`` / ``__bold__``) must not
+        # fail-close a required limitation whose template text is present.
+        # Do not strip single underscores: reason codes keep them.
+        return value.replace("**", "").replace("__", "").lower()
+
+    haystack = _limitation_haystack(answer_text)
     limitations_ok = all(
-        limitation.lower() in answer_text.lower() for limitation in required_limitations
+        _limitation_haystack(limitation) in haystack for limitation in required_limitations
     )
     status_ok = emitted_status == validated_status and emitted_type == validated_type
 
@@ -207,8 +215,16 @@ def run_structural_assurance(run_id: str, artifacts: dict[str, Any]) -> list[Ass
         metadata_ok = False
     if artifacts.get("timed_out") and completion_state == "completed":
         metadata_ok = False
-    tokens = [artifacts.get("input_tokens", 0), artifacts.get("output_tokens", 0)]
-    if any(not isinstance(token, int) or token < 0 for token in tokens):
+    tokens = [artifacts.get("input_tokens"), artifacts.get("output_tokens")]
+    # Missing usage is an explicitly unavailable accounting fact. It is not a
+    # structural stream failure: the budget layer charges its conservative
+    # reservation and eval metrics remain non-scorable. Any reported value,
+    # however, must still be a non-negative integer.
+    if any(
+        token is not None
+        and (not isinstance(token, int) or isinstance(token, bool) or token < 0)
+        for token in tokens
+    ):
         metadata_ok = False
 
     checks = {

@@ -77,3 +77,52 @@ def test_production_capability_registry_derives_health(tmp_path: Path) -> None:
     registry2 = _production_capability_registry(BrokenLoader().get_dependencies())
     assert registry2.is_recoverable(EvidenceNeed.COMPANY_PRIMARY) is False
     assert registry2.is_recoverable(EvidenceNeed.COMPANY_NEWS) is False
+
+
+def test_cancelled_accounting_is_persisted_once_with_real_role_facts(tmp_path: Path):
+    class Events:
+        def __init__(self):
+            self.calls = []
+
+        def append(self, **kwargs):
+            self.calls.append(kwargs)
+
+    class Budget:
+        def case_snapshot(self):
+            return {
+                "case_used_provider_calls": 2,
+                "case_used_cost_usd": 0.25,
+                "cost_method": "reported",
+                "case_outstanding_cost_usd": 0.0,
+                "case_role_accounting": {
+                    "evidence_analyst": {
+                        "logical_calls": 1,
+                        "provider_attempts": 1,
+                    },
+                    "streaming_writer": {
+                        "logical_calls": 1,
+                        "provider_attempts": 1,
+                    },
+                },
+            }
+
+    events = Events()
+    adapter = ProductionRunAdapter(
+        db_path=tmp_path / "runtime.db",
+        events=events,
+        claimer=object(),
+        tokens=object(),
+        cancellation=object(),
+        credential_store=object(),
+        graph_resolver=object(),
+        provider_budget=Budget(),
+    )
+    adapter._persist_provider_accounting("run:cancelled")
+    adapter._persist_provider_accounting("run:cancelled")
+    assert len(events.calls) == 1
+    payload = events.calls[0]["artifact_payloads"][0].payload
+    assert payload["provider_calls"] == 2
+    assert payload["provider"]["analyst_logical_calls"] == 1
+    assert payload["provider"]["analyst_provider_attempts"] == 1
+    assert payload["provider"]["writer_logical_calls"] == 1
+    assert payload["provider"]["writer_provider_attempts"] == 1

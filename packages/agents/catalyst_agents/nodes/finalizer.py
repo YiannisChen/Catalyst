@@ -37,9 +37,16 @@ def thin_finalizer(
         check.status == "pass" for check in assurance_checks
     ):
         sink.fail("ASSURANCE_FAILED")
+        failed = [
+            check.check_name
+            for check in (assurance_checks or ())
+            if getattr(check, "status", None) != "pass"
+        ]
+        suffix = f" failing_checks={','.join(failed)}" if failed else ""
         raise AssuranceFailed(
             "ASSURANCE_FAILED: structural assurance did not pass; the "
             "provisional answer is invalidated"
+            + suffix
         )
     envelope = {
         "run_id": state.get("run_id"),

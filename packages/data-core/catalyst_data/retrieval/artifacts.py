@@ -51,7 +51,20 @@ _EFFECT_KEYS = {
     "reranker_input_count", "reranker_output_count", "reranker_provenance",
 }
 _PROVENANCE_KEYS = {"chunk_id", "rank", "reranker_score", "reranker_rank"}
-_FILTER_KEYS = {"ticker", "evidence_types", "source_classes", "corpus_manifest_id", "index_manifest_id"}
+# Canonical filter identity fields. The first five are the original required
+# filter contract; the optional identity fields let a pointer-free candidate
+# pool persist its complete build/index/source identity chain without a second
+# artifact schema or hash formula.
+_FILTER_KEYS_CORE = frozenset({
+    "ticker", "evidence_types", "source_classes",
+    "corpus_manifest_id", "index_manifest_id",
+})
+_FILTER_KEYS_OPTIONAL = frozenset({
+    "build_id", "source_bundle_id", "snapshot_id", "probe_report_id",
+    "postbuild_readiness_id", "table_name", "model_name", "model_revision",
+    "embedding_dimension", "reranker_model", "reranker_revision",
+})
+_FILTER_KEYS = _FILTER_KEYS_CORE | _FILTER_KEYS_OPTIONAL
 _CONFIG_KEYS = {
     "lexical_top_k", "dense_top_k", "fusion_k", "fused_top_k", "display_top_k",
     "embedding_revision", "reranker_revision", "reranker_timeout_seconds",
@@ -104,7 +117,11 @@ def _validate_payload(payload: dict[str, Any]) -> None:
     if not isinstance(payload.get("query_sha256"), str) or len(payload["query_sha256"]) != 64:
         raise ArtifactValidationError("query_sha256 is required")
     filters = payload.get("filters")
-    if not isinstance(filters, dict) or set(filters) != _FILTER_KEYS:
+    if (
+        not isinstance(filters, dict)
+        or not _FILTER_KEYS_CORE.issubset(set(filters))
+        or not set(filters) <= _FILTER_KEYS
+    ):
         raise ArtifactValidationError("filters fields mismatch")
     if not isinstance(filters["ticker"], str) or not filters["ticker"]:
         raise ArtifactValidationError("filters ticker is required")
@@ -114,6 +131,22 @@ def _validate_payload(payload: dict[str, Any]) -> None:
     for key in ("corpus_manifest_id", "index_manifest_id"):
         if not isinstance(filters[key], str) or re.fullmatch(r"[0-9a-f]{64}", filters[key]) is None:
             raise ArtifactValidationError(f"filters {key} must be a bound SHA-256 identity")
+    for key in (
+        "build_id", "source_bundle_id", "snapshot_id", "probe_report_id",
+        "postbuild_readiness_id",
+    ):
+        if key not in filters:
+            continue
+        if not isinstance(filters[key], str) or re.fullmatch(r"[0-9a-f]{64}", filters[key]) is None:
+            raise ArtifactValidationError(f"filters {key} must be a bound SHA-256 identity")
+    for key in ("table_name", "model_name", "model_revision", "reranker_model", "reranker_revision"):
+        if key in filters and (not isinstance(filters[key], str) or not filters[key]):
+            raise ArtifactValidationError(f"filters {key} is invalid")
+    if "embedding_dimension" in filters and (
+        type(filters["embedding_dimension"]) is not int or type(filters["embedding_dimension"]) is bool
+        or filters["embedding_dimension"] <= 0
+    ):
+        raise ArtifactValidationError("filters embedding_dimension is invalid")
     config = payload.get("retrieval_config")
     if not isinstance(config, dict) or set(config) != _CONFIG_KEYS:
         raise ArtifactValidationError("retrieval_config fields mismatch")

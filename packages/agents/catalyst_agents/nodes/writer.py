@@ -113,12 +113,16 @@ def _writer_messages(writer_input: WriterInput) -> list[dict]:
     return [{"role": "system", "content": "\n".join(system_lines)}]
 
 
-def _stream_chunks(llm: Any, messages: list[dict]) -> Iterator[tuple[str | None, dict[str, int]]]:
-    """Iterate provider stream chunks with text and integer usage metadata.
+def _stream_chunks(
+    llm: Any, messages: list[dict]
+) -> Iterator[tuple[str | None, dict[str, int | None]]]:
+    """Iterate chunks and normalize provider usage without zero-filling.
 
-    Real provider chunks expose usage through ``response_metadata``
-    (e.g. ``token_usage``); fakes yield plain strings with empty usage. The
-    writer surfaces the ACTUAL token counts to structural assurance.
+    LangChain providers expose usage either as ``usage_metadata`` with
+    ``input_tokens``/``output_tokens`` or as ``response_metadata`` containing
+    ``token_usage``/``usage`` with prompt/completion names. A missing or
+    malformed field remains ``None`` so the budget layer can charge its
+    conservative bound and the run stays non-scorable for measured tokens.
     """
     stream = getattr(llm, "stream", None)
     if not callable(stream):
@@ -126,24 +130,44 @@ def _stream_chunks(llm: Any, messages: list[dict]) -> Iterator[tuple[str | None,
             f"provider {type(llm).__name__!r} exposes no true streaming interface"
         )
     for chunk in stream(messages):
+        usage_metadata: Any = None
+        response_metadata: Any = None
         if isinstance(chunk, str):
             text = chunk
-            metadata: dict[str, Any] = {}
+            response_metadata = {}
         elif isinstance(chunk, dict):
             text = chunk.get("content")
-            metadata = chunk.get("response_metadata") or {}
+            usage_metadata = chunk.get("usage_metadata")
+            response_metadata = chunk.get("response_metadata")
         else:
             text = getattr(chunk, "content", None)
-            metadata = getattr(chunk, "response_metadata", None) or {}
-        usage: dict[str, int] = {}
+            usage_metadata = getattr(chunk, "usage_metadata", None)
+            response_metadata = getattr(chunk, "response_metadata", None)
+        metadata = usage_metadata if isinstance(usage_metadata, dict) else response_metadata
+        usage: dict[str, int | None] = {
+            "input_tokens": None,
+            "output_tokens": None,
+        }
         if isinstance(metadata, dict):
-            token_usage = metadata.get("token_usage") or metadata.get("usage") or {}
+            token_usage = metadata.get("token_usage") or metadata.get("usage")
             if isinstance(token_usage, dict):
-                usage = {
-                    key: int(value)
-                    for key, value in token_usage.items()
-                    if isinstance(value, (int, float))
-                }
+                metadata = token_usage
+            input_value = metadata.get("input_tokens", metadata.get("prompt_tokens"))
+            output_value = metadata.get(
+                "output_tokens", metadata.get("completion_tokens")
+            )
+            if (
+                isinstance(input_value, (int, float))
+                and not isinstance(input_value, bool)
+                and input_value >= 0
+            ):
+                usage["input_tokens"] = int(input_value)
+            if (
+                isinstance(output_value, (int, float))
+                and not isinstance(output_value, bool)
+                and output_value >= 0
+            ):
+                usage["output_tokens"] = int(output_value)
         yield (text if isinstance(text, str) else None), usage
 
 
@@ -173,6 +197,9 @@ def writer_node(
     flush_interval_ms: int = 50,
     flush_chars: int = 2048,
     control: Any | None = None,
+    provider_budget: Any | None = None,
+    provider_identity: str | None = None,
+    model_identity: str | None = None,
 ) -> dict:
     """Run one streaming Writer logical call and commit deltas + Answer.
 
@@ -191,10 +218,13 @@ def writer_node(
         repr([writer_input.model_dump(mode="json"), messages]).encode("utf-8")
     ).hexdigest()
 
-    input_tokens_total = 0
-    output_tokens_total = 0
+    input_tokens_total: int | None = None
+    output_tokens_total: int | None = None
     cancelled = False
     timed_out = False
+    # The most recent attempt's genuinely reported usage, used to settle the
+    # shared provider budget with real tokens when the provider reports them.
+    attempt_usage: list[tuple[int | None, int | None]] = []
 
     def attempt():
         nonlocal input_tokens_total, output_tokens_total, cancelled, timed_out
@@ -206,8 +236,8 @@ def writer_node(
             stream_id=f"stream:{run_id}",
         )
         accepted_any = False
-        attempt_input = 0
-        attempt_output = 0
+        attempt_input: int | None = None
+        attempt_output: int | None = None
         try:
             for text, usage in _stream_chunks(llm, messages):
                 if control is not None and control_expired(control):
@@ -216,8 +246,10 @@ def writer_node(
                     cancelled = bool(control.should_cancel())
                     timed_out = not cancelled
                     break
-                attempt_input += int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0)
-                attempt_output += int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0)
+                if usage.get("input_tokens") is not None:
+                    attempt_input = usage["input_tokens"]
+                if usage.get("output_tokens") is not None:
+                    attempt_output = usage["output_tokens"]
                 if text:
                     accepted_any = True
                     coalescer.accept(text)
@@ -242,6 +274,7 @@ def writer_node(
         verify_answer_equality(answer.text, sink)
         input_tokens_total = attempt_input
         output_tokens_total = attempt_output
+        attempt_usage.append((attempt_input, attempt_output))
         return answer
 
     if cancelled or timed_out:
@@ -252,8 +285,8 @@ def writer_node(
             "answer": None,
             "stream_complete": False,
             "writer_input_hash": derive_writer_input_hash(writer_input),
-            "input_tokens": 0,
-            "output_tokens": 0,
+            "input_tokens": None,
+            "output_tokens": None,
             "completion_state": "cancelled" if cancelled else "timed_out",
             "cancellation_requested": cancelled,
             "timed_out": timed_out,
@@ -267,6 +300,12 @@ def writer_node(
             attempt,
             role=WRITER_ROLE,
             semantic_input_hash=semantic_input_hash,
+            budget=provider_budget,
+            provider=provider_identity,
+            model_id=model_identity,
+            usage_extractor=(
+                (lambda _result: attempt_usage[-1]) if attempt_usage is not None else None
+            ),
         )
     except Exception:
         sink.fail("WRITER_FAILURE")
@@ -302,6 +341,7 @@ def writer_node(
         "timed_out": bool(state.get("timed_out", False)),
         "writer_logical_calls": bounded.counts.logical_calls,
         "writer_provider_attempts": bounded.counts.provider_attempts,
+        "writer_attempt_usages": bounded.attempt_usages,
         "run_id": run_id,
     }
 

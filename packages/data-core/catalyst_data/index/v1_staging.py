@@ -11,8 +11,20 @@ from typing import Any, Iterator
 import numpy as np
 
 from catalyst_data.config import BGE_M3_DIMENSION, BGE_M3_MODEL, BGE_M3_REVISION
-from catalyst_data.retrieval.gpu_contract import _atomic_json, production_lancedb_schema
+from catalyst_data.retrieval.gpu_contract import (
+    _atomic_json,
+    _chunk_ids_order_checksum,
+    production_lancedb_schema,
+)
+from catalyst_data.retrieval.gpu_driver import _chunk_order_checksum
 from catalyst_data.retrieval.index_manifest import IndexManifest
+
+INTERRUPTED_CANDIDATE_OPERATOR_PROCEDURE = (
+    "Operator cleanup: delete the candidate manifest directory contents "
+    "(candidate_generation.json, index_manifest.json, and the candidate_*.lance "
+    "table) then re-run the identical execute command. Do not promote or copy "
+    "leftovers into the active generation."
+)
 
 _STAGING_PAGE_SIZE = 500
 _STAGING_ADD_BATCH = 512
@@ -77,6 +89,53 @@ def _load_chunk_ids(path: Path) -> list[str]:
     if not isinstance(payload, list) or not all(isinstance(item, str) for item in payload):
         raise ValueError("chunk_ids.json must be a JSON array of strings")
     return payload
+
+
+def _bind_embedding_files_to_index_manifest(
+    artifact: Path,
+    manifest: IndexManifest,
+    *,
+    chunk_ids: list[str],
+    listed: dict[str, str],
+) -> None:
+    """Fail closed unless checksums.sha256, files, and IndexManifest agree.
+
+    Reuses the GPU canonical file SHA and chunk-order checksum formulas.
+    """
+    vectors_sha = _file_sha256(artifact / "vectors.npy")
+    chunk_ids_path = artifact / "chunk_ids.json"
+    chunk_ids_sha = _file_sha256(chunk_ids_path)
+    if not manifest.vectors_checksum:
+        raise ValueError("IndexManifest.vectors_checksum is required")
+    if not manifest.chunk_order_checksum:
+        raise ValueError("IndexManifest.chunk_order_checksum is required")
+    if manifest.vectors_checksum != vectors_sha:
+        raise ValueError("embedding vectors checksum mismatch")
+    if manifest.artifact_hashes.get("vectors.npy") != vectors_sha:
+        raise ValueError("IndexManifest vectors artifact hash mismatch")
+    if manifest.artifact_hashes.get("chunk_ids.json") != chunk_ids_sha:
+        raise ValueError("IndexManifest chunk index artifact hash mismatch")
+    order_from_list = _chunk_order_checksum(chunk_ids)
+    if manifest.chunk_order_checksum != order_from_list:
+        raise ValueError("embedding chunk order checksum mismatch")
+    try:
+        order_from_file = _chunk_ids_order_checksum(chunk_ids_path)
+    except ValueError as exc:
+        raise ValueError("embedding chunk order checksum mismatch") from exc
+    if order_from_file != order_from_list:
+        raise ValueError("chunk_ids.json encoding is not the canonical order payload")
+    if listed.get("vectors.npy") != vectors_sha:
+        raise ValueError("checksum mismatch for vectors.npy")
+    if listed.get("chunk_ids.json") != chunk_ids_sha:
+        raise ValueError("checksum mismatch for chunk_ids.json")
+    if listed.get("vectors.npy") != manifest.vectors_checksum:
+        raise ValueError("checksums.sha256 disagrees with IndexManifest vectors checksum")
+    if listed.get("chunk_ids.json") != manifest.artifact_hashes["chunk_ids.json"]:
+        raise ValueError("checksums.sha256 disagrees with IndexManifest chunk_ids hash")
+    if "index_manifest.json" in listed:
+        manifest_path = artifact / "index_manifest.json"
+        if not manifest_path.is_file() or _file_sha256(manifest_path) != listed["index_manifest.json"]:
+            raise ValueError("checksum mismatch for index_manifest.json")
 
 
 def _iter_chunk_records(path: Path) -> dict[str, dict[str, Any]]:
@@ -264,6 +323,9 @@ def stage_dense(
         if listed.get(name) != _file_sha256(artifact / name):
             raise ValueError(f"checksum mismatch for {name}")
     chunk_ids = _load_chunk_ids(chunk_ids_path)
+    _bind_embedding_files_to_index_manifest(
+        artifact, new_index_manifest, chunk_ids=chunk_ids, listed=listed
+    )
     vectors = np.load(vectors_path, mmap_mode="r")
     if vectors.ndim != 2 or vectors.shape[0] != expected_chunk_count:
         raise ValueError("vector count mismatch")
@@ -310,13 +372,49 @@ def stage_dense(
         embedding_revision=BGE_M3_REVISION,
         embedding_dimension=BGE_M3_DIMENSION,
     )
-    existing = candidate.candidate_generation_path
-    if existing.is_file():
-        payload = json.loads(existing.read_text(encoding="utf-8"))
+    generation_path = candidate.candidate_generation_path
+    manifest_path = Path(candidate.manifest_dir) / "index_manifest.json"
+    manifest_payload = new_index_manifest.to_dict()
+
+    def _require_persisted_manifest() -> None:
+        if not manifest_path.is_file():
+            raise ValueError(
+                "candidate_generation.json exists without a matching "
+                "index_manifest.json; refusing half-published candidate resume. "
+                + INTERRUPTED_CANDIDATE_OPERATOR_PROCEDURE
+            )
+        try:
+            existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError("staged index_manifest.json is malformed") from exc
+        if existing_manifest != manifest_payload:
+            raise ValueError("staged index_manifest.json identity mismatch")
+
+    if generation_path.is_file():
+        payload = json.loads(generation_path.read_text(encoding="utf-8"))
         if payload != _candidate_payload(candidate):
             raise ValueError("existing candidate_generation.json identity mismatch")
+        # Resume requires both published records and exact identity agreement.
+        # A generation record alone (crash between manifest/generation) is a
+        # half-published candidate and must never be accepted.
+        _require_persisted_manifest()
         validate_dense_candidate(candidate, expected_chunk_count=expected_chunk_count)
         return candidate
+    if manifest_path.is_file():
+        raise ValueError(
+            "index_manifest.json exists without candidate_generation.json; "
+            "refusing half-published candidate resume. "
+            + INTERRUPTED_CANDIDATE_OPERATOR_PROCEDURE
+        )
+    # A LanceDB table without either published identity record is also
+    # half-published (crash before the manifest/generation publish step).
+    table_dir = Path(candidate.manifest_dir) / f"{table_name}.lance"
+    if table_dir.exists():
+        raise ValueError(
+            "candidate LanceDB table exists without published identity "
+            "records; refusing half-published candidate resume. "
+            + INTERRUPTED_CANDIDATE_OPERATOR_PROCEDURE
+        )
 
     def metadata_factory() -> Iterator[dict[str, Any]]:
         """Return a fresh authoritative metadata iterator for each pass.
@@ -419,5 +517,10 @@ def stage_dense(
             except Exception:
                 pass
         raise
+    # Make the staged candidate directory self-describing.  The matching
+    # index_manifest.json is published first (from the in-memory authoritative
+    # IndexManifest), and candidate_generation.json only after it is safely
+    # persisted, so a crash between the two can never look complete.
+    _atomic_json(manifest_path, manifest_payload)
     _atomic_json(candidate.candidate_generation_path, _candidate_payload(candidate))
     return candidate

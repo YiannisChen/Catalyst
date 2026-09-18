@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+import hashlib
+import json
 import re
 import sqlite3
 import time
@@ -98,17 +102,30 @@ def _eligibility_predicate(
     ticker: str,
     source_classes: tuple[str, ...] | None,
     evidence_types: tuple[str, ...] | None,
+    *,
+    build_id: str | None = None,
 ) -> tuple[str, list[object]]:
+    """Eligibility SQL over the served relation or one exact inactive build.
+
+    ``build_id`` selects the pointer-free per-build relation
+    (``corpus_build_chunks c``) and binds ``c.build_id`` instead of the
+    manifest-scoped ``c.manifest_id``. Omitting ``build_id`` keeps the
+    unchanged active served-manifest predicate.
+    """
+    if build_id is None:
+        scope_sql = "c.manifest_id = ?"
+        scope_params: list[object] = [requested_manifest_id]
+    else:
+        scope_sql = "c.build_id = ?"
+        scope_params = [build_id]
     status_placeholders = ",".join("?" for _ in SEARCHABLE_STATUSES)
     sql = (
-        f"c.manifest_id = ? AND c.status IN ({status_placeholders}) "
+        f"{scope_sql} AND c.status IN ({status_placeholders}) "
         "AND c.eligibility = 'eligible' AND c.available_at <= ? "
         "AND EXISTS (SELECT 1 FROM json_each(c.ticker_associations) t "
         "WHERE t.value = ?)"
     )
-    params: list[object] = [
-        requested_manifest_id, *SEARCHABLE_STATUSES, cutoff, ticker,
-    ]
+    params: list[object] = [*scope_params, *SEARCHABLE_STATUSES, cutoff, ticker]
     if source_classes is not None:
         sql += f" AND c.source_class IN ({','.join('?' for _ in source_classes)})"
         params.extend(source_classes)
@@ -144,6 +161,142 @@ def _served_mode(
     if state[1] != "fts5":
         return "sql_like", state[2] or "fts5_unavailable", None
     return "fts5", None, state[3]
+
+
+def _inactive_build_scope(
+    conn: sqlite3.Connection,
+    requested_manifest_id: str,
+    build_id: str,
+) -> tuple[int, str]:
+    """Validate one inactive candidate build and return (row_count, digest).
+
+    Pointer-free candidate lexical retrieval may only read from an exact
+    inactive build that is frozen at ``lexical_ready`` for the requested
+    corpus manifest.  Wrong build, wrong manifest, a current/promoted
+    manifest, a non-ready build, a missing per-build FTS table, an empty
+    generation, and stored-digest inconsistency all fail closed.
+    """
+    if re.fullmatch(r"[0-9a-f]{64}", build_id) is None:
+        raise RetrievalContractError("invalid_build_id")
+    row = conn.execute(
+        """SELECT manifest_id, status, lexical_ready, lexical_row_count,
+                  lexical_digest, lexical_expected_digest
+           FROM corpus_publication_builds WHERE build_id=?""",
+        (build_id,),
+    ).fetchone()
+    if row is None:
+        raise RetrievalContractError("inactive_build_not_found")
+    build_manifest_id = str(row[0] or "")
+    status = str(row[1] or "")
+    lexical_ready = int(row[2] or 0)
+    row_count = int(row[3] or 0)
+    lexical_digest = str(row[4] or "")
+    expected_digest = str(row[5] or "")
+    if build_manifest_id != requested_manifest_id:
+        raise RetrievalContractError("inactive_build_manifest_mismatch")
+    if status != "lexical_ready" or lexical_ready != 1:
+        raise RetrievalContractError("inactive_build_not_ready")
+    manifest_row = conn.execute(
+        "SELECT is_current FROM corpus_manifest WHERE manifest_id=?",
+        (requested_manifest_id,),
+    ).fetchone()
+    if manifest_row is None:
+        raise RetrievalContractError("manifest_not_found")
+    if int(manifest_row[0] or 0) != 0:
+        raise RetrievalContractError("inactive_build_manifest_current")
+    fts_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' "
+        "AND name='corpus_build_chunks_fts'"
+    ).fetchone()
+    if fts_exists is None:
+        raise RetrievalContractError("inactive_build_fts_unavailable")
+    if row_count < 1:
+        raise RetrievalContractError("inactive_build_fts_empty")
+    if not lexical_digest:
+        raise RetrievalContractError("inactive_build_fts_digest_missing")
+    if expected_digest and expected_digest != lexical_digest:
+        raise RetrievalContractError("inactive_build_fts_digest_mismatch")
+    return row_count, lexical_digest
+
+
+def _update_lexical_digest(digest: Any, chunk_id: object, content_text: object) -> None:
+    """Canonical per-row lexical digest (must match the FTS builder)."""
+    digest.update(
+        json.dumps(
+            [str(chunk_id), str(content_text)],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    digest.update(b"\n")
+
+
+def _inactive_build_source_digest(
+    conn: sqlite3.Connection, build_id: str
+) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    count = 0
+    cursor = conn.execute(
+        """SELECT chunk_id, content_text FROM corpus_build_chunks
+           WHERE build_id=? AND eligibility='eligible'
+             AND status IN ('active','pending_embedding','embedded','metadata_only')
+           ORDER BY chunk_id COLLATE BINARY""",
+        (build_id,),
+    )
+    while True:
+        rows = cursor.fetchmany(500)
+        if not rows:
+            break
+        for chunk_id, content_text in rows:
+            _update_lexical_digest(digest, chunk_id, content_text)
+            count += 1
+    return count, digest.hexdigest()
+
+
+def _inactive_build_persisted_digest(
+    conn: sqlite3.Connection, build_id: str
+) -> tuple[int, str]:
+    digest = hashlib.sha256()
+    count = 0
+    cursor = conn.execute(
+        """SELECT chunk_id, content_text FROM corpus_build_chunks_fts
+           WHERE build_id=? ORDER BY chunk_id COLLATE BINARY""",
+        (build_id,),
+    )
+    while True:
+        rows = cursor.fetchmany(500)
+        if not rows:
+            break
+        for chunk_id, content_text in rows:
+            _update_lexical_digest(digest, chunk_id, content_text)
+            count += 1
+    return count, digest.hexdigest()
+
+
+def verify_inactive_lexical_build(
+    conn: sqlite3.Connection,
+    *,
+    requested_manifest_id: str,
+    build_id: str,
+) -> None:
+    """Read-only full verification of one inactive candidate FTS generation.
+
+    Runs the same source/persisted count and canonical-digest parity checks
+    the FTS builder enforces at build time, plus the inactive-build scope
+    invariants.  Intended to be called once before a candidate evidence pool
+    starts; it never writes and never touches active serving state.
+    """
+    row_count, lexical_digest = _inactive_build_scope(
+        conn, requested_manifest_id, build_id
+    )
+    source_count, source_digest = _inactive_build_source_digest(conn, build_id)
+    if source_count != row_count or source_digest != lexical_digest:
+        raise RetrievalContractError("inactive_build_fts_count_digest_mismatch")
+    persisted_count, persisted_digest = _inactive_build_persisted_digest(
+        conn, build_id
+    )
+    if persisted_count != row_count or persisted_digest != lexical_digest:
+        raise RetrievalContractError("inactive_build_fts_count_digest_mismatch")
 
 
 def _resolve_center(
@@ -199,6 +352,7 @@ def _fts_from_clause(
     eligibility_sql: str,
     window_sql: str,
     order_sql: str,
+    build_scoped_join: bool = False,
 ) -> tuple[str, str, str]:
     """Return (select_sql, count_sql, fts_table) for MATCH queries."""
     if lexical_generation_id is None:
@@ -212,9 +366,15 @@ def _fts_from_clause(
         score_expr = "bm25(corpus_chunks_fts) AS score"
     else:
         fts_table = "corpus_build_chunks_fts"
+        if build_scoped_join:
+            join_sql = (
+                "ON c.build_id = fts.build_id AND c.chunk_id = fts.chunk_id"
+            )
+        else:
+            join_sql = "ON c.chunk_id = fts.chunk_id"
         base = f"""
             FROM corpus_build_chunks_fts fts
-            JOIN {chunks_relation} c ON c.chunk_id = fts.chunk_id
+            JOIN {chunks_relation} c {join_sql}
             WHERE corpus_build_chunks_fts MATCH ? AND fts.build_id = ?
               AND {eligibility_sql}{window_sql}
         """
@@ -308,6 +468,7 @@ def _fts_retrieve_with_policy(
     candidate_depth: int,
     session_date: str | None = None,
     trade_date: str | None = None,
+    build_scoped_join: bool = False,
 ) -> tuple[list[tuple], int, str, str, int | None, TemporalCenterResolution]:
     """Return (rows, matched_count, match_mode, policy, window_days, center).
 
@@ -356,6 +517,7 @@ def _fts_retrieve_with_policy(
             eligibility_sql=eligibility_sql,
             window_sql=window_sql,
             order_sql=order_sql,
+            build_scoped_join=build_scoped_join,
         )
         and_query = compile_match(plan.terms, mode="and")
         rows, matched = _run_fts_match(
@@ -403,7 +565,15 @@ def retrieve_lexical(
     include_trace: bool = False,
     session_date: str | None = None,
     trade_date: str | None = None,
+    inactive_build_id: str | None = None,
 ) -> RetrievalResultSet:
+    """Retrieve lexical results for the requested corpus manifest.
+
+    When ``inactive_build_id`` is supplied the query is bound to that exact
+    inactive candidate build's per-build FTS rows (pointer-free; it never
+    touches active serving state or ``lexical_index_state``).  When omitted,
+    the unchanged active served-manifest path is used.
+    """
     started = time.perf_counter()
     source_classes, evidence_types = _validate_inputs(
         requested_manifest_id, ticker, cutoff, top_k, candidate_depth,
@@ -429,22 +599,45 @@ def retrieve_lexical(
             raise RetrievalContractError("manifest_not_found")
         from catalyst_data.corpus.streaming_publication import served_chunks_relation
 
-        chunks_relation = served_chunks_relation(conn)
+        build_scope = inactive_build_id is not None
+        if build_scope:
+            _inactive_build_scope(conn, requested_manifest_id, inactive_build_id)
+            chunks_relation = "corpus_build_chunks"
+        else:
+            chunks_relation = served_chunks_relation(conn)
 
         eligibility_sql, eligibility_params = _eligibility_predicate(
             requested_manifest_id, cutoff, ticker, source_classes, evidence_types,
+            build_id=inactive_build_id if build_scope else None,
         )
-        manifest_count = conn.execute(
-            f"SELECT COUNT(*) FROM {chunks_relation} WHERE manifest_id = ?",
-            (requested_manifest_id,),
-        ).fetchone()[0]
-        eligible_count = conn.execute(
-            f"SELECT COUNT(*) FROM {chunks_relation} c WHERE {eligibility_sql}",
-            eligibility_params,
-        ).fetchone()[0]
-        mode_served, degradation_reason, lexical_generation_id = _served_mode(
-            conn, requested_manifest_id
+        if build_scope:
+            manifest_count = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM corpus_build_chunks WHERE build_id=?",
+                    (inactive_build_id,),
+                ).fetchone()[0]
+            )
+        else:
+            manifest_count = int(
+                conn.execute(
+                    f"SELECT COUNT(*) FROM {chunks_relation} WHERE manifest_id = ?",
+                    (requested_manifest_id,),
+                ).fetchone()[0]
+            )
+        eligible_count = int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM {chunks_relation} c WHERE {eligibility_sql}",
+                eligibility_params,
+            ).fetchone()[0]
         )
+        if build_scope:
+            mode_served = "fts5"
+            degradation_reason = None
+            lexical_generation_id = inactive_build_id
+        else:
+            mode_served, degradation_reason, lexical_generation_id = _served_mode(
+                conn, requested_manifest_id
+            )
         filtered_at = time.perf_counter()
         raw_terms = _normalize_query(query)
 
@@ -472,6 +665,7 @@ def retrieve_lexical(
                     candidate_depth=candidate_depth,
                     session_date=session_date,
                     trade_date=trade_date,
+                    build_scoped_join=build_scope,
                 )
             )
             if match_mode == "none" and not plan_lexical_query(query, ticker).terms:
@@ -583,4 +777,5 @@ def retrieve_lexical(
 
 __all__ = [
     "RetrievalArmUnavailableError", "RetrievalContractError", "retrieve_lexical",
+    "verify_inactive_lexical_build",
 ]

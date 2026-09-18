@@ -240,6 +240,49 @@ def test_load_reranker_returns_none_when_import_fails(monkeypatch):
     assert result is None
 
 
+def test_load_reranker_is_offline_and_pinned(monkeypatch):
+    """Item 7: production reranker loads local_files_only with pinned revision."""
+    import sys
+    import types
+    from catalyst_data.config import BGE_RERANKER_MODEL, BGE_RERANKER_REVISION
+
+    captured: dict = {}
+
+    class FakeCrossEncoder:
+        def __init__(self, *args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+
+    fake = types.ModuleType("sentence_transformers")
+    fake.CrossEncoder = FakeCrossEncoder
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake)
+
+    result = load_reranker(BGE_RERANKER_MODEL)
+    assert result is not None
+    assert captured["args"] == (BGE_RERANKER_MODEL,)
+    assert captured["kwargs"]["revision"] == BGE_RERANKER_REVISION
+    assert captured["kwargs"]["device"] == "cuda"
+    assert captured["kwargs"]["local_files_only"] is True
+
+
+def test_load_reranker_local_cache_miss_returns_none(monkeypatch):
+    """Item 7: a local cache miss fails closed (None) with no fallback/CPU path."""
+    import sys
+    import types
+    from catalyst_data.config import BGE_RERANKER_MODEL
+
+    class CacheMissCrossEncoder:
+        def __init__(self, *args, **kwargs):
+            assert kwargs.get("local_files_only") is True
+            raise OSError("offline cache miss for pinned revision")
+
+    fake = types.ModuleType("sentence_transformers")
+    fake.CrossEncoder = CacheMissCrossEncoder
+    monkeypatch.setitem(sys.modules, "sentence_transformers", fake)
+
+    assert load_reranker(BGE_RERANKER_MODEL) is None
+
+
 # ---------------------------------------------------------------------------
 # L2 chunking helpers
 # ---------------------------------------------------------------------------

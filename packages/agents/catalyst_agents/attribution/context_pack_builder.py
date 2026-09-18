@@ -236,6 +236,13 @@ class ContextPackBuilder:
                     payload, "METADATA_ONLY", "metadata_only_never_body", 0
                 )
                 excluded.add(payload.evidence_id)
+            elif payload.content_state == "TITLE_ONLY":
+                # Title/lead is not FULL_TEXT and is not citable inventory.
+                # Keep the identity record; never include the title as body.
+                records[payload.evidence_id] = self._record(
+                    payload, "TITLE_ONLY", "title_only_never_body", 0
+                )
+                excluded.add(payload.evidence_id)
 
         # Novelty pass: filing dedup is filing-scoped. Distinct filing
         # sections survive even when they share corpus_document_id/content_hash.

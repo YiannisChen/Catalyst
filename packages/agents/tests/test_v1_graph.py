@@ -360,6 +360,161 @@ def test_v1_graph_abstain_path_terminates_valid() -> None:
     assert result.validated_claim_plan.status.value == "ABSTAIN"
 
 
+def _writer_role_bracket_abstain_factory(messages):
+    """Copy the production Writer prompt shape that live c05 emitted."""
+    import re
+
+    prompt = messages[0]["content"] if isinstance(messages[0], dict) else messages[0].content
+    claim_ids = re.findall(r"claim_id: ([A-Za-z0-9:_-]+)", prompt)
+    lines = [
+        "## OBSERVED_MOVE",
+        "AAPL +9.50% on 2026-01-15.",
+        "",
+        "## LIMITATIONS",
+        "No causal explanation was established from the available evidence.",
+    ]
+    for claim_id in claim_ids:
+        lines.append(f"- [LIMITATION] (claim_id: {claim_id}) Coverage gap: MISSING_PRIMARY_CONFIRMATION for COMPANY_PRIMARY.")
+    return "\n".join(lines)
+
+
+def test_v1_graph_abstain_writer_role_brackets_do_not_fail_assurance() -> None:
+    """Live c05 fingerprint: ABSTAIN Writer copies ``[LIMITATION] (claim_id: ...)``
+    from the prompt. Structural assurance must not treat the role tag as a
+    claim ID; the run completes ABSTAIN.
+    """
+    analyst = GraphAnalystProvider(_abstain_decision)
+    writer = GraphWriterProvider(_writer_role_bracket_abstain_factory)
+    result = run_v1_graph(**_graph_kwargs(analyst=analyst, writer=writer))
+    assert writer.calls == 1
+    assert "[LIMITATION]" in result.answer.text
+    assert "(claim_id:" in result.answer.text
+    assert result.terminal_envelope["assured"] is True
+    assert result.terminal_envelope["final_status"] == "ABSTAIN"
+    assert result.validated_claim_plan.status.value == "ABSTAIN"
+
+
+def _writer_prompt_format_sufficient_factory(evidence_id: str = "e1"):
+    import re
+
+    def factory(messages):
+        prompt = messages[0]["content"] if isinstance(messages[0], dict) else messages[0].content
+        match = re.search(r"claim_id: ([A-Za-z0-9:_-]+)", prompt)
+        claim_id = match.group(1) if match else "claim:1"
+        return (
+            "SUMMARY\n"
+            f"- [PRIMARY] (claim_id: {claim_id}) AAPL rose on record guidance. "
+            f"[citations: {evidence_id}]\n"
+            "CAUSAL_EXPLANATION\nGuidance raised forward revenue.\n"
+            "LIMITATIONS\nNone."
+        )
+
+    return factory
+
+
+def test_v1_graph_sufficient_writer_prompt_markers_pass_assurance() -> None:
+    """Writer prompt emits ``[PRIMARY] (claim_id: ...) [citations: e1]``.
+    Assurance must bind those as claim/citation markers, not the role tag.
+    """
+    analyst = GraphAnalystProvider(_ready_decision)
+    writer = GraphWriterProvider(_writer_prompt_format_sufficient_factory())
+    result = run_v1_graph(**_graph_kwargs(analyst=analyst, writer=writer))
+    assert "[PRIMARY]" in result.answer.text
+    assert "[citations: e1]" in result.answer.text
+    assert result.terminal_envelope["assured"] is True
+    assert result.terminal_envelope["final_status"] == "SUFFICIENT"
+
+
+def test_v1_graph_metadata_only_empty_citable_inventory_skips_analyst() -> None:
+    """Live c02 shape through the production graph: retrieved rows are all
+    METADATA_ONLY, included_evidence_ids is empty, renderer emits
+    inventory=NONE, Analyst provider calls are 0, Writer still runs the
+    fixed LIMITATION path, and the run completes ABSTAIN."""
+    from dataclasses import replace
+
+    class MetadataOnlyRetriever(GraphRetriever):
+        def _evidence(self, chunk_id: str, rank: int):
+            return replace(
+                super()._evidence(chunk_id, rank),
+                content_state="METADATA_ONLY",
+                material_capability="NOT_CAPABLE",
+                content_text="",
+            )
+
+    analyst = GraphAnalystProvider(_ready_decision)
+    writer = GraphWriterProvider(
+        "OBSERVED_MOVE\nAAPL +9.5%.\nLIMITATIONS\nNo causal explanation was established from the available evidence."
+    )
+    kwargs = _graph_kwargs(analyst=analyst, writer=writer)
+    kwargs["retriever"] = MetadataOnlyRetriever()
+    persistence = kwargs["persistence"]
+    result = run_v1_graph(**kwargs)
+
+    assert analyst.calls == 0
+    assert writer.calls == 1
+    assert result.analyst_logical_calls == 0
+    assert result.analyst_provider_attempts == 0
+    assert result.writer_logical_calls == 1
+    assert result.logical_model_call_count == 1
+    assert result.context_pack.included_evidence_ids == ()
+    assert result.context_pack.evidence_inventory
+    assert all(
+        item.content_state == "METADATA_ONLY"
+        for item in result.context_pack.evidence_inventory
+    )
+    assert result.terminal_envelope["final_status"] == "ABSTAIN"
+    assert result.terminal_envelope["assured"] is True
+    assert result.validated_claim_plan.status.value == "ABSTAIN"
+    pair = persistence.load_pair(run_id="run:v1")
+    inventory_lines = [
+        message.content
+        for message in pair.rendered_messages
+        if message.content.startswith("inventory=")
+    ]
+    assert inventory_lines == ["inventory=NONE"]
+    assert all(
+        item.evidence_id not in " ".join(inventory_lines)
+        for item in result.context_pack.evidence_inventory
+    )
+
+
+def test_v1_graph_title_only_empty_citable_inventory_skips_analyst() -> None:
+    """Live c05 shape: retrieved rows are TITLE_ONLY (plus METADATA_ONLY), so
+    included_evidence_ids is empty, Analyst is not dispatched, and the run
+    completes ABSTAIN without a corrective round.
+    """
+    from dataclasses import replace
+
+    class TitleOnlyRetriever(GraphRetriever):
+        def _evidence(self, chunk_id: str, rank: int):
+            return replace(
+                super()._evidence(chunk_id, rank),
+                content_state="TITLE_ONLY",
+                material_capability="LEAD_ONLY",
+                content_text="TSLA stock has given up its prior gain.",
+            )
+
+    analyst = GraphAnalystProvider(_ready_decision)
+    writer = GraphWriterProvider(
+        "OBSERVED_MOVE\nAAPL +9.5%.\nLIMITATIONS\nNo causal explanation was established from the available evidence."
+    )
+    kwargs = _graph_kwargs(analyst=analyst, writer=writer)
+    kwargs["retriever"] = TitleOnlyRetriever()
+    result = run_v1_graph(**kwargs)
+    assert analyst.calls == 0
+    assert writer.calls == 1
+    assert result.analyst_logical_calls == 0
+    assert result.analyst_provider_attempts == 0
+    assert result.corrective_rounds == 0
+    assert result.context_pack.included_evidence_ids == ()
+    assert all(
+        item.content_state == "TITLE_ONLY"
+        for item in result.context_pack.evidence_inventory
+    )
+    assert result.terminal_envelope["final_status"] == "ABSTAIN"
+    assert result.terminal_envelope["assured"] is True
+
+
 def test_v1_graph_state_is_thin() -> None:
     analyst = GraphAnalystProvider(_ready_decision)
     writer = GraphWriterProvider(_writer_text_factory())
@@ -479,3 +634,36 @@ def test_control_cancellation_before_analyst_prevents_writer_dispatch() -> None:
         run_v1_graph(**kwargs)
     assert analyst.calls == 0
     assert writer.calls == 0
+
+
+def test_v1_graph_observation_cutoff_is_canonical_z(monkeypatch) -> None:
+    """The graph must hand the observation stage a canonical ``...Z`` cutoff.
+
+    ``TemporalIdentity.cutoff_at`` is already bound and is never recomputed
+    here; only its serialization was wrong. ``datetime.isoformat()`` renders
+    UTC as ``...+00:00``, which is not the canonical form the context layer
+    compares against its ``...Z`` rows. ``ObservationBuilder.build`` normalizes
+    defensively, but the graph must not emit the non-canonical form at all.
+    """
+    import catalyst_agents.graph as graph_module
+
+    real_builder = graph_module.ObservationBuilder
+    seen: list[str] = []
+
+    class _RecordingBuilder:
+        def __init__(self, *, provider, policy):
+            self._inner = real_builder(provider=provider, policy=policy)
+
+        def build(self, **kwargs):
+            seen.append(kwargs["cutoff"])
+            return self._inner.build(**kwargs)
+
+    monkeypatch.setattr(graph_module, "ObservationBuilder", _RecordingBuilder)
+
+    analyst = GraphAnalystProvider(_ready_decision)
+    writer = GraphWriterProvider(_writer_text_factory())
+    run_v1_graph(**_graph_kwargs(analyst=analyst, writer=writer))
+
+    assert seen, "the observation stage was never invoked"
+    assert seen[0] == "2026-01-15T21:00:00Z", seen[0]
+    assert "+00:00" not in seen[0]

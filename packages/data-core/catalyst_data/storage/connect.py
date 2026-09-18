@@ -23,7 +23,7 @@ def _connect_readonly(
     db_path: str | Path, *, timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS
 ) -> sqlite3.Connection:
     path = Path(db_path).resolve()
-    uri = f"file:{path}?mode=ro"
+    uri = f"file:{path}?mode=ro&immutable=1"
     conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
     conn.execute("PRAGMA query_only=ON")
     conn.execute("PRAGMA foreign_keys=ON")

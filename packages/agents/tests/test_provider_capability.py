@@ -22,6 +22,7 @@ from catalyst_agents.runtime.provider_capability import (
     ProviderCapability,
     ProviderCapabilityError,
     TechnicalRetryExhausted,
+    extract_provider_usage,
     invoke_with_bounded_retry,
     provider_capability_for,
     require_capabilities,
@@ -128,6 +129,27 @@ def test_second_attempt_success_records_attempts_and_counts() -> None:
     assert result.counts.provider_attempts == 2
     assert len(calls) == 2
     assert [record.outcome for record in logged] == ["ModelTimeoutFailure", "ok"]
+
+
+def test_retry_with_unknown_attempt_usage_keeps_whole_attempt_usage_unknown():
+    """A retry whose first dispatched attempt has no usage stays non-numeric."""
+    calls = 0
+
+    def call():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ModelTransportFailure("transport failed after dispatch")
+        return {"usage_metadata": {"input_tokens": 12, "output_tokens": 3}}
+
+    result = invoke_with_bounded_retry(
+        call,
+        role="evidence_analyst",
+        semantic_input_hash="h" * 64,
+        usage_extractor=extract_provider_usage,
+    )
+
+    assert result.attempt_usages == ((None, None), (12, 3))
 
 
 def test_valid_abstain_and_partial_are_never_retried() -> None:

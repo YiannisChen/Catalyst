@@ -29,6 +29,18 @@ SUPPORTED_MODELS: list[str] = [
 ]
 
 DEFAULT_MODEL: str = "gemini-2.5-flash-nothink"
+V1_MAX_OUTPUT_TOKENS: int = 2_000
+
+# Endpoints that reject ``response_format: json_schema`` cannot receive the
+# OpenAI structured-output shape. They are steered to the LangChain
+# ``function_calling`` method instead: the AnalystDecision schema travels in
+# ``tools[]`` with a forced ``tool_choice``, so field names and enum values are
+# carried by the request itself. (The 2026-09-15 live c01 run used
+# ``json_mode``/``json_object``, which transmits no schema at all, and the model
+# answered valid JSON with invented field names twice in a row.)
+_PROVIDER_STRUCTURED_OUTPUT_METHODS: dict[str, str] = {
+    "deepseek": "function_calling",
+}
 
 _PROVIDER_DEFAULTS: dict[str, str] = {
     "openai": "https://api.openai.com/v1",
@@ -160,7 +172,10 @@ def build_v1_llm(
         "temperature": 0.0,
         "max_retries": 0,
         "stream_usage": True,
+        "max_tokens": V1_MAX_OUTPUT_TOKENS,
     }
+    if provider == "deepseek" and resolved_model == "deepseek-flash":
+        client_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     if timeout_seconds is not None:
         client_kwargs["timeout"] = timeout_seconds
     client = ChatOpenAI(**client_kwargs)
@@ -175,6 +190,13 @@ def build_v1_llm(
             "declares_token_accounting": True,
             "normalizes_timeout_errors": True,
             "capability_revision": "v1.1-capability-1",
+            # DeepSeek's OpenAI-compatible surface documents response_format
+            # json_object|text only, so the analyst admission must not send
+            # the OpenAI json_schema shape; it sends the schema as a forced
+            # tool call instead.
+            "structured_output_method": _PROVIDER_STRUCTURED_OUTPUT_METHODS.get(
+                provider
+            ),
         },
     )
     return client

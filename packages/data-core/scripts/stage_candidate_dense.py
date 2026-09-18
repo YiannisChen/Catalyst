@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Pointer-free candidate dense staging CLI (Q-011, M7).
+
+Wraps ``catalyst_data.index.v1_staging.stage_dense`` through the
+pointer-free core in ``catalyst_data.index.candidate_staging_cli``.
+
+Usage:
+  stage_candidate_dense.py preflight [options]
+  stage_candidate_dense.py execute  [options]
+
+The candidate derivative must be inactive (corpus_manifest.is_current=0) and
+the candidate build must be lexical-ready. ``execute`` never calls
+``promote_v1_generation`` and never creates/modifies active pointers. An
+already-staged matching ``candidate_generation.json`` is returned unchanged
+(idempotent resume).
+
+Interrupted staging is fail-closed. A leftover ``candidate_generation.json``,
+``index_manifest.json``, or ``candidate_*.lance`` table without the complete
+published pair is rejected. Operator cleanup: delete the candidate manifest
+directory contents (candidate_generation.json, index_manifest.json, and the
+candidate_*.lance table) then re-run the identical execute command. Do not
+promote or copy leftovers into the active generation. There is no automatic
+recovery.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+if str(REPO_ROOT / "packages" / "data-core") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "packages" / "data-core"))
+
+from catalyst_data.index.candidate_staging_cli import (  # noqa: E402
+    CandidateDenseStagingInputs,
+    execute_stage_candidate_dense,
+    preflight_stage_candidate_dense,
+)
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="mode", required=True)
+
+    def _common(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--derivative", type=Path, required=True)
+        p.add_argument("--build-id", required=True)
+        p.add_argument("--embedding-artifact", type=Path, required=True)
+        p.add_argument("--candidate-manifest-dir", type=Path, required=True)
+
+    pre = sub.add_parser("preflight", help="read-only identity/path validation")
+    _common(pre)
+    pre.add_argument("--source-bundle", type=Path, default=None)
+    pre.add_argument("--expected-index-manifest-id", default=None)
+    pre.add_argument("--code-revision", default=None)
+    pre.add_argument("--active-lancedb-dir", type=Path, default=None)
+    pre.add_argument("--active-generation-pointer", type=Path, default=None)
+    # Mandatory identity and active-generation protection on the mutating
+    # command: execute without these flags is rejected by the parser before
+    # any write can occur.
+    exe = sub.add_parser(
+        "execute",
+        help="stage inactive candidate dense generation (pointer-free)",
+    )
+    _common(exe)
+    exe.add_argument("--source-bundle", type=Path, required=True)
+    exe.add_argument("--expected-index-manifest-id", required=True)
+    exe.add_argument("--code-revision", required=True)
+    exe.add_argument("--active-lancedb-dir", type=Path, required=True)
+    exe.add_argument("--active-generation-pointer", type=Path, required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    inputs = CandidateDenseStagingInputs(
+        derivative=args.derivative,
+        build_id=args.build_id,
+        embedding_artifact_dir=args.embedding_artifact,
+        candidate_manifest_dir=args.candidate_manifest_dir,
+        source_bundle=args.source_bundle,
+        active_lancedb_dir=args.active_lancedb_dir,
+        active_generation_pointer=args.active_generation_pointer,
+        expected_index_manifest_id=args.expected_index_manifest_id,
+        code_revision=args.code_revision,
+    )
+    if args.mode == "preflight":
+        result = preflight_stage_candidate_dense(inputs)
+    elif args.mode == "execute":
+        result = execute_stage_candidate_dense(inputs)
+    else:
+        raise SystemExit(f"unknown mode: {args.mode}")
+    print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

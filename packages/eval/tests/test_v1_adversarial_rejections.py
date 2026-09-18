@@ -479,7 +479,25 @@ def test_second_eval_manifest_outcome_append_is_rejected() -> None:
     )
     outcome = EvalOutcome(
         completed_at=_utc("2026-01-08T09:00:00Z"),
-        per_case_result_refs=(),
+        observed_run_artifact_identity={
+            "run_manifest_bindings": (
+                {
+                    "run_manifest_id": "manifest:run:1",
+                    "run_manifest_hash": "b" * 64,
+                },
+            ),
+            "context_pack_refs": (),
+            "claim_plan_refs": (),
+            "assurance_refs": (),
+        },
+        per_case_result_refs=(
+            {
+                "case_id": "stage1-001",
+                "run_manifest_id": "manifest:run:1",
+                "run_manifest_hash": "b" * 64,
+                "result_artifact_id": "result:run:1",
+            },
+        ),
         aggregate_metrics=(),
         latency_tokens_cost=LatencyTokensCost(
             total_latency_ms=1,

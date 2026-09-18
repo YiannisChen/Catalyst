@@ -16,6 +16,7 @@ admission reopens.
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+import inspect
 import threading
 import time
 from typing import Any, Callable
@@ -46,6 +47,30 @@ class ExecutorConfigError(ValueError):
 # the remaining budget and terminalizes the run before returning.
 RunAdapter = Callable[[str, float], Any]
 
+# The failure handler terminalizes a crashed run. Handlers may declare a third
+# parameter to receive the crashed exception (persisted, sanitized, as public
+# diagnostic text); the two-argument form stays supported.
+FailureHandler = Callable[..., None]
+
+
+def _failure_handler_accepts_exception(handler: Callable[..., None] | None) -> bool:
+    """True when the handler can receive the crashed exception positionally."""
+    if handler is None:
+        return False
+    try:
+        parameters = list(inspect.signature(handler).parameters.values())
+    except (TypeError, ValueError):
+        return False
+    positional = [
+        parameter
+        for parameter in parameters
+        if parameter.kind
+        in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    return len(positional) >= 3 or any(
+        parameter.kind is parameter.VAR_POSITIONAL for parameter in parameters
+    )
+
 
 class RunExecutor:
     def __init__(
@@ -54,7 +79,7 @@ class RunExecutor:
         admission_slots: int = DEFAULT_ADMISSION_SLOTS,
         max_workers: int = DEFAULT_MAX_WORKERS,
         run_adapter: RunAdapter,
-        failure_handler: Callable[[str, str], None] | None = None,
+        failure_handler: FailureHandler | None = None,
         terminal_check: Callable[[str], bool] | None = None,
         shutdown_grace_seconds: float = DEFAULT_SHUTDOWN_GRACE_SECONDS,
     ) -> None:
@@ -74,6 +99,9 @@ class RunExecutor:
         self.shutdown_grace_seconds = shutdown_grace_seconds
         self._run_adapter = run_adapter
         self._failure_handler = failure_handler
+        self._failure_handler_takes_exception = _failure_handler_accepts_exception(
+            failure_handler
+        )
         self._terminal_check = terminal_check
         self._pool = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="catalyst-run"
@@ -170,12 +198,19 @@ class RunExecutor:
             self._active += 1
         try:
             return self._run_adapter(run_id, timeout_seconds)
-        except BaseException:
+        except BaseException as exc:
             # A crashed adapter must not leave the run stranded: terminalize
             # FAILED so startup recovery is not required for ordinary faults.
+            # The crashed exception is offered to the handler so the durable
+            # failure record can carry its sanitized type and first line; the
+            # original exception is still re-raised into the (unconsumed)
+            # future for in-process callers.
             if self._failure_handler is not None:
                 try:
-                    self._failure_handler(run_id, "SYSTEM_ERROR")
+                    if self._failure_handler_takes_exception:
+                        self._failure_handler(run_id, "SYSTEM_ERROR", exc)
+                    else:
+                        self._failure_handler(run_id, "SYSTEM_ERROR")
                 except Exception:
                     pass  # recovery/terminal race; durable state is authoritative
             raise
@@ -218,6 +253,7 @@ __all__ = [
     "DEFAULT_SHUTDOWN_GRACE_SECONDS",
     "ExecutorClosedError",
     "ExecutorConfigError",
+    "FailureHandler",
     "MAX_ADMISSION_SLOTS",
     "MIN_ADMISSION_SLOTS",
     "RunAdapter",

@@ -395,6 +395,18 @@ def test_get_live_run_failed_never_synthesizes_attribution(tmp_path: Path) -> No
             " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at, failure_code)"
             " VALUES ('run:failed', 'FAILED', NULL, 'a'*64, 'manifest:run:failed', 'b'*64, 0, 't', 't', 'TIMEOUT')"
         )
+        conn.execute(
+            "INSERT INTO run_events (run_id, seq, occurred_at, event_type, stage, payload_json, schema_version)"
+            " VALUES ('run:failed', 1, 't', 'run.failed', 'TERMINAL', '{}', 'v1')"
+        )
+        conn.execute(
+            "INSERT INTO run_artifacts (artifact_id, run_id, event_seq, artifact_type, payload_hash, payload_json, optional)"
+            " VALUES ('stale-attribution', 'run:failed', 1, 'attribution_result', ?, ?, 0)",
+            ("c" * 64, json.dumps({
+                "attribution_status": "SUFFICIENT",
+                "attribution_type": "EVIDENCE_BACKED_CAUSAL",
+            }, sort_keys=True)),
+        )
         conn.commit()
     app = _app_with_admission(db_path)
 

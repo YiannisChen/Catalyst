@@ -32,6 +32,10 @@ from catalyst_agents.retrieval.task import (
     RetrievalStrategy,
     retrieval_strategy_for,
 )
+from catalyst_agents.runtime.retrieval_adapter import (
+    RetrievalCallObservation,
+    RetrievalDegradedError,
+)
 from catalyst_data.canonical.identity import DataRuntimeIdentity
 from catalyst_data.canonical.temporal import TemporalIdentity
 from catalyst_data.retrieval.result import RetrievalContractError
@@ -69,6 +73,15 @@ QueryBuilder = Callable[[ResearchTask, str], str]
 
 
 @dataclass(frozen=True)
+class ObservedRetrievalCall:
+    """One retrieval call's observed facts, bound to its research task."""
+
+    task_id: str
+    task_fingerprint: str
+    observation: RetrievalCallObservation
+
+
+@dataclass(frozen=True)
 class ResearchExecution:
     """Deterministic stage output: ordered task results + typed gaps."""
 
@@ -76,6 +89,10 @@ class ResearchExecution:
     capability_gaps: tuple[CapabilityGap, ...]
     degradations: tuple[RetrievalDegradation, ...]
     deadline_exhausted: bool = False
+    # Observed retrieval facts for the tasks whose retriever exposed them.
+    # Tasks served by structured/backends with no retrieval call contribute
+    # nothing here (their absence is not a "no results" observation).
+    observed_retrieval_calls: tuple[ObservedRetrievalCall, ...] = ()
 
 
 def _default_query(task: ResearchTask, ticker: str) -> str:
@@ -91,6 +108,7 @@ class _Accumulator:
         self.results: list[ResearchTaskResult] = []
         self.gaps: list[CapabilityGap] = []
         self.degradations: list[RetrievalDegradation] = []
+        self.observations: list[ObservedRetrievalCall] = []
 
     def add_result(self, result: ResearchTaskResult) -> None:
         with self._lock:
@@ -103,6 +121,10 @@ class _Accumulator:
     def add_degradation(self, degradation: RetrievalDegradation) -> None:
         with self._lock:
             self.degradations.append(degradation)
+
+    def add_observation(self, observation: ObservedRetrievalCall) -> None:
+        with self._lock:
+            self.observations.append(observation)
 
 
 class ResearchExecutor:
@@ -196,10 +218,16 @@ class ResearchExecutor:
         ordered = tuple(
             sorted(accumulator.results, key=lambda item: (item.priority, item.task_id))
         )
+        observed_by_task = {item.task_id: item for item in accumulator.observations}
         return ResearchExecution(
             task_results=ordered,
             capability_gaps=_dedup_gaps(accumulator.gaps),
             degradations=_sorted_degradations(accumulator.degradations),
+            observed_retrieval_calls=tuple(
+                observed_by_task[result.task_id]
+                for result in ordered
+                if result.task_id in observed_by_task
+            ),
         )
 
     # -- per-task execution --------------------------------------------------
@@ -269,9 +297,13 @@ class ResearchExecutor:
             )
             return
         query = self.query_builder(task, ticker)
+        retrieve_with_observations = getattr(
+            self.retriever, "retrieve_with_observations", None
+        )
+        observation: RetrievalCallObservation | None = None
         try:
-            evidence = tuple(
-                self.retriever.retrieve(
+            if callable(retrieve_with_observations):
+                evidence, observation = retrieve_with_observations(
                     query,
                     ticker=ticker,
                     cutoff=cutoff,
@@ -280,11 +312,62 @@ class ResearchExecutor:
                     top_k=8,
                     candidate_depth=20,
                 )
-            )
+            else:
+                evidence = tuple(
+                    self.retriever.retrieve(
+                        query,
+                        ticker=ticker,
+                        cutoff=cutoff,
+                        requested_manifest_id=requested_manifest_id,
+                        temporal_identity=temporal_identity,
+                        top_k=8,
+                        candidate_depth=20,
+                    )
+                )
         except RetrievalContractError as exc:
             raise ResearchIntegrityError(
                 f"research integrity failure in task {task.task_id}: {exc.code}"
             ) from exc
+        except RetrievalDegradedError as exc:
+            observed = exc.observation
+            reasons = tuple(observed.degradation_reasons) or (
+                "retrieval_degraded_not_v1_representable",
+            )
+            accumulator.add_degradation(
+                RetrievalDegradation(
+                    task_id=task.task_id,
+                    component="retrieval",
+                    reason_code=reasons[0],
+                    requested_mode=_mode_requested(task),
+                    served_mode=observed.served_mode,
+                )
+            )
+            accumulator.add_observation(
+                ObservedRetrievalCall(
+                    task_id=task.task_id,
+                    task_fingerprint=task.task_fingerprint,
+                    observation=RetrievalCallObservation(
+                        requested_mode=_mode_requested(task),
+                        served_mode=observed.served_mode,
+                        ordered_candidate_evidence_ids=tuple(
+                            observed.ordered_candidate_evidence_ids
+                        ),
+                        ordered_final_ranked_evidence_ids=tuple(
+                            observed.ordered_final_ranked_evidence_ids
+                        ),
+                        rank_changes=dict(observed.rank_changes),
+                        degradation_reasons=reasons,
+                        arm_names=tuple(observed.arm_names),
+                    ),
+                )
+            )
+            accumulator.add_result(
+                self._degraded_result(
+                    task, started, started_mono, data_runtime_identity,
+                    reasons, reasons[0], mode_served=observed.served_mode,
+                )
+            )
+            return
         except Exception as exc:
             reason = "retrieval_backend_unavailable"
             accumulator.add_degradation(
@@ -304,10 +387,19 @@ class ResearchExecutor:
             )
             return
         items = tuple(self._item_for(task, item, round) for item in evidence)
+        if observation is not None:
+            accumulator.add_observation(
+                ObservedRetrievalCall(
+                    task_id=task.task_id,
+                    task_fingerprint=task.task_fingerprint,
+                    observation=observation,
+                )
+            )
         accumulator.add_result(
             self._result(
                 task, started, started_mono, ResearchTaskResultStatus.SUCCEEDED,
                 data_runtime_identity, evidence_items=items,
+                mode_served=(observation.served_mode if observation else None),
             )
         )
 
@@ -358,6 +450,7 @@ class ResearchExecutor:
         structured_facts: tuple[EvidenceStateItem, ...] = (),
         degradation_reasons: tuple[str, ...] = (),
         error_code: str | None = None,
+        mode_served: str | None = None,
     ) -> ResearchTaskResult:
         elapsed_seconds = max(0.0, time.monotonic() - started_mono)
         ended = started + timedelta(seconds=elapsed_seconds)
@@ -373,7 +466,7 @@ class ResearchExecutor:
             evidence_items=evidence_items,
             structured_facts=structured_facts,
             mode_requested=_mode_requested(task),
-            mode_served=None,
+            mode_served=mode_served,
             degradation_reasons=degradation_reasons,
             error_code=error_code,
             data_runtime_identity=data_runtime_identity,
@@ -387,10 +480,12 @@ class ResearchExecutor:
         data_runtime_identity: DataRuntimeIdentity,
         reasons: tuple[str, ...],
         error_code: str,
+        mode_served: str | None = None,
     ) -> ResearchTaskResult:
         return self._result(
             task, started, started_mono, ResearchTaskResultStatus.DEGRADED,
             data_runtime_identity, degradation_reasons=reasons, error_code=error_code,
+            mode_served=mode_served,
         )
 
 

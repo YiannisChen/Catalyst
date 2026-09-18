@@ -131,18 +131,52 @@ def test_gate_b_fails_on_mismatched_case_pack(tmp_path: Path) -> None:
 
 
 def test_cli_gate_both_exits_zero_and_writes_artifacts(tmp_path: Path) -> None:
-    proc = subprocess.run(
-        [sys.executable, str(CLI), "--gate", "both"],
+    """Run both gates through the CLI but write ONLY to tmp artifacts.
+
+    The tracked ``data/baseline/reports`` artifacts are sealed; running the
+    gates must never mutate them (Batch-B corrective: the M5 sealed artifact
+    is protected from mutation). The Gate A artifact embeds an absolute
+    ``report_path``, so writing to the tracked path is worktree-dependent.
+    """
+    a = tmp_path / "gate_a.json"
+    b = tmp_path / "gate_b.json"
+    proc_a = subprocess.run(
+        [
+            sys.executable, str(CLI), "--gate", "sealed_baseline_integrity",
+            "--out", str(a),
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
         timeout=120,
     )
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    a = REPO_ROOT / "data/baseline/reports/v1_1_m5_gate_a_sealed_baseline_integrity.json"
-    b = REPO_ROOT / "data/baseline/reports/v1_1_m5_gate_b_semantic_ontology_regression.json"
+    assert proc_a.returncode == 0, proc_a.stdout + proc_a.stderr
+    proc_b = subprocess.run(
+        [
+            sys.executable, str(CLI), "--gate", "semantic_ontology_regression",
+            "--out", str(b),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc_b.returncode == 0, proc_b.stdout + proc_b.stderr
     assert a.exists()
     assert b.exists()
+    sealed_a = (
+        REPO_ROOT
+        / "data/baseline/reports/v1_1_m5_gate_a_sealed_baseline_integrity.json"
+    )
+    sealed_b = (
+        REPO_ROOT
+        / "data/baseline/reports/v1_1_m5_gate_b_semantic_ontology_regression.json"
+    )
+    # The sealed tracked artifacts remain present and are never rewritten by
+    # this test (the gate output path is tmp); byte-stability is asserted by
+    # the standing ``git status`` check after the full FAST run.
+    assert sealed_a.read_bytes()
+    assert sealed_b.read_bytes()
 
 
 def test_cli_bad_usage_exits_two() -> None:

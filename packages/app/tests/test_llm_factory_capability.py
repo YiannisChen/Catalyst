@@ -38,6 +38,20 @@ def test_build_v1_llm_neutralizes_provider_internal_retries_and_temperature() ->
     kwargs = chat_openai.call_args.kwargs
     assert kwargs["max_retries"] == 0
     assert kwargs["temperature"] == 0.0
+    assert kwargs["max_tokens"] == 2_000
+
+
+def test_build_v1_llm_configures_current_deepseek_non_thinking_model() -> None:
+    with patch("catalyst_app.llm_factory.ChatOpenAI") as chat_openai:
+        build_v1_llm(
+            "deepseek-flash",
+            provider="deepseek",
+            api_key="test-key",
+        )
+    kwargs = chat_openai.call_args.kwargs
+    assert kwargs["model"] == "deepseek-flash"
+    assert kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert kwargs["max_tokens"] == 2_000
 
 
 def test_build_v1_llm_client_passes_capability_admission() -> None:
@@ -205,3 +219,37 @@ def test_build_v1_llm_omits_fixed_timeout_when_not_supplied() -> None:
         )
     kwargs = chat_openai.call_args.kwargs
     assert kwargs.get("timeout") != 90
+
+
+def test_build_v1_llm_declares_function_calling_structured_output_for_deepseek() -> None:
+    """DeepSeek's OpenAI-compatible surface rejects response_format
+    json_schema, and json_object carried no schema the model could follow: the
+    2026-09-15 live c01 run returned valid JSON with invented field names
+    twice in a row. The client must declare ``function_calling`` so the
+    AnalystDecision schema travels in ``tools[]`` with a forced
+    ``tool_choice``; json_mode stays out of the production path."""
+    client = build_v1_llm(
+        "deepseek-flash",
+        provider="deepseek",
+        api_key="sk-test-key-123",
+        base_url="https://example.invalid/v1",
+    )
+    metadata = client.capability_metadata
+    assert metadata["structured_output_method"] == "function_calling"
+    assert metadata["structured_output_method"] not in ("json_mode", "json_schema")
+    assert metadata["supports_structured_output"] is True
+    # the metadata must stay admissible through the capability contract
+    capability = require_capabilities(client, REQUIRED)
+    assert capability.structured_output_method == "function_calling"
+
+
+def test_build_v1_llm_declares_no_structured_output_method_for_other_providers() -> None:
+    client = build_v1_llm(
+        "provider-specific-model",
+        provider="custom_openai_compatible",
+        api_key="sk-test-key-123",
+        base_url="https://example.invalid/v1",
+    )
+    assert client.capability_metadata.get("structured_output_method") is None
+    capability = require_capabilities(client, REQUIRED)
+    assert capability.structured_output_method is None

@@ -186,13 +186,22 @@ def _case_hash(*parts: str) -> str:
 def extract_answer_markers(answer_text: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Extract emitted citation and claim markers from answer text (same
     convention as catalyst_agents.graph.extract_answer_markers)."""
-    citations = tuple(
-        sorted(set(re.findall(r"\(([A-Za-z0-9:_-]+)\)", answer_text)))
+    role_markers = {"PRIMARY", "SECONDARY", "CONTEXT", "LIMITATION"}
+    claim_markers: set[str] = set(
+        re.findall(r"\(claim_id:\s*([A-Za-z0-9:_-]+)\)", answer_text)
     )
-    claim_markers = tuple(
-        sorted(set(re.findall(r"\[([A-Za-z0-9:_-]+)\]", answer_text)))
-    )
-    return citations, claim_markers
+    for raw in re.findall(r"\[([A-Za-z0-9:_-]+)\]", answer_text):
+        if raw in role_markers or raw.lower() == "citations":
+            continue
+        claim_markers.add(raw)
+    citations: set[str] = set()
+    for block in re.findall(r"\[citations:\s*([^\]]*)\]", answer_text):
+        for part in block.split(","):
+            token = part.strip()
+            if token:
+                citations.add(token)
+    citations.update(re.findall(r"\(([A-Za-z0-9:_-]+)\)", answer_text))
+    return tuple(sorted(citations)), tuple(sorted(claim_markers))
 
 
 def _serialize(value: Any) -> str:

@@ -134,106 +134,124 @@ def _seed_live_pointers(conn: sqlite3.Connection, active_path: Path) -> None:
     conn.commit()
 
 
-def _insert_news(conn: sqlite3.Connection) -> None:
-    asset_id = "v1:asset:news-fixture"
-    version_id = "v1:content:news-fixture"
+def _seed_raw_asset(conn: sqlite3.Connection, *, asset_id: str, source_type: str) -> None:
     conn.execute(
-        """INSERT INTO canonical_assets (
-            asset_id, asset_type, issuer_id, tickers_json, provider, publisher,
-            canonical_url, source_class, source_published_at, eligible_at,
-            eligible_at_reason, temporal_precision, accepted_time_recovered,
-            fail_closed, ingested_at, content_state, serving_status, title,
-            content_ref, dedup_cluster_id, independence_group_id, parse_quality,
-            subtype_metadata, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (
-            asset_id, "NEWS", "issuer:AAPL", '["AAPL"]', "polygon", "Fixture News",
-            "https://example.test/news", "reported_news", NOW, NOW,
-            "publication_time_provider", "publication_time", 0, 0, NOW,
-            "FULL_TEXT", "body_candidate", "Unicode café news",
-            "raw:news-1", "v1:dedup:news", "v1:ind:news", "not_applicable",
-            json.dumps({"body": NEWS_BODY, "description": NEWS_BODY}),
-            NOW, NOW,
-        ),
-    )
-    conn.execute(
-        """INSERT INTO canonical_content_versions (
-            canonical_content_version_id, asset_id, content_hash,
-            normalizer_version, materiality_version, version_ordinal,
-            created_at, payload_ref
-        ) VALUES (?,?,?,?,?,1,?,?)""",
-        (
-            version_id, asset_id, _h(NEWS_BODY), NEWS_NORMALIZER_VERSION,
-            MATERIALITY_VERSION, NOW, "raw:news-1",
-        ),
-    )
-    conn.execute(
-        """INSERT INTO canonical_subtype_assoc (
-            asset_id, subtype_table, subtype_pk, subtype_pk_value,
-            canonical_content_version_id, created_at
-        ) VALUES (?,?,?,?,?,?)""",
-        (asset_id, "articles", "article_id", "poly:000001", version_id, NOW),
-    )
-    conn.execute(
-        "INSERT INTO canonical_asset_tickers (asset_id, ticker, issuer_id) VALUES (?,?,?)",
-        (asset_id, "AAPL", "issuer:AAPL"),
+        """INSERT INTO raw_assets
+           (asset_id, ticker, source_type, reference_date, fetched_at,
+            data_version, content_raw, metadata_json)
+           VALUES (?, 'AAPL', ?, '2026-01-05', '2026-01-05T10:00:00Z',
+                   'v1', ?, '{}')""",
+        (asset_id, source_type, b"raw-payload"),
     )
 
 
-def _insert_filing(conn: sqlite3.Connection) -> None:
-    asset_id = "v1:asset:filing-fixture"
-    version_id = "v1:content:filing-fixture"
+def _seed_production_shaped_fixture(conn: sqlite3.Connection) -> None:
+    """Seed raw subtype tables and run the REAL canonical backfill (M3-2).
+
+    Production shape: filing body lives only in ``filing_documents.text`` and
+    is bound through ``canonical_subtype_assoc``. No ``raw_text`` is placed in
+    canonical ``subtype_metadata`` (matches production; M3-9 regression).
+    """
+    from catalyst_data.articles import upsert_article, upsert_article_ticker
+    from catalyst_data.canonical.backfill import backfill_from_subtypes
+    from catalyst_data.corpus.news_v2 import _normalize_text
+    from catalyst_data.storage.sqlite import upsert_filing
+
+    _seed_raw_asset(conn, asset_id="raw:news-1", source_type="finnhub_company_news")
+    _seed_raw_asset(conn, asset_id="raw:sec-1", source_type="sec_filings")
+
+    upsert_article(
+        conn,
+        article={
+            "article_id": "finnhub:news-1",
+            "raw_asset_id": "raw:news-1",
+            "provider": "finnhub",
+            "source_type": "finnhub_company_news",
+            "ticker": "AAPL",
+            "reference_date": "2026-01-05",
+            "published_utc": "2026-01-05T15:30:00Z",
+            "title": "Apple announces new AI features",
+            "description": NEWS_BODY,
+            "article_url": "https://www.reuters.com/fixture-news",
+            "publisher_name": "Reuters",
+        },
+    )
+    upsert_article_ticker(
+        conn,
+        article_id="finnhub:news-1",
+        ticker="AAPL",
+        raw_asset_id="raw:news-1",
+        reference_date="2026-01-05",
+    )
+
+    upsert_filing(
+        conn,
+        filing_id="filing-8k-fixture",
+        cik="0000320193",
+        ticker="AAPL",
+        form_type="8-K",
+        filed_at="2026-01-05",
+        accession_number="0000320193-26-000001",
+        primary_document="a.htm",
+        url="https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/a.htm",
+        raw_asset_id="raw:sec-1",
+    )
+    # Production M3-3 shape: persist the recovered SEC acceptance time so the
+    # filing projects as an eligible body_candidate (never fail-closed on a
+    # date-only filed_at).
     conn.execute(
-        """INSERT INTO canonical_assets (
-            asset_id, asset_type, issuer_id, tickers_json, provider, publisher,
-            canonical_url, source_class, source_published_at, eligible_at,
-            eligible_at_reason, temporal_precision, accepted_time_recovered,
-            fail_closed, ingested_at, content_state, serving_status, title,
-            content_ref, dedup_cluster_id, independence_group_id, parse_quality,
-            subtype_metadata, created_at, updated_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        """UPDATE filings SET
+               accepted_time_utc='2026-01-05T20:06:03Z',
+               eligible_at='2026-01-05T20:06:03Z',
+               eligible_at_reason='accepted_time_recovered',
+               temporal_precision='accepted_time',
+               accepted_time_recovered=1,
+               eligibility_fail_closed=0
+           WHERE filing_id='filing-8k-fixture'"""
+    )
+    normalized_filing_body = _normalize_text(FILING_BODY)
+    conn.execute(
+        """INSERT INTO filing_documents (
+               filing_id, document_url, document_type, text, char_len,
+               content_type, byte_size, extraction_status, extracted_at,
+               document_id, parser_version, document_hash, parse_quality,
+               section_parse_degraded
+           ) VALUES (?, ?, 'primary_doc', ?, ?, 'text/html', ?, 'success',
+                     '2026-01-05T20:00:00Z', ?, 'sec_extract_v1', ?, 'full', 0)""",
         (
-            asset_id, "FILING", "issuer:AAPL", '["AAPL"]', "sec", None,
-            "https://example.test/8k", "issuer_disclosure", NOW, NOW,
-            "accepted_time", "accepted_time", 1, 0, NOW,
-            "FULL_TEXT", "body_candidate", "Apple 8-K",
-            "raw:filing-1", "v1:dedup:filing", "v1:ind:filing", "full",
-            json.dumps({"raw_text": FILING_BODY, "form_type": "8-K", "document_role": "primary_doc"}),
-            NOW, NOW,
+            "filing-8k-fixture",
+            "https://www.sec.gov/Archives/edgar/data/320193/000032019326000001/a.htm",
+            FILING_BODY,
+            len(FILING_BODY.encode("utf-8")),
+            len(FILING_BODY.encode("utf-8")),
+            "e" * 64,
+            _h(normalized_filing_body),
         ),
     )
-    conn.execute(
-        """INSERT INTO canonical_content_versions (
-            canonical_content_version_id, asset_id, content_hash,
-            normalizer_version, materiality_version, version_ordinal,
-            created_at, payload_ref
-        ) VALUES (?,?,?,?,?,1,?,?)""",
-        (
-            version_id, asset_id, _h(FILING_BODY), SEC_NORMALIZER_VERSION,
-            MATERIALITY_VERSION, NOW, "raw:filing-1",
-        ),
-    )
-    conn.execute(
-        """INSERT INTO canonical_subtype_assoc (
-            asset_id, subtype_table, subtype_pk, subtype_pk_value,
-            canonical_content_version_id, created_at
-        ) VALUES (?,?,?,?,?,?)""",
-        (asset_id, "filing_documents", "document_id", "e" * 64, version_id, NOW),
-    )
-    conn.execute(
-        "INSERT INTO canonical_asset_tickers (asset_id, ticker, issuer_id) VALUES (?,?,?)",
-        (asset_id, "AAPL", "issuer:AAPL"),
-    )
+    conn.commit()
+    backfill_from_subtypes(conn)
+    conn.commit()
 
 
 def _fixture_conn(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     init_db(conn)
-    _insert_news(conn)
-    _insert_filing(conn)
-    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+    _seed_production_shaped_fixture(conn)
     return conn
+
+
+def _filing_asset_identity(conn: sqlite3.Connection) -> tuple[str, str]:
+    row = conn.execute(
+        """SELECT a.asset_id, v.canonical_content_version_id
+           FROM canonical_assets a
+           JOIN canonical_content_versions v ON v.asset_id = a.asset_id
+           WHERE a.asset_type='FILING'
+           ORDER BY a.asset_id LIMIT 1"""
+    ).fetchone()
+    assert row is not None
+    return str(row[0]), str(row[1])
 
 
 def _expected_build_id(projection_digest: str, profile_versions: dict[str, str]) -> str:
@@ -262,6 +280,213 @@ def test_stage_corpus_candidate_missing_api():
 
     assert callable(stage_corpus_candidate)
     assert InactiveCorpusCandidate is not None
+
+
+def _stage_fixture_candidate(tmp_path):
+    from catalyst_data.corpus.streaming_publication import (
+        InactiveCorpusCandidate,
+        stage_corpus_candidate,
+    )
+
+    db_path = tmp_path / "m3-9.db"
+    conn = _fixture_conn(db_path)
+    active_path = tmp_path / "active_generation.json"
+    _seed_live_pointers(conn, active_path)
+    before = _pointer_snapshot(conn, active_path)
+    out = tmp_path / "bundles"
+    profiles = {"news": "news_v2", "filing": "filing_v3"}
+    candidate = stage_corpus_candidate(
+        conn,
+        certified_snapshot_identity=SNAPSHOT,
+        profile_versions=profiles,
+        source_bundle_output_root=out,
+        snapshot_id=SNAPSHOT,
+        probe_report_id=PROBE,
+        postbuild_readiness_id=POSTBUILD,
+    )
+    return conn, candidate, before, active_path
+
+
+def test_real_backfill_filing_produces_filing_v3_chunks(tmp_path):
+    """A production-shaped FULL_TEXT filing yields filing_v3 chunks."""
+    from catalyst_data.corpus.streaming_publication import stage_corpus_candidate
+
+    conn, candidate, _before, _active = _stage_fixture_candidate(tmp_path)
+    asset_id, version_id = _filing_asset_identity(conn)
+    chunks = conn.execute(
+        """SELECT chunk_id, canonical_asset_id, content_version_id,
+                  corpus_document_id, chunk_profile_version, content_state,
+                  source_class, parse_quality
+           FROM corpus_build_chunks WHERE build_id=?
+           ORDER BY chunk_id""",
+        (candidate.build_id,),
+    ).fetchall()
+    filing_chunks = [row for row in chunks if row["canonical_asset_id"] == asset_id]
+    assert filing_chunks, "production-shaped filing produced no filing chunks"
+    assert all(row["chunk_profile_version"] == "filing_v3" for row in filing_chunks)
+    assert all(row["content_state"] == "FULL_TEXT" for row in filing_chunks)
+    assert all(row["source_class"] == "official_government" for row in filing_chunks)
+    assert any(
+        "item_1.01" in row["chunk_id"] or "item_2.02" in row["chunk_id"]
+        for row in filing_chunks
+    )
+    assert candidate.chunk_count >= 2
+
+
+def test_duplicate_provenance_associations_do_not_duplicate_corpus_documents(tmp_path):
+    """filings + filing_documents associations yield ONE corpus document per
+    (asset_id, canonical_content_version_id, filing profile)."""
+    from catalyst_data.index_builder import build_canonical_corpus_records
+
+    conn, candidate, _before, _active = _stage_fixture_candidate(tmp_path)
+    asset_id, version_id = _filing_asset_identity(conn)
+    assocs = conn.execute(
+        """SELECT subtype_table, subtype_pk, subtype_pk_value
+           FROM canonical_subtype_assoc WHERE asset_id=? AND
+             canonical_content_version_id=? ORDER BY subtype_table""",
+        (asset_id, version_id),
+    ).fetchall()
+    assert {row["subtype_table"] for row in assocs} == {"filings", "filing_documents"}
+
+    records = build_canonical_corpus_records(conn)
+    filing_records = [r for r in records if r["asset_id"] == asset_id]
+    assert len(filing_records) == 1, (
+        "expected one canonical corpus record per filing content version, got "
+        f"{len(filing_records)}"
+    )
+    surviving = filing_records[0]
+    document_assoc = next(
+        row for row in assocs if row["subtype_table"] == "filing_documents"
+    )
+    assert surviving["subtype_table"] == "filing_documents"
+    assert surviving["subtype_pk"] == "document_id"
+    assert surviving["subtype_pk_value"] == document_assoc["subtype_pk_value"]
+
+    docs = conn.execute(
+        """SELECT source_kind, source_key, document_id
+           FROM corpus_build_documents WHERE build_id=? AND document_id=?
+           ORDER BY source_key""",
+        (candidate.build_id, corpus_document_id(
+            canonical_content_version_id=version_id,
+            chunk_profile_version="filing_v3",
+        )),
+    ).fetchall()
+    assert len(docs) == 1, f"expected one corpus document, got {len(docs)}"
+
+    chunk_ids = [
+        row["chunk_id"]
+        for row in conn.execute(
+            "SELECT chunk_id FROM corpus_build_chunks WHERE build_id=? AND canonical_asset_id=?",
+            (candidate.build_id, asset_id),
+        )
+    ]
+    assert chunk_ids
+    assert len(chunk_ids) == len(set(chunk_ids)), "duplicate filing chunk_ids emitted"
+
+
+def test_filing_chunks_bind_correct_asset_and_content_version(tmp_path):
+    """All emitted filing chunks bind the right asset/content version/document."""
+    conn, candidate, _before, _active = _stage_fixture_candidate(tmp_path)
+    asset_id, version_id = _filing_asset_identity(conn)
+    expected_doc = corpus_document_id(
+        canonical_content_version_id=version_id,
+        chunk_profile_version="filing_v3",
+    )
+    rows = conn.execute(
+        """SELECT chunk_id, canonical_asset_id, content_version_id,
+                  corpus_document_id
+           FROM corpus_build_chunks WHERE build_id=? AND chunk_profile_version='filing_v3'
+           ORDER BY chunk_id""",
+        (candidate.build_id,),
+    ).fetchall()
+    assert rows
+    for row in rows:
+        assert row["canonical_asset_id"] == asset_id
+        assert row["content_version_id"] == version_id
+        assert row["corpus_document_id"] == expected_doc
+
+
+def _filing_candidate_with_missing_document_binding(tmp_path) -> sqlite3.Connection:
+    conn = _fixture_conn(tmp_path / "m3-9.db")
+    asset_id, version_id = _filing_asset_identity(conn)
+    conn.execute(
+        "DELETE FROM canonical_subtype_assoc WHERE asset_id=? AND subtype_table='filing_documents'",
+        (asset_id,),
+    )
+    conn.commit()
+    return conn
+
+
+def test_missing_filing_document_binding_fails_closed(tmp_path):
+    """A FULL_TEXT filing content version without a filing_documents binding
+    must fail closed during candidate staging."""
+    from catalyst_data.corpus.streaming_publication import stage_corpus_candidate
+
+    conn = _filing_candidate_with_missing_document_binding(tmp_path)
+    with pytest.raises(ValueError, match="filing_documents"):
+        stage_corpus_candidate(
+            conn,
+            certified_snapshot_identity=SNAPSHOT,
+            profile_versions={"news": "news_v2", "filing": "filing_v3"},
+            source_bundle_output_root=tmp_path / "bundles",
+            snapshot_id=SNAPSHOT,
+            probe_report_id=PROBE,
+            postbuild_readiness_id=POSTBUILD,
+        )
+
+
+def test_missing_filing_text_row_fails_closed(tmp_path):
+    """An association that points at a non-existent filing_documents row must
+    fail closed (LEFT JOIN yields no text)."""
+    from catalyst_data.corpus.streaming_publication import stage_corpus_candidate
+
+    conn = _fixture_conn(tmp_path / "m3-9.db")
+    asset_id, version_id = _filing_asset_identity(conn)
+    conn.execute(
+        """UPDATE canonical_subtype_assoc SET subtype_pk_value=?
+           WHERE asset_id=? AND subtype_table='filing_documents'""",
+        ("f" * 64, asset_id),
+    )
+    conn.commit()
+    with pytest.raises(ValueError, match="filing"):
+        stage_corpus_candidate(
+            conn,
+            certified_snapshot_identity=SNAPSHOT,
+            profile_versions={"news": "news_v2", "filing": "filing_v3"},
+            source_bundle_output_root=tmp_path / "bundles",
+            snapshot_id=SNAPSHOT,
+            probe_report_id=PROBE,
+            postbuild_readiness_id=POSTBUILD,
+        )
+
+
+def test_hash_mismatched_filing_text_fails_closed(tmp_path):
+    """A filing_documents row whose normalized text hash differs from the
+    content version must fail closed."""
+    from catalyst_data.corpus.streaming_publication import stage_corpus_candidate
+
+    conn = _fixture_conn(tmp_path / "m3-9.db")
+    asset_id, _version_id = _filing_asset_identity(conn)
+    document_id = conn.execute(
+        """SELECT subtype_pk_value FROM canonical_subtype_assoc
+           WHERE asset_id=? AND subtype_table='filing_documents'""",
+        (asset_id,),
+    ).fetchone()[0]
+    conn.execute(
+        "UPDATE filing_documents SET text=? WHERE document_id=?",
+        ("Item 1.01 TAMPERED BODY with completely different content.", document_id),
+    )
+    conn.commit()
+    with pytest.raises(ValueError, match="content_hash|hash"):
+        stage_corpus_candidate(
+            conn,
+            certified_snapshot_identity=SNAPSHOT,
+            profile_versions={"news": "news_v2", "filing": "filing_v3"},
+            source_bundle_output_root=tmp_path / "bundles",
+            snapshot_id=SNAPSHOT,
+            probe_report_id=PROBE,
+            postbuild_readiness_id=POSTBUILD,
+        )
 
 
 def test_stage_corpus_candidate_rebuilds_inactive_from_canonical_projection(tmp_path):
@@ -371,8 +596,16 @@ def test_stage_corpus_candidate_rebuilds_inactive_from_canonical_projection(tmp_
     assert fts5_calls == []
     assert _pointer_snapshot(conn, active_path) == before
 
+    filing_asset_id, filing_version_id = _filing_asset_identity(conn)
+    news_asset_id = conn.execute(
+        "SELECT asset_id FROM canonical_assets WHERE asset_type='NEWS'"
+    ).fetchone()[0]
+    news_version_id = conn.execute(
+        "SELECT canonical_content_version_id FROM canonical_content_versions WHERE asset_id=?",
+        (news_asset_id,),
+    ).fetchone()[0]
     news_doc = corpus_document_id(
-        canonical_content_version_id="v1:content:news-fixture",
+        canonical_content_version_id=news_version_id,
         chunk_profile_version="news_v2",
     )
     chunks = conn.execute(
@@ -384,10 +617,11 @@ def test_stage_corpus_candidate_rebuilds_inactive_from_canonical_projection(tmp_
         (first.build_id,),
     ).fetchall()
     assert chunks
-    news_chunks = [row for row in chunks if row["canonical_asset_id"] == "v1:asset:news-fixture"]
-    filing_chunks = [row for row in chunks if row["canonical_asset_id"] == "v1:asset:filing-fixture"]
+    news_chunks = [row for row in chunks if row["canonical_asset_id"] == news_asset_id]
+    filing_chunks = [row for row in chunks if row["canonical_asset_id"] == filing_asset_id]
     assert news_chunks
     assert filing_chunks
     assert any("item_1.01" in row["chunk_id"] or "item_2.02" in row["chunk_id"] for row in filing_chunks)
     assert all(row["corpus_document_id"] for row in chunks)
     assert any(row["corpus_document_id"] == news_doc for row in news_chunks)
+    assert all(row["content_version_id"] == filing_version_id for row in filing_chunks)

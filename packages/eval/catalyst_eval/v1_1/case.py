@@ -154,6 +154,11 @@ class GoldenCase(BaseModel):
     lineage: GoldenCaseLineage
 
 
+# New V1.1 public surface terminology: the benchmark case contract is the same
+# frozen human-truth contract as ``GoldenCase``; ``GoldenCase`` stays exported
+# for legacy V1.1 callers/adapters (sealed compatibility).
+BenchmarkCase = GoldenCase
+
 __all__ = [
     "AcceptableCauseLabel",
     "AcceptableCorrectiveAction",
@@ -166,6 +171,7 @@ __all__ = [
     "EvidenceNeedV1",
     "ExpectedResearchBehavior",
     "GapReasonCodeV1",
+    "BenchmarkCase",
     "GoldenCase",
     "GoldenCaseLineage",
     "MaterialityV1",

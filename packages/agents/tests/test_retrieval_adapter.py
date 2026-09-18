@@ -195,6 +195,40 @@ def test_adapter_consumes_v1_hits_with_full_metadata():
     assert item.data_runtime_identity == hit.data_runtime_identity
 
 
+def test_adapter_does_not_infer_observation_from_lossy_v1_only_retriever():
+    """A V1-only retriever cannot truthfully expose stages or final order.
+
+    The converted hit contains a reranked rank, but that does not prove the
+    upstream control-flow stages or a complete candidate inventory. The
+    adapter must preserve that information as unavailable rather than making
+    a lossy observation look authoritative.
+    """
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.v1_result import RetrievalResultSet
+
+    hit = _v1_hit()
+    result_set = RetrievalResultSet(
+        hits=(hit,),
+        temporal_identity=hit.temporal_identity,
+        data_runtime_identity=hit.data_runtime_identity,
+    )
+
+    class FakeV1Retriever:
+        def retrieve(self, query, **kwargs):
+            return result_set
+
+    evidence, observation = AgentRetrieverAdapter(FakeV1Retriever()).retrieve_with_observations(
+        "why", ticker="NVDA", cutoff="2026-01-06T21:00:00Z",
+        requested_manifest_id="a" * 64, temporal_identity=hit.temporal_identity,
+    )
+    assert len(evidence) == 1
+    assert observation.served_mode is None
+    assert observation.ordered_candidate_evidence_ids == ()
+    assert observation.ordered_final_ranked_evidence_ids == ()
+    assert observation.arm_names == ()
+    assert observation.degradation_reasons == ()
+
+
 def test_adapter_derives_independence_status_and_role_from_data():
     """Unknown lineage and source-role ceiling derive from the hit data."""
     from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter

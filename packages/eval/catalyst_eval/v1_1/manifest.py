@@ -141,14 +141,18 @@ class RunArtifactIdentity(BaseModel):
 
 
 class RetrievalPolicyIdentity(BaseModel):
-    """Arm names/order, top-K, pool, dedup/independence/reranker policy."""
+    """Arm names/order, top-K, and retrieval policy.
+
+    The observed per-case pool is a runtime fact. Identity construction must
+    not invent a synthetic pool identifier before retrieval has run.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     arm_names: tuple[str, ...]
     arm_order: tuple[str, ...]
     top_k: int = Field(ge=1)
-    candidate_pool_id: str
+    candidate_pool_id: str | None = None
     dedup_policy_version: str
     independence_policy_version: str
     reranker_policy_version: str
@@ -239,7 +243,15 @@ class CaseResultRef(BaseModel):
 
     case_id: str
     run_manifest_id: str
+    run_manifest_hash: str
     result_artifact_id: str
+
+    @field_validator("run_manifest_hash")
+    @classmethod
+    def _sha256_hex(cls, value: str) -> str:
+        if _SHA256_RE.fullmatch(value) is None:
+            raise ValueError("must be a lowercase SHA-256 hex digest")
+        return value
 
 
 class MetricAggregate(BaseModel):
@@ -275,7 +287,7 @@ class GateResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     gate_id: str
-    passed: bool
+    passed: bool | None
     detail: str | None = None
 
 
@@ -285,10 +297,42 @@ class EvalOutcome(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     completed_at: datetime
+    observed_run_artifact_identity: RunArtifactIdentity
     per_case_result_refs: tuple[CaseResultRef, ...] = ()
     aggregate_metrics: tuple[MetricAggregate, ...] = ()
     latency_tokens_cost: LatencyTokensCost
     gate_results: tuple[GateResult, ...] = ()
+
+    @model_validator(mode="after")
+    def _result_refs_are_unique(self) -> "EvalOutcome":
+        observed = [ref.case_id for ref in self.per_case_result_refs]
+        if len(observed) != len(set(observed)):
+            raise ValueError("per_case_result_refs case_ids must be unique")
+        return self
+
+    @model_validator(mode="after")
+    def _bindings_match_refs_one_to_one(self) -> "EvalOutcome":
+        """Ordered per-case refs must bind one-to-one to the observed
+        RunManifest id+hash; missing, duplicate, reordered, extra, or
+        mismatched bindings fail closed (M7 execution lock, Batch-B)."""
+        refs = list(self.per_case_result_refs)
+        bindings = list(self.observed_run_artifact_identity.run_manifest_bindings)
+        if len(refs) != len(bindings):
+            raise ValueError(
+                "observed RunManifest bindings must match per_case_result_refs "
+                f"one-to-one (refs={len(refs)} bindings={len(bindings)})"
+            )
+        for index, (ref, binding) in enumerate(zip(refs, bindings)):
+            if (
+                ref.run_manifest_id != binding.run_manifest_id
+                or ref.run_manifest_hash != binding.run_manifest_hash
+            ):
+                raise ValueError(
+                    f"binding at index {index} does not match ref {ref.case_id!r}: "
+                    f"ref=({ref.run_manifest_id},{ref.run_manifest_hash}) "
+                    f"binding=({binding.run_manifest_id},{binding.run_manifest_hash})"
+                )
+        return self
 
 
 class EvalManifest(BaseModel):
@@ -311,11 +355,23 @@ class EvalManifest(BaseModel):
         return super().model_copy(deep=deep)
 
     def append_outcome(self, outcome: EvalOutcome) -> "EvalManifest":
-        """Append the outcome exactly once; a second append fails."""
+        """Append the outcome exactly once; a second append fails.
+
+        The ordered observed bindings must match ``ordered_case_ids``
+        one-to-one: missing, duplicate, reordered, identity-mismatched, or
+        extra bindings fail closed (M7 execution lock).
+        """
         if self.outcome is not None:
             raise ValueError("EvalManifest outcome can only be appended once")
         if not isinstance(outcome, EvalOutcome):
             raise TypeError("EvalManifest append_outcome requires an EvalOutcome")
+        expected = list(self.evaluation_identity.ordered_case_ids)
+        observed = [ref.case_id for ref in outcome.per_case_result_refs]
+        if observed != expected:
+            raise ValueError(
+                "per_case_result_refs must match ordered_case_ids one-to-one "
+                f"in order (expected {expected}, observed {observed})"
+            )
         return type(self).model_validate(
             {**self.model_dump(mode="python"), "outcome": outcome.model_dump(mode="python")}
         )
