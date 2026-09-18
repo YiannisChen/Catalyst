@@ -1063,6 +1063,10 @@ this holdout. Exact case IDs and splits are versioned eval artifacts, not
 architecture constants. Human labels remain primary truth; LLM judges remain
 secondary diagnostics.
 
+The 2026-09-18 M8 amendment does not execute Stage 2 or Stage 3. After V1.1 RC,
+those stages are reserved as M10 and M11 and require their own designs. M8-D
+passing on 12 development cases is not a Stage-2 or public-efficacy result.
+
 ### 7.6 Minimal ablation program
 
 V1.1 freezes five high-value experiments rather than a combinatorial matrix:
@@ -1395,6 +1399,35 @@ residual failure:
 Multi-agent orchestration, free ReAct, GraphRAG, memory, MCP, and distributed
 orchestration have no V1.1 promotion path because no measured requirement
 currently depends on them.
+
+### 13.1 Dated M8 causal-quality recovery amendment (2026-09-18)
+
+The M7 Stage-1 development probe completed mechanically but produced 12/12
+ABSTAIN outputs because its served generation supplied no citable full-text
+evidence. This is measured repository reality and triggers a narrow release-
+ordering amendment:
+
+1. V1.1 may not advance directly from the failed M7 probe to cleanup/RC.
+2. M8 first reuses the frozen M3 versioned data/corpus/FTS/dense and promotion
+   architecture to rebuild a general, body-bearing production generation
+   (M8-A), prove candidate FTS quality on CPU (M8-B), probe Analyst on citable
+   bodies (M8-C), then embed/promote and rerun Stage-1 (M8-D).
+3. Source selection must be sealed before any benchmark-membership audit; gold
+   may validate coverage and retrieval only, never select corpus contents.
+   The Q-011 selective candidate is audit-only and must not be promoted.
+4. Provider/GPU work is gated by CPU-verifiable body coverage and FTS retrieval
+   quality. Existing materiality, citation, cutoff, identity, and no-fabrication
+   rules are not weakened.
+5. The recovered 12-case run receives new data/index/eval identities. The M7
+   failed report remains immutable historical evidence.
+6. Cleanup/RC is M8-E and follows only after a passing M8-D recovery report and
+   rollback window. M8-B is the CPU retrieval gate, not cleanup.
+
+This amendment does not change the production graph, add an LLM planner, permit
+always-on web search, promote the two-action arm, or establish general efficacy.
+Bounded external search remains subject to the conditional promotion gate above
+and a separate post-RC design (reserved name M9). Stage-2 and Stage-3
+requirements remain unchanged and map to reserved names M10 and M11.
 
 ## 14. Repository implementation deltas
 
