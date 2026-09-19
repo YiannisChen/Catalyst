@@ -1,10 +1,14 @@
 # M8 Executor Lock (Codex campaign)
 
 **Status:** Binding for dscodex execution. Reviewer/decision-maker: Grok session
-on 2026-09-18.
+on 2026-09-18; amended 2026-09-19 (M8-B FTS ceiling + dense cutover).
 
-**Authority order:** this lock > recovery design > implementation plan TDD
-steps > original M8 cleanup plan.
+**Amendment:** `docs/plans/2026-09-19-m8-b-fts-ceiling-and-dense-cutover.md` is
+binding from executor HEAD `c9528f8` and overrides this lock on M8-B/M8-C/M8-D
+sequencing. Read it before acting on §0/§6/§7 below.
+
+**Authority order:** this lock + its 2026-09-19 amendment > recovery design >
+implementation plan TDD steps > original M8 cleanup plan.
 
 **Campaign finish line:** Stage-1 attribution quality under a new identity.
 Not cleanup. Not FAST-green. Not a tidy RC.
@@ -20,14 +24,19 @@ M8-E is **out of this campaign**. Do not start cleanup.
 | M8-0 git lineage | Codex, local git only | Yes |
 | M8-A code seams | Codex | Yes |
 | M8-A real candidate rebuild + FTS | Codex on CPU, hours, ~10GB disk | Yes, if it does not stall on tests |
-| M8-B retrieval gate | Codex, no provider | Yes, after A candidate exists |
-| M8-C FTS attribution probe | Codex + operator provider keys | Yes only after user pastes keys / budget |
-| M8-D embed / promote / hybrid Stage-1 | Codex **after** user rents GPU | **No** until a later prompt |
+| M8-B retrieval gate (FTS) | Codex, no provider | **Finished FAIL 2026-09-19** — sealed, do not rerun |
+| M8-C FTS-only attribution probe | Codex + operator provider keys | **Not in the critical path** — deferred until hybrid retrieval exists |
+| M8-D embed / hybrid / promote / Stage-1 | Codex **after** user supplies `GPU_OK=yes` | Yes with `GPU_OK=yes`; promote still requires its own authorization |
 | M8-E cleanup/RC | nobody in this campaign | **No** |
 
-dscodex must **not** claim “M8 complete” after code commits. Complete means
-M8-B gates pass and M8-C (if authorized) meets recovery gates. M8-D is a
-separate prompt.
+The only remaining retrieval path is **M8-D dense/hybrid** on candidate
+`bec845b4…` (see the amendment §4). It requires an explicit prompt containing
+`GPU_OK=yes`; this lock alone never authorizes GPU work. The M8-C FTS-only probe
+is **not** a GPU precondition and must not be run on the current FTS packs.
+
+dscodex must **not** claim “M8 complete” after code commits. Complete means the
+promoted hybrid tuple passes the unchanged M8-B formulas **and** a new-`eval_id`
+Stage-1 attribution run passes the recovery gates. M8-D is a separate prompt.
 
 ---
 
@@ -234,9 +243,9 @@ too low for a full body corpus. Do not silently skip FTS.
 - Post-seal audit: **19/19** FULL_TEXT, cutoff-valid, FTS-indexed.
 - Coverage report + source-selection id committed as sanitized JSON only.
 
-### M8-B exit (CPU, no model)
+### M8-B exit (CPU, no model) — SEALED FAIL 2026-09-19
 
-Reuse `STAGE1_RETRIEVAL_GATES`. Empty denom = fail.
+Reuse `STAGE1_RETRIEVAL_GATES` (**unchanged**). Empty denom = fail.
 
 - Recall@8 ≥ 0.75
 - primary-source hit ≥ 0.80
@@ -245,7 +254,30 @@ Reuse `STAGE1_RETRIEVAL_GATES`. Empty denom = fail.
 - 9/9 expected-primary cases have non-empty `included_evidence_ids`
 - ContextPack carries citable body on those 9
 
-### M8-C exit (provider, no GPU) — only if user authorizes keys
+**Recorded result (candidate `bec845b4…`, `candidate_depth=100`, HEAD
+`c9528f8`): FAIL.** Recall@8 9/29 (value 0.294), primary-source hit 5/9 (0.556),
+duplicate-adjusted P@8 6/26 (0.231), ticker/cutoff violations 0,
+required-primary non-empty 8/9 (missing `c01` only).
+
+Sealed terminal reports — do not overwrite or supersede:
+
+- `data/baseline/reports/v1_1_m8b_candidate_fts_bec845b4.json`
+- `data/baseline/reports/v1_1_m8b_candidate_fts_bec845b4_ftdisplay.json`
+- `data/baseline/reports/v1_1_m8b_candidate_fts_bec845b4_sectiondisplay.json`
+
+**Do not rerun FTS.** No further lexical ranking change on this candidate
+(three policies already measured: 2/29, 10/29, 9/29 recall). The FTS ceiling and
+its root cause are recorded in the 2026-09-19 amendment.
+
+### M8-C exit (provider, no GPU) — DEFERRED until hybrid retrieval exists
+
+Do **not** run the FTS-only probe on the current candidate packs: its first gate
+is `c01 non-ABSTAIN`, and c01 has an empty citable pack on FTS-only retrieval, so
+the probe would measure a retrieval defect instead of Analyst behaviour. M8-C
+runs after M8-D hybrid retrieval produces packs, under its own prompt and
+provider authorization. It is not a GPU precondition.
+
+The gates below are unchanged and still apply to that later run.
 
 - Analyst called on every case with citable evidence
 - ≥ 6/11 gold-answerable non-ABSTAIN
@@ -256,11 +288,24 @@ Reuse `STAGE1_RETRIEVAL_GATES`. Empty denom = fail.
 - false SUFFICIENT ≤ 1/12
 - new eval_id ≠ `2792d333…`; new output dir ≠ `v1_1_stage1_327b3eed`
 
-### M8-D — later prompt only
+### M8-D — the remaining retrieval path (`GPU_OK=yes` required)
 
-GPU only after M8-B and M8-C pass. Embed the **new** `to_embed` set. Then
-promote atomically and rerun Stage-1. Targets: ≥ 7/9 gold SUFFICIENT
-non-ABSTAIN, status match ≥ 8/12, same citation/unsupported rules.
+GPU is allowed **only** in a prompt that contains `GPU_OK=yes`, and only after
+the 2026-09-19 amendment is in force. M8-B FTS FAIL and the deferred M8-C are
+**not** blockers for M8-D.
+
+Embed the **new** candidate's `to_embed` set (374,179 `FULL_TEXT` bodies of
+`bec845b4…`) with pinned BGE-M3 `5617a9f6…` dim 1024, new vectors — never
+Q-011's LanceDB/374,179 vectors. Hybrid retrieval: ticker/cutoff eligibility
+first, FTS identifies documents, dense ranks chunks (including eligible
+`FULL_TEXT` outside the FTS window, needed for c01 live `34e2da1c…`), ≤ 3
+chunks/document, `FULL_TEXT` slots only, no gold ids.
+
+Promote only after the inactive hybrid tuple passes the unchanged M8-B formulas
+**and** a new-`eval_id` Stage-1 run passes the recovery gates. The embed prompt
+still contains **no promote**; promotion is a separate authorization. Targets
+after promotion: ≥ 7/9 gold SUFFICIENT non-ABSTAIN, status match ≥ 8/12, same
+citation/unsupported rules.
 
 ---
 
@@ -270,7 +315,9 @@ non-ABSTAIN, status match ≥ 8/12, same citation/unsupported rules.
 - Q-001 SHA changed.
 - `is_current` flipped without M8-D authorization.
 - 19/19 still failing after one class expansion.
-- M8-B fail: no provider, no GPU.
+- M8-B FTS ceiling sealed; do not start another lexical ranking change.
+- M8-B fail: no provider, no GPU (the FTS slice is now sealed FAIL; the next
+  retrieval step is M8-D dense/hybrid under `GPU_OK=yes`).
 - M8-C fail: no GPU; inspect retrieval → pack → Analyst, in that order.
 - Any request to “just promote Q-011” or loosen citation: refuse.
 
