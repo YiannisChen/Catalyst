@@ -291,3 +291,77 @@ def test_fts_digest_is_the_candidate_lexical_digest(tmp_path):
             raise AssertionError("missing candidate lexical_digest must fail closed")
     finally:
         conn.close()
+
+
+def _chunk(
+    chunk_id: str, state: str, *, kind: str, source_class: str, body: bool = True
+):
+    from catalyst_eval.v1_1.recovery_retrieval import CandidateChunk
+
+    return CandidateChunk(
+        chunk_id=chunk_id,
+        content_state=state,
+        citable=state == "FULL_TEXT" and body,
+        source_class=source_class,
+        source_kind=kind,
+        source_type="sec_filing" if kind == "filing" else "finnhub",
+        available_at="2025-05-01T12:00:00Z",
+        tickers=("AAPL",),
+        status="active",
+        eligibility="eligible",
+    )
+
+
+def test_display_slots_are_full_text_only_and_class_ordered():
+    """M8-B display rule: no metadata slot; class order then lexical order."""
+    from catalyst_eval.v1_1.recovery_retrieval import rank_display_candidates
+
+    chunks = {
+        "meta-1": _chunk("meta-1", "METADATA_ONLY", kind="article",
+                         source_class="reported_news"),
+        "title-1": _chunk("title-1", "TITLE_ONLY", kind="article",
+                          source_class="reported_news"),
+        "news-1": _chunk("news-1", "FULL_TEXT", kind="article",
+                         source_class="reported_news"),
+        "gv-1": _chunk("gv-1", "FULL_TEXT", kind="article",
+                       source_class="official_government"),
+        "file-1": _chunk("file-1", "FULL_TEXT", kind="filing",
+                         source_class="official_government"),
+        "file-2": _chunk("file-2", "FULL_TEXT", kind="filing",
+                         source_class="official_government"),
+        "empty-1": _chunk("empty-1", "FULL_TEXT", kind="filing",
+                          source_class="official_government", body=False),
+    }
+    window = (
+        "meta-1", "title-1", "news-1", "gv-1", "file-1", "empty-1", "file-2",
+    )
+    assert rank_display_candidates(window, chunks, top_k=8) == (
+        "file-1", "file-2", "gv-1", "news-1",
+    )
+    # A shallow display slot set never admits a non-citable hit.
+    assert rank_display_candidates(window, chunks, top_k=3) == (
+        "file-1", "file-2", "gv-1",
+    )
+    assert rank_display_candidates(window, {}, top_k=8) == ()
+
+
+def test_default_retrieve_rejects_a_shallow_candidate_window(tmp_path):
+    """The display rule needs a window deeper than the display top-k."""
+    from catalyst_eval.v1_1.recovery_retrieval import (
+        CANDIDATE_DEPTH_FLOOR,
+        RecoveryRetrievalError,
+        default_retrieve,
+    )
+
+    conn = _conn(tmp_path, {"e1": "FULL_TEXT"})
+    try:
+        with pytest.raises(RecoveryRetrievalError, match="candidate_depth"):
+            default_retrieve(
+                conn,
+                corpus_manifest_id=MANIFEST_ID,
+                build_id=BUILD_ID,
+                top_k=8,
+                candidate_depth=CANDIDATE_DEPTH_FLOOR - 1,
+            )
+    finally:
+        conn.close()

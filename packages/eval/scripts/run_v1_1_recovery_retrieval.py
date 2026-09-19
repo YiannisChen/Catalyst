@@ -31,6 +31,7 @@ from catalyst_eval.v1_1.loader import (  # noqa: E402
     resolve_benchmark_cases_path,
 )
 from catalyst_eval.v1_1.recovery_retrieval import (  # noqa: E402
+    CANDIDATE_DEPTH_FLOOR,
     RecoveryRetrievalError,
     run_candidate_fts_retrieval,
 )
@@ -52,7 +53,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--frozen-ranked", type=Path, default=None)
     parser.add_argument("--top-k", type=int, default=8)
-    parser.add_argument("--candidate-depth", type=int, default=20)
+    parser.add_argument("--candidate-depth", type=int, default=CANDIDATE_DEPTH_FLOOR)
     return parser
 
 
