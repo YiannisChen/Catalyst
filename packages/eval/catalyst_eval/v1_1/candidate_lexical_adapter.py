@@ -11,8 +11,12 @@ Guarantees
 * The database is opened ``mode=ro&immutable=1`` with ``PRAGMA query_only=ON``;
   the adapter never changes ``corpus_manifest.is_current``,
   ``corpus_served_chunks``, ``lexical_index_state``, or any dense pointer.
-* Only ``FULL_TEXT`` candidate chunks are citable; ``METADATA_ONLY`` /
-  ``TITLE_ONLY`` bodies are carried but never reported as citable evidence.
+* Only ``FULL_TEXT`` candidate chunks are citable, and only ``FULL_TEXT``
+  chunks occupy a ranked/display slot; ``METADATA_ONLY`` / ``TITLE_ONLY`` hits
+  may identify a document but never become display evidence.
+* The displayed ordinal comes from the shared within-document policy
+  (``within_document_selection``): the FTS window identifies documents, the
+  public-text scorer chooses the results ordinal inside them.
 * The observation contract (served mode, ordered ranking, violations, latency)
   matches the production adapter, so the agents' ContextPack/Analyst path is
   unchanged.
@@ -21,6 +25,7 @@ Guarantees
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -30,6 +35,11 @@ from typing import Any, Mapping, Sequence
 from catalyst_agents.attribution.provider import RetrievedEvidence
 from catalyst_agents.runtime.retrieval_adapter import RetrievalCallObservation
 from catalyst_data.retrieval.v1_result import DataRuntimeIdentity, TemporalIdentity
+from catalyst_eval.v1_1.within_document_selection import (
+    CANDIDATE_DEPTH_CAP,
+    CANDIDATE_DEPTH_FLOOR,
+    select_within_document_slots,
+)
 
 SCHEMA_VERSION = "v1_1_candidate_lexical_adapter_v1"
 REQUESTED_MODE = "lexical"
@@ -38,6 +48,9 @@ FULL_TEXT = "FULL_TEXT"
 
 _METADATA_COLUMNS = (
     "chunk_id",
+    "ordinal",
+    "content_text",
+    "ticker_associations",
     "document_id",
     "corpus_document_id",
     "canonical_asset_id",
@@ -128,7 +141,7 @@ class CandidateLexicalAdapter:
         build_id: str,
         expected_fts_digest: str | None = None,
         top_k: int = 8,
-        candidate_depth: int = 20,
+        candidate_depth: int = CANDIDATE_DEPTH_CAP,
         temporal_identity: TemporalIdentity | None = None,
         data_runtime_identity: DataRuntimeIdentity | None = None,
     ) -> None:
@@ -184,6 +197,17 @@ class CandidateLexicalAdapter:
         from catalyst_data.retrieval.fts5 import retrieve_lexical
 
         effective_top_k = top_k or self._top_k
+        effective_depth = candidate_depth or self._candidate_depth
+        if effective_depth < CANDIDATE_DEPTH_FLOOR:
+            raise CandidateLexicalAdapterError(
+                f"candidate_depth {effective_depth} is below the display floor "
+                f"{CANDIDATE_DEPTH_FLOOR}; a shallow window cannot refill a slot"
+            )
+        if effective_depth > CANDIDATE_DEPTH_CAP:
+            raise CandidateLexicalAdapterError(
+                f"candidate_depth {effective_depth} exceeds the FTS cap "
+                f"{CANDIDATE_DEPTH_CAP}"
+            )
         started = time.monotonic()
         session_date = None
         resolved_temporal = temporal_identity or self._temporal_identity
@@ -198,31 +222,43 @@ class CandidateLexicalAdapter:
                 requested_manifest_id or self.identity.corpus_manifest_id
             ),
             top_k=effective_top_k,
-            candidate_depth=candidate_depth or self._candidate_depth,
+            candidate_depth=effective_depth,
             session_date=session_date,
             inactive_build_id=self.identity.build_id,
         )
         latency_ms = max(0, int((time.monotonic() - started) * 1000))
-        hits = tuple(result.results[:effective_top_k])
-        chunk_ids = tuple(hit.chunk_id for hit in hits)
+        window = tuple(item.chunk_id for item in result.candidates)
+        # Display ordinals come from the shared within-document policy: the FTS
+        # window identifies documents and every FULL_TEXT body of those
+        # documents can supply the displayed ordinal.
+        chunk_ids = select_within_document_slots(
+            self._conn,
+            build_id=self.identity.build_id,
+            candidate_chunk_ids=window,
+            top_k=effective_top_k,
+        )
+        hits_by_chunk_id = {item.chunk_id: item for item in result.results}
         metadata = _metadata_for_chunks(
             self._conn, build_id=self.identity.build_id, chunk_ids=chunk_ids
         )
         evidence = tuple(
-            self._to_evidence(hit, metadata[hit.chunk_id]) for hit in hits
+            self._to_evidence(
+                chunk_id, hits_by_chunk_id.get(chunk_id), metadata[chunk_id]
+            )
+            for chunk_id in chunk_ids
         )
         ticker_violations = tuple(
-            hit.chunk_id for hit in hits if ticker not in tuple(hit.ticker_associations)
+            item.chunk_id
+            for item in evidence
+            if ticker not in tuple(item.ticker_associations)
         )
         cutoff_violations = tuple(
-            hit.chunk_id for hit in hits if hit.available_at > cutoff
+            item.chunk_id for item in evidence if item.available_at > cutoff
         )
         observation = RetrievalCallObservation(
             requested_mode=REQUESTED_MODE,
             served_mode=result.mode_served,
-            ordered_candidate_evidence_ids=tuple(
-                item.chunk_id for item in result.candidates
-            ),
+            ordered_candidate_evidence_ids=window,
             ordered_final_ranked_evidence_ids=chunk_ids,
             rank_changes={},
             duplicate_drops=None,
@@ -261,45 +297,75 @@ class CandidateLexicalAdapter:
 
     # -- mapping -----------------------------------------------------------
     def _to_evidence(
-        self, hit: Any, metadata: Mapping[str, Any]
+        self, chunk_id: str, hit: Any, metadata: Mapping[str, Any]
     ) -> RetrievedEvidence:
+        """One displayed chunk as production-contract evidence.
+
+        ``hit`` is the FTS candidate for chunks inside the window; an expanded
+        chunk outside the window has no lexical score/rank, so those fields stay
+        ``None`` while the build-scoped metadata supplies everything else.
+        """
         content_state = str(metadata.get("content_state") or "")
         corpus_manifest_id = (
             self.identity.corpus_manifest_id
             if self._data_runtime_identity is None
             else self._data_runtime_identity.corpus_manifest_id
         )
+        raw_tickers = metadata.get("ticker_associations")
+        try:
+            tickers = json.loads(raw_tickers) if raw_tickers else []
+        except (TypeError, json.JSONDecodeError):
+            tickers = []
+        if not isinstance(tickers, list):
+            tickers = []
+        metadata_tickers = tuple(str(item) for item in tickers)
+        hit_tickers = tuple(getattr(hit, "ticker_associations", ()) or ())
+        metadata_available_at = str(metadata.get("available_at") or "")
+        hit_available_at = str(getattr(hit, "available_at", "") or "")
+        if hit is None:
+            available_at = metadata_available_at
+        else:
+            available_at = metadata_available_at or hit_available_at
+        fallback_source = str(metadata.get("source_class") or "")
         return RetrievedEvidence(
-            chunk_id=hit.chunk_id,
-            document_id=str(metadata.get("corpus_document_id") or hit.document_id),
-            content_text=hit.content_text or "",
-            available_at=str(metadata.get("available_at") or hit.available_at),
-            source_class=str(metadata.get("source_class") or hit.source_class),
-            ticker_associations=tuple(hit.ticker_associations),
+            chunk_id=chunk_id,
+            document_id=str(
+                metadata.get("corpus_document_id")
+                or getattr(hit, "document_id", "")
+                or ""
+            ),
+            content_text=str(metadata.get("content_text") or ""),
+            available_at=available_at,
+            source_class=str(
+                metadata.get("source_class") or getattr(hit, "source_class", "")
+            )
+            or fallback_source,
+            ticker_associations=hit_tickers or metadata_tickers,
             dedup_cluster_id=metadata.get("dedup_cluster_id"),
             cluster_first_available_at=str(
                 metadata.get("cluster_first_available_at")
                 or metadata.get("available_at")
-                or hit.available_at
+                or hit_available_at
             ),
             representative_document_id=str(
                 metadata.get("representative_document_id")
                 or metadata.get("corpus_document_id")
-                or hit.document_id
+                or getattr(hit, "document_id", "")
+                or ""
             ),
             is_novel=False,
-            lexical_raw_score=hit.lexical_raw_score,
-            lexical_rank=hit.lexical_rank,
+            lexical_raw_score=getattr(hit, "lexical_raw_score", None),
+            lexical_rank=getattr(hit, "lexical_rank", None),
             corpus_manifest_id=corpus_manifest_id,
             index_manifest_id=None,
             mode_requested=REQUESTED_MODE,
-            mode_served=hit.mode_served,
-            is_degraded=bool(hit.is_degraded),
-            fallback_reason=hit.fallback_reason,
-            temporal_center_date=hit.temporal_center_date,
-            query_date=hit.query_date,
-            query_date_conflict=bool(hit.query_date_conflict),
-            query_date_decision=hit.query_date_decision,
+            mode_served=str(getattr(hit, "mode_served", "") or SERVED_MODE),
+            is_degraded=bool(getattr(hit, "is_degraded", False)),
+            fallback_reason=getattr(hit, "fallback_reason", None),
+            temporal_center_date=getattr(hit, "temporal_center_date", None),
+            query_date=getattr(hit, "query_date", None),
+            query_date_conflict=bool(getattr(hit, "query_date_conflict", False)),
+            query_date_decision=getattr(hit, "query_date_decision", None),
             canonical_asset_id=metadata.get("canonical_asset_id"),
             canonical_content_version_id=metadata.get("content_version_id"),
             corpus_document_id=metadata.get("corpus_document_id"),
@@ -316,7 +382,11 @@ class CandidateLexicalAdapter:
     def citable_evidence_ids(
         self, evidence: Sequence[RetrievedEvidence]
     ) -> tuple[str, ...]:
-        """Evidence ids whose candidate body is citable FULL_TEXT."""
+        """Evidence ids whose candidate body is citable FULL_TEXT.
+
+        The ranked list is already FULL_TEXT-only, so this is the display list
+        itself; a non-citable chunk can never take a slot.
+        """
         return tuple(
             item.chunk_id
             for item in evidence
@@ -325,6 +395,8 @@ class CandidateLexicalAdapter:
 
 
 __all__ = [
+    "CANDIDATE_DEPTH_CAP",
+    "CANDIDATE_DEPTH_FLOOR",
     "SCHEMA_VERSION",
     "CandidateLexicalAdapter",
     "CandidateLexicalAdapterError",

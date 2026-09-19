@@ -20,8 +20,17 @@ NOW = "2026-09-01T00:00:00Z"
 AVAILABLE_AT = "2025-05-01T00:00:00Z"
 
 CHUNKS = (
-    ("chunk-full-0001", "FULL_TEXT", "apple inc announced material agreement"),
-    ("chunk-meta-0001", "METADATA_ONLY", "apple inc announced material agreement"),
+    (
+        "chunk-full-0001",
+        "FULL_TEXT",
+        "apple inc announced a material agreement and full quarter results "
+        "with revenue and diluted earnings per share",
+    ),
+    (
+        "chunk-meta-0001",
+        "METADATA_ONLY",
+        "apple inc announced a material agreement and full quarter results",
+    ),
 )
 
 
@@ -133,9 +142,14 @@ def test_adapter_returns_production_evidence_contract(tmp_path):
         assert observation.ordered_final_ranked_evidence_ids == tuple(
             item.chunk_id for item in evidence
         )
+        # M8-B/M8-C display rule: only FULL_TEXT bodies take a ranked slot.
+        # The metadata hit may still identify its document in the candidate
+        # window, but it never becomes display evidence.
+        assert tuple(item.chunk_id for item in evidence) == ("chunk-full-0001",)
         states = {item.chunk_id: item.content_state for item in evidence}
-        assert states["chunk-full-0001"] == "FULL_TEXT"
-        assert states["chunk-meta-0001"] == "METADATA_ONLY"
+        assert states == {"chunk-full-0001": "FULL_TEXT"}
+        assert "chunk-meta-0001" in observation.ordered_candidate_evidence_ids
+        assert "chunk-meta-0001" not in observation.ordered_final_ranked_evidence_ids
         assert adapter.citable_evidence_ids(evidence) == ("chunk-full-0001",)
         assert adapter.retrieve(
             "apple inc material agreement",

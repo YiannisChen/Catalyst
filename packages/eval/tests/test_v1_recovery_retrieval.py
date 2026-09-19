@@ -293,56 +293,110 @@ def test_fts_digest_is_the_candidate_lexical_digest(tmp_path):
         conn.close()
 
 
-def _chunk(
-    chunk_id: str, state: str, *, kind: str, source_class: str, body: bool = True
-):
-    from catalyst_eval.v1_1.recovery_retrieval import CandidateChunk
+def _selection_conn(tmp_path: Path, rows: tuple[tuple[str, str, str, str], ...]):
+    """Build-scoped chunk table keyed by (document_id, ordinal)."""
+    conn = sqlite3.connect(tmp_path / "selection.db")
+    conn.execute("DROP TABLE IF EXISTS corpus_build_chunks")
+    conn.execute(
+        "CREATE TABLE corpus_build_chunks (build_id TEXT, chunk_id TEXT, "
+        "document_id TEXT, ordinal TEXT, content_state TEXT, content_text TEXT)"
+    )
+    for ordinal, document_id, state, text in rows:
+        conn.execute(
+            "INSERT INTO corpus_build_chunks VALUES (?,?,?,?,?,?)",
+            (
+                BUILD_ID,
+                f"{document_id}:filing_v3:unknown_000:{ordinal}",
+                document_id,
+                ordinal,
+                state,
+                text,
+            ),
+        )
+    conn.commit()
+    return conn
 
-    return CandidateChunk(
-        chunk_id=chunk_id,
-        content_state=state,
-        citable=state == "FULL_TEXT" and body,
-        source_class=source_class,
-        source_kind=kind,
-        source_type="sec_filing" if kind == "filing" else "finnhub",
-        available_at="2025-05-01T12:00:00Z",
-        tickers=("AAPL",),
-        status="active",
-        eligibility="eligible",
+
+def test_within_document_slots_are_full_text_scored_and_capped(tmp_path):
+    """The window identifies documents; the displayed ordinal is scored."""
+    from catalyst_eval.v1_1.within_document_selection import (
+        MAX_CHUNKS_PER_DOCUMENT,
+        select_within_document_slots,
     )
 
+    conn = _selection_conn(
+        tmp_path,
+        (
+            # Cover page / XBRL boilerplate of the matching document.
+            ("0001", "doc-a", "FULL_TEXT", "us-gaap:Revenues xbrl cover page"),
+            ("0002", "doc-a", "METADATA_ONLY", "quarter results"),
+            ("0003", "doc-a", "FULL_TEXT", "Item 2.02 results of operations"),
+            ("0004", "doc-a", "FULL_TEXT", "total revenue and net income table"),
+            ("0005", "doc-a", "FULL_TEXT", "diluted earnings per share"),
+            ("0006", "doc-a", "FULL_TEXT", "revenue revenue revenue"),
+            # Another document in the window, entirely boilerplate.
+            ("0001", "doc-b", "FULL_TEXT", "Exchange Act of 1934 cover page"),
+        ),
+    )
+    try:
+        window = (
+            "doc-a:filing_v3:unknown_000:0001",
+            "doc-b:filing_v3:unknown_000:0001",
+            "doc-a:filing_v3:unknown_000:0002",
+        )
+        assert select_within_document_slots(
+            conn, build_id=BUILD_ID, candidate_chunk_ids=window, top_k=8
+        ) == (
+            # Scored by public text (score 26 / 21 / 18), capped at 3 per doc.
+            "doc-a:filing_v3:unknown_000:0004",
+            "doc-a:filing_v3:unknown_000:0005",
+            "doc-a:filing_v3:unknown_000:0003",
+        )
+        assert MAX_CHUNKS_PER_DOCUMENT == 3
+    finally:
+        conn.close()
 
-def test_display_slots_are_full_text_only_and_class_ordered():
-    """M8-B display rule: no metadata slot; class order then lexical order."""
-    from catalyst_eval.v1_1.recovery_retrieval import rank_display_candidates
 
-    chunks = {
-        "meta-1": _chunk("meta-1", "METADATA_ONLY", kind="article",
-                         source_class="reported_news"),
-        "title-1": _chunk("title-1", "TITLE_ONLY", kind="article",
-                          source_class="reported_news"),
-        "news-1": _chunk("news-1", "FULL_TEXT", kind="article",
-                         source_class="reported_news"),
-        "gv-1": _chunk("gv-1", "FULL_TEXT", kind="article",
-                       source_class="official_government"),
-        "file-1": _chunk("file-1", "FULL_TEXT", kind="filing",
-                         source_class="official_government"),
-        "file-2": _chunk("file-2", "FULL_TEXT", kind="filing",
-                         source_class="official_government"),
-        "empty-1": _chunk("empty-1", "FULL_TEXT", kind="filing",
-                          source_class="official_government", body=False),
+def test_within_document_slots_never_pad_with_unscored_siblings(tmp_path):
+    """An empty slot beats a chunk with no positive public signal."""
+    from catalyst_eval.v1_1.within_document_selection import (
+        select_within_document_slots,
+    )
+
+    conn = _selection_conn(
+        tmp_path,
+        (
+            ("0001", "doc-a", "FULL_TEXT", "quarter ends on 2025-05-01"),
+            ("0002", "doc-a", "FULL_TEXT", "net income and diluted earnings"),
+            ("0003", "doc-a", "FULL_TEXT", "unrelated narrative"),
+        ),
+    )
+    try:
+        window = ("doc-a:filing_v3:unknown_000:0001",)
+        assert select_within_document_slots(
+            conn, build_id=BUILD_ID, candidate_chunk_ids=window, top_k=8
+        ) == ("doc-a:filing_v3:unknown_000:0002",)
+        assert select_within_document_slots(
+            conn, build_id=BUILD_ID, candidate_chunk_ids=(), top_k=8
+        ) == ()
+    finally:
+        conn.close()
+
+
+def test_required_primary_cases_are_the_nine_gold_cases():
+    """The required-primary cohort is c01/c02/c05-c11 (never c03/c04/c12)."""
+    from catalyst_eval.v1_1.loader import load_benchmark_cases
+
+    stage1 = Path(__file__).resolve().parents[1] / "benchmarks" / "v1_1" / "stage1"
+    manifest = json.loads((stage1 / "manifest.json").read_text(encoding="utf-8"))
+    cases = load_benchmark_cases(stage1 / "cases.jsonl", manifest=manifest)
+    required = {
+        case.case_id for case in cases if case.expected_primary_evidence
     }
-    window = (
-        "meta-1", "title-1", "news-1", "gv-1", "file-1", "empty-1", "file-2",
-    )
-    assert rank_display_candidates(window, chunks, top_k=8) == (
-        "file-1", "file-2", "gv-1", "news-1",
-    )
-    # A shallow display slot set never admits a non-citable hit.
-    assert rank_display_candidates(window, chunks, top_k=3) == (
-        "file-1", "file-2", "gv-1",
-    )
-    assert rank_display_candidates(window, {}, top_k=8) == ()
+    assert required == {
+        "c01", "c02", "c05", "c06", "c07", "c08", "c09", "c10", "c11",
+    }
+    assert not required & {"c03", "c04", "c12"}
 
 
 def test_default_retrieve_rejects_a_shallow_candidate_window(tmp_path):

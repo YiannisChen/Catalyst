@@ -27,6 +27,12 @@ from catalyst_eval.v1_1.retrieval_metrics import (
     RetrievalResult,
     compute_retrieval_metrics,
 )
+from catalyst_eval.v1_1.within_document_selection import (
+    CANDIDATE_DEPTH_CAP,
+    CANDIDATE_DEPTH_FLOOR,
+    MAX_CHUNKS_PER_DOCUMENT,
+    select_within_document_slots,
+)
 
 SCHEMA_VERSION = "v1_1_recovery_retrieval_v1"
 CANDIDATE_ARM_VERSION = "1.0.0"
@@ -41,31 +47,9 @@ M8B_GATES = {
 
 CITABLE_STATES = frozenset({"FULL_TEXT"})
 
-# A display run must be able to refill an attribution slot from full-text
-# supply behind a run of non-citable metadata hits, so the candidate window
-# has a hard floor instead of the former ``top_k``-sized default.
-CANDIDATE_DEPTH_FLOOR = 50
-
-# Display tie-break classes for FULL_TEXT candidates. The classes are read
-# from the candidate build's own public source columns (never from benchmark
-# expectations): SEC filings and exhibits first, then official government
-# documents, then issuer disclosure, then any other full-text news.
-DISPLAY_TIER_FILING = 0
-DISPLAY_TIER_OFFICIAL_GOVERNMENT = 1
-DISPLAY_TIER_ISSUER_DISCLOSURE = 2
-DISPLAY_TIER_OTHER_FULL_TEXT = 3
-
-FILING_SOURCE_KINDS = frozenset(
-    {"filing", "filings", "exhibit", "exhibits", "sec_filing"}
-)
-FILING_SOURCE_TYPES = frozenset({"sec_filing"})
-OFFICIAL_GOVERNMENT_SOURCE_CLASSES = frozenset({"official_government"})
-ISSUER_DISCLOSURE_SOURCE_CLASSES = frozenset(
-    {"issuer_disclosure", "corporate_press_release"}
-)
-ISSUER_DISCLOSURE_SOURCE_KINDS = frozenset(
-    {"issuer_disclosure", "press_release", "corporate_press_release"}
-)
+# The candidate window is pulled at the FTS cap and fails closed below the
+# display floor (shared within-document policy).
+SCORING_POLICY_ID = "within-document-public-results-v1"
 
 # The retrieval call receives only these benchmark fields.
 CALLABLE_CASE_FIELDS = ("question", "ticker", "cutoff", "session_date", "case_id")
@@ -253,72 +237,15 @@ def _citable_chunk_ids(
 
 @dataclass(frozen=True)
 class CandidateChunk:
-    """Exact build-scoped chunk row for one returned candidate hit."""
+    """Exact build-scoped chunk row for one displayed candidate hit."""
 
     chunk_id: str
     content_state: str
     citable: bool
-    source_class: str
-    source_kind: str
-    source_type: str
     available_at: str
     tickers: tuple[str, ...]
     status: str
     eligibility: str
-
-    @property
-    def display_tier(self) -> int:
-        return display_tier(
-            source_class=self.source_class,
-            source_kind=self.source_kind,
-            source_type=self.source_type,
-        )
-
-
-def display_tier(*, source_class: str, source_kind: str, source_type: str) -> int:
-    """Display class for one FULL_TEXT chunk (lower is displayed first).
-
-    Measured only from public source metadata on the candidate row.
-    """
-    kind = (source_kind or "").strip().lower()
-    source_type_norm = (source_type or "").strip().lower()
-    source_class_norm = (source_class or "").strip().lower()
-    if kind in FILING_SOURCE_KINDS or source_type_norm in FILING_SOURCE_TYPES:
-        return DISPLAY_TIER_FILING
-    if source_class_norm in OFFICIAL_GOVERNMENT_SOURCE_CLASSES:
-        return DISPLAY_TIER_OFFICIAL_GOVERNMENT
-    if (
-        source_class_norm in ISSUER_DISCLOSURE_SOURCE_CLASSES
-        or kind in ISSUER_DISCLOSURE_SOURCE_KINDS
-    ):
-        return DISPLAY_TIER_ISSUER_DISCLOSURE
-    return DISPLAY_TIER_OTHER_FULL_TEXT
-
-
-def rank_display_candidates(
-    candidates: Sequence[str],
-    chunks: Mapping[str, CandidateChunk],
-    *,
-    top_k: int,
-) -> tuple[str, ...]:
-    """Fill ``top_k`` attribution slots with citable FULL_TEXT candidates only.
-
-    ``candidates`` is the FTS candidate window in retrieval order. A
-    ``METADATA_ONLY`` / ``TITLE_ONLY`` (or empty-body) hit is never displayed,
-    regardless of its lexical score. Surviving hits are ordered by display
-    class (filing, official government, issuer disclosure, other full-text
-    news); the sort is stable, so lexical order still decides inside a class.
-    No benchmark field participates.
-    """
-    if top_k <= 0:
-        raise RecoveryRetrievalError("top_k must be positive")
-    citable = [
-        chunk_id
-        for chunk_id in candidates
-        if (chunk := chunks.get(chunk_id)) is not None and chunk.citable
-    ]
-    ordered = sorted(citable, key=lambda chunk_id: chunks[chunk_id].display_tier)
-    return tuple(ordered[:top_k])
 
 
 def _build_scoped_chunks(
@@ -337,15 +264,15 @@ def _build_scoped_chunks(
         return {}
     placeholders = ",".join("?" for _ in unique)
     rows = conn.execute(
-        "SELECT chunk_id, content_state, source_class, source_kind, source_type, "
-        "available_at, status, eligibility, ticker_associations, "
+        "SELECT chunk_id, content_state, available_at, status, eligibility, "
+        "ticker_associations, "
         "content_text IS NOT NULL AND length(trim(content_text)) > 0 "
         f"FROM corpus_build_chunks WHERE build_id=? AND chunk_id IN ({placeholders})",
         (build_id, *unique),
     ).fetchall()
     resolved: dict[str, CandidateChunk] = {}
     for row in rows:
-        raw_tickers = row[8]
+        raw_tickers = row[5]
         try:
             tickers = json.loads(raw_tickers) if raw_tickers else []
         except (TypeError, json.JSONDecodeError):
@@ -356,14 +283,11 @@ def _build_scoped_chunks(
         resolved[str(row[0])] = CandidateChunk(
             chunk_id=str(row[0]),
             content_state=content_state,
-            citable=content_state in CITABLE_STATES and bool(row[9]),
-            source_class=str(row[2] or ""),
-            source_kind=str(row[3] or ""),
-            source_type=str(row[4] or ""),
-            available_at=str(row[5] or ""),
+            citable=content_state in CITABLE_STATES and bool(row[6]),
+            available_at=str(row[2] or ""),
             tickers=tuple(str(item) for item in tickers),
-            status=str(row[6] or ""),
-            eligibility=str(row[7] or ""),
+            status=str(row[3] or ""),
+            eligibility=str(row[4] or ""),
         )
     return resolved
 
@@ -378,17 +302,24 @@ def default_retrieve(
 ) -> Callable[[Mapping[str, str]], Sequence[CandidateHit]]:
     """Pointer-free candidate lexical retrieval bound to one inactive build.
 
-    The FTS candidate window is pulled at ``candidate_depth`` (never at the
-    display ``top_k``) and then re-displayed under the M8-B attribution rule:
-    only citable FULL_TEXT bodies may occupy a slot, with filing / official
-    government / issuer disclosure ordered ahead of other full-text news.
-    Returns measured :class:`CandidateHit` values so the ranking layer fills
-    the ticker/cutoff violation fields from the actual returned hits.
+    ``retrieve_lexical`` identifies documents from the FTS window pulled at
+    ``candidate_depth`` (never at the display ``top_k``); the shared
+    within-document policy then chooses the displayed ordinal from public
+    chunk text. Only FULL_TEXT bodies can occupy a slot, at most
+    ``MAX_CHUNKS_PER_DOCUMENT`` per document, and slots are never padded with
+    unscored siblings. Returns measured :class:`CandidateHit` values so the
+    ranking layer fills the ticker/cutoff violation fields from the actual
+    returned hits.
     """
     if candidate_depth < CANDIDATE_DEPTH_FLOOR:
         raise RecoveryRetrievalError(
             f"candidate_depth {candidate_depth} is below the display floor "
             f"{CANDIDATE_DEPTH_FLOOR}; a shallow window cannot refill a slot"
+        )
+    if candidate_depth > CANDIDATE_DEPTH_CAP:
+        raise RecoveryRetrievalError(
+            f"candidate_depth {candidate_depth} exceeds the FTS cap "
+            f"{CANDIDATE_DEPTH_CAP}"
         )
 
     from catalyst_data.corpus.streaming_publication import SEARCHABLE_STATUSES
@@ -407,8 +338,10 @@ def default_retrieve(
             inactive_build_id=build_id,
         )
         window = tuple(item.chunk_id for item in result.candidates)
-        chunks = _build_scoped_chunks(conn, build_id=build_id, chunk_ids=window)
-        displayed = rank_display_candidates(window, chunks, top_k=top_k)
+        displayed = select_within_document_slots(
+            conn, build_id=build_id, candidate_chunk_ids=window, top_k=top_k
+        )
+        chunks = _build_scoped_chunks(conn, build_id=build_id, chunk_ids=displayed)
         hits: list[CandidateHit] = []
         for chunk_id in displayed:
             chunk = chunks.get(chunk_id)
@@ -571,7 +504,7 @@ def run_candidate_fts_retrieval(
     cases: Sequence[GoldenCase],
     expected_primary_case_ids: Iterable[str] = (),
     top_k: int = 8,
-    candidate_depth: int = CANDIDATE_DEPTH_FLOOR,
+    candidate_depth: int = CANDIDATE_DEPTH_CAP,
     retrieve: Callable[[Mapping[str, str]], Sequence[str]] | None = None,
     frozen_ranked_path: str | Path | None = None,
 ) -> RecoveryRetrievalReport:
@@ -656,25 +589,22 @@ def run_candidate_fts_retrieval(
 
 __all__ = [
     "CALLABLE_CASE_FIELDS",
+    "CANDIDATE_DEPTH_CAP",
     "CANDIDATE_DEPTH_FLOOR",
     "CandidateChunk",
     "CandidateHit",
     "CITABLE_STATES",
-    "DISPLAY_TIER_FILING",
-    "DISPLAY_TIER_ISSUER_DISCLOSURE",
-    "DISPLAY_TIER_OFFICIAL_GOVERNMENT",
-    "DISPLAY_TIER_OTHER_FULL_TEXT",
     "M8B_GATES",
+    "MAX_CHUNKS_PER_DOCUMENT",
+    "SCORING_POLICY_ID",
     "RankedCase",
     "RecoveryRetrievalError",
     "RecoveryRetrievalReport",
     "SCHEMA_VERSION",
     "case_query",
     "default_retrieve",
-    "display_tier",
     "evaluate_recovery_retrieval_gates",
     "frozen_ranked_payload",
     "rank_cases",
-    "rank_display_candidates",
     "run_candidate_fts_retrieval",
 ]
