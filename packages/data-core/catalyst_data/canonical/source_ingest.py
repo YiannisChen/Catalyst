@@ -42,6 +42,7 @@ from catalyst_data.canonical.backfill import (
     NEWS_NORMALIZER_VERSION,
     SEC_NORMALIZER_VERSION,
     _now_utc,
+    _record_provenance,
     _state_serving_status,
     _upsert_asset,
     _upsert_subtype_assoc,
@@ -343,6 +344,19 @@ def _ingest_sec_document(
         subtype_pk="document_id",
         subtype_pk_value=document_id,
         canonical_content_version_id=version_id,
+    )
+    # Execution-lock §C: a filing-document association must keep its
+    # entity_type='filing' / entity_id=document_id provenance row, or the
+    # canonical no-orphan audit fails closed.
+    _record_provenance(
+        conn,
+        entity_type="filing",
+        entity_id=document_id,
+        entity_version=content_hash,
+        raw_asset_id=str(filing["raw_asset_id"]),
+        normalizer_version=SEC_NORMALIZER_VERSION,
+        canonical_asset_id_value=asset,
+        canonical_content_version_id_value=version_id,
     )
     conn.commit()
     return IngestedDocument(

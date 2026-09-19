@@ -343,3 +343,50 @@ def test_news_document_from_html_archive_mints_full_text(tmp_path):
         assert "<p>" not in stored
     finally:
         conn.close()
+
+
+def test_sec_exhibit_keeps_execution_lock_c_provenance(tmp_path):
+    """A new filing-document assoc must carry §C provenance, or the canonical
+    no-orphan audit fails closed."""
+    from catalyst_data.canonical.audit import audit_canonical
+
+    conn = _conn(tmp_path)
+    try:
+        path, root = _manifest(
+            tmp_path,
+            [
+                _document(
+                    tmp_path,
+                    url=EXHIBIT_URL,
+                    body=EXHIBIT_HTML,
+                    source_class="issuer_disclosure",
+                    title=None,
+                    **{
+                        "filing_accession": ACCESSION,
+                        "document_role": "exhibit_99_1",
+                    },
+                )
+            ],
+        )
+        manifest = load_source_selection_manifest(path, body_root=root)
+        result = ingest_source_selection_documents(
+            conn, manifest=manifest, body_root=root
+        )
+        doc = conn.execute(
+            "SELECT document_id FROM filing_documents WHERE filing_id='filing-unh' "
+            "AND document_id!=?",
+            ("",),
+        ).fetchone()
+        provenance = conn.execute(
+            "SELECT entity_version, canonical_asset_id, "
+            "canonical_content_version_id FROM normalized_provenance "
+            "WHERE entity_type='filing' AND entity_id=?",
+            (doc["document_id"],),
+        ).fetchone()
+        assert provenance is not None
+        assert provenance[0]
+        assert provenance[2] == result.documents[0].canonical_content_version_id
+        audit = audit_canonical(conn)
+        assert "no_orphan_gate" not in audit.failures, audit.failures
+    finally:
+        conn.close()
