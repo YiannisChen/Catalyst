@@ -17,6 +17,15 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -r requirements-dev.txt
+      # The chunker tests use the pinned BGE-M3 tokenizer (tokenizer files only, no model weights).
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-bge-m3-tokenizer-5617a9f61b028005a4858fdac845db406aefb181
+      - name: Fetch the pinned tokenizer
+        env:
+          PYTHONPATH: packages/data
+        run: python -c "from catalyst_data.corpus.tokenizer import get_tokenizer; get_tokenizer()"
       - name: Runtime tests
         env:
           PYTHONPATH: packages/data:packages/agents:packages/api:scripts
