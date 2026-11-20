@@ -11,8 +11,8 @@ jobs:
   python:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -23,17 +23,22 @@ jobs:
           HF_HUB_OFFLINE: "1"
           TRANSFORMERS_OFFLINE: "1"
         run: |
+          status=0
           for tests in packages/data/tests packages/agents/tests packages/api/tests deploy/monitor/tests deploy/api/tests; do
-            python -m pytest "$tests" -q --disable-warnings
+            python -m pytest "$tests" -q --disable-warnings -rfE 2>&1 | tee -a pytest.log
+            [ "${PIPESTATUS[0]}" -eq 0 ] || status=1
           done
+          # Surface each failing test as an annotation, readable without opening the log.
+          grep -E "^(FAILED|ERROR) " pytest.log | head -30 | sed 's/^/::error title=pytest::/' || true
+          exit $status
       - run: python scripts/check_ruff.py
       - run: lint-imports --config pyproject.toml --no-logo
 
   web:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm

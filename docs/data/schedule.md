@@ -1,77 +1,77 @@
-# 定时任务与夏令时
+# Scheduled Jobs and Daylight Saving Time
 
-| 项 | 内容 |
+| Item | Details |
 |---|---|
-| 日期 | 2026-10-23（补充额度共享一节，§3） |
-| 规则 | 写任何时间都先写太平洋时间（PT），括号里注明 UTC。服务器和监控主机按 UTC 排定时任务；Mac 的 launchd 按本机时间（PT）排；跟美股收盘绑定的任务按 `America/New_York` 排（systemd 255 支持），夏令时切换时会自动跟着变 |
-| 夏令时 | 2026-11-01（周日）结束：PDT（UTC−7）→ PST（UTC−8）；纽约 EDT（UTC−4）→ EST（UTC−5）。下表“现在”指 11-01 之前，“11-01 起”指之后 |
-| 两个禁区 | <ul><li>**评测时段**：Tue–Sat 06:30–09:30 PT。现在是 13:30–16:30 UTC，11-01 起是 14:30–17:30 UTC；</li><li>**日更时段**：Tue–Sat 11:00–13:30 UTC。现在是 04:00–06:30 PT，11-01 起是 03:00–05:30 PT。</li></ul>两个时段里都不排批量的联网任务（回补、研究抓取）；常驻的小流量采集器（每 5–60 分钟一次）全天都在跑。额度共享的准确含义见 §3（共享仅限同一状态目录下的服务器进程；Mac 上的评测运行是独立的） |
+| Date | 2026-10-23 |
+| Rule | Always write Pacific Time (PT) first, followed by UTC in parentheses. Schedule jobs on servers and monitoring hosts in UTC; schedule Mac `launchd` jobs in local time (PT); schedule jobs tied to the U.S. market close in `America/New_York` (`systemd` 255 supports this), so they automatically follow daylight saving time changes. |
+| Daylight saving time | Ends on 2026-11-01 (Sunday): PDT (UTC−7) → PST (UTC−8); New York EDT (UTC−4) → EST (UTC−5). “Current” in the table below means before 11-01; “From 11-01” means after that date. |
+| Two restricted windows | <ul><li>**Evaluation window**: Tue–Sat 06:30–09:30 PT. Currently this is 13:30–16:30 UTC; from 11-01 it is 14:30–17:30 UTC;</li><li>**Daily update window**: Tue–Sat 11:00–13:30 UTC. Currently this is 04:00–06:30 PT; from 11-01 it is 03:00–05:30 PT.</li></ul>Do not schedule bulk network tasks (backfills, research fetches) during either window. Always-on, low-volume collectors (once every 5–60 minutes) run all day. Section 3 defines quota sharing precisely: sharing applies only to server processes using the same state directory; evaluation runs on the Mac are separate. |
 
-## 1. 全部定时任务
+## 1. All Scheduled Jobs
 
-| 主机 | 任务 | 排法 | 现在（PT / UTC） | 11-01 起（PT / UTC） | 是否进入禁区 |
+| Host | Job | Schedule | Current (PT / UTC) | From 11-01 (PT / UTC) | In a restricted window? |
 |---|---|---|---|---|---|
-| 美国 | `catalyst-daily` 日更 | Tue–Sat 11:00 UTC | 04:00 / 11:00 | 03:00 / 11:00 | 它本身就是日更时段 |
-| 美国 | `catalyst-backup` 夜间备份 | 每天 15:00 UTC | 08:00 / 15:00 | 07:00 / 15:00 | **在评测时段内**；只做本机读写，不联网，不占提供方额度 |
-| 美国 | `catalyst-health` 健康报告 | 每 10 分钟 | — | — | 只读本机，不联网 |
-| 美国 | `collect-press` 新闻稿 RSS | 每 5 分钟 | — | — | 常驻小流量，全天 |
-| 美国 | `collect-news-fast` Finnhub 市场新闻 | 每 15 分钟 | — | — | 常驻小流量（每次 1 次请求） |
-| 美国 | `collect-alpaca-news` | 每小时 :10 | — | — | 常驻小流量 |
-| 美国 | `collect-news-hourly` Seeking Alpha、NewsAPI | 每小时 :20 | — | — | 常驻小流量 |
-| 美国 | `collect-news-gdelt` | 每小时 :50 | — | — | 常驻小流量 |
-| 美国 | `collect-news-marketaux` | 每 2 小时 :40（UTC 偶数点） | — | — | 常驻小流量 |
-| 美国 | `collect-news-company` Finnhub 公司新闻（每次约 101 次请求） | 00:30、06:30、18:30、22:30 UTC | 17:30、23:30、11:30、15:30 | 16:30、22:30、10:30、14:30 | 否：06:30 UTC 和 18:30 UTC 都在两个时段之外，11-01 起也一样 |
-| 美国 | `collect-calendar` 财报日历 | 10:15、22:15 UTC（10-22 起；原来 12:15 UTC 落在日更时段里） | 03:15、15:15 | 02:15、14:15 | 否 |
-| 美国 | `collect-market-minute` 分钟线 | Tue–Sat 01:30 UTC | 18:30（前一天） | 17:30（前一天） | 否 |
-| 美国 | `collect-market-options` 期权快照 | Mon–Fri 16:30 **America/New_York**（10-22 起；原来 20:30 UTC，11-01 起会变成纽约 15:30，还没收盘） | 13:30 / 20:30 | 13:30 / 21:30 | 否 |
-| 美国 | `collect-market-ratings` 评级 | 每天 02:30 UTC | 19:30（前一天） | 18:30（前一天） | 否 |
-| 美国 | `collect-market-events` 事件日历 | 每天 03:00 UTC | 20:00（前一天） | 19:00（前一天） | 否 |
-| 美国 | `collect-finra-shvol` | Tue–Sat 04:00 UTC | 21:00（前一天） | 20:00（前一天） | 否 |
-| 美国 | `collect-regulatory-fr`、`-fda` | 04:15、04:30 UTC | 21:15、21:30（前一天） | 20:15、20:30（前一天） | 否 |
-| 美国 | `collect-trial-times` 试运行抽样 | 每天 05:00 UTC | 22:00（前一天） | 21:00（前一天） | 否 |
-| 香港 | `catalyst-monitor-check` | 每 15 分钟 | — | — | 只通过门禁读健康报告 |
-| 香港 | `catalyst-monitor-daily` 日报 | 每天 14:30 UTC | 07:30 / 14:30 | 06:30 / 14:30 | 在评测时段内；只读健康报告、发一封邮件 |
-| 香港 | `catalyst-monitor-pull-backup` | 每天 16:00 UTC | 09:00 / 16:00 | 08:00 / 16:00 | 在评测时段内；只在两台自己的主机之间传文件，不碰提供方 |
-| 香港 | `catalyst-monitor-restore-drill` | 每月 2 日 17:00 UTC | 10:00 / 17:00 | 09:00 / 17:00 | 11-01 起，若 2 日是 Tue–Sat 则在评测时段内（12-02 是周三）；只读香港本机。**建议**：评测结束前不会再遇到（下一次是 11-02 周一 09:00 PST），12 月起改到 19:00 UTC |
-| Mac | `com.catalyst.prospective` 第一轮 | Tue–Sat 07:00 PT | 07:00 / 14:00 | 07:00 / 15:00 | 评测本身 |
-| Mac | `com.catalyst.prospective2` 第二轮 | Tue–Sat 07:10 PT（等第一轮提交后再过 25 分钟） | 07:10 / 14:10 | 07:10 / 15:10 | 评测本身 |
-| Mac | `prospective-check`、`prospective2-check` | Tue–Sat 08:30、08:50 PT | — | — | 评测本身 |
-| Mac | `tavily-check` | Tue–Sat 09:10 PT | 09:10 / 16:10 | 09:10 / 17:10 | 评测本身 |
-| Mac | `com.catalyst.gold` 金标 | 每天 10:00 PT | 10:00 / 17:00 | 10:00 / 18:00 | 否（在评测时段之后） |
-| Mac | Benzinga 中转与反向隧道 | 常驻 | — | — | 为日更服务（11:00 UTC） |
+| US | `catalyst-daily` daily update | Tue–Sat 11:00 UTC | 04:00 / 11:00 | 03:00 / 11:00 | It is the daily update window |
+| US | `catalyst-backup` nightly backup | Daily at 15:00 UTC | 08:00 / 15:00 | 07:00 / 15:00 | **During the evaluation window**; performs local reads and writes only, with no network access and no provider quota use |
+| US | `catalyst-health` health report | Every 10 minutes | — | — | Reads local data only, no network access |
+| US | `collect-press` press release RSS | Every 5 minutes | — | — | Always-on, low-volume |
+| US | `collect-news-fast` Finnhub market news | Every 15 minutes | — | — | Always-on, low-volume (1 request per run) |
+| US | `collect-alpaca-news` | Hourly at :10 | — | — | Always-on, low-volume |
+| US | `collect-news-hourly` Seeking Alpha, NewsAPI | Hourly at :20 | — | — | Always-on, low-volume |
+| US | `collect-news-gdelt` | Hourly at :50 | — | — | Always-on, low-volume |
+| US | `collect-news-marketaux` | Every 2 hours at :40 (even UTC hours) | — | — | Always-on, low-volume |
+| US | `collect-news-company` Finnhub company news (about 101 requests per run) | 00:30, 06:30, 18:30, 22:30 UTC | 17:30, 23:30, 11:30, 15:30 | 16:30, 22:30, 10:30, 14:30 | No: 06:30 UTC and 18:30 UTC are outside both windows, and remain so from 11-01 |
+| US | `collect-calendar` earnings calendar | 10:15, 22:15 UTC (from 10-22; previously 12:15 UTC, which fell in the daily update window) | 03:15, 15:15 | 02:15, 14:15 | No |
+| US | `collect-market-minute` minute bars | Tue–Sat 01:30 UTC | 18:30 (previous day) | 17:30 (previous day) | No |
+| US | `collect-market-options` options snapshot | Mon–Fri 16:30 **America/New_York** (from 10-22; previously 20:30 UTC, which would become 15:30 New York time from 11-01, before market close) | 13:30 / 20:30 | 13:30 / 21:30 | No |
+| US | `collect-market-ratings` ratings | Daily at 02:30 UTC | 19:30 (previous day) | 18:30 (previous day) | No |
+| US | `collect-market-events` events calendar | Daily at 03:00 UTC | 20:00 (previous day) | 19:00 (previous day) | No |
+| US | `collect-finra-shvol` | Tue–Sat 04:00 UTC | 21:00 (previous day) | 20:00 (previous day) | No |
+| US | `collect-regulatory-fr`, `-fda` | 04:15, 04:30 UTC | 21:15, 21:30 (previous day) | 20:15, 20:30 (previous day) | No |
+| US | `collect-trial-times` trial-run sampling | Daily at 05:00 UTC | 22:00 (previous day) | 21:00 (previous day) | No |
+| Hong Kong | `catalyst-monitor-check` | Every 15 minutes | — | — | Reads health reports through the gate only |
+| Hong Kong | `catalyst-monitor-daily` daily report | Daily at 14:30 UTC | 07:30 / 14:30 | 06:30 / 14:30 | During the evaluation window; reads health reports and sends one email only |
+| Hong Kong | `catalyst-monitor-pull-backup` | Daily at 16:00 UTC | 09:00 / 16:00 | 08:00 / 16:00 | During the evaluation window; transfers files between the two owned hosts only, with no provider access |
+| Hong Kong | `catalyst-monitor-restore-drill` | 2nd day of each month at 17:00 UTC | 10:00 / 17:00 | 09:00 / 17:00 | From 11-01, falls in the evaluation window if the 2nd is Tue–Sat (12-02 is Wednesday); reads the local Hong Kong host only. **Recommendation**: it will not run again before the evaluation ends (the next run is Monday 11-02 at 09:00 PST); move it to 19:00 UTC starting in December |
+| Mac | `com.catalyst.prospective` first run | Tue–Sat 07:00 PT | 07:00 / 14:00 | 07:00 / 15:00 | The evaluation itself |
+| Mac | `com.catalyst.prospective2` second run | Tue–Sat 07:10 PT (wait 25 minutes after the first run is submitted) | 07:10 / 14:10 | 07:10 / 15:10 | The evaluation itself |
+| Mac | `prospective-check`, `prospective2-check` | Tue–Sat 08:30, 08:50 PT | — | — | The evaluation itself |
+| Mac | `tavily-check` | Tue–Sat 09:10 PT | 09:10 / 16:10 | 09:10 / 17:10 | The evaluation itself |
+| Mac | `com.catalyst.gold` gold labels | Daily at 10:00 PT | 10:00 / 17:00 | 10:00 / 18:00 | No (after the evaluation window) |
+| Mac | Benzinga relay and reverse tunnel | Always on | — | — | Supports the daily update (11:00 UTC) |
 
-**结论**：
-- 没有批量的联网任务落在评测时段或日更时段里。
-- 两处已经改掉：财报日历原来在日更时段里；期权快照到 11-01 之后会在收盘前运行。
-- 在评测时段内运行的只有：本机备份、监控日报、备份拉取，和常驻的小流量采集器。它们都不跑批量请求。
+**Summary**:
+- No bulk network tasks run during the evaluation or daily update windows.
+- Two schedules have changed: the earnings calendar previously ran during the daily update window; the options snapshot would run before market close after 11-01.
+- Only the local backup, monitoring daily report, backup pull, and always-on low-volume collectors run during the evaluation window. None runs bulk requests.
 
-## 2. 一次性任务的排法
+## 2. Scheduling One-Time Tasks
 
-- **时间**：写成 PT 加 UTC，例如“10-22 11:20 PT（18:20 UTC）”。排之前对照上面两个禁区，**按排定那一天的夏令时状态**换算。
-- **运行上限**：用 `systemd-run` 时同时设 `RuntimeMaxSec`，保证在下一个禁区开始前停下：
-  - 现在：最晚 11:00 UTC（04:00 PT）停下，避开日更时段；
-  - 11-01 起：日更时段仍是 11:00 UTC（03:00 PT）开始，评测时段改成 14:30 UTC 开始。
-- **依赖**：“前一步完成后再跑下一步”用完成标记文件，不看 systemd 临时单元的状态（临时单元跑完就被卸载，状态查不到；10-22 的回补就是这样，下一步没有触发）：
-  - 前一步用 `/opt/catalyst/bin/catalyst-job NAME 命令...` 运行，会写 `/opt/catalyst/jobs/NAME.started`，再写 `NAME.done`（退出码 0）或 `NAME.failed`（含被终止的情况）；
-  - 后一步用 `catalyst-job --wait NAME [最长秒数]` 等它。
-- **当前的一次性任务**：`catalyst-research-secfix`，SEC 接收时间对照表，10-22 11:15 PT（18:15 UTC）开始，约 3 小时，运行上限约 14 小时；它在 `catalyst-job` 之前启动，所以完成与否看输出文件的行数。
+- **Time**: Write PT followed by UTC, for example, “10-22 11:20 PT (18:20 UTC).” Check against the two restricted windows above and convert using the daylight saving time status on the scheduled date.
+- **Runtime limit**: When using `systemd-run`, also set `RuntimeMaxSec` so the task stops before the next restricted window begins:
+  - Current: stop by 11:00 UTC (04:00 PT) at the latest to avoid the daily update window;
+  - From 11-01: the daily update window still begins at 11:00 UTC (03:00 PT), and the evaluation window now begins at 14:30 UTC.
+- **Dependencies**: To run the next step after the previous step completes, use completion marker files rather than the transient systemd unit's status. A transient unit is unloaded after it finishes, so its status is unavailable; this prevented the next step from starting in the 10-22 backfill:
+  - Run the previous step with `/opt/catalyst/bin/catalyst-job NAME command...`. It writes `/opt/catalyst/jobs/NAME.started`, then writes `NAME.done` (exit code 0) or `NAME.failed` (including if it was terminated);
+  - Run the next step with `catalyst-job --wait NAME [maximum seconds]` to wait for it.
+- **Current one-time task**: `catalyst-research-secfix`, an SEC receipt-time reference table, starts at 10-22 11:15 PT (18:15 UTC), takes about 3 hours, and has a runtime limit of about 14 hours. Check the output file's line count to determine whether it completed.
 
-## 3. 额度共享与批量任务的用量（2026-10-23 澄清）
+## 3. Quota Sharing and Bulk Task Usage
 
-**共享桶的准确范围**
-- 采集器的 `SharedBucket` 只在**同一状态目录下运行的服务器进程**之间共享额度。当前实际状态：
-  - 日更任务（`catalyst-daily`）目前是**进程内**的限流，与采集器的 `SharedBucket` 不共享（合并分支时会统一，见 inventory §3.3）；
-  - Mac 上的前瞻评测运行器是**独立的进程和主机**，与服务器上的任何桶都不协调。
-- 所以：采集器的限流**不是**为 Mac 或日更“预留剩余额度”。
+**Exact scope of the shared bucket**
+- The collectors' `SharedBucket` shares quotas only among server processes using the **same state directory**. Current behavior:
+  - The daily update job (`catalyst-daily`) currently uses an in-process rate limiter and does not share the collectors' `SharedBucket`;
+  - The prospective evaluation runner on the Mac is a **separate process on a separate host** and does not coordinate with any server bucket.
+- Therefore, the collectors' rate limiter does **not** “reserve remaining quota” for the Mac or the daily update.
 
-**服务器上采集器的本地上限**（是本地 ceiling，不是提供方总额度的已知划分）：
-- Finnhub 50 次/分钟；
-- Polygon 4 次/分钟；
-- Alpaca 150 次/分钟。
+**Local limits for collectors on the server** (these are local ceilings, not known allocations of the providers' total quotas):
+- Finnhub: 50 requests/minute;
+- Polygon: 4 requests/minute;
+- Alpaca: 150 requests/minute.
 
-**批量任务（回补、研究抓取）的用量规则**
-1. 批量任务避开评测时段和日更时段；同一提供方同一时间只跑一个批量任务。
-2. 批量预算取 `min(本地预算, 提供方剩余额度 − 预留)`；**预留数值还没有定**，需要负责人根据提供方的真实用量数据决定，在此之前不得编造数字。
-3. 提供方剩余额度未知时，用保守预算，遇到 429 按退避处理。**没有跨主机的硬保证**：服务器和 Mac 是各自独立的。
-4. 每个批量任务开始前要记录：限额（已知多少）、当前用量（已知多少）、剩余额度（已知还是未知）。**不记录任何凭据**。
-5. **范围区分**：交互式编码（人在场的小请求）现在不受窗口限制；本节的窗口和预算规则只约束批量联网任务。
+**Usage rules for bulk tasks (backfills, research fetches)**
+1. Bulk tasks must avoid the evaluation and daily update windows. Run only one bulk task per provider at a time.
+2. Set the bulk budget to `min(local budget, provider remaining quota − reserve)`. **The reserve value has not been set**; it must be determined from actual provider usage data. Do not make up a value.
+3. If the provider's remaining quota is unknown, use a conservative budget and apply backoff on 429 responses. **There is no hard guarantee across hosts**: the server and Mac operate independently.
+4. Before each bulk task starts, record the limit, current usage, and remaining quota, including whether each value is known. **Do not record credentials.**
+5. **Scope**: Interactive coding (small requests while a person is present) is not currently restricted by these windows. The windows and budget rules in this section apply only to bulk network tasks.

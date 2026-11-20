@@ -95,79 +95,79 @@ alert means search may be serving the previous corpus build (or no new build bec
 - **Benzinga relay.** Benzinga answers 403 to some server IP ranges, including this deployment's VPS. In that case, run the Mac relay plus the reverse tunnel (`python -m catalyst_data.ingestion.collectors.relay`, see `catalyst_data/ingestion/relay.py`). Without it, Benzinga discovery items fail and are retried. A host that Benzinga serves directly can drop the two `CATALYST_RELAY_*` lines from the service.
 - **Prices.** yfinance is the primary source. When it returns nothing (Yahoo intermittently blocks some server IPs), sessions are filled from Polygon's grouped daily bars. Both sources are split-adjusted and not dividend-adjusted. They agreed to within 0.01% on about 490 symbols (measured 2026-10-09).
 
-## API 部署
+## API deployment
 
-API 使用独立 `/opt/catalyst/api` checkout 和 `/opt/catalyst/api/venv`；数据、corpus、正文库和精选 manifest 仍位于 `/opt/catalyst/repo`，不复制正文库。服务单元见 `deploy/api/catalyst-api.service`，绑定 `127.0.0.1:8000`、1 个 worker，并从 `/opt/catalyst/.env` 读取运行凭据（部署/检查时不要输出该文件）。部署脚本只配置 Nginx，不争用 443；443 由负责人决定。日更成功后会 try-restart API 以重新绑定当前 served build。
+The API uses a separate checkout at `/opt/catalyst/api` and `/opt/catalyst/api/venv`; data, corpus, body database, and curated manifest remain in `/opt/catalyst/repo`, and the body database is not copied. The service unit is `deploy/api/catalyst-api.service`. It binds to `127.0.0.1:8000`, uses 1 worker, and reads runtime credentials from `/opt/catalyst/.env` (do not print this file during deployment or checks). The deployment script configures Nginx only and does not claim port 443; configure 443 separately. After a successful daily update, the API is try-restarted to bind to the currently served build.
 
-正文库默认仍按不可变快照只读；API 单元设置 `CATALYST_SQLITE_LIVE_READ=1`，以普通 `mode=ro` 读取日更中的活库。`CATALYST_SQLITE_READ_TIMEOUT_S=10` 是每条查询的总等待上限，`CATALYST_SQLITE_READ_RETRIES=4` 限定锁冲突后的退避重试次数；SQLite busy timeout 与应用层退避共同限制等待，超时返回 `SQLiteReadTimeoutError`。原本就是普通 `mode=ro` 的正文/市场/jobs 读取显式使用活库模式；通用 `storage.connect` 未设置开关时仍使用 immutable，评测快照调用保持原行为。`ready_range()` 读取经过清单与哈希验证的固定快照，不改为活库。活库模式下 SQLite 仍需在库文件同目录创建 `-shm`/`-wal` 文件；API 与日更必须使用同一系统用户（当前服务器为 root），或同组且数据目录可写。
+The body database remains read-only through an immutable snapshot by default. The API unit sets `CATALYST_SQLITE_LIVE_READ=1` to read the live database during daily updates using ordinary `mode=ro`. `CATALYST_SQLITE_READ_TIMEOUT_S=10` sets the total wait limit per query, and `CATALYST_SQLITE_READ_RETRIES=4` limits the number of backoff retries after lock conflicts. SQLite's busy timeout and application-level backoff jointly limit the wait; a timeout returns `SQLiteReadTimeoutError`. Body, market, and jobs reads that already used ordinary `mode=ro` explicitly use live mode. Without the switch, the generic `storage.connect` still uses immutable mode, and evaluation snapshot calls retain their existing behavior. `ready_range()` reads a fixed snapshot validated against its manifest and hash; it does not use the live database. In live mode, SQLite still needs to create `-shm`/`-wal` files in the database directory. The API and daily job must run as the same system user (currently root on the server), or as members of the same group with write access to the data directory.
 
-资源上限采用保守建议值：1 worker、`MemoryMax=2G`、`CPUQuota=100%`（约一核）、`TasksMax=256`、`IOWeight=10`、`Nice=10`，降低 API 与日更争抢 CPU/磁盘的优先级。服务器实测为 4 核、约 5.8 GB 内存；上线前仍按机器资源复核：MemoryMax 建议不超过总内存的 25%，并为系统、SQLite 缓存和日更保留至少 50%；CPUQuota 建议按 `min(100% × 核数, 25% × 核数 × 100%)` 配置并检查日更时延；TasksMax 按 `1 + workers × (1 + 40 + 余量)` 估算（1 worker、40 个 AnyIO 线程并留进程余量时当前上限为 256）。
+Recommended resource limits are conservative: 1 worker, `MemoryMax=2G`, `CPUQuota=100%` (about one core), `TasksMax=256`, `IOWeight=10`, and `Nice=10`. These lower the API's priority when it competes with the daily job for CPU and disk. The server has 4 cores and about 5.8 GB of memory. Recheck the limits against the machine before deployment: keep MemoryMax at or below 25% of total memory, and reserve at least 50% for the system, SQLite cache, and daily job. Set CPUQuota using `min(100% × core count, 25% × core count × 100%)` and check daily-job latency. Estimate TasksMax as `1 + workers × (1 + 40 + headroom)` (with 1 worker, 40 AnyIO threads, and process headroom, the current limit is 256).
 
-Nginx 配置模板为 `deploy/nginx/catalyst-api.conf`。`cloudflare_ips.txt` 列表来源为 Cloudflare 官方 IP ranges：<https://www.cloudflare.com/ips/>；该仓库列表只是已知快照，**部署前必须人工核对官方页面**。`generate_cloudflare_include.py` 从同一清单生成 allow 与 `set_real_ip_from` 指令。建议一般 API 限制 30 请求/分钟、burst 20；实时运行 `/api/run` 限制 2 请求/分钟、burst 2；请求体上限 1 MiB，连接/发送/读取超时分别为 5/30/120 秒。`cloudflare_ufw.sh` 默认仅打印 UFW 命令；人工核对 IP 和 SSH 管理访问规则后才可传 `--apply`。
+The Nginx configuration template is `deploy/nginx/catalyst-api.conf`. The `cloudflare_ips.txt` list comes from Cloudflare's official IP ranges: <https://www.cloudflare.com/ips/>. The repository list is only a known snapshot; **manually check the official page before deployment**. `generate_cloudflare_include.py` uses the same list to generate the allow and `set_real_ip_from` directives. Recommended limits are 30 requests/minute with burst 20 for general API traffic and 2 requests/minute with burst 2 for live `/api/run`. The request body limit is 1 MiB; connection, send, and read timeouts are 5/30/120 seconds. By default, `cloudflare_ufw.sh` only prints UFW commands. Pass `--apply` only after checking the IPs and SSH administration access rules.
 
-健康检查是启用 API 的硬门槛：`sec_exhibit_units.status` 必须为 `ok` 且 `rows > 0`，否则先确认部署正文库来源并核对附件单元数据，不应开放 API。安装前会在 `/opt/catalyst/api-deploy-backups/<UTC时间戳>/` 保存现有 unit、Nginx 主配置和生成的 Cloudflare include；`nginx -t` 失败会恢复文件。安装后可用 `deploy/deploy_api.sh --rollback` 恢复最近一份备份。脚本不会删除备份。
+Health checks are a hard requirement for enabling the API: `sec_exhibit_units.status` must be `ok` and `rows > 0`. Otherwise, confirm the source of the deployed body database and check the exhibit unit metadata; do not expose the API. Before installation, the existing unit, main Nginx configuration, and generated Cloudflare include are saved under `/opt/catalyst/api-deploy-backups/<UTC-timestamp>/`. If `nginx -t` fails, the files are restored. After installation, use `deploy/deploy_api.sh --rollback` to restore the most recent backup. The script does not delete backups.
 
-上线前核对：
+Pre-deployment checks:
 
-1. 确认机器内存/核数并调整 unit 资源上限；确认 `/opt/catalyst/api/venv` 和 `catalyst_app.main:app` 可用。
-2. 核对 `.env` 权限与必需变量，不输出变量值；确认只读文件权限允许 `catalyst` 用户读取正文库。
-3. 核对 `sec_exhibit_units` 健康状态及行数大于零。
-4. 人工核对 Cloudflare 当前 IPv4/IPv6 段、DNS 代理状态、证书路径（替换 `catalyst.example.com`）与源站防火墙策略；先 dry-run UFW 脚本。
-5. 执行 `deploy/deploy_api.sh --dry-run` 审阅路径，再由部署负责人安装；检查 `nginx -t`、服务状态和本机 health/API 响应。
-6. 保留备份目录并记录回滚命令，验证失败时执行 `deploy/deploy_api.sh --rollback`。
+1. Check the machine's memory and core count, then adjust the unit resource limits. Confirm `/opt/catalyst/api/venv` and `catalyst_app.main:app` are available.
+2. Check `.env` permissions and required variables without printing their values. Confirm read-only file permissions allow the `catalyst` user to read the body database.
+3. Check the health status of `sec_exhibit_units` and confirm it has more than zero rows.
+4. Manually check the current Cloudflare IPv4/IPv6 ranges, DNS proxy status, certificate path (replace `catalyst.example.com`), and origin firewall policy. Run the UFW script in dry-run mode first.
+5. Run `deploy/deploy_api.sh --dry-run` and review the paths before installation. Check `nginx -t`, service status, and local health/API responses.
+6. Keep the backup directory and record the rollback command. If verification fails, run `deploy/deploy_api.sh --rollback`.
 
-只读入口核对：通用 `storage.connect` 默认保留 immutable 快照行为，`CATALYST_SQLITE_LIVE_READ=1` 可默认切到活库；对原本就是普通 `mode=ro` 的 `readiness`、正文检索、SEC 附件/更正时间读取、health 正文检查、ready snapshot build 及 m9 活库读取均显式使用活库连接。`read_api.ready_range()` 与 `storage.readonly_snapshot()` 操作经过 manifest/hash 固定的快照，刻意不走活库模式。其他市场/采集侧的局部 `mode=ro` 连接仍按短时只读操作使用；新增长时正文库读取必须复用连接工厂。
+Read-only entry-point check: generic `storage.connect` retains immutable snapshot behavior by default; `CATALYST_SQLITE_LIVE_READ=1` switches the default to the live database. `readiness`, body retrieval, SEC exhibit/amendment-time reads, health body checks, ready snapshot builds, and m9 live database reads that already used ordinary `mode=ro` explicitly use live connections. `read_api.ready_range()` and `storage.readonly_snapshot()` use snapshots fixed by manifest/hash and intentionally do not use live mode. Other local `mode=ro` connections on the market/ingestion side remain short-lived read-only operations. New long-running body database reads must reuse the connection factory.
 
-## 部署日（data 侧）
+## Deployment day (data side)
 
-本节用于 data 日更/检索库与 API、agent 在同一天切换的窗口。先由负责人确认一个已审阅的发布 ref 同时包含要上线的 D-a/D-b 日更 FTS 与回滚代码、D-f API 配置以及 agent 侧批准版本；D-a/D-b 尚未合入时不得把“脚本已写”当作已部署。流程在 Mac 上准备和传库，在服务器上验库和切换。不要让 API 在正文库健康门槛失败时对外开放。
+Use this procedure when the data daily job/corpus, API, and agent are switched on the same day. The procedure prepares and transfers the database on the Mac, then validates the database and switches services on the server. Do not expose the API if the body database health requirement fails.
 
-### 1. 部署前核对 Cloudflare IP 段
+### 1. Check Cloudflare IP ranges before deployment
 
-脚本 `deploy/ops/check_cloudflare_ips.py` 从官方 `ips-v4`、`ips-v6` 下载列表，与 `deploy/nginx/cloudflare_ips.txt` 逐条对比。默认只读，发现差异会打印 `ADDED`/`MISSING` 并以非零退出；先人工核对 <https://www.cloudflare.com/ips/>，确认后才运行 `--write`。写操作要求 v4 至少 10 段、v6 至少 5 段；任一为空或低于门槛都会在备份/写入前拒绝。写入前会把 IP 清单和已有 include 分别复制为带 UTC 时间戳的 `.bak.*` 文件，然后用同目录临时文件和 `os.replace` 原子替换清单与生成 include。`generate_cloudflare_include.py` 自身也校验两类网段数量并原子写入。服务器安装时 `deploy_api.sh` 仍从同一清单生成实际 include。
+The `deploy/ops/check_cloudflare_ips.py` script downloads the official `ips-v4` and `ips-v6` lists and compares them entry by entry with `deploy/nginx/cloudflare_ips.txt`. It is read-only by default. If it finds differences, it prints `ADDED`/`MISSING` and exits with a nonzero status. Manually check <https://www.cloudflare.com/ips/> before running `--write`. A write requires at least 10 v4 ranges and 5 v6 ranges; if either list is empty or below the threshold, the script refuses before making a backup or writing. Before writing, it copies the IP list and existing include to separate `.bak.*` files with UTC timestamps, then atomically replaces the list and generated include using temporary files in the same directory and `os.replace`. `generate_cloudflare_include.py` also validates the number of ranges of each type and writes atomically. During server installation, `deploy_api.sh` still generates the actual include from the same list.
 
 ```sh
 python3 deploy/ops/check_cloudflare_ips.py
-# 经人工核对后才执行：
+# Run only after manual review:
 python3 deploy/ops/check_cloudflare_ips.py --write
 ```
 
-### 2. Mac 首次拷贝检索库
+### 2. Initial corpus copy from the Mac
 
-检索库当前不在服务器上，源文件约 22.6 GB。`deploy/ops/seed_corpus.sh` 默认 dry-run，只有显式 `--execute` 才访问服务器或读源库。主机必须用 `--host USER@HOST` 或 `CATALYST_DEPLOY_HOST` 提供；不在脚本中固定 IP。可用 `--source`、`--remote-path`、`--env-file` 覆盖源库、服务器目标和服务器环境文件路径。
+The corpus is not currently on the server; the source file is about 22.6 GB. `deploy/ops/seed_corpus.sh` defaults to dry-run and accesses the server or reads the source database only when explicitly passed `--execute`. Provide the host with `--host USER@HOST` or `CATALYST_DEPLOY_HOST`; the script does not hard-code an IP. Use `--source`, `--remote-path`, and `--env-file` to override the source database, server destination, and server environment file path.
 
-`--execute` 首先检查服务器正式文件、孤立 sidecar 和所有 `catalyst_corpus.sqlite3.incoming*` 都不存在；已有临时文件必须先人工改名备份，脚本绝不覆盖。随后停止 `catalyst-daily.timer`，等待 `catalyst-daily.service` 退出（最长默认 2 小时，可用 `--wait-timeout-s` 调整），不会重启 oneshot。再用 Mac `lsof` 检查源库和 sidecar 没有进程打开；这是保守检查，读者也必须先退出。脚本在源库同一文件系统先检查至少 1.2 倍源库大小的可用空间，再通过 SQLite Backup API 从 `mode=ro` 的源连接生成临时副本。源库不 checkpoint、不写入。`PRAGMA wal_checkpoint(TRUNCATE)`、校验、哈希和传输全部针对临时副本。副本的 `-wal`/`-shm` 必须不存在或为零字节；服务器 incoming 的任一 sidecar 只要存在就拒绝打开。副本只读 immutable 核验完整 manifest `bf4be0178add29a32bcfda49155325aadb862adc506973a0c9db4be8843c66e7`、`lexical_index_state` 的 FTS build `f14324922ff6a0618afb2f9cb2f1120b2791f812c2c1072048d8565fa7dcc8e9`，以及对应 publication 状态。SHA-256 在传输前后对同一临时副本计算且必须一致。
+With `--execute`, the script first checks that the server's final file, orphaned sidecars, and all `catalyst_corpus.sqlite3.incoming*` files are absent. Any existing temporary files must be manually renamed and backed up first; the script never overwrites them. It then stops `catalyst-daily.timer` and waits for `catalyst-daily.service` to exit (2 hours by default; adjust with `--wait-timeout-s`). It does not restart the oneshot service. Next, Mac `lsof` checks that no process has the source database or its sidecars open; this is a conservative check, and readers must also exit first. On the source database's filesystem, the script checks for available space of at least 1.2 times the source database size, then creates a temporary copy using SQLite Backup API from a `mode=ro` source connection. The source database is not checkpointed or written. `PRAGMA wal_checkpoint(TRUNCATE)`, validation, hashing, and transfer all operate on the temporary copy. Its `-wal`/`-shm` files must be absent or zero bytes. On the server, opening is refused if any sidecar exists for the incoming file. Using read-only immutable mode, the script validates the copy's full manifest `bf4be0178add29a32bcfda49155325aadb862adc506973a0c9db4be8843c66e7`, the FTS build `f14324922ff6a0618afb2f9cb2f1120b2791f812c2c1072048d8565fa7dcc8e9` in `lexical_index_state`, and the corresponding publication status. SHA-256 is computed for the same temporary copy before and after transfer and must match.
 
 ```sh
-deploy/ops/seed_corpus.sh --host root@<服务器主机名> \
+deploy/ops/seed_corpus.sh --host root@<server-hostname> \
   --source /path/to/catalyst_corpus.sqlite3
-# 审阅 dry-run 输出后执行；可加 --quick-check 做服务器端完整性扫描：
-deploy/ops/seed_corpus.sh --execute --host root@<服务器主机名> \
+# Run after reviewing the dry-run output; optionally add --quick-check for a server-side integrity scan:
+deploy/ops/seed_corpus.sh --execute --host root@<server-hostname> \
   --source /path/to/catalyst_corpus.sqlite3
 ```
 
-传输使用 `rsync --partial --checksum` 到带 UTC 时间戳的新名 `catalyst_corpus.sqlite3.incoming.<时间戳>`；不会使用/覆盖既有 incoming。服务器用 `mode=ro&immutable=1` 核验尚未上线的 incoming，前后均检查无 sidecar，核对 SHA 与本地副本一致、manifest/build 完整字符串完全相同；`--quick-check` 可选。活库核对必须用 `mode=ro` 且不带 `immutable=1`，以读取 WAL 中的最新提交。22.6 GB 在持续 100 MB/s 的理想顺序读取下，单纯扫描下限约 4 分钟，SQLite 校验和机器负载可能延长到数十分钟。拷贝后剩余空间必须不少于 `CATALYST_CORPUS_MIN_FREE_GB + 1.2 × 数据库字节数`。服务器 `/` 最近记录的剩余空间约 86 GB；22.6 GB 拷贝后约 63 GB，仍须按已配置的最小空间阈值核算。全部检查通过才在同盘 `mv --no-clobber` 为正式文件，并设为 `root:root`、`0644`。脚本不启动 timer；代码切换和健康检查完成后，由操作者最后执行 `systemctl start catalyst-daily.timer`。该 timer 为 `Persistent=true`，可能立即补跑错过的日更。出错时保留副本和 incoming，timer 保持停止，需操作人确认安全状态后再启动，不执行 `rm`。
+Transfer uses `rsync --partial --checksum` to a new name with a UTC timestamp, `catalyst_corpus.sqlite3.incoming.<timestamp>`; it does not use or overwrite an existing incoming file. The server validates the not-yet-published incoming file with `mode=ro&immutable=1`, checks for sidecars before and after, and verifies that its SHA matches the local copy and that the full manifest/build strings match. `--quick-check` is optional. Validate the live database with `mode=ro` and without `immutable=1` to read the latest WAL commit. At a sustained ideal sequential read speed of 100 MB/s, scanning 22.6 GB takes at least about 4 minutes; SQLite validation and machine load may extend this to tens of minutes. After the copy, free space must be at least `CATALYST_CORPUS_MIN_FREE_GB + 1.2 × database size in bytes`. The most recently recorded free space on server `/` is about 86 GB; after copying 22.6 GB, about 63 GB would remain. Still check this against the configured minimum free-space threshold. Only after all checks pass, use same-filesystem `mv --no-clobber` to place the final file, then set ownership to `root:root` and permissions to `0644`. The script does not start the timer. After code switching and health checks are complete, the operator starts it with `systemctl start catalyst-daily.timer`. The timer has `Persistent=true` and may immediately run a missed daily job. On error, keep the copy and incoming file and leave the timer stopped; have an operator confirm the safe state before starting it. Do not run `rm`.
 
-传库/切换窗口会停用 `catalyst-daily.timer`。该 timer 设置了 `Persistent=true`，如果窗口跨过计划触发时间，重新 `start` 后 systemd 可能立即补跑错过的日更；安排窗口时留意这一点，恢复 timer 后检查 service 状态和日更 summary，不要通过 restart 试探。
+The database transfer/switch window disables `catalyst-daily.timer`. The timer has `Persistent=true`; if the window crosses a scheduled trigger time, systemd may immediately run the missed daily job after the timer is started again. Account for this when scheduling the window. After restoring the timer, check the service status and daily summary. Do not use restart to test it.
 
-传库完成后，核对脚本输出中的 manifest、FTS build 与 SHA；服务器上只读查询正式路径的同三张表，并用 `df` 确认可用空间。健康报告 `/opt/catalyst/health/health.json` 至少要有新鲜 `generated_at`、`daily_job.status` 为最近预期结果，以及 `sec_exhibit_units.status == "ok"`、`sec_exhibit_units.rows > 0`。`sec_exhibit_units` 读的是 `news_bodies_v2.sqlite3` 正文库，不能证明检索库 build 正确。实际 API 健康路由是 `GET /api/health`，检查命令为 `curl -fsS http://127.0.0.1:8000/api/health`；该路由检查运行库 `runs`/`run_events`，不检查 corpus build；仓库没有 `/healthz` 路由。
+After transfer, check the manifest, FTS build, and SHA in the script output. On the server, query the same three tables at the final path in read-only mode and use `df` to confirm available space. The health report `/opt/catalyst/health/health.json` must have a recent `generated_at`, the most recently expected result in `daily_job.status`, and `sec_exhibit_units.status == "ok"` with `sec_exhibit_units.rows > 0`. `sec_exhibit_units` reads the `news_bodies_v2.sqlite3` body database and does not prove that the corpus build is correct. The actual API health route is `GET /api/health`; check it with `curl -fsS http://127.0.0.1:8000/api/health`. This route checks the runtime database's `runs`/`run_events`, not the corpus build. The repository has no `/healthz` route.
 
-### 3. 部署日检查清单
+### 3. Deployment-day checklist
 
-| 顺序 | 谁做 | 动作与验证 | 失败时回滚 |
+| Order | Role | Action and verification | Rollback on failure |
 |---|---|---|---|
-| 0. 定版 | 发布负责人、data/agent 负责人 | 确认统一发布 ref 含已审阅的 data、API、agent 版本；D-b rollback/FTS 开关必须先合入 data/main 并部署；记录上一部署提交。 | 不开始部署；若已切换代码，按“代码回滚”恢复记录的提交。 |
-| 1. Cloudflare | Mac 部署执行者 | 运行只读核对脚本，审阅新增/缺失 CIDR；写入前人工核对官方页面。`--write` 前核验 v4/v6 最少条数，并确认带时间戳备份生成；检查清单与生成 include 一致。 | 不开放 Nginx/API；将备份文件原子恢复回清单/include，重跑 `nginx -t`。 |
-| 2. 检索库与维护窗口 | Mac 部署执行者，data 负责人复核 | dry-run 审阅 source/host/target；`--execute` 会停止 `catalyst-daily.timer`，等待 service 结束后再做备份副本和传输。记录副本 SHA；检查正式库 manifest、lexical state、published build、sidecar、空间及可选 `quick_check`。传库成功后 timer 仍保持停止。 | 失败时 `.incoming*` 和本地副本保留，timer 保持停止；确认正式目标未变、日更不会创建冲突文件后，再由负责人决定恢复 timer 或重试。若已发布坏 build，使用 corpus rollback。 |
-| 3. 代码切换 | data/API 负责人 | 切换已批准的 data/API 代码；`deploy_api.sh` 安装失败会恢复备份。health 单元代码按 collectors checkout 部署。此步骤不启动 daily timer。 | API 用 API rollback；data/health 代码按各自 checkout 的部署路径回滚。 |
-| 4. 健康检查与 agent | API、health、agent 负责人 | 核对 health.json 新鲜度、`daily_job.status` 与 `sec_exhibit_units.status == "ok"`、`rows > 0`；本机验证 `curl -fsS http://127.0.0.1:8000/api/health`。通过后部署 agent ref 并按 Cloudflare/DNS/HTTPS 入口验收。健康硬门槛不过时不开放 API，也不启动 timer。 | API 保持 stopped；按 API、health collectors、agent 各自路径回滚。 |
-| 5. 最后启动日更 | data 负责人 | 只有代码切换和健康检查完成后，才执行 `systemctl start catalyst-daily.timer`。`Persistent=true` 可能立即补跑错过的日更；检查 `systemctl status catalyst-daily.service catalyst-daily.timer`、health.json 的 `daily_job.status/generated_at` 和 D-b summary 的 `corpus_fts_attempt`，并用活库 `mode=ro` 核验当前 lexical build。 | 停 timer；如 oneshot 在运行，按回滚手册 stop service；先关闭下一次 FTS rebuild，再核对当前 build。 |
+| 0. Release ref | Deployment team | Confirm the unified release ref contains the reviewed data, API, and agent versions. D-b rollback/FTS controls must be merged into data/main and deployed first. Record the previous deployment commit. | Do not begin deployment. If code has already been switched, restore the recorded commit using “Code rollback.” |
+| 1. Cloudflare | Mac deployment | Run the read-only check script and review added/missing CIDRs; manually check the official page before writing. Before `--write`, verify the minimum v4/v6 counts and confirm timestamped backups were created. Check that the list matches the generated include. | Do not expose Nginx/API. Atomically restore the backup files to the list/include and rerun `nginx -t`. |
+| 2. Corpus and maintenance window | Mac deployment | Review source/host/target in the dry-run. `--execute` stops `catalyst-daily.timer`, waits for the service to exit, then creates a backup copy and transfers it. Record the copy's SHA. Check the final database manifest, lexical state, published build, sidecars, free space, and optional `quick_check`. The timer remains stopped after a successful transfer. | On failure, keep `.incoming*` and the local copy, and leave the timer stopped. After confirming the final target is unchanged and the daily job will not create conflicting files, decide whether to restore the timer or retry. If a bad build was published, use corpus rollback. |
+| 3. Code switch | Data/API deployment | Switch to the approved data/API code. If `deploy_api.sh` installation fails, it restores the backup. Deploy health unit code from the collectors checkout. This step does not start the daily timer. | Roll back the API with API rollback; roll back data/health code using each checkout's deployment procedure. |
+| 4. Health check and agent | API/health/agent deployment | Check that health.json is recent, `daily_job.status` has the expected value, and `sec_exhibit_units.status == "ok"` with `rows > 0`. Verify locally with `curl -fsS http://127.0.0.1:8000/api/health`. After it passes, deploy the agent ref and verify the Cloudflare/DNS/HTTPS entry point. If the health requirement fails, do not expose the API or start the timer. | Keep the API stopped; roll back API, health collectors, and agent through their respective procedures. |
+| 5. Start daily job last | Data deployment | Only after the code switch and health checks are complete, run `systemctl start catalyst-daily.timer`. `Persistent=true` may immediately run a missed daily job. Check `systemctl status catalyst-daily.service catalyst-daily.timer`, `daily_job.status/generated_at` in health.json, and `corpus_fts_attempt` in the D-b summary. Verify the current lexical build against the live database using `mode=ro`. | Stop the timer. If the oneshot is running, stop the service as described in the rollback procedure. Disable the next FTS rebuild, then check the current build. |
 
-### 4. 症状 → 命令 → 验证 / 回滚
+### 4. Symptom → command → verification / rollback
 
-corpus rollback CLI 和 `CATALYST_CORPUS_FTS_REBUILD` 开关已随 D-a/D-b 合入 data/main（6b77bb3），部署日把这一版部署到服务器后才能使用下列命令。已核对 D-b 的 `rollback.py` 只支持必需的 `--db` 和可选 `--to`，没有查看模式；运行该 CLI 会写库并切换 build。因此必须先用只读查询列出 build，再显式指定上一 build 回滚。不要用 `$CATALYST_CORPUS_DB`，它不会从 systemd 的 EnvironmentFile 自动进入交互 shell。
+The corpus rollback CLI and `CATALYST_CORPUS_FTS_REBUILD` switch are available after D-a/D-b is merged into data/main (6b77bb3) and that version is deployed to the server. The D-b `rollback.py` supports the required `--db` and optional `--to` arguments and has no inspection mode; running it writes to the database and switches the build. Therefore, first list builds with a read-only query, then explicitly specify the previous build for rollback. Do not use `$CATALYST_CORPUS_DB`; systemd's EnvironmentFile does not automatically export it to an interactive shell.
 
-先只读查看候选 build（正式执行前将路径保持为绝对路径）：
+First list candidate builds in read-only mode (keep the path absolute when executing the operation):
 
 ```sh
 /opt/catalyst/venv/bin/python - <<'PY'
@@ -193,18 +193,18 @@ finally:
 PY
 ```
 
-核实并记录上一 `build_id` 后，才运行真正回滚；`--to` 必须是完整 build ID：
+After verifying and recording the previous `build_id`, run the rollback. `--to` must be a full build ID:
 
 ```sh
 cd /opt/catalyst/repo
 PYTHONPATH=packages/data /opt/catalyst/venv/bin/python -m catalyst_data.corpus.rollback \
-  --db /opt/catalyst/repo/data/m9/catalyst_corpus.sqlite3 --to <上一完整build_id>
+  --db /opt/catalyst/repo/data/m9/catalyst_corpus.sqlite3 --to <previous-full-build-id>
 ```
 
-对正在使用的活检索库，核对 URI 必须为 `mode=ro` 且不带 `immutable=1`，以读取 WAL 中的最新提交。将下列查询的 `target` 设为上一条命令指定的完整 build ID；必须确认 `lexical_index_state.lexical_generation_id == target`，且 `corpus_publication_builds` 中该 build 已发布、关联 manifest 当前有效。先在 API 重启前核对，重启后再运行一次确认一致。`immutable=1` 仅用于拷贝过程中尚未上线的 `.incoming` 文件。`GET /api/health` 只检查运行库 `runs`/`run_events`，不能证明检索库 build 已切回；health.json 的 `sec_exhibit_units` 检查的是正文库 `news_bodies_v2.sqlite3`，也不能代替上述 corpus 查询。
+For the live corpus in use, the verification URI must use `mode=ro` without `immutable=1` so it reads the latest WAL commit. Set `target` in the query below to the full build ID specified in the previous command. Confirm that `lexical_index_state.lexical_generation_id == target`, and that this build is published in `corpus_publication_builds` with an associated manifest that is current. Verify before restarting the API, then run the query again after restart to confirm consistency. Use `immutable=1` only for `.incoming` files that have not yet been published during the copy. `GET /api/health` checks only the runtime database's `runs`/`run_events` and cannot prove that the corpus build was switched back. The `sec_exhibit_units` check in health.json reads the `news_bodies_v2.sqlite3` body database and cannot replace the corpus query above.
 
 ```sh
-/opt/catalyst/venv/bin/python - <上一完整build_id> <<'PY'
+/opt/catalyst/venv/bin/python - <previous-full-build-id> <<'PY'
 import sqlite3, sys
 from pathlib import Path
 target = sys.argv[1]
@@ -228,19 +228,19 @@ finally:
 PY
 ```
 
-只有活库查询通过后才重启 API；重启后再次运行上面的同一查询，确认一致：
+Restart the API only after the live database query passes. Run the same query again after restart to confirm consistency:
 
 ```sh
 systemctl restart catalyst-api.service
 ```
 
-| 症状 | 命令 | 验证 |
+| Symptom | Command | Verification |
 |---|---|---|
-| API 新版异常，需要恢复安装前配置 | 在服务器仓库执行 `deploy/deploy_api.sh --rollback`。 | `nginx -t`；`systemctl status catalyst-api.service`；`curl -fsS http://127.0.0.1:8000/api/health`；读取 `/opt/catalyst/health/health.json` 的 `generated_at` 与 `sec_exhibit_units.status/rows`。 |
-| 日更 FTS rebuild 导致异常 | 该开关在 D-b 部署后的 `/opt/catalyst/.env`。先 `systemctl stop catalyst-daily.timer`；若 oneshot 正在运行，执行 `systemctl stop catalyst-daily.service`，不要 restart。编辑 `.env` 删除该键，再执行 `systemctl daemon-reload`；变更只对下一次 service 启动生效。 | 只输出键名计数并要求为 0：`count=$(grep -cE '^[[:space:]]*CATALYST_CORPUS_FTS_REBUILD[[:space:]]*=' /opt/catalyst/.env || true); printf 'key_count=%s\\n' "$count"; test "$count" -eq 0`。再用一次性进程只检查该键是否进入环境、不打印其他变量：`systemd-run --quiet --wait --pipe --property=EnvironmentFile=/opt/catalyst/.env /opt/catalyst/venv/bin/python -c 'import os; print("CATALYST_CORPUS_FTS_REBUILD=" + ("present" if "CATALYST_CORPUS_FTS_REBUILD" in os.environ else "absent"))'`；必须显示 `absent` 后才执行 `systemctl start catalyst-daily.timer`（不要 restart；`Persistent=true` 可能立即补跑）。下一次日更 summary 中 `corpus_fts_attempt` 应为 `skipped`，查看 service 日志和 `/opt/catalyst/repo/data/m9/daily_pipeline_status.json`。 |
-| 发布代码本身导致故障 | `git -C /opt/catalyst/repo checkout <上一个部署提交>` 只改变该 checkout；它不会安装 unit/nginx 文件。API unit/Nginx 用 `deploy/deploy_api.sh --rollback` 恢复，或按上一版本重新安装，再 `systemctl daemon-reload` 并 `systemctl restart catalyst-api.service`。`catalyst-daily.service` 是 oneshot，不要 restart；若正在运行先 stop，恢复 timer 后下一次 activation 使用旧 data 代码。 | 核对 `/opt/catalyst/api-deploy-backups/<时间戳>/` 中备份与 `/etc/systemd/system/catalyst-api.service`、`/etc/nginx/conf.d/catalyst-api.conf`、`/etc/nginx/catalyst-cloudflare-allow.conf` 一致；检查 `systemctl status catalyst-api.service catalyst-daily.timer`、`nginx -t` 和本机 `/api/health`。工作区 `rev-parse HEAD` 不是 unit 已恢复的证据。 |
-| health 检查代码需要回滚 | `catalyst-health.service` 从 `/opt/catalyst/repo/packages/data` 读取代码。回滚时先停 health timer，恢复上一部署提交和保存的 health unit，再执行 `systemctl daemon-reload`；通过只读健康检查后恢复 timer。`deploy/deploy_monitor.sh` 部署的是监控主机 `/opt/catalyst-monitor`，不是该 health service。 | `systemctl cat catalyst-health.service` 确认 ExecStart/PYTHONPATH；`systemctl start catalyst-health.service` 后查 `systemctl status catalyst-health.service` 与 health.json。再核验 repo checkout/ref；health.json 时间戳只证明报告刷新，不证明用了 repo checkout 的代码。 |
-| 活库读取报锁/超时 | 不要临时移除 `CATALYST_SQLITE_LIVE_READ=1`：回到默认 immutable 可能忽略活库变化并读到不一致数据。先 `systemctl stop catalyst-api.service`，保留日更运行并查日志/锁持有者。 | `systemctl is-active catalyst-api.service` 应为 inactive；`systemctl status catalyst-daily.service`；health.json 的 `generated_at` 与 `sec_exhibit_units.status/rows`；修复锁问题并重新通过硬门槛后才启动 API。 |
-| SEC 附件健康检查未通过 | 不开放 API；若 API 已启动，先 `systemctl stop catalyst-api.service`。核实日更实际使用的正文库来源并核对 `sec_exhibit_units` 行数。 | `/opt/catalyst/health/health.json` 中 `sec_exhibit_units.status` 必须是 `ok` 且 `rows > 0`；再查 `systemctl status catalyst-health.service catalyst-api.service` 和本机 `/api/health`。不满足就保持 API stopped。 |
+| API issue in the new version; restore pre-install configuration | In the server repository, run `deploy/deploy_api.sh --rollback`. | `nginx -t`; `systemctl status catalyst-api.service`; `curl -fsS http://127.0.0.1:8000/api/health`; read `generated_at` and `sec_exhibit_units.status/rows` in `/opt/catalyst/health/health.json`. |
+| Daily FTS rebuild causes an issue | The switch is in `/opt/catalyst/.env` after D-b is deployed. First run `systemctl stop catalyst-daily.timer`; if the oneshot is running, run `systemctl stop catalyst-daily.service`; do not restart it. Edit `.env` to remove the key, then run `systemctl daemon-reload`. The change takes effect at the next service start. | Print only the key count and require it to be 0: `count=$(grep -cE '^[[:space:]]*CATALYST_CORPUS_FTS_REBUILD[[:space:]]*=' /opt/catalyst/.env || true); printf 'key_count=%s\\n' "$count"; test "$count" -eq 0`. Then use a one-off process to check only whether the key is in the environment, without printing other variables: `systemd-run --quiet --wait --pipe --property=EnvironmentFile=/opt/catalyst/.env /opt/catalyst/venv/bin/python -c 'import os; print("CATALYST_CORPUS_FTS_REBUILD=" + ("present" if "CATALYST_CORPUS_FTS_REBUILD" in os.environ else "absent"))'`. It must show `absent` before running `systemctl start catalyst-daily.timer` (do not restart; `Persistent=true` may immediately run a missed job). In the next daily summary, `corpus_fts_attempt` should be `skipped`; check the service log and `/opt/catalyst/repo/data/m9/daily_pipeline_status.json`. |
+| A code release causes a failure | `git -C /opt/catalyst/repo checkout <previous-deployment-commit>` changes that checkout only; it does not install unit/Nginx files. Restore the API unit/Nginx with `deploy/deploy_api.sh --rollback`, or reinstall the previous version, then run `systemctl daemon-reload` and `systemctl restart catalyst-api.service`. `catalyst-daily.service` is a oneshot; do not restart it. If it is running, stop it first. After restoring the timer, the next activation uses the previous data code. | Check that the backups in `/opt/catalyst/api-deploy-backups/<UTC-timestamp>/` match `/etc/systemd/system/catalyst-api.service`, `/etc/nginx/conf.d/catalyst-api.conf`, and `/etc/nginx/catalyst-cloudflare-allow.conf`. Check `systemctl status catalyst-api.service catalyst-daily.timer`, `nginx -t`, and local `/api/health`. The workspace's `rev-parse HEAD` does not prove that the unit was restored. |
+| Health-check code needs rollback | `catalyst-health.service` reads code from `/opt/catalyst/repo/packages/data`. To roll back, stop the health timer, restore the previous deployment commit and saved health unit, then run `systemctl daemon-reload`. Restore the timer after the read-only health check passes. `deploy/deploy_monitor.sh` deploys to the monitoring host at `/opt/catalyst-monitor`, not to this health service. | Run `systemctl cat catalyst-health.service` to confirm ExecStart/PYTHONPATH. After `systemctl start catalyst-health.service`, check `systemctl status catalyst-health.service` and health.json. Then verify the repository checkout/ref. The health.json timestamp proves only that the report was refreshed; it does not prove which repository code it used. |
+| Live database read hits a lock or timeout | Do not temporarily remove `CATALYST_SQLITE_LIVE_READ=1`: returning to immutable mode may ignore live database changes and read inconsistent data. First run `systemctl stop catalyst-api.service`, leave the daily job running, and check logs/lock holders. | `systemctl is-active catalyst-api.service` should be inactive; check `systemctl status catalyst-daily.service` and `generated_at` plus `sec_exhibit_units.status/rows` in health.json. Fix the lock issue and pass the health requirement again before starting the API. |
+| SEC exhibit health check fails | Do not expose the API. If it is already running, first run `systemctl stop catalyst-api.service`. Check the source of the body database used by the daily job and verify the `sec_exhibit_units` row count. | In `/opt/catalyst/health/health.json`, `sec_exhibit_units.status` must be `ok` and `rows > 0`. Also check `systemctl status catalyst-health.service catalyst-api.service` and local `/api/health`. If the requirement is not met, keep the API stopped. |
 
-API、data 服务、collectors health 和 agent 的代码回滚是分开的操作：每次切换前记录上一提交/build 和 API 部署备份目录；回滚后重新通过本节对应验证，不能以“命令退出 0”替代健康门槛。
+Code rollback for the API, data service, collectors health, and agent are separate operations. Before each switch, record the previous commit/build and API deployment backup directory. After rollback, repeat the relevant checks in this section; a command exiting with status 0 does not replace the health requirement.

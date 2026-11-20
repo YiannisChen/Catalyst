@@ -1,107 +1,104 @@
-# Catalyst 系统卡
+# Catalyst System Card
 
-> 下文点名、但已不在工作区的历史文档，正文在 git 历史，标签 `research-archive-20261106`。
+- **Version**: v2.0.1, 2026-10-18 (failure mode 11 added; web retrieval rewritten to match the code); v1.0: 2026-10-16
+- **Systems covered**:
+  - Frozen backend `backend-freeze-v1` (default configuration, evidence-constrained publisher);
+  - Second version `backend-freeze-v2` (four publishing rules);
+  - Second-version extension `backend-freeze-v2.1` (adds the `filing` rule).
+  - The latter two are not defaults; the second prospective evaluation will determine whether to use them.
+- **Sources for metrics**: All figures in this document refer to the results registry, in the form 〔R: record ID〕.
 
+## 1. What the system does
 
-- **版本**：v2.0.1，2026-10-18（新增失败模式 11，联网检索按代码改写；v1.0：2026-10-16）
-- **对象**：
-  - 后端冻结版 `backend-freeze-v1`（默认配置，证据约束发布器）；
-  - 第二版 `backend-freeze-v2`（四条发布规则）；
-  - 第二版增补 `backend-freeze-v2.1`（加规则 `filing`）。
-  - 后两者不是默认，由第二轮前瞻评测判断。
-- **数字来源**：本文所有数字引用结果登记表，写作 〔R: 记录 ID〕
+Given a large-cap U.S. stock and a trading day D, the system determines whether the price movement on day D can be attributed to a specific sourced event that occurred before the movement:
+- **Yes**: The conclusion is assembled from verbatim quotations from source text, with the publisher, time, and link;
+- **No**: The system abstains, explains why, and provides market facts.
 
-## 1. 系统做什么
+The system uses only DeepSeek and free data. Model cost is about 0.8 cents per case (first run on the test set) 〔R: test.cost.publisher〕.
 
-给定一只美股大盘股和一个交易日 D，系统判断 D 日的涨跌能不能归因到一个在变动之前、有来源的具体事件：
-- **能**：结论由来源原文的逐字引文拼接而成，附出版方、时间和链接；
-- **不能**：拒答，说明理由，并给出行情事实。
+## 2. Intended uses
 
-系统只用 DeepSeek 和免费数据，每例模型成本约 0.8 美分（测试集首轮）〔R: test.cost.publisher〕。
+- Research and review: Quickly check whether a sourced company-specific event can explain a large move in a large-cap stock on a given day.
+- Scenarios that require auditable outputs: Every conclusion can be traced to source text and a timestamp, and abstentions include an explanation.
+- Starting point for human analysis: Market facts, direction agreement, and decomposition data can help determine where to investigate first.
 
-## 2. 适用场景
+## 3. Out-of-scope uses
 
-- 研究和复盘：快速查看某只大盘股某天的大幅涨跌，有没有有来源的本公司事件可以解释。
-- 需要可审计输出的场景：每个结论都能追溯到原文和时间戳，拒答时会说明理由。
-- 作为人工分析的起点：行情事实、同向性和分解数据可以用来判断该先查哪里。
+- **Investment advice or trading signals**: The system does not provide investment advice.
+- **Moves driven by macroeconomic factors, sectors, or commodities**: The system may answer only when source text explicitly attributes the move to such a factor. Coverage is low and the error rate is high (§5).
+- **Intraday attribution, fund flows, and position analysis**: The system does not have these data.
+- **Small-cap stocks, non-U.S. stocks, and non-trading days**: These have not been evaluated.
+- **Commercial use**: Data sources such as the Polygon free tier permit personal, non-commercial use only ([data notes](data/data-card.md)).
 
-## 3. 不适用场景
+## 4. Capability claims
 
-- **投资建议或交易信号**：系统不提供投资建议。
-- **宏观、板块、商品驱动的涨跌**：只有在来源原文明确写出归因时才可能作答，覆盖率低、错误率高（§5）。
-- **盘中归因、资金流和仓位分析**：没有这些数据。
-- **小盘股、非美股、非交易日**：没有评测过。
-- **商业用途**：Polygon 免费层等数据源只允许个人、非商业使用（[数据说明](data/data-card.md)）。
-
-## 4. 能力声明
-
-| 可以声明 | 依据 | 限定条件 |
+| Claim | Evidence | Limitations |
 |---|---|---|
-| 本公司事件的已发布结论精确率高 | 开发集一次运行加测试集 22/23〔R: pooled.publisher.issuer_right〕；测试集 7/7〔R: test.publisher.issuer_right〕 | 这是已作答中的精确率，不是覆盖率：测试集本公司事件只答了 7/10〔R: test.publisher.issuer_answered〕；开发集数据偏乐观 |
-| 财报日上，作答时主事件几乎都是本公司财报 | 99/100〔R: t6.category_right〕 | 没有金标，只评类别、不评机制；覆盖率约一半〔R: t6.answered〕 |
-| 拒答校准优于联网大模型 | 测试集正确拒答率 88%〔R: test.publisher.correct_abstain_rate〕，联网大模型为 0%〔R: test.gpt.correct_abstain_rate〕 | 测试集仍有 2/17 的应拒答案例被发布〔R: test.publisher.abstain_published〕 |
-| 测试集被引证据没有越过时点窗口 | 23 条中越界 0 条〔R: test.leak.outside〕 | 审计按库里存的时间核对。后来发现两条来源的时间有偏差（§6 第 5 条），已按更正对照表复核：测试集的被引证据仍全部在窗口内，没有受影响；EOG 2026-09-16 的上下文里有 2 条更正后落在收盘后的条目，没有被引用。只审计了测试集的被引证据；“仅日期”时间戳没有带标记，存在残余风险（§6） |
-| 定位了核心瓶颈 | 两个预注册实验都判 FAIL，各类安慰剂发布均为 0〔R: v3.verdict〕〔R: b.verdict〕〔R: b.placebo〕 | — |
-| 运行间稳定 | 作答/拒答翻转率〔R: t3.decision_flip〕 | 开发集 80 例，3 次运行 |
-| 第二版增补提升财报日**事件层面**的归因覆盖（指出事件） | 新财报日样本 100 例上发布从 55 增到 82〔R: v21.e100.published〕；新增答案 27/27 被判为正确〔R: v21.e100.added_right〕；安慰剂日 0/58〔R: v21.placebo.published〕 | 新增答案中 26 个是 PARTIAL：说明了发生了什么，没有说明哪个数字超预期；样本的金标全部为应作答；不是默认配置，第二轮判断 |
+| High precision on published conclusions about company-specific events | One run on the development set plus 22/23 on the test set 〔R: pooled.publisher.issuer_right〕; 7/7 on the test set 〔R: test.publisher.issuer_right〕 | This is precision among answered cases, not coverage: on the test set, the system answered only 7/10 company-specific event cases 〔R: test.publisher.issuer_answered〕; development-set results are optimistic |
+| On earnings days, the main event in answered cases is almost always a company earnings report | 99/100 〔R: t6.category_right〕 | There is no gold label; only the category was evaluated, not the mechanism. Coverage is about half 〔R: t6.answered〕 |
+| Abstention calibration is better than that of web-enabled large language models | Correct abstention rate: 88% on the test set 〔R: test.publisher.correct_abstain_rate〕 versus 0% for web-enabled large language models 〔R: test.gpt.correct_abstain_rate〕 | The system still published 2/17 test-set cases where it should have abstained 〔R: test.publisher.abstain_published〕 |
+| Cited evidence in the test set did not fall outside the time window | 0 out of 23 citations were outside the window 〔R: test.leak.outside〕 | The audit checked times stored in the database. Two source timestamps were later found to be inaccurate (§6, item 5) and were rechecked against the correction table: all cited test-set evidence remains within the window and was unaffected; two corrected Benzinga items in the context for EOG 2026-09-16 fall after market close and were not cited. Only cited evidence in the test set was audited. Timestamps with date only are unmarked, leaving residual risk (§6) |
+| The main bottleneck was identified | Both preregistered experiments were judged FAIL, and all placebo publishing counts were 0 〔R: v3.verdict〕〔R: b.verdict〕〔R: b.placebo〕 | — |
+| Results are stable across runs | Answer/abstention flip rate 〔R: t3.decision_flip〕 | 80 development-set cases, 3 runs |
+| The second-version extension improves attribution coverage at the **event level** on earnings days (identifies the event) | On 100 new earnings-day cases, published answers increased from 55 to 82 〔R: v21.e100.published〕; all 27 added answers were judged correct 〔R: v21.e100.added_right〕; 0/58 placebo days 〔R: v21.placebo.published〕 | 26 of the added answers are PARTIAL: they explain what happened but not which figure exceeded expectations. All cases had gold labels requiring an answer. This is not the default configuration; the second evaluation will decide whether to use it |
 
-## 5. 不能声明的内容
+## 5. Claims that cannot be made
 
-| 不能声明 | 原因 |
+| Claim | Reason |
 |---|---|
-| 系统能做宏观或板块归因 | 系统性类在测试集上已作答 6 例，只对 2 例〔R: test.publisher.systematic_right〕 |
-| 系统比联网大模型更会找原因 | 应作答案例上，系统答对 9/23〔R: test.publisher.gold_answer_right〕，联网大模型 17/23〔R: test.gpt.gold_answer_right〕。系统的优势只在拒答 |
-| 新发布器比早期基线更准确 | 测试集净分 −9 对 −7，置信区间重叠〔R: test.publisher.net〕〔R: test.baseline.net〕 |
-| 新发布器比早期基线更便宜 | 测试集实测成本相同〔R: test.cost.publisher〕〔R: test.cost.baseline〕 |
-| 开发集成绩代表真实表现 | 错因率从开发集到测试集明显退化〔R: derived.dev_test_wrong_gap〕 |
-| 测试集完全干净 | 测试案例来自门槛规则曾经诊断过的集合 |
-| 测试集净分为正 | 测试集净分为负，置信区间跨过 0〔R: test.publisher.net〕 |
-| 系统完全不使用未来信息 | 泄漏审计只覆盖测试集的被引证据 |
-| 第二版增补提升**机制层面**的解释（说明哪个数字超预期） | 新增答案几乎都是 PARTIAL〔R: v21.e100.added_right〕；财报数字的解析没有实现（ADR-019） |
-| 第二版或第二版增补整体优于第一版 | 开发集上规则只改变了少数案例，测试集上的变化是样本内描述；由第二轮前瞻评测判断 |
+| The system can attribute moves to macroeconomic or sector factors | It answered 6 systematic-factor cases on the test set and got only 2 right 〔R: test.publisher.systematic_right〕 |
+| The system is better than web-enabled large language models at finding causes | On cases that required an answer, the system got 9/23 right 〔R: test.publisher.gold_answer_right〕, versus 17/23 for web-enabled large language models 〔R: test.gpt.gold_answer_right〕. The system's advantage is limited to abstention |
+| The new publisher is more accurate than the early baseline | The test-set net scores are −9 versus −7, with overlapping confidence intervals 〔R: test.publisher.net〕〔R: test.baseline.net〕 |
+| The new publisher is cheaper than the early baseline | Measured test-set costs are the same 〔R: test.cost.publisher〕〔R: test.cost.baseline〕 |
+| Development-set results represent real-world performance | The error rate worsened substantially from the development set to the test set 〔R: derived.dev_test_wrong_gap〕 |
+| The test set is completely clean | Test cases came from a set previously diagnosed using threshold rules |
+| The test-set net score is positive | The test-set net score is negative, with a confidence interval that crosses 0 〔R: test.publisher.net〕 |
+| The system never uses future information | The leakage audit covered only cited evidence in the test set |
+| The second-version extension improves explanations at the **mechanism level** (identifies which figure exceeded expectations) | Nearly all added answers are PARTIAL 〔R: v21.e100.added_right〕; earnings figure parsing has not been implemented (ADR-019) |
+| The second version or its extension is better overall than the first version | On the development set, the rules changed only a few cases. Changes on the test set are an in-sample description; the second prospective evaluation will determine the result |
 
-## 6. 已知失败模式
+## 6. Known failure modes
 
-1. **过期旧闻**：在没有明确原因的交易日，发布了旧的收购或财报消息。测试集 2 例，第一阶段、第二阶段各 1 例〔R: test.publisher.abstain_published〕。
-2. **对公司公告利用不足**：有本公司 8-K、但没有“股价因此涨跌”的报道，而且当天还有其他本公司事件时，系统不发布。财报日样本中，这类拒答占绝大多数〔R: t6.no_eligible〕。原因之一：前一交易日盘后发布的财报新闻稿被抽取标为另一交易日，在正常路径上被剔除（运行情况 RG-14）。
-3. **系统性归因不可靠**：
-   - 板块行情里，系统容易把金标中的次要原因或别的驱动当成主因；
-   - 由行情分解直接推断群体原因时，错得更多〔R: m3.inferred_group_wrong〕。
-4. **来源质量**：发布器没有来源分级，评论站点（Motley Fool、24/7 Wall St. 等）的逐字归因句可以成为发布依据。
-5. **时间戳**：
-   - “仅日期”的联网证据会被补成当日 23:59:59Z，D−1 的这类证据会落进 D 的盘前〔R: t1.preopen_dminus1〕；
-   - Tavily 的零点时间戳按分钟精度处理〔R: t1.tavily_midnight〕；
-   - 两条入库路径的时间有偏差（2026-10-22 时区排查）：经 Finnhub 进来的 Benzinga 和 CNBC 公司新闻（Finnhub 给这两个来源的时间是美东时钟当成 UTC；库里的 Benzinga 这类条目是 2026-09-30 至 10-08 抓取的），库里存的发布时间偏早 4–5 小时，收盘后的报道会被当成盘中。开发集 CAT 2026-04-30 和 T6 第一版 A 2026-05-28 的已发布答案，引用了实际在收盘后发布的证据。冻结测试集的被引证据按更正后的时间仍全部在窗口内；但 EOG 2026-09-16 的上下文里有 2 条更正后落在收盘后的 Benzinga，没有被引用。已有数字没有重算；更正对照表在 data 层（`data/corrections/time_corrections_v1.csv`，data/collectors `80edfe1`），两轮前瞻评测在计分时按预注册追加做敏感性分析（第二轮 §10，第一轮追加文件，`5767b97`）。
-   - SEC 8-K 的接收时间有偏差（2026-10-22 发现，10-23 完成排查）：SEC submissions 接口的 `acceptanceDateTime`，约六成发行人（按公司固定，同一家要么全对、要么全错）比 EDGAR 索引页的接收时间正好晚 4 小时（夏令时）或 5 小时（冬令时）。已有库中的 11,200 份 8-K：4,955 份晚 4 小时，2,088 份晚 5 小时，4,122 份一致（更正对照表 `data/time-fix` `af6d8ab`）。方向是偏晚，不会把事后的消息当成事前，但会把 8-K 放错时段：美东 12:00–16:00 接收的会被推到收盘之后，算进下一个交易日的窗口；当天盘前接收的会被当成开盘后。只读核对全部已有运行（不含两轮前瞻评测）：被引 SEC 证据的窗口判定没有一处改变；财报锚定和财报兜底的判定改变的只有 1 个会话（T6 BRK-B 2025-11-04，第一版运行，没有发布）；当天盘前的 8-K 被当成开盘后的有 92 个会话，其中 8 个符合时点闸门的拦截形态，已发布答案里有这种情况的（开发集与 T6、新财报日样本的 v2 / v2.1 运行，如 KR 2026-03-05、PODD 2026-05-06）如果用正确时间，可能会被时点闸门拦下，这只是上限，因为闸门还要看全部主因来源。测试集只列出：BLK 2026-07-15。已有数字没有重算。新入库从 10-22 起以索引页时间为准；v2 的 SEC 索引（`m9/sec_filings.py`）在评测结束后修复；两轮前瞻评测在计分时按附录做敏感性分析。
-6. **交易日错位**：事件发生在 D−1 盘中，股价却在 D 日变动时，时点规则会排除这个事件（TSLA x04，见 推断关联通道结果）。
-7. **评审误差**：
-   - 自动评审与人工评审的一致性只基于 30 例〔R: t2.kappa4〕；
-   - 同一评审重评，约每 13 条改判 1 条〔R: judge.self_agreement〕，集中在 PARTIAL 与错误类的边界；
-   - rubric 对“正确地说无法确认催化剂”没有对应标签。
-8. **第二版的财报直通很少真正发布**〔R: v2.t6.fallback_published〕：附件摘录压平后不像完整句，引文规则拒绝；第二版增补改为按附件单元引用。
-9. **附件单元的启发式**（第二版增补）：多行标题不被识别；版式异常的附件可能产生错误单元。
-10. **运行间不确定性**：共同随机数只覆盖已录制的请求；检索截止时间按墙钟计，个别案例重跑会在作答与拒答之间翻转。
-11. **运行情况**：数据缺失、外部服务失败和运行故障时的处理与失败方向见运行情况处理规格。与本卡相关的几条：模型服务整体中断时显示为普通拒答而不是运行失败（RQ-07）；拒答的“可能的解释”附有核验器模型写的一句理由（RQ-14）；发布器的结论状态实际只有 PARTIAL（RQ-12）；生产 HTTP 服务不在运行前刷新数据，拒答不区分“没有新闻”与“数据未入库”（RG-02）。
+1. **Stale news**: On trading days without a clear cause, the system published old acquisition or earnings news. There were 2 cases on the test set, one in each of the first and second stages 〔R: test.publisher.abstain_published〕.
+2. **Insufficient use of company filings**: When a company has an 8-K but no report saying that the stock price moved as a result, and there is another company event that day, the system does not publish an answer. On earnings-day cases, most abstentions were of this type 〔R: t6.no_eligible〕. One cause: earnings press releases published after market close on the previous trading day are extracted as belonging to another trading day and excluded from the normal path (run behavior RG-14).
+3. **Unreliable systematic attribution**:
+   - For sector moves, the system may mistake a secondary cause in the gold label or another driver for the main cause;
+   - It makes more errors when it infers a group-level cause directly from market decomposition 〔R: m3.inferred_group_wrong〕.
+4. **Source quality**: The publisher does not rank sources. Verbatim attribution sentences from commentary sites (Motley Fool, 24/7 Wall St., and others) can be used as grounds for publication.
+5. **Timestamps**:
+   - Web evidence with a date only is assigned a time of 23:59:59Z on that date. This can place D−1 evidence in the pre-market period on D 〔R: t1.preopen_dminus1〕;
+   - Tavily midnight timestamps are treated as having minute-level precision 〔R: t1.tavily_midnight〕;
+   - Timestamps differ between two ingestion paths (time-zone investigation on 2026-10-22): For Benzinga and CNBC company news ingested through Finnhub, Finnhub treated these sources' Eastern Time timestamps as UTC. Stored publication times for Benzinga items ingested from 2026-09-30 through 10-08 are 4–5 hours early, so after-close reports are treated as intraday. Published answers in development-set CAT 2026-04-30 and the first version of T6 A 2026-05-28 cited evidence that was actually published after market close. All cited evidence in the frozen test set remains within the window after correcting the timestamps. However, two Benzinga items in the context for EOG 2026-09-16 fall after market close after correction and were not cited. Existing figures have not been recalculated. The correction table is in the data layer (`data/corrections/time_corrections_v1.csv`, data/collectors `80edfe1`). Sensitivity analysis was added at scoring time for both prospective evaluations as preregistered (second evaluation §10; first evaluation addendum `5767b97`).
+   - SEC 8-K receipt times are inaccurate (found 2026-10-22; investigation completed 10-23): For about 60% of issuers (consistent per company: each company is either always right or always wrong), the SEC submissions API's `acceptanceDateTime` is exactly 4 hours later during daylight saving time or 5 hours later during standard time than the receipt time on the EDGAR index page. Among the 11,200 8-Ks already in the database, 4,955 are 4 hours late, 2,088 are 5 hours late, and 4,122 match (correction table `data/time-fix` `af6d8ab`). The direction is late, so this does not make after-the-fact news appear to be before the fact, but it can place 8-Ks in the wrong time period: filings received between 12:00 and 16:00 Eastern are pushed past market close and into the next trading day's window; filings received before market open are treated as after the open. A read-only check of all existing runs (excluding the two prospective evaluations) found no changes to the window classification of cited SEC evidence. The earnings anchor and earnings fallback classifications changed for only one session (T6 BRK-B 2025-11-04, first-version run, no answer published). There were 92 sessions where an 8-K received before market open that day was treated as received after the open; 8 matched the time-gate blocking pattern. Published answers in development-set and T6 cases and in v2 / v2.1 runs on the new earnings-day sample (such as KR 2026-03-05 and PODD 2026-05-06) may have been blocked by the time gate if the correct times had been used. This is only an upper bound because the gate also checks all main-cause sources. The test set lists only BLK 2026-07-15. Existing figures have not been recalculated. New ingestions have used index-page times since 10-22. The v2 SEC index (`m9/sec_filings.py`) was fixed after the evaluation ended. Sensitivity analyses were added to scoring for both prospective evaluations as described in the appendices.
+6. **Trading-day mismatch**: When an event occurs intraday on D−1 but the stock price moves on D, the time rule excludes the event (TSLA x04; see inferred association-channel results).
+7. **Review errors**:
+   - Agreement between automated and human review is based on only 30 cases 〔R: t2.kappa4〕;
+   - On re-review, the same reviewer changes the judgment about once every 13 cases 〔R: judge.self_agreement〕, mostly at the boundary between PARTIAL and incorrect;
+   - The rubric has no label for “correctly saying that the catalyst cannot be confirmed.”
+8. **The second version rarely publishes its earnings passthrough** 〔R: v2.t6.fallback_published〕: Flattened attachment excerpts do not look like complete sentences, so the quote rules reject them. The second-version extension instead cites attachment units.
+9. **Heuristic for attachment units** (second-version extension): Multiline headings are not recognized; attachments with unusual layouts may produce incorrect units.
+10. **Run-to-run uncertainty**: Common random numbers cover only recorded requests. Retrieval cutoff time is based on the wall clock, so rerunning some cases can switch between answering and abstaining.
+11. **Run behavior**: Handling of missing data, external service failures, and run failures, including failure direction, is described in the run behavior handling specification. Relevant details: When the model service is entirely unavailable, the system displays an ordinary abstention instead of a run failure (RQ-07); an abstention's “possible explanation” includes one reason written by a verifier model (RQ-14); the publisher's only actual conclusion status is PARTIAL (RQ-12); the production HTTP service does not refresh data before a run, and abstentions do not distinguish “no news” from “data not ingested” (RG-02).
 
-## 7. 成本与延迟
+## 7. Cost and latency
 
-数据来自测试集（40 例，单次运行）。都是**首轮**数字：技术重试之前，而且四个配置与联网大模型基线并行运行，所以不能当作完成重试后整次评测的成本和耗时：
+Data is from the test set (40 cases, one run). All figures are for the **first run**: before technical retries, and with the four configurations and the web-enabled large language model baseline running in parallel. They therefore do not represent the cost and elapsed time for the full evaluation after retries:
 
-| 配置 | 每例成本（均值） | 延迟（中位数 / p90） | 模型调用（中位数 / 最大） | 首轮超时 |
+| Configuration | Cost per case (mean) | Latency (median / p90) | Model calls (median / max) | First-run timeouts |
 |---|---|---|---|---|
-| 证据约束发布器 | 〔R: test.cost.publisher〕 | 〔R: test.latency.publisher〕 | 〔R: test.calls.publisher〕 | 〔R: test.timeouts.publisher〕 |
-| 早期基线发布器 | 〔R: test.cost.baseline〕 | 〔R: test.latency.baseline〕 | — | — |
-| 联网大模型基线 | 订阅制，不计 | 〔R: test.latency.gpt〕 | — | — |
+| Evidence-constrained publisher | 〔R: test.cost.publisher〕 | 〔R: test.latency.publisher〕 | 〔R: test.calls.publisher〕 | 〔R: test.timeouts.publisher〕 |
+| Early baseline publisher | 〔R: test.cost.baseline〕 | 〔R: test.latency.baseline〕 | — | — |
+| Web-enabled large language model baseline | Subscription-based, not counted | 〔R: test.latency.gpt〕 | — | — |
 
-- **超时原因**：四个配置与联网大模型基线并行运行。
-- **联网检索**：运行中不检索；联网缓存在运行前构建，每只股票最多 4 个 Tavily 额度（前瞻评测）。生产 HTTP 服务没有构建步骤（运行情况 RG-11）。
-- **事件发现代理**：每例成本没有单独统计（待核实），代码上限为 $0.03。
+- **Cause of timeouts**: The four configurations and the web-enabled large language model baseline ran in parallel.
+- **Web retrieval**: No retrieval during a run; the web cache is built beforehand, with at most 4 Tavily credits per stock (prospective evaluation). The production HTTP service has no build step (run behavior RG-11).
+- **Event discovery agent**: Cost per case was not measured separately (unverified); the code limit is $0.03.
 
-## 8. 评测与证据
+## 8. Evaluation and evidence
 
-- **完整协议**：评测协议。
-- **设计依据**：后端设计 §11、设计决策记录。
-- **前瞻评测**（2026-10-19 起，两轮）：给出不受污染的估计，结果出来后更新本卡。
-  - 第一轮检验第一版（预注册）；
-  - 第二轮检验第二版与第二版增补对第一版的非劣效（预注册）。
-- **评审模型**：只用 gpt-6.1-sol，更便宜的候选都没有通过校准（校准报告）。
+- **Full protocol**: Evaluation protocol.
+- **Design basis**: Backend design §11, design decision records.
+- **Prospective evaluation** (two rounds starting 2026-10-19): Provides an uncontaminated estimate; this card will be updated when results are available.
+  - Round one evaluates the first version (preregistered);
+  - Round two evaluates non-inferiority of the second version and its extension relative to the first version (preregistered).
+- **Reviewer model**: A model that passed calibration was used; cheaper candidates did not pass calibration (calibration report).
