@@ -1,0 +1,46 @@
+#!/bin/bash
+# Nightly online backup of every store (sqlite3 .backup is safe while writers run), zstd-compressed, with a
+# sha256 MANIFEST; the monitor host pulls it. Two days are kept here; the monitor keeps seven.
+set -euo pipefail
+# BEGIN runtime data root validation
+RUNTIME_DATA_DIR=${CATALYST_RUNTIME_DATA_DIR:-/opt/catalyst/repo/data/m9}
+if [[ "$RUNTIME_DATA_DIR" != /* ]]; then
+  RUNTIME_DATA_DIR="/opt/catalyst/repo/$RUNTIME_DATA_DIR"
+fi
+if [[ ! -d "$RUNTIME_DATA_DIR" ]]; then
+  echo "runtime data directory missing: $RUNTIME_DATA_DIR" >&2
+  exit 1
+fi
+if [[ ! -f "$RUNTIME_DATA_DIR/news_bodies_v2.sqlite3" ]]; then
+  echo "runtime body store missing: $RUNTIME_DATA_DIR/news_bodies_v2.sqlite3" >&2
+  exit 1
+fi
+# END runtime data root validation
+D=/opt/catalyst/backup/$(date -u +%F)
+mkdir -p "$D"
+rm -f "$D/ROWCOUNTS.tmp"
+for db in "$RUNTIME_DATA_DIR"/*.sqlite3 /opt/catalyst/archive/*.sqlite3; do
+  n=$(basename "$db")
+  sqlite3 "$db" ".timeout 60000" ".backup '$D/$n'"
+  # row count per table of the copy, for the restore drill (monitor.py restore-drill compares them)
+  sqlite3 "$D/$n" "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'" | while read -r t; do
+    echo "$n $t $(sqlite3 "$D/$n" "SELECT COUNT(*) FROM \"$t\"")"
+  done >> "$D/ROWCOUNTS.tmp"
+  zstd -q -T2 -f --rm "$D/$n" -o "$D/$n.zst"
+done
+mv "$D/ROWCOUNTS.tmp" "$D/ROWCOUNTS"
+# Minute bars (one file per month) are not in the nightly copy: a month is backed up once, a week after it ends
+# (late back-fills of its last days are in by then), and the monitor pulls it once.
+M=/opt/catalyst/backup/minute
+mkdir -p "$M"
+closed=$(date -u -d "-7 days" +%Y-%m)
+for f in /opt/catalyst/archive/minute/minute_????-??.sqlite3; do
+  [ -e "$f" ] || continue
+  n=$(basename "$f"); month=${n#minute_}; month=${month%.sqlite3}
+  [[ "$month" < "$closed" && ! -e "$M/$n.zst" ]] || continue
+  sqlite3 "$f" ".timeout 60000" ".backup '$M/$n'" && zstd -q -T2 -f --rm "$M/$n" -o "$M/$n.zst"
+done
+(cd "$M" && if ls *.zst >/dev/null 2>&1; then sha256sum *.zst > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST; fi)
+(cd "$D" && sha256sum *.zst ROWCOUNTS > MANIFEST.tmp && mv MANIFEST.tmp MANIFEST)
+find /opt/catalyst/backup -mindepth 1 -maxdepth 1 -type d -name '20??-??-??' -mtime +1 -exec rm -rf {} +
+du -sh "$D"

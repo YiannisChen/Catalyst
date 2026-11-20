@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "note": "Source registry of the data layer (docs/data/inventory.md). Collectors, the deploy script, the health report and the monitor read it; packages/data/tests/ingestion/test_sources.py keeps it, the systemd units and the monitor consistent. status: enabled | trial | disabled | planned (only enabled and trial are run and checked). tier: 1 = mail at once (data correctness, or attribution as a whole fails); 2 = in the daily summary only; 3 = logged only. expected_hours: the usual interval between completed requests (null = judged otherwise, or on demand). key: the health report's source key in that store (fnmatch pattern). since: when the source went live on the server (a missing store or a source without ledger rows is not a problem before since + the silent limit). time_reference: an independent source for the publication time (required for every active source of category news, press_release or sec).",
+  "stores": {
+    "daily": "/opt/catalyst/repo/data/m9/news_bodies_v2.sqlite3",
+    "market": "/opt/catalyst/repo/data/m9/market_context.sqlite3",
+    "alpaca_news": "/opt/catalyst/archive/alpaca_news.sqlite3"
+  },
+  "sources": [
+    {
+      "id": "daily:price_bars",
+      "store": "market",
+      "key": "daily_price_bars",
+      "status": "planned",
+      "category": "market",
+      "tier": 2,
+      "expected_hours": null,
+      "timers": [],
+      "backfill": true,
+      "since": null,
+      "note": "Daily OHLCV O1 source; start date is set when the collector is deployed."
+    },
+    {
+      "id": "daily:sec",
+      "store": "daily",
+      "key": "sec",
+      "status": "enabled",
+      "category": "sec",
+      "tier": 1,
+      "expected_hours": null,
+      "timers": [
+        "catalyst-daily"
+      ],
+      "backfill": false,
+      "since": "2026-09-01",
+      "note": "SEC 8-K/10-Q bodies of the daily job; judged by the daily-job rules",
+      "time_reference": "EDGAR filing index page 'Accepted' (used); submissions JSON kept for comparison (body_times); earnings exhibits against the Benzinga wire (cross_checks.sec_vs_wire)"
+    },
+    {
+      "id": "daily:finnhub+polygon",
+      "store": "daily",
+      "key": "finnhub+polygon",
+      "status": "enabled",
+      "category": "news",
+      "tier": 1,
+      "expected_hours": null,
+      "timers": [
+        "catalyst-daily"
+      ],
+      "backfill": false,
+      "since": "2026-10-17",
+      "note": "company headlines and bodies of the daily job",
+      "time_reference": "the page's declared time (body_times)"
+    },
+    {
+      "id": "daily:discovery_v2",
+      "store": "daily",
+      "key": "discovery_v2",
+      "status": "enabled",
+      "category": "news",
+      "tier": 1,
+      "expected_hours": null,
+      "timers": [
+        "catalyst-daily"
+      ],
+      "backfill": false,
+      "since": "2026-10-17",
+      "time_reference": "the page's declared time (page_versions)"
+    },
+    {
+      "id": "daily:kitco",
+      "store": "daily",
+      "key": "kitco",
+      "status": "enabled",
+      "category": "news",
+      "tier": 2,
+      "expected_hours": null,
+      "timers": [
+        "catalyst-daily"
+      ],
+      "backfill": false,
+      "since": "2026-09-01",
+      "note": "only on sessions where a gold miner is in scope",
+      "time_reference": "sitemap lastmod against the page's declared time"
+    },
+    {
+      "id": "daily:finnhub",
+      "store": "daily",
+      "key": "finnhub",
+      "status": "disabled",
+      "category": "news",
+      "tier": 3,
+      "expected_hours": null,
+      "timers": [],
+      "backfill": false,
+      "since": null,
+      "note": "replaced by finnhub+polygon on 2026-10-17"
+    },
+    {
+      "id": "daily:discovery",
+      "store": "daily",
+      "key": "discovery",
+      "status": "disabled",
+      "category": "news",
+      "tier": 3,
+      "expected_hours": null,
+      "timers": [],
+      "backfill": false,
+      "since": null,
+      "note": "replaced by discovery_v2"
+    },
+    {
+      "id": "alpaca_news:news:poll",
+      "store": "alpaca_news",
+      "key": "news:poll",
+      "status": "trial",
+      "category": "news",
+      "tier": 2,
+      "expected_hours": 1,
+      "timers": [
+        "catalyst-collect-alpaca-news"
+      ],
+      "backfill": false,
+      "since": "2026-10-21",
+      "note": "Benzinga wire with full text, back to 2015",
+      "time_reference": "Finnhub same headline (known 4 h early for Benzinga) and the 8-K for results (trial Q7, cross_checks)"
+    },
+    {
+      "id": "alpaca_news:backfill",
+      "store": "alpaca_news",
+      "key": "news:backfill*",
+      "status": "enabled",
+      "category": "news",
+      "tier": 3,
+      "expected_hours": null,
+      "timers": [],
+      "backfill": true,
+      "since": "2026-10-21",
+      "note": "on demand",
+      "time_reference": "as news:poll"
+    }
+  ],
+  "infrastructure_timers": {
+    "catalyst-headline-archive": "daily Finnhub company headline archive",
+    "catalyst-daily": "daily job (deploy/deploy.sh, /opt/catalyst/repo)",
+    "catalyst-health": "health report",
+    "catalyst-backup": "nightly backup"
+  }
+}

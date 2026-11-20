@@ -1,0 +1,9 @@
+[Unit]
+Description=Catalyst health report (read-only; pulled by the monitor host)
+
+[Service]
+Type=oneshot
+TimeoutStartSec=5min
+EnvironmentFile=-/opt/catalyst/.env
+Environment=PYTHONPATH=/opt/catalyst/repo/packages/data
+ExecStart=/opt/catalyst/venv/bin/python -m catalyst_data.ingestion.ops.health --out /opt/catalyst/health/health.json

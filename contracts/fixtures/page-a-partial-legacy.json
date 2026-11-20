@@ -1,0 +1,473 @@
+{
+  "presentation": {
+    "note": "API exposes legacy_text; PARTIAL is not a field in the current /view DTO"
+  },
+  "request": {
+    "method": "GET",
+    "params": {
+      "run_id": "19cf478edcd346b3b6c69e73341cd3ed"
+    },
+    "route": "/api/live-runs/{run_id}/view"
+  },
+  "response": {
+    "answer": null,
+    "availability": {
+      "abstention_reason": "not_applicable",
+      "answer": "not_recorded",
+      "cost": "present",
+      "facts": "not_recorded",
+      "policy": "present",
+      "trace": "present"
+    },
+    "cost": {
+      "cost_method": "upper_bound_charged",
+      "cost_usd": 0.039264690000000005,
+      "model_calls": {
+        "analyst": 1,
+        "verifier": 1,
+        "writer": 0
+      },
+      "provider_attempts": 2
+    },
+    "facts": null,
+    "failure": null,
+    "legacy_text": "## SUMMARY\nNEM -7.12% on 2026-02-05; market -1.25%, sector ETF XLB -2.68%, peer median -4.27% across 1 peers, commodity proxy GLD -2.66%. Co-movement computed from closing prices: same direction as the market but much larger; same direction as the sector but much larger; same direction as the peers but much larger; with the commodity proxy GLD. Timing: opening gap -3.02%, open to close -4.23%.\nThe cause lines below quote source documents verbatim; each quote was checked against its cited evidence and the session window. Which sentences were selected, and the cause category, are model judgments.\n\n## CAUSAL_EXPLANATION\n[PRIMARY] (claim_id: claim:79d500c69d7a66ae) “It makes perfect sense that when the products Newmont mines and sells get cheaper, so too would Newmont's stock price.” — The Motley Fool, 2026-02-05 16:39 UTC, https://www.fool.com/investing/2026/02/05/why-newmont-corporation-stock-keeps-falling/ “Long liquidation in the gold and silver futures markets is featured today, as the shorter-term futures traders that became would-be bargain hunters and dip buyers earlier this week may now be getting their fingers burned late this week.” — Kitco News, 2026-02-05 18:08 UTC, https://www.kitco.com/news/article/2026-02-05/silver-sharply-down-leading-gold-lower-too “Commodities also suffered broad-based declines, with silver plunging 13% to $76 an ounce and gold slipping 2% to $4,865 per ounce.” — Benzinga, 2026-02-05 18:15 UTC, https://www.benzinga.com/markets/equities/26/02/50424311/stock-market-news-software-crash-bitcoin-plunges-strategy [citations: web:91e9654f26cec9d254e44c1cc173c882:web_body:0001,web:aafc9d08f783451c5a042d207cace8d7:web_body:0001,web:b526c02d3759c2c1c9eb1e963171c696:web_body:0001,web:f8a0e3bc3d49c0a6be49dc94301cf276:web_body:0001]\n[SECONDARY] (claim_id: claim:93d8a5bda78b0f36) “In trading on Thursday, materials stocks fell by 2.2%.” — Benzinga, 2026-02-05 17:23 UTC, https://www.benzinga.com/markets/market-summary/26/02/50422201/dow-tumbles-over-400-points-bristol-myers-reports-strong-q4-results “U.S. stocks traded lower this morning, with the Nasdaq Composite falling more than 200 points on Thursday.” — Benzinga, 2026-02-05 15:10 UTC, https://www.benzinga.com/markets/market-summary/26/02/50414705/nasdaq-dips-200-points-alphabet-posts-upbeat-earnings [citations: web:92de6b305cb6ba19b225e03e02fef4ef:web_body:0001,web:d5b11ef6adc7e81dbc7ba3e38cd8cbe3:web_body:0001]\n[CONTEXT] (claim_id: claim:e5bf70dcc758ff1d) “That initial plunge was tied to the nomination of Kevin Warsh as the next Federal Reserve chair, a move that eased concerns about central bank independence.” — Benzinga, 2026-02-05 17:52 UTC, https://www.benzinga.com/trading-ideas/movers/26/02/50423227/hycroft-mining-stock-drops-as-gold-and-silver-resume-sell-off [citations: web:21322e955806d2547003f3ea45887491:web_body:0001]\n\n## LIMITATIONS\n- Unresolved material conflict remains between evidence items.\n- Coverage gap: MISSING_PRIMARY_CONFIRMATION for COMPANY_PRIMARY.\n- Coverage gap: MISSING_SECTOR_CONTEXT for SECTOR_NEWS.\n- Coverage gap: MISSING_MACRO_CONTEXT for MACRO_EVENT.\n",
+    "run": {
+      "code_revision": {
+        "dirty": null,
+        "sha": "75cb68b7b4b8b0b36d35ef3f343f2a145d6d2012"
+      },
+      "created_at": "2026-10-09T06:48:54.641697Z",
+      "duration_ms": 20458,
+      "duration_source": "decision_trace",
+      "finished_at": "2026-10-09T06:49:15.444741Z",
+      "force_full": null,
+      "lifecycle": "COMPLETED",
+      "model": {
+        "analyst_model_id": "deepseek-flash",
+        "provider": "deepseek"
+      },
+      "policy": {
+        "corrective_enabled": false,
+        "quote_rules_version": "q1c_quote_rules_v4",
+        "verifier_enabled": true,
+        "verifier_prompt_sha256": "fdc2cf2c6d1574f5e3953d130e20e84dd70ded0045deaa7c30456c07dc4c5ecb",
+        "verifier_version": "primary_verifier_v6"
+      },
+      "run_id": "19cf478edcd346b3b6c69e73341cd3ed",
+      "session_date": "2026-02-05",
+      "ticker": "NEM"
+    },
+    "schema_version": "run_view_v1",
+    "trace": {
+      "final_status": "PARTIAL",
+      "model_calls": {
+        "analyst": 1,
+        "verifier": 1,
+        "writer": 0
+      },
+      "retrieval": {
+        "evidence_in_state": 14,
+        "excluded_from_pack": 0,
+        "facts_in_state": 0,
+        "included_by_content_state": {
+          "FULL_TEXT": 14
+        },
+        "included_in_pack": 14,
+        "inventory": 14,
+        "lead_only": 2,
+        "tasks": [
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 2,
+            "latency_ms": 3008,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:0:9a06cac9bb8c"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 2,
+            "latency_ms": 3006,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:1:ad503a6684d2"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 2,
+            "latency_ms": 2563,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:2:a748e97cba72"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 8,
+            "latency_ms": 2567,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:2:a748e97cba72:peer:GLD"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 8,
+            "latency_ms": 2209,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:2:a748e97cba72:peer:SPY"
+          }
+        ]
+      },
+      "rounds": [
+        {
+          "code_checks": {
+            "gates": [
+              {
+                "detail": null,
+                "gate": "comove",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "subject",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "timing",
+                "result": "no_change"
+              }
+            ],
+            "outcome": {
+              "attribution_type": "EVIDENCE_BACKED_CAUSAL",
+              "final_status": "PARTIAL",
+              "hypotheses": [
+                {
+                  "cause_type": "FUNDAMENTAL_REPRICING",
+                  "id": "hyp:19cf478edcd346b3b6c69e73341cd3ed:1:e0ade9af0604",
+                  "role": "PRIMARY"
+                },
+                {
+                  "cause_type": "SECTOR_MOVE",
+                  "id": "hyp:19cf478edcd346b3b6c69e73341cd3ed:1:944106dca531",
+                  "role": "SECONDARY"
+                },
+                {
+                  "cause_type": "MACRO_EVENT",
+                  "id": "hyp:19cf478edcd346b3b6c69e73341cd3ed:1:93c3d4cd5e99",
+                  "role": "CONTEXT"
+                }
+              ],
+              "research_decision": "READY",
+              "status_ceiling": "PARTIAL"
+            },
+            "quotes": [
+              {
+                "evidence_id": "web:91e9654f26cec9d254e44c1cc173c882:web_body:0001",
+                "hypothesis_ref": "h_commodity_pullback",
+                "kept": true,
+                "rule": "OK",
+                "text": "It makes perfect sense that when the products Newmont mines and sells get cheaper, so too would Newmont's stock price."
+              },
+              {
+                "evidence_id": "web:f8a0e3bc3d49c0a6be49dc94301cf276:web_body:0001",
+                "hypothesis_ref": "h_commodity_pullback",
+                "kept": true,
+                "rule": "OK",
+                "text": "Long liquidation in the gold and silver futures markets is featured today, as the shorter-term futures traders that became would-be bargain hunters and dip buyers earlier this week may now be getting their fingers burned late this week."
+              },
+              {
+                "evidence_id": "web:b526c02d3759c2c1c9eb1e963171c696:web_body:0001",
+                "hypothesis_ref": "h_commodity_pullback",
+                "kept": true,
+                "rule": "OK",
+                "text": "Commodities also suffered broad-based declines, with silver plunging 13% to $76 an ounce and gold slipping 2% to $4,865 per ounce."
+              },
+              {
+                "evidence_id": "web:21322e955806d2547003f3ea45887491:web_body:0001",
+                "hypothesis_ref": "h_commodity_pullback",
+                "kept": false,
+                "rule": "R6_OTHER_SESSION_MOVE",
+                "text": "Spot gold fell 0.7% to $4,926.90 per ounce Thursday, giving back the strong gains from Tuesday and Wednesday, when it jumped 6% and 2%."
+              },
+              {
+                "evidence_id": "web:d5b11ef6adc7e81dbc7ba3e38cd8cbe3:web_body:0001",
+                "hypothesis_ref": "h_sector_materials",
+                "kept": true,
+                "rule": "OK",
+                "text": "In trading on Thursday, materials stocks fell by 2.2%."
+              },
+              {
+                "evidence_id": "web:92de6b305cb6ba19b225e03e02fef4ef:web_body:0001",
+                "hypothesis_ref": "h_sector_materials",
+                "kept": true,
+                "rule": "OK",
+                "text": "U.S. stocks traded lower this morning, with the Nasdaq Composite falling more than 200 points on Thursday."
+              },
+              {
+                "evidence_id": "web:21322e955806d2547003f3ea45887491:web_body:0001",
+                "hypothesis_ref": "h_warsh_macro",
+                "kept": true,
+                "rule": "OK",
+                "text": "That initial plunge was tied to the nomination of Kevin Warsh as the next Federal Reserve chair, a move that eased concerns about central bank independence."
+              }
+            ]
+          },
+          "model_reported": {
+            "analyst": {
+              "evidence_decisions": [
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "web:91e9654f26cec9d254e44c1cc173c882:web_body:0001",
+                  "note": "States NEM down 5.5% intraday and ties the decline to gold and silver prices falling from Jan 28 peaks; the commodity move is the stated cause.",
+                  "reason_code": "COMMODITY_DRIVER",
+                  "supports": [
+                    "h_commodity_pullback"
+                  ]
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "WEAK",
+                  "evidence_id": "web:91e9654f26cec9d254e44c1cc173c882:web_body:0002",
+                  "note": "Valuation/PEG commentary and a buy recommendation; no causal claim about this session's move.",
+                  "reason_code": "VALUATION_OPINION",
+                  "supports": []
+                },
+                {
+                  "contradicts": [
+                    "h_commodity_pullback"
+                  ],
+                  "disposition": "CONTRADICT",
+                  "evidence_id": "web:aafc9d08f783451c5a042d207cace8d7:web_body:0001",
+                  "note": "CIBC raised its gold forecast to $6,000/oz for the year, a bullish gold view that runs against a same-session gold-driven selloff.",
+                  "reason_code": "BULLISH_FORECAST",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "IRRELEVANT",
+                  "evidence_id": "web:64910804b0144a26cbcec70e2ae0bfb7:web_body:0001",
+                  "note": "Bessent remarks on China digital assets; no bearing on NEM's session move.",
+                  "reason_code": "OFF_TOPIC",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "WEAK",
+                  "evidence_id": "web:d48acc72cbc7e3ef0abbd65ed1226c36:web_body:0001",
+                  "note": "China 2025 gold consumption data is structural context, not a driver of this session.",
+                  "reason_code": "STRUCTURAL_DEMAND_DATA",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "web:b526c02d3759c2c1c9eb1e963171c696:web_body:0001",
+                  "note": "Reports broad commodity declines with silver plunging 13% and gold slipping 2%, consistent with the precious-metals driver of NEM's fall.",
+                  "reason_code": "COMMODITY_SELLOFF",
+                  "supports": [
+                    "h_commodity_pullback"
+                  ]
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "web:21322e955806d2547003f3ea45887491:web_body:0001",
+                  "note": "States precious metals pulled back again Thursday, with spot gold and silver lower, and ties the initial plunge to the Warsh Fed nomination.",
+                  "reason_code": "COMMODITY_PULLBACK",
+                  "supports": [
+                    "h_commodity_pullback",
+                    "h_warsh_macro"
+                  ]
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "IRRELEVANT",
+                  "evidence_id": "web:8832f6e43bebb85ea6b667e26d128287:web_body:0001",
+                  "note": "Long-horizon rotation thesis and promotional content; no session-specific cause.",
+                  "reason_code": "THEMATIC_PROMOTION",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "web:f8a0e3bc3d49c0a6be49dc94301cf276:web_body:0001",
+                  "note": "Names long liquidation in gold/silver futures, a firmer dollar and lower crude as the bearish drivers for precious metals that session.",
+                  "reason_code": "LONG_LIQUIDATION",
+                  "supports": [
+                    "h_commodity_pullback"
+                  ]
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "web:d5b11ef6adc7e81dbc7ba3e38cd8cbe3:web_body:0001",
+                  "note": "Reports materials stocks fell 2.2% and broad indices lower, matching the sector/market backdrop for NEM.",
+                  "reason_code": "SECTOR_MATERIALS_DOWN",
+                  "supports": [
+                    "h_sector_materials"
+                  ]
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "IRRELEVANT",
+                  "evidence_id": "web:3bd18bae05d9f31f53967215577dbdf2:web_body:0001",
+                  "note": "Polymarket betting on a Fed chair replacement; no causal link to NEM's session move.",
+                  "reason_code": "OFF_TOPIC",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "IRRELEVANT",
+                  "evidence_id": "web:b9ca130c7440e4f42c1549e093ec862d:web_body:0001",
+                  "note": "Barrick spin-out plan is peer-specific news, not a driver of NEM's move.",
+                  "reason_code": "PEER_COMPANY_NEWS",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "IRRELEVANT",
+                  "evidence_id": "web:c8ce96d5342ca7bda03186edb176f1a9:web_body:0001",
+                  "note": "Retirement-planning human-interest piece; no causal content.",
+                  "reason_code": "OFF_TOPIC",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "web:92de6b305cb6ba19b225e03e02fef4ef:web_body:0001",
+                  "note": "Reports US stocks lower at the open with broad indices down, establishing the market-wide down session.",
+                  "reason_code": "MARKET_DOWN",
+                  "supports": [
+                    "h_sector_materials"
+                  ]
+                }
+              ],
+              "hypotheses": [
+                {
+                  "cause_type": "FUNDAMENTAL_REPRICING",
+                  "magnitude_fit": "STRONG",
+                  "proposed_role": "PRIMARY",
+                  "quotes": [
+                    {
+                      "evidence_id": "web:91e9654f26cec9d254e44c1cc173c882:web_body:0001",
+                      "text": "It makes perfect sense that when the products Newmont mines and sells get cheaper, so too would Newmont's stock price."
+                    },
+                    {
+                      "evidence_id": "web:f8a0e3bc3d49c0a6be49dc94301cf276:web_body:0001",
+                      "text": "Long liquidation in the gold and silver futures markets is featured today, as the shorter-term futures traders that became would-be bargain hunters and dip buyers earlier this week may now be getting their fingers burned late this week."
+                    },
+                    {
+                      "evidence_id": "web:b526c02d3759c2c1c9eb1e963171c696:web_body:0001",
+                      "text": "Commodities also suffered broad-based declines, with silver plunging 13% to $76 an ounce and gold slipping 2% to $4,865 per ounce."
+                    },
+                    {
+                      "evidence_id": "web:21322e955806d2547003f3ea45887491:web_body:0001",
+                      "text": "Spot gold fell 0.7% to $4,926.90 per ounce Thursday, giving back the strong gains from Tuesday and Wednesday, when it jumped 6% and 2%."
+                    }
+                  ],
+                  "ref": "h_commodity_pullback",
+                  "statement": "NEM fell with the precious-metals complex as gold and silver prices dropped sharply on the session, with long liquidation in futures, a firmer dollar and lower crude pressuring the metals.",
+                  "supporting_evidence_ids": [
+                    "web:91e9654f26cec9d254e44c1cc173c882:web_body:0001",
+                    "web:f8a0e3bc3d49c0a6be49dc94301cf276:web_body:0001",
+                    "web:b526c02d3759c2c1c9eb1e963171c696:web_body:0001",
+                    "web:21322e955806d2547003f3ea45887491:web_body:0001"
+                  ]
+                },
+                {
+                  "cause_type": "SECTOR_MOVE",
+                  "magnitude_fit": "PLAUSIBLE",
+                  "proposed_role": "SECONDARY",
+                  "quotes": [
+                    {
+                      "evidence_id": "web:d5b11ef6adc7e81dbc7ba3e38cd8cbe3:web_body:0001",
+                      "text": "In trading on Thursday, materials stocks fell by 2.2%."
+                    },
+                    {
+                      "evidence_id": "web:92de6b305cb6ba19b225e03e02fef4ef:web_body:0001",
+                      "text": "U.S. stocks traded lower this morning, with the Nasdaq Composite falling more than 200 points on Thursday."
+                    }
+                  ],
+                  "ref": "h_sector_materials",
+                  "statement": "NEM's decline was amplified by a broad materials-sector and market-wide down session, with materials stocks down 2.2% and major indices lower.",
+                  "supporting_evidence_ids": [
+                    "web:d5b11ef6adc7e81dbc7ba3e38cd8cbe3:web_body:0001",
+                    "web:92de6b305cb6ba19b225e03e02fef4ef:web_body:0001"
+                  ]
+                },
+                {
+                  "cause_type": "MACRO_EVENT",
+                  "magnitude_fit": "PLAUSIBLE",
+                  "proposed_role": "CONTEXT",
+                  "quotes": [
+                    {
+                      "evidence_id": "web:21322e955806d2547003f3ea45887491:web_body:0001",
+                      "text": "That initial plunge was tied to the nomination of Kevin Warsh as the next Federal Reserve chair, a move that eased concerns about central bank independence."
+                    }
+                  ],
+                  "ref": "h_warsh_macro",
+                  "statement": "The precious-metals pullback that dragged NEM lower traces to the Kevin Warsh Fed-chair nomination, which eased central-bank-independence concerns and triggered a historic metals selloff.",
+                  "supporting_evidence_ids": [
+                    "web:21322e955806d2547003f3ea45887491:web_body:0001"
+                  ]
+                }
+              ],
+              "recommended_status": "SUFFICIENT",
+              "research_decision": "READY"
+            },
+            "verifier": {
+              "called": true,
+              "category": "GROUP_DRIVER",
+              "cause_type": "FUNDAMENTAL_REPRICING",
+              "reason": "The quotes attribute the move to falling gold and silver prices (commodity proxy GLD -2.66%), and NEM fell in the same direction as that commodity group, consistent with the observed co-movement.",
+              "verdict": "SUPPORTED"
+            }
+          },
+          "round": 1
+        }
+      ],
+      "run_id": "19cf478edcd346b3b6c69e73341cd3ed",
+      "schema_version": "decision_trace_v1",
+      "stages": [
+        {
+          "duration_ms": 7984,
+          "stage": "research_and_context_pack",
+          "started_ms": 0
+        },
+        {
+          "duration_ms": 11745,
+          "round": 1,
+          "stage": "evidence_analyst",
+          "started_ms": 7984
+        },
+        {
+          "duration_ms": 710,
+          "round": 1,
+          "stage": "checks_and_verifier",
+          "started_ms": 19729
+        },
+        {
+          "duration_ms": 15,
+          "stage": "claims_and_render",
+          "started_ms": 20441
+        }
+      ],
+      "total_ms": 20458
+    }
+  },
+  "source": {
+    "kind": "real",
+    "run_id": "19cf478edcd346b3b6c69e73341cd3ed",
+    "store": "data/m9/eval_runs/v5_r1m/runtime.sqlite3",
+    "underlying_attribution_status": "PARTIAL"
+  },
+  "state": "PARTIAL legacy run"
+}

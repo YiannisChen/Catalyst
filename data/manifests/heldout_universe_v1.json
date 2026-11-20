@@ -1,0 +1,17 @@
+{
+  "schema_version": "heldout_universe_v1",
+  "note": "Fixed large-cap universe (roughly the S&P 100) by sector, with the SPDR sector ETF used as the sector reference. Chosen before any candidate was computed.",
+  "sectors": {
+    "XLK": ["AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "CRM", "ADBE", "AMD", "INTC", "QCOM", "TXN", "CSCO", "IBM", "ACN", "NOW", "INTU", "AMAT", "MU", "PANW"],
+    "XLC": ["GOOGL", "META", "NFLX", "DIS", "CMCSA", "T", "VZ", "TMUS"],
+    "XLY": ["AMZN", "TSLA", "HD", "MCD", "NKE", "SBUX", "LOW", "BKNG", "TJX", "GM", "F"],
+    "XLP": ["WMT", "COST", "PG", "KO", "PEP", "PM", "MO", "MDLZ", "CL", "TGT"],
+    "XLV": ["UNH", "JNJ", "LLY", "ABBV", "MRK", "PFE", "TMO", "ABT", "DHR", "AMGN", "GILD", "BMY", "CVS", "MDT", "ISRG"],
+    "XLF": ["JPM", "BAC", "WFC", "C", "GS", "MS", "BLK", "SCHW", "AXP", "V", "MA", "PYPL", "USB", "COF"],
+    "XLE": ["XOM", "CVX", "COP", "SLB", "EOG"],
+    "XLI": ["CAT", "DE", "BA", "GE", "HON", "UPS", "RTX", "LMT", "UNP", "MMM"],
+    "XLB": ["LIN", "APD", "NEM", "FCX"],
+    "XLU": ["NEE", "DUK", "SO"],
+    "XLRE": ["AMT", "PLD", "SPG"]
+  }
+}

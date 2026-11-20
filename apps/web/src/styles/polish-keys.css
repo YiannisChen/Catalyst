@@ -1,0 +1,113 @@
+/* Keys and models: semantic classes. */
+@layer components {
+  .models-layout {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+    min-height: 420px;
+  }
+  .models-provider-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 12px;
+    border-right: 1px solid var(--line-100);
+  }
+  .models-provider-list .type-label {
+    margin: 10px 0 4px;
+  }
+  .models-provider {
+    display: grid;
+    grid-template-columns: 8px minmax(0, 1fr) auto;
+    gap: 10px;
+    align-items: center;
+    padding: 9px 12px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--ink-100);
+    text-align: left;
+  }
+  .models-provider:hover,
+  .models-provider.is-selected {
+    background: var(--bg-300);
+  }
+  .models-provider:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+  .models-provider small {
+    color: var(--ink-300);
+  }
+  .models-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--line-200);
+  }
+  .models-dot.is-good {
+    background: var(--up);
+  }
+  .models-dot.is-bad {
+    background: var(--down);
+  }
+  .models-detail {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 14px;
+    padding: 20px 24px;
+  }
+  .models-model-row {
+    display: flex;
+    min-height: 42px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border-bottom: 1px solid var(--line-100);
+    padding: 8px 12px;
+  }
+  .models-model-row:last-child {
+    border-bottom: 0;
+  }
+  .analysis-model-menu {
+    position: absolute;
+    z-index: 60;
+    top: calc(100% + 8px);
+    right: 0;
+    display: flex;
+    width: 340px;
+    flex-direction: column;
+    gap: 10px;
+    border: 1px solid var(--line-200);
+    border-radius: 8px;
+    background: var(--bg-200);
+    padding: 16px;
+    box-shadow: var(--shadow-pop);
+  }
+  .analysis-model-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-top: 1px solid var(--line-100);
+    padding-top: 10px;
+  }
+  .analysis-model-options label {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    color: var(--ink-200);
+  }
+  @media (max-width: 760px) {
+    .models-layout {
+      grid-template-columns: 1fr;
+    }
+    .models-provider-list {
+      border-right: 0;
+      border-bottom: 1px solid var(--line-100);
+    }
+  }
+  .models-model-row .settings-link:disabled {
+    color: var(--ink-300);
+    cursor: not-allowed;
+  }
+}

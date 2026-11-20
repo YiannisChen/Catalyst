@@ -1,0 +1,17 @@
+#!/bin/bash
+# Forced command for the monitor's key in /root/.ssh/authorized_keys (from the monitor host only, no pty, no
+# forwarding). The monitor can read the health report and the nightly backups; nothing else.
+set -euo pipefail
+cmd=${SSH_ORIGINAL_COMMAND:-}
+case "$cmd" in
+  health)
+    exec cat /opt/catalyst/health/health.json ;;
+  backup-list)
+    cd /opt/catalyst/backup && exec find . -mindepth 2 -maxdepth 2 -type f \( -name '*.zst' -o -name MANIFEST -o -name ROWCOUNTS \) -printf '%P %s\n' ;;
+  backup-get\ *)
+    f=${cmd#backup-get }
+    [[ $f =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}/([A-Za-z0-9_.-]+\.sqlite3\.zst|MANIFEST|ROWCOUNTS)$ || $f =~ ^minute/(minute_[0-9]{4}-[0-9]{2}\.sqlite3\.zst|MANIFEST)$ ]] || { echo "denied" >&2; exit 2; }
+    exec cat "/opt/catalyst/backup/$f" ;;
+  *)
+    echo "denied" >&2; exit 2 ;;
+esac

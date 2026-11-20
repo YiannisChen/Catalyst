@@ -1,0 +1,109 @@
+{
+  "description": "运行失败，已推送的回答被作废：answer.ready(provisional) → run.failed(顶层 failure_code) → view 无回答；查询 DTO 仍用 failure.code",
+  "events": [
+    {
+      "schema_version": "v1",
+      "run_id": "a1000000000000000000000000000006",
+      "sequence": 11,
+      "event_type": "answer.ready",
+      "emitted_at": "2026-10-19T09:00:11Z",
+      "payload": {
+        "provisional": true,
+        "answer_snapshot": {
+          "schema_version": "answer_snapshot_v2",
+          "run_id": "a1000000000000000000000000000006",
+          "ticker": "ACME",
+          "session_date": "2026-10-16",
+          "headline": "ACME 上涨 2.33%，大盘下跌 1.11%。",
+          "outcome": "ANSWERED",
+          "status": "PARTIAL",
+          "scope_note": "结论只到事件层面：指出是哪件事，不说明这件事中哪一部分、在多大程度上推动了股价。",
+          "tier": "T3",
+          "tier_reason": "涨幅 2.33% 与大盘反向（大盘 −1.11%），不是跟随大盘的普通波动。",
+          "cascade_stage": 1,
+          "stage_label": "当日检索",
+          "basis": "REPORTED_ATTRIBUTION",
+          "basis_text": "有来源明确归因：来源报道把它作为这次变动的原因。",
+          "primary": {
+            "event_type": "ANALYST_ACTION",
+            "scope": "ISSUER",
+            "event_date": "2026-10-16",
+            "quotes": [
+              {
+                "text": "ACME shares rose on Friday after Example Securities raised its price target on the company.",
+                "publisher": "Example News",
+                "publisher_family": "example_news",
+                "published_at": "2026-10-16T16:44:45Z",
+                "published_precision": "second",
+                "url": "https://news.example.com/acme-price-target",
+                "evidence_id": "ext_0001"
+              }
+            ]
+          },
+          "secondary": null,
+          "facts": {
+            "target_return_pct": 2.33,
+            "market": {
+              "return_pct": -1.11,
+              "relation": "OPPOSITE_DIRECTION"
+            },
+            "sector": {
+              "ticker": "XLF",
+              "return_pct": 0.45
+            },
+            "peers": {
+              "median_return_pct": 0.9,
+              "relation": "SAME_DIRECTION"
+            },
+            "gap_return_pct": 0.97,
+            "filings": []
+          },
+          "window": {
+            "information_window_start_at": "2026-10-15T20:00:00Z",
+            "cutoff_at": "2026-10-16T20:00:00Z",
+            "session_open_at": "2026-10-16T13:30:00Z"
+          },
+          "retrospective": {
+            "is_retrospective": false,
+            "collected_at": "2026-10-17T13:10:00Z",
+            "note": null
+          },
+          "data_gaps": [],
+          "update_notice": null,
+          "limitations": []
+        }
+      }
+    },
+    {
+      "schema_version": "v1",
+      "run_id": "a1000000000000000000000000000006",
+      "sequence": 12,
+      "event_type": "run.failed",
+      "emitted_at": "2026-10-19T09:00:12Z",
+      "payload": {
+        "failure_code": "TIMEOUT",
+        "stage": "EXECUTION",
+        "retryable": false,
+        "safe_message": "运行超过时间上限",
+        "provisional_output_invalidated": true
+      }
+    }
+  ],
+  "view_after": {
+    "schema_version": "run_view_v2",
+    "run": {
+      "run_id": "a1000000000000000000000000000006",
+      "lifecycle": "FAILED"
+    },
+    "answer": null,
+    "failure": {
+      "code": "TIMEOUT",
+      "message": "运行超过时间上限"
+    },
+    "availability": {
+      "answer": "not_applicable",
+      "trace": "present",
+      "cost": "present"
+    }
+  }
+}

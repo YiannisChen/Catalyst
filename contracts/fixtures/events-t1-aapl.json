@@ -1,0 +1,18 @@
+{
+  "request": {
+    "kind": "sse-events",
+    "method": "GET",
+    "params": {
+      "run_id": "76f91456158d4c3fa1646261ebb65ead"
+    },
+    "route": "/api/live-runs/{run_id}/stream"
+  },
+  "response_file": "events-t1-aapl.jsonl",
+  "source": {
+    "endpoint": "GET /api/live-runs/{run_id}/stream",
+    "kind": "real",
+    "run_id": "76f91456158d4c3fa1646261ebb65ead",
+    "store": "data/m9/eval_runs/b3_smoke2/runtime.sqlite3"
+  },
+  "state": "Persisted T1-AAPL SSE event sequence"
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Catalyst monitor: pull-backup (*-*-* 16:00:00 UTC)
+
+[Timer]
+OnCalendar=*-*-* 16:00:00 UTC
+Persistent=true
+Unit=catalyst-monitor-pull-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,413 @@
+from __future__ import annotations
+
+from catalyst_data.retrieval.lexical_display import (
+    CANDIDATE_DEPTH_CAP,
+    DISPLAY_TOP_K,
+)
+
+
+def test_agent_adapter_preserves_typed_provenance():
+    """The V1.1 adapter preserves ticker/representative/index/mode/fusion."""
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.v1_result import (
+        RetrievalResultSet,
+        StageRank,
+        StageScore,
+    )
+
+    hit = _v1_hit(
+        scores=(StageScore(stage="fusion", value=0.123), StageScore(stage="reranked", value=0.5)),
+        ranks=(StageRank(stage="fusion", value=1), StageRank(stage="reranked", value=1)),
+    )
+    result_set = RetrievalResultSet(
+        hits=(hit,),
+        temporal_identity=hit.temporal_identity,
+        data_runtime_identity=hit.data_runtime_identity,
+    )
+
+    class FakeProductionRetriever:
+        def retrieve(self, query, **kwargs):
+            assert query == "why"
+            assert kwargs["requested_manifest_id"] == "a" * 64
+            return result_set
+
+    evidence = AgentRetrieverAdapter(FakeProductionRetriever()).retrieve(
+        "why", ticker="AAPL", cutoff="2026-01-15T21:00:00Z",
+        requested_manifest_id="a" * 64, top_k=DISPLAY_TOP_K, candidate_depth=CANDIDATE_DEPTH_CAP,
+        temporal_identity=hit.temporal_identity,
+    )
+    assert evidence[0].ticker_associations == ("NVDA",)
+    assert evidence[0].representative_document_id == hit.corpus_document_id
+    assert evidence[0].index_manifest_id == hit.data_runtime_identity.dense_index_version
+    assert evidence[0].mode_served == "reranked"
+    assert evidence[0].fusion_score == 0.123
+
+
+def test_agent_adapter_preserves_reranker_provenance():
+    """reranker_score/reranker_rank must survive the V1.1 adapter boundary."""
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.v1_result import (
+        RetrievalResultSet,
+        StageRank,
+        StageScore,
+    )
+
+    hit = _v1_hit(
+        scores=(StageScore(stage="reranked", value=0.97),),
+        ranks=(StageRank(stage="reranked", value=1),),
+    )
+    result_set = RetrievalResultSet(
+        hits=(hit,),
+        temporal_identity=hit.temporal_identity,
+        data_runtime_identity=hit.data_runtime_identity,
+    )
+
+    class FakeProductionRetriever:
+        def retrieve(self, query, **kwargs):
+            return result_set
+
+    evidence = AgentRetrieverAdapter(FakeProductionRetriever()).retrieve(
+        "why", ticker="AAPL", cutoff="2026-01-15T21:00:00Z",
+        requested_manifest_id="a" * 64, top_k=DISPLAY_TOP_K, candidate_depth=CANDIDATE_DEPTH_CAP,
+        temporal_identity=hit.temporal_identity,
+    )
+    assert evidence[0].reranker_score == 0.97
+    assert evidence[0].reranker_rank == 1
+
+
+def test_agent_adapter_preserves_temporal_identity():
+    """The exact validated TemporalIdentity passes through the V1.1 adapter."""
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.v1_result import RetrievalResultSet
+
+    hit = _v1_hit()
+    result_set = RetrievalResultSet(
+        hits=(hit,),
+        temporal_identity=hit.temporal_identity,
+        data_runtime_identity=hit.data_runtime_identity,
+    )
+
+    class FakeProductionRetriever:
+        def retrieve(self, query, **kwargs):
+            return result_set
+
+    evidence = AgentRetrieverAdapter(FakeProductionRetriever()).retrieve(
+        "Why did AAPL move on 2025-07-24?", ticker="AAPL",
+        cutoff="2026-01-06T21:00:00Z",
+        requested_manifest_id="a" * 64, top_k=DISPLAY_TOP_K, candidate_depth=CANDIDATE_DEPTH_CAP,
+        temporal_identity=hit.temporal_identity,
+    )
+    assert evidence[0].temporal_identity == hit.temporal_identity
+    assert evidence[0].temporal_center_date == "2026-01-06"
+
+
+
+def _v1_hit(**overrides):
+    from datetime import datetime, timezone
+
+    from catalyst_data.canonical.identity import DataRuntimeIdentity
+    from catalyst_data.canonical.temporal import TemporalIdentity
+    from catalyst_data.retrieval.v1_result import RetrievalHit, StageRank, StageScore
+
+    temporal = TemporalIdentity(
+        session_date="2026-01-06",
+        market_timezone="America/New_York",
+        session_open_at=datetime(2026, 1, 6, 14, 30, tzinfo=timezone.utc),
+        session_close_at=datetime(2026, 1, 6, 21, 0, tzinfo=timezone.utc),
+        information_window_start_at=datetime(2026, 1, 5, 21, 0, tzinfo=timezone.utc),
+        cutoff_at=datetime(2026, 1, 6, 21, 0, tzinfo=timezone.utc),
+    )
+    runtime = DataRuntimeIdentity(
+        data_snapshot_id="snapshot:7a004",
+        corpus_manifest_id="a" * 64,
+        fts_index_version="build:fts",
+        dense_index_version="1" * 64,
+        embedding_model_revision="emb:1",
+        reranker_revision="rr:1",
+        query_policy_version="qp:v1",
+    )
+    base = dict(
+        evidence_id="chunk:1",
+        canonical_asset_id="v1:asset:1",
+        content_version_id="v1:content:1",
+        corpus_document_id="doc:1",
+        chunk_id="chunk:1",
+        excerpt="NVDA raised guidance at its earnings call.",
+        scores=(StageScore(stage="reranked", value=0.97),),
+        ranks=(StageRank(stage="reranked", value=1),),
+        source_class="reported_news",
+        content_state="FULL_TEXT",
+        eligible_at=datetime(2026, 1, 6, 12, 0, tzinfo=timezone.utc),
+        ticker_scope=("NVDA",),
+        provider="polygon",
+        publisher="Example Wire",
+        dedup_cluster_id="v1:dedup:1",
+        parse_quality="full",
+        retrieval_policy_version="qp:v1",
+        temporal_identity=temporal,
+        data_runtime_identity=runtime,
+        section_key="body",
+        chunk_ordinal=1,
+        asset_type="NEWS",
+        content_hash="c" * 64,
+        material_capability="MATERIAL_CAPABLE",
+        serving_status="body_candidate",
+        temporal_precision="publication_time",
+        independence_group_id="v1:ind:1",
+        canonical_url="https://example.test/nvda",
+        evidence_role="INDEPENDENT_REPORT",
+    )
+    base.update(overrides)
+    return RetrievalHit(**base)
+
+def test_adapter_consumes_v1_hits_with_full_metadata():
+    """AgentRetrieverAdapter consumes the V1.1 hit contract and emits evidence
+    with the complete data-owned metadata; no hardcoded AAPL/provider values."""
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.v1_result import RetrievalResultSet
+
+    hit = _v1_hit()
+    result_set = RetrievalResultSet(
+        hits=(hit,),
+        temporal_identity=hit.temporal_identity,
+        data_runtime_identity=hit.data_runtime_identity,
+    )
+
+    class FakeV1Retriever:
+        def retrieve(self, query, **kwargs):
+            assert query == "why"
+            assert kwargs["requested_manifest_id"] == "a" * 64
+            assert kwargs["temporal_identity"] is hit.temporal_identity
+            return result_set
+
+    evidence = AgentRetrieverAdapter(FakeV1Retriever()).retrieve(
+        "why", ticker="NVDA", cutoff="2026-01-06T21:00:00Z",
+        requested_manifest_id="a" * 64, top_k=DISPLAY_TOP_K, candidate_depth=CANDIDATE_DEPTH_CAP,
+        temporal_identity=hit.temporal_identity,
+    )
+    assert len(evidence) == 1
+    item = evidence[0]
+    assert item.chunk_id == "chunk:1"
+    assert item.canonical_asset_id == "v1:asset:1"
+    assert item.canonical_content_version_id == "v1:content:1"
+    assert item.corpus_document_id == "doc:1"
+    assert item.section_key == "body"
+    assert item.chunk_ordinal == 1
+    assert item.asset_type == "NEWS"
+    assert item.content_hash == "c" * 64
+    assert item.material_capability == "MATERIAL_CAPABLE"
+    assert item.serving_status == "body_candidate"
+    assert item.temporal_precision == "publication_time"
+    assert item.independence_group_id == "v1:ind:1"
+    assert item.independence_status == "KNOWN_GROUP"
+    assert item.canonical_url == "https://example.test/nvda"
+    assert item.publisher == "Example Wire"
+    assert item.evidence_role == "INDEPENDENT_REPORT"
+    assert item.provider == "polygon"
+    assert item.ticker_associations == ("NVDA",)
+    assert item.temporal_identity == hit.temporal_identity
+    assert item.data_runtime_identity == hit.data_runtime_identity
+
+
+def test_adapter_does_not_infer_observation_from_lossy_v1_only_retriever():
+    """A V1-only retriever cannot truthfully expose stages or final order.
+
+    The converted hit contains a reranked rank, but that does not prove the
+    upstream control-flow stages or a complete candidate inventory. The
+    adapter must preserve that information as unavailable rather than making
+    a lossy observation look authoritative.
+    """
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.v1_result import RetrievalResultSet
+
+    hit = _v1_hit()
+    result_set = RetrievalResultSet(
+        hits=(hit,),
+        temporal_identity=hit.temporal_identity,
+        data_runtime_identity=hit.data_runtime_identity,
+    )
+
+    class FakeV1Retriever:
+        def retrieve(self, query, **kwargs):
+            return result_set
+
+    evidence, observation = AgentRetrieverAdapter(FakeV1Retriever()).retrieve_with_observations(
+        "why", ticker="NVDA", cutoff="2026-01-06T21:00:00Z",
+        requested_manifest_id="a" * 64, temporal_identity=hit.temporal_identity,
+        top_k=DISPLAY_TOP_K, candidate_depth=CANDIDATE_DEPTH_CAP,
+    )
+    assert len(evidence) == 1
+    assert observation.served_mode is None
+    assert observation.ordered_candidate_evidence_ids == ()
+    assert observation.ordered_final_ranked_evidence_ids == ()
+    assert observation.arm_names == ()
+    assert observation.degradation_reasons == ()
+
+
+def test_adapter_derives_independence_status_and_role_from_data():
+    """Unknown lineage and source-role ceiling derive from the hit data."""
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.v1_result import RetrievalResultSet
+
+    hit = _v1_hit(
+        independence_group_id=None,
+        source_class="analysis_opinion",
+        evidence_role="COMMENTARY_LEAD",
+        content_state="TITLE_ONLY",
+        material_capability="LEAD_ONLY",
+    )
+    result_set = RetrievalResultSet(
+        hits=(hit,),
+        temporal_identity=hit.temporal_identity,
+        data_runtime_identity=hit.data_runtime_identity,
+    )
+
+    class FakeV1Retriever:
+        def retrieve(self, query, **kwargs):
+            return result_set
+
+    evidence = AgentRetrieverAdapter(FakeV1Retriever()).retrieve(
+        "why", ticker="NVDA", cutoff="2026-01-06T21:00:00Z",
+        requested_manifest_id="a" * 64, temporal_identity=hit.temporal_identity,
+        top_k=DISPLAY_TOP_K, candidate_depth=CANDIDATE_DEPTH_CAP,
+    )
+    item = evidence[0]
+    assert item.independence_status == "UNKNOWN"
+    assert item.evidence_role == "COMMENTARY_LEAD"
+    assert item.material_capability == "LEAD_ONLY"
+
+
+def test_adapter_v1_evidence_builds_evidence_state_item():
+    """Adapter output builds EvidenceStateItem with all M4-0 metadata intact."""
+    from datetime import datetime, timezone
+
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.v1_result import RetrievalResultSet
+
+    updated_at = datetime(2026, 1, 6, 20, 45, tzinfo=timezone.utc)
+    hit = _v1_hit(provider_updated_at=updated_at)
+    result_set = RetrievalResultSet(
+        hits=(hit,),
+        temporal_identity=hit.temporal_identity,
+        data_runtime_identity=hit.data_runtime_identity,
+    )
+
+    class FakeV1Retriever:
+        def retrieve(self, query, **kwargs):
+            return result_set
+
+    evidence = AgentRetrieverAdapter(FakeV1Retriever()).retrieve(
+        "why", ticker="NVDA", cutoff="2026-01-06T21:00:00Z",
+        requested_manifest_id="a" * 64, temporal_identity=hit.temporal_identity,
+        top_k=DISPLAY_TOP_K, candidate_depth=CANDIDATE_DEPTH_CAP,
+    )
+    state_item = evidence[0].to_evidence_state_item(
+        first_seen_round=1, contributing_task_ids=("research:1:0:abc",)
+    )
+    assert state_item.evidence_id == "chunk:1"
+    assert state_item.canonical_asset_id == "v1:asset:1"
+    assert state_item.canonical_content_version_id == "v1:content:1"
+    assert state_item.corpus_document_id == "doc:1"
+    assert state_item.section_key == "body"
+    assert state_item.chunk_ordinal == 1
+    assert state_item.asset_type == "NEWS"
+    assert state_item.content_hash == "c" * 64
+    assert state_item.material_capability == "MATERIAL_CAPABLE"
+    assert state_item.serving_status == "body_candidate"
+    assert state_item.temporal_precision == "publication_time"
+    assert state_item.independence_group_id == "v1:ind:1"
+    assert state_item.independence_status == "KNOWN_GROUP"
+    assert state_item.canonical_url == "https://example.test/nvda"
+    assert state_item.publisher == "Example Wire"
+    assert state_item.evidence_role == "INDEPENDENT_REPORT"
+    assert state_item.first_seen_round == 1
+    assert state_item.contributing_task_ids == ("research:1:0:abc",)
+    assert state_item.eligible_at == hit.eligible_at
+    assert state_item.provider_updated_at == updated_at
+
+
+def test_adapter_observation_carries_lexical_display_fields():
+    """WP-B B3: the adapter records match_mode/policy/window/centre/build/query
+    hash from the retriever's own observation and the exact query string."""
+    import hashlib
+    from types import SimpleNamespace
+
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.v1_result import RetrievalResultSet
+
+    hit = _v1_hit()
+    result_set = RetrievalResultSet(
+        hits=(hit,),
+        temporal_identity=hit.temporal_identity,
+        data_runtime_identity=hit.data_runtime_identity,
+    )
+    query = "AAPL"
+
+    class FakeLexicalRetriever:
+        def retrieve_with_observation(self, query, **kwargs):  # noqa: A002
+            observation = SimpleNamespace(
+                requested_mode="lexical",
+                served_mode="fts5",
+                match_mode="temporal",
+                policy="temporal_window",
+                temporal_window_days=5,
+                temporal_centre_date="2026-01-15",
+                served_build_id="build:served",
+                ordered_candidate_evidence_ids=("chunk:1",),
+                ordered_final_ranked_evidence_ids=("chunk:1",),
+                rank_changes={},
+                degradation_reasons=(),
+                arm_names=("lexical",),
+            )
+            return SimpleNamespace(result_set=result_set, observation=observation)
+
+    evidence, observation = AgentRetrieverAdapter(
+        FakeLexicalRetriever()
+    ).retrieve_with_observations(
+        query,
+        ticker="NVDA",
+        cutoff="2026-01-06T21:00:00Z",
+        requested_manifest_id="a" * 64,
+        temporal_identity=hit.temporal_identity,
+        top_k=DISPLAY_TOP_K,
+        candidate_depth=CANDIDATE_DEPTH_CAP,
+    )
+    assert len(evidence) == 1
+    assert observation.match_mode == "temporal"
+    assert observation.retrieval_policy == "temporal_window"
+    assert observation.temporal_window_days == 5
+    assert observation.temporal_centre_date == "2026-01-15"
+    assert observation.served_build_id == "build:served"
+    assert observation.query_sha256 == hashlib.sha256(query.encode("utf-8")).hexdigest()
+
+
+def test_lossy_v1_retriever_observation_still_hashes_the_query():
+    """Even the lossy V1-only path records the executed query hash."""
+    import hashlib
+
+    from catalyst_agents.runtime.retrieval_adapter import AgentRetrieverAdapter
+    from catalyst_data.retrieval.v1_result import RetrievalResultSet
+
+    hit = _v1_hit()
+    result_set = RetrievalResultSet(
+        hits=(hit,),
+        temporal_identity=hit.temporal_identity,
+        data_runtime_identity=hit.data_runtime_identity,
+    )
+
+    class FakeV1Retriever:
+        def retrieve(self, query, **kwargs):
+            return result_set
+
+    _, observation = AgentRetrieverAdapter(FakeV1Retriever()).retrieve_with_observations(
+        "why",
+        ticker="NVDA",
+        cutoff="2026-01-06T21:00:00Z",
+        requested_manifest_id="a" * 64,
+        temporal_identity=hit.temporal_identity,
+        top_k=DISPLAY_TOP_K,
+        candidate_depth=CANDIDATE_DEPTH_CAP,
+    )
+    assert observation.match_mode is None
+    assert observation.retrieval_policy is None
+    assert observation.query_sha256 == hashlib.sha256(b"why").hexdigest()

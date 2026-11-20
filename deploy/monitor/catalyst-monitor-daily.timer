@@ -1,0 +1,10 @@
+[Unit]
+Description=Catalyst monitor: daily (*-*-* 14:30:00 UTC)
+
+[Timer]
+OnCalendar=*-*-* 14:30:00 UTC
+Persistent=true
+Unit=catalyst-monitor-daily.service
+
+[Install]
+WantedBy=timers.target

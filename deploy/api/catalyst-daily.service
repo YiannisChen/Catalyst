@@ -1,0 +1,15 @@
+[Unit]
+Description=Catalyst daily market and news update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/catalyst/repo
+EnvironmentFile=/opt/catalyst/.env
+Environment=CATALYST_PREFER_IPV4=1
+Environment=CATALYST_RELAY_URL=http://127.0.0.1:8765
+Environment=CATALYST_RELAY_HOSTS=www.benzinga.com,benzinga.com
+Environment=PYTHONPATH=/opt/catalyst/repo/packages/data:/opt/catalyst/repo/packages/agents
+ExecStart=/opt/catalyst/venv/bin/python -m catalyst_data.ingestion.ops.daily scheduled
+ExecStartPost=/opt/catalyst/repo/deploy/api/restart-if-new-build.sh

@@ -1,0 +1,10 @@
+[Unit]
+Description=Catalyst health report every 10 minutes
+
+[Timer]
+OnCalendar=*:0/10
+Persistent=false
+Unit=catalyst-health.service
+
+[Install]
+WantedBy=timers.target

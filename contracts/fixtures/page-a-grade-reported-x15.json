@@ -1,0 +1,87 @@
+{
+  "source": "derived from real grade_smoke1 x15 Benzinga quote; one-document subset showing the REPORTED contract",
+  "request": {
+    "method": "GET",
+    "params": {
+      "run_id": "72df4293ad534709ba73c024a8e5d70a"
+    },
+    "route": "/api/live-runs/{run_id}/view"
+  },
+  "response": {
+    "run": {
+      "run_id": "72df4293ad534709ba73c024a8e5d70a",
+      "ticker": "NOW",
+      "session_date": "2026-04-10",
+      "lifecycle": "COMPLETED",
+      "created_at": "2026-10-10T10:04:02.325877+00:00",
+      "duration_source": "not_recorded",
+      "model": {},
+      "code_revision": {}
+    },
+    "cost": {},
+    "answer": {
+      "grade": "REPORTED",
+      "grade_label": "Reported by Benzinga.",
+      "outcome": "ANSWERED",
+      "key_sentence": {
+        "text": "ServiceNow Inc (NYSE: NOW ) shares are sliding Friday after UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and sharply reduced his price target from $170 to $100.",
+        "publisher": "Benzinga",
+        "publisher_family": "benzinga",
+        "published_at": "2026-04-10 14:56 UTC",
+        "event_time": "2026-04-10",
+        "r4b_path": "pre_deadline_publication",
+        "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51755149/servicenow-stock-is-taking-a-tumble-whats-happening",
+        "evidence_id": "web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+        "roles": [
+          "ATTRIBUTION",
+          "EVENT"
+        ]
+      },
+      "event_sentence": {
+        "text": "ServiceNow Inc (NYSE: NOW ) shares are sliding Friday after UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and sharply reduced his price target from $170 to $100.",
+        "publisher": "Benzinga",
+        "publisher_family": "benzinga",
+        "published_at": "2026-04-10 14:56 UTC",
+        "event_time": "2026-04-10",
+        "r4b_path": "pre_deadline_publication",
+        "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51755149/servicenow-stock-is-taking-a-tumble-whats-happening",
+        "evidence_id": "web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+        "roles": [
+          "ATTRIBUTION",
+          "EVENT"
+        ]
+      },
+      "reported_by": [
+        {
+          "publisher": "Benzinga",
+          "publisher_family": "benzinga"
+        }
+      ],
+      "sources": [
+        {
+          "claim_id": "claim:a239e47264b67446",
+          "event_time": "2026-04-10",
+          "evidence_id": "web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+          "published_at": "2026-04-10 14:56 UTC",
+          "publisher": "Benzinga",
+          "publisher_family": "benzinga",
+          "r4b_path": "pre_deadline_publication",
+          "role": "PRIMARY",
+          "roles": [
+            "ATTRIBUTION",
+            "EVENT"
+          ],
+          "source_class": "reported_news",
+          "text": "ServiceNow Inc (NYSE: NOW ) shares are sliding Friday after UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and sharply reduced his price target from $170 to $100.",
+          "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51755149/servicenow-stock-is-taking-a-tumble-whats-happening"
+        }
+      ],
+      "headline": "NOW fell 7.58% while its sector rose (XLK +0.39%).",
+      "ticker": "NOW",
+      "session_date": "2026-04-10"
+    },
+    "availability": {
+      "answer": "present"
+    }
+  }
+}

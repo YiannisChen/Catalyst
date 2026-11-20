@@ -1,0 +1,950 @@
+{
+  "request": {
+    "method": "GET",
+    "route": "/api/quality"
+  },
+  "response": {
+    "adjudications": {
+      "count": 7,
+      "items": [
+        {
+          "case": "v26",
+          "decision": "OVERTURN",
+          "short_reason": "A pre-open, company-specific contract event that the sealed label missed: the Pentagon's seven-year framework with Boeing and Lockheed Martin to triple PAC-3 MSE seeker output. Both parties outperformed XLI (+1.67%): BA +4.17%, LMT +2.19%. "
+        },
+        {
+          "case": "v08",
+          "decision": "AMEND_NOTES",
+          "short_reason": "The Wolfe Research upgrade (Peer Perform to Outperform, $210 target) was public before the open. But CVX's excess return is small and shared with peers: XLE +0.78%, COP +1.46%, XOM +0.59%. It is a plausible but unestablished explanation, so"
+        },
+        {
+          "case": "h51",
+          "decision": "OVERTURN",
+          "short_reason": "Jefferies upgraded GM to Buy before the open (target $90 to $99) and also upgraded Ford. GM rose 5.32%, F rose 2.16%, XLY 1.31% and SPY 0.02%. Same-day reports linked the gain to the upgrade. The sealed label's 'momentum' reading missed a d"
+        },
+        {
+          "case": "h35",
+          "decision": "AMEND_NOTES",
+          "short_reason": "The weak Europe registration and China sales reports were public during the session. But a pre-open headline reported TSLA trading higher despite the Europe numbers, and TSLA's underperformance against XLY (-1.66%) came on a broad risk-off "
+        },
+        {
+          "case": "x09",
+          "decision": "AMEND_NOTES",
+          "short_reason": "A same-day Stocktwits piece tied the drop to Meta's Instagram-for-TV expansion on Samsung TVs. But the expansion was already in a June 20 article, and no wire source links it to the June 22 move. Plausible but unestablished."
+        },
+        {
+          "case": "x40",
+          "decision": "AMEND_NOTES",
+          "short_reason": "PM filed an 8-K before the open announcing a new organisational structure and three new reporting segments from 2026. No report links the gain to it, and PM beat MO (+1.13) and KO (+1.02) by only about one point. Plausible but unestablished"
+        },
+        {
+          "case": "x59",
+          "decision": "AMEND_NOTES",
+          "short_reason": "Two in-window candidates the sealed label missed: (1) an 8-K after the Aug 5 close announcing that President and Chief Engineering Officer Srini Tallapragada steps down; (2) pre-market software weakness after Figma flagged surging AI costs."
+        }
+      ],
+      "links": [
+        "docs/plans/2026-10-03-attribution-quality-analysis.md#section-23",
+        "docs/plans/2026-10-08-t4-acceptance-set-v5.md#adjudication-of-abstain-gold-cases-where-the-system-published-2026-10-09"
+      ],
+      "path": "packages/eval/benchmarks/m9_heldout/gold_adjudications_v1.jsonl"
+    },
+    "calibration": {
+      "development": {
+        "pooled": {
+          "accuracy": 0.897,
+          "confusion_judge_by_human": {
+            "MATCH": {
+              "MATCH": 12
+            },
+            "PARTIAL": {
+              "MATCH": 3,
+              "PARTIAL": 2
+            },
+            "UNSUPPORTED": {
+              "UNSUPPORTED": 9
+            },
+            "WRONG": {
+              "MATCH": 1,
+              "WRONG": 12
+            }
+          },
+          "kappa": 0.856,
+          "kappa_linear_weighted": 0.867,
+          "labelled": 39,
+          "n": 39
+        },
+        "sheets": [
+          {
+            "agreement": {
+              "accuracy": 0.85,
+              "confusion_judge_by_human": {
+                "MATCH": {
+                  "MATCH": 5
+                },
+                "PARTIAL": {
+                  "MATCH": 3,
+                  "PARTIAL": 1
+                },
+                "UNSUPPORTED": {
+                  "UNSUPPORTED": 5
+                },
+                "WRONG": {
+                  "WRONG": 6
+                }
+              },
+              "kappa": 0.797,
+              "kappa_linear_weighted": 0.841,
+              "labelled": 20
+            },
+            "key": "data/m9/calibration/v1/calibration_key.codex.v2.json",
+            "n": 20,
+            "sheet": "data/m9/calibration/v1/calibration_sheet_labelled.csv"
+          },
+          {
+            "agreement": {
+              "accuracy": 0.947,
+              "confusion_judge_by_human": {
+                "MATCH": {
+                  "MATCH": 7
+                },
+                "PARTIAL": {
+                  "PARTIAL": 1
+                },
+                "UNSUPPORTED": {
+                  "UNSUPPORTED": 4
+                },
+                "WRONG": {
+                  "MATCH": 1,
+                  "WRONG": 6
+                }
+              },
+              "kappa": 0.923,
+              "kappa_linear_weighted": 0.892,
+              "labelled": 19
+            },
+            "key": "data/m9/calibration/v2/calibration_key.codex.v2.json",
+            "n": 19,
+            "sheet": "data/m9/calibration/v2/calibration_sheet_labelled.csv"
+          }
+        ]
+      },
+      "fresh": {
+        "pooled": {
+          "accuracy": 0.833,
+          "confusion_judge_by_human": {
+            "MATCH": {
+              "MATCH": 5,
+              "PARTIAL": 1
+            },
+            "PARTIAL": {
+              "MATCH": 3,
+              "PARTIAL": 3
+            },
+            "UNSUPPORTED": {
+              "UNSUPPORTED": 6
+            },
+            "WRONG": {
+              "WRONG": 6
+            }
+          },
+          "kappa": 0.778,
+          "kappa_linear_weighted": 0.818,
+          "labelled": 24,
+          "n": 24
+        },
+        "sheets": [
+          {
+            "agreement": {
+              "accuracy": 0.833,
+              "confusion_judge_by_human": {
+                "MATCH": {
+                  "MATCH": 2,
+                  "PARTIAL": 1
+                },
+                "PARTIAL": {
+                  "MATCH": 1,
+                  "PARTIAL": 2
+                },
+                "UNSUPPORTED": {
+                  "UNSUPPORTED": 3
+                },
+                "WRONG": {
+                  "WRONG": 3
+                }
+              },
+              "kappa": 0.778,
+              "kappa_linear_weighted": 0.81,
+              "labelled": 12
+            },
+            "key": "data/m9/calibration/v3/calibration_key.json",
+            "n": 12,
+            "sheet": "data/m9/calibration/v3/calibration_sheet_labelled.csv"
+          },
+          {
+            "agreement": {
+              "accuracy": 0.833,
+              "confusion_judge_by_human": {
+                "MATCH": {
+                  "MATCH": 3
+                },
+                "PARTIAL": {
+                  "MATCH": 2,
+                  "PARTIAL": 1
+                },
+                "UNSUPPORTED": {
+                  "UNSUPPORTED": 3
+                },
+                "WRONG": {
+                  "WRONG": 3
+                }
+              },
+              "kappa": 0.778,
+              "kappa_linear_weighted": 0.826,
+              "labelled": 12
+            },
+            "key": "data/m9/calibration/v4/calibration_key.json",
+            "n": 12,
+            "sheet": "data/m9/calibration/v4/calibration_sheet_labelled.csv"
+          }
+        ]
+      },
+      "links": [
+        "docs/plans/2026-10-03-attribution-quality-analysis.md#section-21",
+        "docs/plans/2026-10-03-attribution-quality-analysis.md#section-22",
+        "docs/plans/2026-10-03-attribution-quality-analysis.md#section-23"
+      ]
+    },
+    "code_revision": "fccca4b2b16b5aab1f8b61949f3a83de3940eeec",
+    "comparisons": [
+      {
+        "a_path": "data/m9/eval_runs/v3a_codex_rv2_score.json",
+        "b_path": "data/m9/eval_runs/v3b_codex_rv2_score.json",
+        "id": "v3_verifier_off_to_on",
+        "links": [
+          "docs/plans/2026-10-03-attribution-quality-analysis.md#section-20"
+        ],
+        "results": {
+          "abstain_accuracy": {
+            "a": 0.212,
+            "b": 0.697,
+            "ci95": [
+              0.222,
+              0.741
+            ],
+            "delta": 0.485,
+            "p_two_sided": 0.002,
+            "verdict": "B higher"
+          },
+          "answered": {
+            "a": 1.0,
+            "b": 0.813,
+            "ci95": [
+              -0.345,
+              -0.058
+            ],
+            "delta": -0.187,
+            "p_two_sided": 0.001,
+            "verdict": "B lower"
+          },
+          "precision": {
+            "a": 0.76,
+            "b": 0.836,
+            "ci95": [
+              -0.005,
+              0.181
+            ],
+            "delta": 0.076,
+            "p_two_sided": 0.075,
+            "verdict": "no detectable difference"
+          },
+          "reference": {
+            "a": 0.593,
+            "b": 0.685,
+            "ci95": [
+              -0.028,
+              0.222
+            ],
+            "delta": 0.092,
+            "p_two_sided": 0.177,
+            "verdict": "no detectable difference"
+          },
+          "shared_cases": 36,
+          "wrong_cause_rate": {
+            "a": 0.376,
+            "b": 0.225,
+            "ci95": [
+              -0.275,
+              -0.045
+            ],
+            "delta": -0.151,
+            "p_two_sided": 0.003,
+            "verdict": "B lower"
+          }
+        }
+      },
+      {
+        "a_path": "data/m9/eval_runs/v4b_codex_rv2_score.json",
+        "b_path": "data/m9/eval_runs/v4c_codex_rv2_score.json",
+        "id": "v4_corrective_on_to_off",
+        "links": [
+          "docs/plans/2026-10-03-attribution-quality-analysis.md#section-20"
+        ],
+        "results": {
+          "abstain_accuracy": {
+            "a": 0.588,
+            "b": 0.722,
+            "ci95": [
+              0.0,
+              0.401
+            ],
+            "delta": 0.134,
+            "p_two_sided": 0.3152,
+            "verdict": "no detectable difference"
+          },
+          "answered": {
+            "a": 0.91,
+            "b": 0.889,
+            "ci95": [
+              -0.076,
+              0.025
+            ],
+            "delta": -0.021,
+            "p_two_sided": 0.576,
+            "verdict": "no detectable difference"
+          },
+          "precision": {
+            "a": 0.741,
+            "b": 0.762,
+            "ci95": [
+              -0.036,
+              0.077
+            ],
+            "delta": 0.021,
+            "p_two_sided": 0.511,
+            "verdict": "no detectable difference"
+          },
+          "reference": {
+            "a": 0.648,
+            "b": 0.685,
+            "ci95": [
+              -0.014,
+              0.097
+            ],
+            "delta": 0.037,
+            "p_two_sided": 0.214,
+            "verdict": "no detectable difference"
+          },
+          "shared_cases": 36,
+          "wrong_cause_rate": {
+            "a": 0.273,
+            "b": 0.224,
+            "ci95": [
+              -0.103,
+              -0.004
+            ],
+            "delta": -0.049,
+            "p_two_sided": 0.012,
+            "verdict": "B lower"
+          }
+        }
+      }
+    ],
+    "generated_at": "2026-10-09T18:18:13+00:00",
+    "inputs": [
+      {
+        "path": "packages/eval/catalyst_eval/m9/quality_inputs_v1.json",
+        "role": "manifest",
+        "sha256": "a94aab957bc372af0bb81c1266316fec5af64167ee7b5ab90f5e7980b0524b1e"
+      },
+      {
+        "path": "data/m9/eval_runs/v3b_codex_rv2_score.json",
+        "role": "v3.score",
+        "sha256": "2866d909fc89288a0ee4df7dd7532dadf915eecc7c29c2ab0432bd595675ea21"
+      },
+      {
+        "path": "data/m9/eval_runs/v3b_codex_rv2_adj_score.json",
+        "role": "v3.adjudicated_score",
+        "sha256": "bef5a648a5be126408792740762c94f880dcda7e3796cd474d0bbe7ca8f04bf9"
+      },
+      {
+        "path": "data/m9/eval_runs/suff_v3.json",
+        "role": "v3.audit",
+        "sha256": "bf44f8d644e2b01613e77520198e070774f1de394fb113e5b79bf2cac1322abe"
+      },
+      {
+        "path": "packages/eval/benchmarks/m9_heldout/gold_v3.jsonl",
+        "role": "v3.gold",
+        "sha256": "7fbfe78d8066cb0213b73bef9bb9d152570387a2a3a4f325048a7f6f26ff5ae3"
+      },
+      {
+        "path": "data/m9/eval_runs/v4c_codex_rv2_score.json",
+        "role": "v4.score",
+        "sha256": "4cbe711844fd8b08d0aef666aa2072aaed2098f80a630dadf5d8676422d26c0d"
+      },
+      {
+        "path": "data/m9/eval_runs/suff_v4_codex.json",
+        "role": "v4.audit",
+        "sha256": "b3bfa688a9d8f86890162b3648d5a2f0b8d40f3a603ddb2460dccd4306d1c94f"
+      },
+      {
+        "path": "packages/eval/benchmarks/m9_heldout/gold_v4.jsonl",
+        "role": "v4.gold",
+        "sha256": "c341a27069920366b8d882edb8ca07c628a8b12e454db94c620820d4c7763bec"
+      },
+      {
+        "path": "data/m9/eval_runs/v5m_codex_rv2_score.json",
+        "role": "v5.score",
+        "sha256": "1f9f805d73948ea50a6d02ec7ed0e7353b80da15cb3c33bd900701fe68c89d9a"
+      },
+      {
+        "path": "data/m9/eval_runs/v5m_codex_rv2_adj_score.json",
+        "role": "v5.adjudicated_score",
+        "sha256": "7d98082b38e49ae89fc02106d4ff9bb8985c2769cb301f854f4a044de7b07643"
+      },
+      {
+        "path": "packages/eval/benchmarks/m9_heldout/gold_v5.jsonl",
+        "role": "v5.gold",
+        "sha256": "a40a21848ed6b9b614733b3cf9781720f4dfd67b84429ae2e11d49dfefe2fc49"
+      },
+      {
+        "path": "data/m9/eval_runs/v3a_codex_rv2_score.json",
+        "role": "v3_verifier_off_to_on.a",
+        "sha256": "dafbeb9438d16a5d23ce7e9d37ba7f9df457683d25f8fd31465e44c53a01a61c"
+      },
+      {
+        "path": "data/m9/eval_runs/v4b_codex_rv2_score.json",
+        "role": "v4_corrective_on_to_off.a",
+        "sha256": "28bb4275b95cccd9c88c8cee975b52b171b3be5707980182e6dd015da9358962"
+      },
+      {
+        "path": "data/m9/calibration/v1/calibration_sheet_labelled.csv",
+        "role": "calibration.development.1.sheet",
+        "sha256": "e38a0411cbbad9642b3106a1dbacf69f25bb0be8a174d2b9c610043ca0320e71"
+      },
+      {
+        "path": "data/m9/calibration/v1/calibration_key.codex.v2.json",
+        "role": "calibration.development.1.key",
+        "sha256": "19fd440dd85048ce8fc3ce87316ffb10bc1bab4a91761bd6f475f6c9229d40f5"
+      },
+      {
+        "path": "data/m9/calibration/v2/calibration_sheet_labelled.csv",
+        "role": "calibration.development.2.sheet",
+        "sha256": "d538369d1841cbfb1bda642de27777e7be25940e6f49b36626f7d1bb430441a8"
+      },
+      {
+        "path": "data/m9/calibration/v2/calibration_key.codex.v2.json",
+        "role": "calibration.development.2.key",
+        "sha256": "d069fa776b4ad05c6ebc45461fdf1a4440999af757d124621304405dffa89d0e"
+      },
+      {
+        "path": "data/m9/calibration/v3/calibration_sheet_labelled.csv",
+        "role": "calibration.fresh.1.sheet",
+        "sha256": "19764e0243f3a9c98d37489081c93f479dabc8ba2085eff4158ec5130a9d3621"
+      },
+      {
+        "path": "data/m9/calibration/v3/calibration_key.json",
+        "role": "calibration.fresh.1.key",
+        "sha256": "bcb517ce304b98a23bb0b4896ca414c78b867fe6200b5a189754684f6811a51e"
+      },
+      {
+        "path": "data/m9/calibration/v4/calibration_sheet_labelled.csv",
+        "role": "calibration.fresh.2.sheet",
+        "sha256": "ef8140dce19018fc29b7e2b55416c55de9c681569fc85debdb68fa068a2be62c"
+      },
+      {
+        "path": "data/m9/calibration/v4/calibration_key.json",
+        "role": "calibration.fresh.2.key",
+        "sha256": "3db77e0c31cefa97cf6053cf460ca2e8561fbf4ff81539434962b479ca84e84a"
+      },
+      {
+        "path": "packages/eval/benchmarks/m9_heldout/gold_adjudications_v1.jsonl",
+        "role": "adjudications",
+        "sha256": "a1bef1443d5b5a2d8db46e550eaf3ea1e35c9881b4ee74606d255e3380aa4b11"
+      }
+    ],
+    "model": {
+      "analyst_model_id": "deepseek-flash",
+      "provider": "deepseek"
+    },
+    "schema_version": "quality_v1",
+    "sets": [
+      {
+        "adjudicated_sensitivity": {
+          "counts": {
+            "abstain_ok": 23,
+            "abstain_runs": 30,
+            "answer_runs": 78,
+            "answered": 64,
+            "published": 71,
+            "runs": 108,
+            "wrong": 10
+          },
+          "metrics_ci95": {
+            "abstain_accuracy": {
+              "ci95": [
+                0.462,
+                1.0
+              ],
+              "value": 0.767
+            },
+            "answered": {
+              "ci95": [
+                0.667,
+                0.947
+              ],
+              "value": 0.821
+            },
+            "cases": 36,
+            "free_score": {
+              "ci95": [
+                0.704,
+                0.921
+              ],
+              "value": 0.819
+            },
+            "precision": {
+              "ci95": [
+                0.695,
+                0.958
+              ],
+              "value": 0.844
+            },
+            "reference": {
+              "ci95": [
+                0.597,
+                0.852
+              ],
+              "value": 0.727
+            },
+            "runs": 108,
+            "wrong_cause_rate": {
+              "ci95": [
+                0.017,
+                0.286
+              ],
+              "value": 0.141
+            }
+          },
+          "utility": 0.384,
+          "utility_sensitivity": {
+            "wrong=-1": 0.569,
+            "wrong=-3": 0.384,
+            "wrong=-5": 0.199
+          },
+          "utility_weights": {
+            "CORRECT_ABSTAIN": 1.0,
+            "MATCH": 1.0,
+            "MISSED": -0.5,
+            "PARTIAL": 0.5,
+            "RUN_FAILED": -0.5,
+            "UNSUPPORTED": -3.0,
+            "WRONG": -3.0
+          }
+        },
+        "counts": {
+          "abstain_ok": 23,
+          "abstain_runs": 33,
+          "answer_runs": 75,
+          "answered": 61,
+          "published": 71,
+          "runs": 108,
+          "wrong": 16
+        },
+        "gold": "packages/eval/benchmarks/m9_heldout/gold_v3.jsonl",
+        "id": "v3",
+        "judge": {
+          "effort": "medium",
+          "model": "gpt-6.1-sol",
+          "provider": "codex"
+        },
+        "links": [
+          "docs/plans/2026-10-03-attribution-quality-analysis.md#section-20",
+          "docs/plans/2026-10-03-attribution-quality-analysis.md#section-22",
+          "docs/plans/2026-10-03-attribution-quality-analysis.md#section-23"
+        ],
+        "metrics_ci95": {
+          "abstain_accuracy": {
+            "ci95": [
+              0.4,
+              0.958
+            ],
+            "value": 0.697
+          },
+          "answered": {
+            "ci95": [
+              0.655,
+              0.942
+            ],
+            "value": 0.813
+          },
+          "cases": 36,
+          "free_score": {
+            "ci95": [
+              0.639,
+              0.898
+            ],
+            "value": 0.778
+          },
+          "precision": {
+            "ci95": [
+              0.683,
+              0.956
+            ],
+            "value": 0.836
+          },
+          "reference": {
+            "ci95": [
+              0.546,
+              0.815
+            ],
+            "value": 0.685
+          },
+          "runs": 108,
+          "wrong_cause_rate": {
+            "ci95": [
+              0.075,
+              0.4
+            ],
+            "value": 0.225
+          }
+        },
+        "reference_type": "sealed_gold",
+        "rubric": "v2",
+        "system_policy": {
+          "corrective": "on",
+          "verifier": "on"
+        },
+        "utility": 0.176,
+        "utility_sensitivity": {
+          "wrong=-1": 0.472,
+          "wrong=-3": 0.176,
+          "wrong=-5": -0.12
+        },
+        "utility_weights": {
+          "CORRECT_ABSTAIN": 1.0,
+          "MATCH": 1.0,
+          "MISSED": -0.5,
+          "PARTIAL": 0.5,
+          "RUN_FAILED": -0.5,
+          "UNSUPPORTED": -3.0,
+          "WRONG": -3.0
+        }
+      },
+      {
+        "counts": {
+          "abstain_ok": 13,
+          "abstain_runs": 18,
+          "answer_runs": 90,
+          "answered": 80,
+          "published": 85,
+          "runs": 108,
+          "wrong": 19
+        },
+        "gold": "packages/eval/benchmarks/m9_heldout/gold_v4.jsonl",
+        "id": "v4",
+        "judge": {
+          "effort": "medium",
+          "model": "gpt-6.1-sol",
+          "provider": "codex"
+        },
+        "links": [
+          "docs/plans/2026-10-03-attribution-quality-analysis.md#section-20",
+          "docs/plans/2026-10-03-attribution-quality-analysis.md#section-22",
+          "docs/plans/2026-10-03-attribution-quality-analysis.md#section-23"
+        ],
+        "metrics_ci95": {
+          "abstain_accuracy": {
+            "ci95": [
+              0.333,
+              1.0
+            ],
+            "value": 0.722
+          },
+          "answered": {
+            "ci95": [
+              0.774,
+              0.978
+            ],
+            "value": 0.889
+          },
+          "cases": 36,
+          "free_score": {
+            "ci95": [
+              0.662,
+              0.889
+            ],
+            "value": 0.778
+          },
+          "precision": {
+            "ci95": [
+              0.618,
+              0.895
+            ],
+            "value": 0.762
+          },
+          "reference": {
+            "ci95": [
+              0.542,
+              0.819
+            ],
+            "value": 0.685
+          },
+          "runs": 108,
+          "wrong_cause_rate": {
+            "ci95": [
+              0.087,
+              0.386
+            ],
+            "value": 0.224
+          }
+        },
+        "reference_type": "sealed_gold",
+        "rubric": "v2",
+        "system_policy": {
+          "corrective": "off",
+          "verifier": "on"
+        },
+        "utility": 0.111,
+        "utility_sensitivity": {
+          "wrong=-1": 0.463,
+          "wrong=-3": 0.111,
+          "wrong=-5": -0.241
+        },
+        "utility_weights": {
+          "CORRECT_ABSTAIN": 1.0,
+          "MATCH": 1.0,
+          "MISSED": -0.5,
+          "PARTIAL": 0.5,
+          "RUN_FAILED": -0.5,
+          "UNSUPPORTED": -3.0,
+          "WRONG": -3.0
+        }
+      },
+      {
+        "adjudicated_sensitivity": {
+          "counts": {
+            "abstain_ok": 44,
+            "abstain_runs": 59,
+            "answer_runs": 120,
+            "answered": 86,
+            "published": 101,
+            "runs": 180,
+            "wrong": 24
+          },
+          "metrics_ci95": {
+            "abstain_accuracy": {
+              "ci95": [
+                0.551,
+                0.919
+              ],
+              "value": 0.746
+            },
+            "answered": {
+              "ci95": [
+                0.581,
+                0.842
+              ],
+              "value": 0.717
+            },
+            "cases": 60,
+            "precision": {
+              "ci95": [
+                0.567,
+                0.836
+              ],
+              "value": 0.709
+            },
+            "reference": {
+              "ci95": [
+                0.492,
+                0.706
+              ],
+              "value": 0.6
+            },
+            "runs": 180,
+            "wrong_cause_rate": {
+              "ci95": [
+                0.108,
+                0.4
+              ],
+              "value": 0.238
+            }
+          },
+          "utility": 0.103,
+          "utility_sensitivity": {
+            "wrong=-1": 0.369,
+            "wrong=-3": 0.103,
+            "wrong=-5": -0.164
+          },
+          "utility_weights": {
+            "CORRECT_ABSTAIN": 1.0,
+            "MATCH": 1.0,
+            "MISSED": -0.5,
+            "PARTIAL": 0.5,
+            "RUN_FAILED": -0.5,
+            "UNSUPPORTED": -3.0,
+            "WRONG": -3.0
+          }
+        },
+        "counts": {
+          "abstain_ok": 44,
+          "abstain_runs": 59,
+          "answer_runs": 120,
+          "answered": 86,
+          "published": 101,
+          "runs": 180,
+          "wrong": 30
+        },
+        "gold": "packages/eval/benchmarks/m9_heldout/gold_v5.jsonl",
+        "id": "v5",
+        "judge": {
+          "effort": "medium",
+          "model": "gpt-6.1-sol",
+          "provider": "codex"
+        },
+        "links": [
+          "docs/plans/2026-10-08-t4-acceptance-set-v5.md#final-result-2026-10-09",
+          "docs/plans/2026-10-08-t4-acceptance-set-v5.md#adjudication-of-abstain-gold-cases-where-the-system-published-2026-10-09"
+        ],
+        "metrics_ci95": {
+          "abstain_accuracy": {
+            "ci95": [
+              0.551,
+              0.919
+            ],
+            "value": 0.746
+          },
+          "answered": {
+            "ci95": [
+              0.581,
+              0.842
+            ],
+            "value": 0.717
+          },
+          "cases": 60,
+          "precision": {
+            "ci95": [
+              0.567,
+              0.836
+            ],
+            "value": 0.709
+          },
+          "reference": {
+            "ci95": [
+              0.469,
+              0.692
+            ],
+            "value": 0.583
+          },
+          "runs": 180,
+          "wrong_cause_rate": {
+            "ci95": [
+              0.157,
+              0.451
+            ],
+            "value": 0.297
+          }
+        },
+        "pre_registered_exclusion_sensitivity": {
+          "counts": {
+            "abstain_ok": 44,
+            "abstain_runs": 59,
+            "answer_runs": 105,
+            "answered": 79,
+            "published": 94,
+            "runs": 165,
+            "wrong": 23
+          },
+          "excluded_cases": [
+            "x29",
+            "x45",
+            "x41",
+            "x04",
+            "x31"
+          ],
+          "metrics_ci95": {
+            "abstain_accuracy": {
+              "ci95": [
+                0.556,
+                0.925
+              ],
+              "value": 0.746
+            },
+            "answered": {
+              "ci95": [
+                0.614,
+                0.881
+              ],
+              "value": 0.752
+            },
+            "cases": 55,
+            "precision": {
+              "ci95": [
+                0.647,
+                0.885
+              ],
+              "value": 0.772
+            },
+            "reference": {
+              "ci95": [
+                0.527,
+                0.752
+              ],
+              "value": 0.636
+            },
+            "runs": 165,
+            "wrong_cause_rate": {
+              "ci95": [
+                0.105,
+                0.397
+              ],
+              "value": 0.245
+            }
+          },
+          "utility": 0.136,
+          "utility_sensitivity": {
+            "wrong=-1": 0.415,
+            "wrong=-3": 0.136,
+            "wrong=-5": -0.142
+          },
+          "utility_weights": {
+            "CORRECT_ABSTAIN": 1.0,
+            "MATCH": 1.0,
+            "MISSED": -0.5,
+            "PARTIAL": 0.5,
+            "RUN_FAILED": -0.5,
+            "UNSUPPORTED": -3.0,
+            "WRONG": -3.0
+          }
+        },
+        "reference_type": "sealed_gold",
+        "rubric": "v2",
+        "system_policy": {
+          "corrective": "off",
+          "verifier": "on"
+        },
+        "utility": -0.014,
+        "utility_sensitivity": {
+          "wrong=-1": 0.319,
+          "wrong=-3": -0.014,
+          "wrong=-5": -0.347
+        },
+        "utility_weights": {
+          "CORRECT_ABSTAIN": 1.0,
+          "MATCH": 1.0,
+          "MISSED": -0.5,
+          "PARTIAL": 0.5,
+          "RUN_FAILED": -0.5,
+          "UNSUPPORTED": -3.0,
+          "WRONG": -3.0
+        }
+      }
+    ]
+  },
+  "source": {
+    "kind": "real",
+    "store": "data/m9/quality/quality_v1.json"
+  },
+  "state": "Quality"
+}

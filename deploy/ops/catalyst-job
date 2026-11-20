@@ -1,0 +1,29 @@
+#!/bin/bash
+# Run a one-off job with an explicit completion marker, so a later step depends on a file, not on a (transient)
+# systemd unit's state, which disappears once the unit has finished.
+#   catalyst-job NAME CMD [ARG...]     writes /opt/catalyst/jobs/NAME.started, then NAME.done or NAME.failed
+#   catalyst-job --wait NAME [MAX_S]   blocks until NAME.done (exit 0) or NAME.failed (exit 1); MAX_S: exit 2
+set -u
+D=${CATALYST_JOBS_DIR:-/opt/catalyst/jobs}
+mkdir -p "$D"
+if [ "${1:-}" = "--wait" ]; then
+  name=$2; max=${3:-0}; waited=0
+  while :; do
+    [ -f "$D/$name.done" ] && exit 0
+    [ -f "$D/$name.failed" ] && exit 1
+    [ "$max" -gt 0 ] && [ "$waited" -ge "$max" ] && exit 2
+    sleep 30; waited=$((waited + 30))
+  done
+fi
+name=$1; shift
+rm -f "$D/$name.done" "$D/$name.failed"
+date -u +%FT%TZ > "$D/$name.started"
+finish() {
+  printf '%s exit=%s %s\n' "$(date -u +%FT%TZ)" "$1" "$2" > "$D/$name.tmp"
+  if [ "$1" -eq 0 ]; then mv "$D/$name.tmp" "$D/$name.done"; else mv "$D/$name.tmp" "$D/$name.failed"; fi
+}
+trap 'finish 143 "terminated"; exit 143' TERM INT
+"$@"; rc=$?
+trap - TERM INT
+finish "$rc" ""
+exit "$rc"

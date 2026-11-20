@@ -1,0 +1,21 @@
+#!/bin/bash
+# Shadow run of a collectors commit: the same pollers as production, into stores under /opt/catalyst/shadow/archive,
+# drawing on the same shared request budgets (/opt/catalyst/ratelimit), so production quotas are never exceeded.
+# Compare with shadow_compare.py; switch production only when the shadow is not worse.
+#   catalyst-shadow setup <sha>    check the commit out at /opt/catalyst/shadow/collectors
+#   catalyst-shadow run            one round of the shadowed pollers (a timer runs this hourly at :35)
+set -eu
+S=/opt/catalyst/shadow; A=$S/archive; C=$S/collectors; PY=/opt/catalyst/venv/bin/python
+case "${1:-run}" in
+  setup)
+    mkdir -p $A
+    test -d $C/.git || git clone -q /opt/catalyst/catalyst.git $C
+    cd $C && git fetch -q origin shadow && git checkout -q -f --detach "$2"
+    echo "$2 $(date -u +%FT%TZ)" > $S/SHADOW_SHA ;;
+  run)
+    cd $C
+    set -a; . /opt/catalyst/.env; set +a
+    export PYTHONPATH=$C/packages/data CATALYST_PREFER_IPV4=1 CATALYST_RESILIENCE_DB=$A/resilience.sqlite3 CATALYST_ARCHIVE_DIR=$A
+    $PY -m catalyst_data.ingestion.collectors.alpaca news-poll --db $A/alpaca_news.sqlite3 --minutes 90 >/dev/null || true
+    date -u +%FT%TZ >> $S/runs ;;
+esac

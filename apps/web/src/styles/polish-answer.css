@@ -1,0 +1,145 @@
+/* UI polish (answer): semantic classes for the 1440x900 redesign. */
+@layer components {
+  .polish-answer-tabs {
+    @apply flex items-center justify-between gap-3;
+  }
+
+  .polish-answer-content {
+    @apply flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1;
+  }
+
+  .polish-answer-move-row {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
+  .polish-answer-move-row > :last-child {
+    @apply ml-auto;
+  }
+
+  .polish-answer-move {
+    @apply text-title font-semibold;
+  }
+
+  .polish-answer-cause {
+    @apply flex flex-col gap-2;
+  }
+
+  .polish-answer-title {
+    @apply m-0 text-title text-ink-100;
+  }
+
+  .polish-answer-primary-quote {
+    @apply m-0 border-l-2 border-line-200 pl-3 text-body text-ink-100;
+  }
+
+  .polish-answer-confirmed-title {
+    @apply text-title font-medium;
+  }
+
+  .polish-answer-group {
+    @apply flex flex-col gap-2 border-t border-line-100 pt-3;
+  }
+
+  .polish-answer-group-heading {
+    @apply flex flex-wrap items-baseline justify-between gap-2;
+  }
+
+  .polish-answer-residual {
+    @apply text-body-sm font-semibold;
+  }
+
+  .polish-answer-group-rows {
+    @apply flex flex-col gap-2;
+  }
+
+  .polish-answer-group-row {
+    @apply grid items-center gap-2;
+    grid-template-columns: minmax(0, 7rem) minmax(0, 1fr) minmax(0, 4rem);
+  }
+
+  .polish-answer-bar {
+    @apply relative h-2;
+  }
+
+  .polish-answer-bar::before {
+    content: '';
+    position: absolute;
+    inset-block: -0.25rem;
+    left: 50%;
+    border-left: 1px solid var(--line-200);
+  }
+
+  .polish-answer-bar-fill {
+    @apply absolute top-0 h-2 rounded-sm;
+  }
+
+  .polish-answer-bar-positive {
+    background: var(--up);
+  }
+
+  .polish-answer-bar-negative {
+    background: var(--down);
+  }
+
+  .polish-answer-group-value {
+    @apply text-right text-caption;
+  }
+
+  .polish-answer-section {
+    @apply flex flex-col gap-2 border-t border-line-100 pt-3;
+  }
+
+  .polish-answer-quote {
+    @apply flex flex-col gap-1 border-l-2 border-line-200 pl-3;
+  }
+
+  .polish-answer-quote-selected {
+    border-color: var(--accent);
+  }
+
+  .polish-answer-quote-button {
+    @apply flex flex-col gap-1 border-0 bg-transparent p-0 text-left text-body-sm text-ink-100;
+  }
+
+  .polish-answer-lead {
+    @apply grid gap-2 border-t border-line-100 py-2 text-body-sm text-ink-100;
+    grid-template-columns: 7.5rem minmax(0, 1fr);
+  }
+
+  .polish-answer-lead-copy {
+    @apply flex min-w-0 flex-col gap-1;
+  }
+
+  .polish-answer-details {
+    @apply flex flex-col border-t border-line-100;
+  }
+
+  .polish-answer-detail-toggle {
+    @apply flex w-full items-center justify-between gap-2 border-0 border-b border-line-100 bg-transparent py-2 text-left text-body-sm text-ink-200;
+  }
+
+  .polish-answer-detail-toggle[aria-expanded='true'] svg {
+    transform: rotate(90deg);
+  }
+
+  .polish-answer-filing-list,
+  .polish-answer-timing {
+    @apply m-0 flex list-none flex-col gap-2 border-b border-line-100 py-2 pl-0 text-caption text-ink-300;
+  }
+
+  .polish-answer-filing-list li {
+    @apply flex flex-wrap items-center gap-2;
+  }
+
+  .polish-answer-process-link {
+    @apply w-fit border-0 bg-transparent p-0 text-left text-caption text-ink-300 hover:text-ink-100;
+  }
+
+  .polish-run-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .polish-run-definition {
+    @apply flex min-w-0 flex-col gap-1 border-b border-line-100 pb-2;
+  }
+}

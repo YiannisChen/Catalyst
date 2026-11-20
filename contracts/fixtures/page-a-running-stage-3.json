@@ -1,0 +1,117 @@
+{
+  "presentation": {
+    "trace_event_count": 3
+  },
+  "request": {
+    "method": "GET",
+    "params": {
+      "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16"
+    },
+    "route": "/api/live-runs/{run_id}/view"
+  },
+  "response": {
+    "answer": null,
+    "availability": {
+      "abstention_reason": "not_applicable",
+      "answer": "not_recorded",
+      "cost": "present",
+      "facts": "present",
+      "policy": "present",
+      "trace": "not_recorded"
+    },
+    "cost": {
+      "cost_method": "upper_bound_charged",
+      "cost_usd": 0.039253880000000005,
+      "model_calls": {
+        "analyst": 1,
+        "verifier": 1,
+        "writer": 0
+      },
+      "provider_attempts": 2
+    },
+    "facts": {
+      "commodity": null,
+      "comove_sentence": "Co-movement (computed from closing prices): against the sector; same direction as the peers but much larger. Timing: opening gap -1.00%, open to close -6.65%.",
+      "filings": [],
+      "gap_return_pct": -1.0021155773299206,
+      "market": {
+        "band": "UNKNOWN",
+        "relation": "REFERENCE_FLAT",
+        "residual_pct": -7.5164964836747625,
+        "return_pct": -0.06617805145495703,
+        "ticker": null
+      },
+      "peers": {
+        "band": "DIVERGENT",
+        "count": 4,
+        "items": [
+          {
+            "return_pct": -3.9677723605750725,
+            "ticker": "CRWD"
+          },
+          {
+            "return_pct": -2.612963678040814,
+            "ticker": "GEN"
+          },
+          {
+            "return_pct": -0.5897016645669662,
+            "ticker": "MSFT"
+          },
+          {
+            "return_pct": -6.742924363869152,
+            "ticker": "PANW"
+          }
+        ],
+        "median_return_pct": -3.290368019307943,
+        "relation": "SAME_DIRECTION",
+        "residual_pct": -4.292306515821776
+      },
+      "sector": {
+        "band": "DIVERGENT",
+        "relation": "OPPOSITE_DIRECTION",
+        "residual_pct": -7.969799026306535,
+        "return_pct": 0.3871244911768157,
+        "ticker": "XLK"
+      },
+      "target_return_pct": -7.582674535129719
+    },
+    "failure": null,
+    "legacy_text": null,
+    "run": {
+      "code_revision": {
+        "dirty": null,
+        "sha": "c79c703c824b20f98dc9e247cf50fcbcafedd8a0"
+      },
+      "created_at": "2026-10-09T16:14:54.675722Z",
+      "duration_ms": null,
+      "duration_source": "not_recorded",
+      "finished_at": null,
+      "force_full": null,
+      "lifecycle": "RUNNING",
+      "model": {
+        "analyst_model_id": "deepseek-flash",
+        "provider": "deepseek"
+      },
+      "policy": {
+        "corrective_enabled": false,
+        "quote_rules_version": "q1c_quote_rules_v4",
+        "verifier_enabled": true,
+        "verifier_prompt_sha256": "fdc2cf2c6d1574f5e3953d130e20e84dd70ded0045deaa7c30456c07dc4c5ecb",
+        "verifier_version": "primary_verifier_v6"
+      },
+      "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+      "session_date": "2026-04-10",
+      "ticker": "NOW"
+    },
+    "schema_version": "run_view_v1",
+    "trace": null
+  },
+  "source": {
+    "based_on_run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+    "first_events_used": 3,
+    "kind": "synthetic",
+    "source_events_file": "events-t3-now.jsonl",
+    "store": "data/m9/eval_runs/b5_smoke/runtime.sqlite3"
+  },
+  "state": "Run streaming at stage 3"
+}

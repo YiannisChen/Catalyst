@@ -1,0 +1,10 @@
+[Unit]
+Description=Catalyst archive: Alpaca news, hourly
+
+[Timer]
+OnCalendar=*:12
+Persistent=true
+Unit=catalyst-collect-alpaca-news.service
+
+[Install]
+WantedBy=timers.target

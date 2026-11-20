@@ -1,0 +1,335 @@
+{
+  "request": {
+    "method": "GET",
+    "params": {
+      "run_id": "19197473311449cbb25a4b0599981acc"
+    },
+    "route": "/api/live-runs/{run_id}/view"
+  },
+  "response": {
+    "answer": {
+      "also_sentence": null,
+      "evidence_origin": "web_search",
+      "facts": {
+        "commodity": null,
+        "comove_sentence": "Timing: opening gap -3.16%, open to close -0.42%.",
+        "filings": [],
+        "gap_return_pct": -3.1560475858687598,
+        "market": {
+          "band": "UNKNOWN",
+          "relation": "UNKNOWN",
+          "residual_pct": null,
+          "return_pct": null,
+          "ticker": null
+        },
+        "peers": {
+          "band": "UNKNOWN",
+          "count": 0,
+          "items": [],
+          "median_return_pct": null,
+          "relation": "UNKNOWN",
+          "residual_pct": null
+        },
+        "sector": {
+          "band": "UNKNOWN",
+          "relation": "UNKNOWN",
+          "residual_pct": null,
+          "return_pct": null,
+          "ticker": null
+        },
+        "target_return_pct": -3.558617842120193
+      },
+      "governing_ref": null,
+      "headline": "TSLA fell 3.56%.",
+      "key_sentence": {
+        "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+        "published_at": "2026-04-23 15:00 UTC",
+        "publisher": "24/7 Wall St.",
+        "text": "Shares of Tesla ( NASDAQ:TSLA | TSLA Price Prediction ) are down 4% in Thursday morning trading, changing hands near $370 after the electric vehicle maker’s Q1 2026 report.",
+        "url": "https://247wallst.com/investing/2026/04/23/tesla-slides-4-investors-digest-capex-ramp-tempered-self-driving-outlook/"
+      },
+      "label": "user-selected web source",
+      "limitations": [
+        "Single user-selected web source; not corroborated by a second independent or primary source.",
+        "Coverage gap: MISSING_MACRO_CONTEXT for MACRO_EVENT.",
+        "Coverage gap: MISSING_SECTOR_CONTEXT for SECTOR_NEWS."
+      ],
+      "outcome": "WEB_SOURCE_SUPPORTED",
+      "run_id": "19197473311449cbb25a4b0599981acc",
+      "schema_version": "answer_snapshot_v1",
+      "session_date": "2026-04-23",
+      "sources": [
+        {
+          "domain": "247wallst.com",
+          "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+          "published_at": "2026-04-23 15:00 UTC",
+          "publisher": "24/7 Wall St.",
+          "role": "PRIMARY",
+          "text": "Shares of Tesla ( NASDAQ:TSLA | TSLA Price Prediction ) are down 4% in Thursday morning trading, changing hands near $370 after the electric vehicle maker’s Q1 2026 report.",
+          "url": "https://247wallst.com/investing/2026/04/23/tesla-slides-4-investors-digest-capex-ramp-tempered-self-driving-outlook/"
+        }
+      ],
+      "status": "PARTIAL",
+      "ticker": "TSLA",
+      "tier": "T3",
+      "tier_reason": "A session override applied, so the close alone does not establish an ordinary move.",
+      "window": {
+        "cutoff_at": "2026-04-23T20:00:00+00:00",
+        "information_window_start_at": "2026-04-22T20:00:00+00:00",
+        "session_open_at": "2026-04-23T13:30:00+00:00"
+      }
+    },
+    "availability": {
+      "abstention_reason": "not_applicable",
+      "answer": "present",
+      "cost": "present",
+      "facts": "present",
+      "policy": "present",
+      "trace": "present"
+    },
+    "cost": {
+      "cost_method": "upper_bound_charged",
+      "cost_usd": 0.039195020000000004,
+      "model_calls": {
+        "analyst": 1,
+        "verifier": 1,
+        "writer": 0
+      },
+      "provider_attempts": 2
+    },
+    "facts": {
+      "commodity": null,
+      "comove_sentence": "Timing: opening gap -3.16%, open to close -0.42%.",
+      "filings": [],
+      "gap_return_pct": -3.1560475858687598,
+      "market": {
+        "band": "UNKNOWN",
+        "relation": "UNKNOWN",
+        "residual_pct": null,
+        "return_pct": null,
+        "ticker": null
+      },
+      "peers": {
+        "band": "UNKNOWN",
+        "count": 0,
+        "items": [],
+        "median_return_pct": null,
+        "relation": "UNKNOWN",
+        "residual_pct": null
+      },
+      "sector": {
+        "band": "UNKNOWN",
+        "relation": "UNKNOWN",
+        "residual_pct": null,
+        "return_pct": null,
+        "ticker": null
+      },
+      "target_return_pct": -3.558617842120193
+    },
+    "failure": null,
+    "legacy_text": null,
+    "run": {
+      "code_revision": {
+        "dirty": null,
+        "sha": "cd4f89f8136217340d93cefc3234a2de7f6291ca"
+      },
+      "created_at": "2026-10-09T20:05:00.767061Z",
+      "duration_ms": 13299,
+      "duration_source": "decision_trace",
+      "finished_at": "2026-10-09T20:05:14.262770Z",
+      "force_full": true,
+      "lifecycle": "COMPLETED",
+      "model": {
+        "analyst_model_id": "deepseek-flash",
+        "provider": "deepseek"
+      },
+      "policy": {
+        "corrective_enabled": false,
+        "force_full": true,
+        "quote_rules_version": "q1c_quote_rules_v4",
+        "verifier_enabled": true,
+        "verifier_prompt_sha256": "fdc2cf2c6d1574f5e3953d130e20e84dd70ded0045deaa7c30456c07dc4c5ecb",
+        "verifier_version": "primary_verifier_v6"
+      },
+      "run_id": "19197473311449cbb25a4b0599981acc",
+      "session_date": "2026-04-23",
+      "ticker": "TSLA"
+    },
+    "schema_version": "run_view_v1",
+    "trace": {
+      "final_status": "PARTIAL",
+      "model_calls": {
+        "analyst": 1,
+        "verifier": 1,
+        "writer": 0
+      },
+      "retrieval": {
+        "evidence_in_state": 1,
+        "excluded_from_pack": 0,
+        "facts_in_state": 0,
+        "included_by_content_state": {
+          "FULL_TEXT": 1
+        },
+        "included_in_pack": 1,
+        "inventory": 1,
+        "lead_only": 0,
+        "tasks": [
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 1,
+            "latency_ms": 0,
+            "mode_served": null,
+            "status": "SUCCEEDED",
+            "task_id": "research:1:0:187056047681"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 1,
+            "latency_ms": 0,
+            "mode_served": null,
+            "status": "SUCCEEDED",
+            "task_id": "research:1:1:5f2707f49c18"
+          }
+        ]
+      },
+      "rounds": [
+        {
+          "code_checks": {
+            "gates": [
+              {
+                "detail": null,
+                "gate": "comove",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "subject",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "timing",
+                "result": "no_change"
+              }
+            ],
+            "outcome": {
+              "attribution_type": "EVIDENCE_BACKED_CAUSAL",
+              "final_status": "PARTIAL",
+              "hypotheses": [
+                {
+                  "cause_type": "COMPANY_SPECIFIC_CATALYST",
+                  "id": "hyp:19197473311449cbb25a4b0599981acc:1:2c00c678fee2",
+                  "role": "PRIMARY"
+                }
+              ],
+              "research_decision": "READY",
+              "status_ceiling": "PARTIAL"
+            },
+            "quotes": [
+              {
+                "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+                "hypothesis_ref": "h_capex_guidance_overhang",
+                "kept": true,
+                "rule": "OK",
+                "text": "Shares of Tesla ( NASDAQ:TSLA | TSLA Price Prediction ) are down 4% in Thursday morning trading, changing hands near $370 after the electric vehicle maker’s Q1 2026 report."
+              },
+              {
+                "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+                "hypothesis_ref": "h_capex_guidance_overhang",
+                "kept": false,
+                "rule": "R2_NOT_COMPLETE_SENTENCE",
+                "text": "Tesla’s Q1 2026 capital expenditures reached $2.493 billion, a jump of 67% year over year, tied to AI compute, battery materials, semiconductor manufacturing, and production lines for Cyberca"
+              }
+            ]
+          },
+          "model_reported": {
+            "analyst": {
+              "evidence_decisions": [
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+                  "note": "Single full-text report ties the session decline to the Q1 2026 report: a headline beat on earnings and revenue was overshadowed by an aggressive capex ramp and a tempered near-term autonomous driving roadmap. States the direction (down 4%) and the drivers, so it supports the company-specific catalyst hypothesis.",
+                  "reason_code": "company_event_drives_move",
+                  "supports": [
+                    "h_capex_guidance_overhang",
+                    "h_beat_overshadowed_repricing",
+                    "h_continuation_ytd_weakness"
+                  ]
+                }
+              ],
+              "hypotheses": [
+                {
+                  "cause_type": "COMPANY_SPECIFIC_CATALYST",
+                  "magnitude_fit": "STRONG",
+                  "proposed_role": "PRIMARY",
+                  "quotes": [
+                    {
+                      "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+                      "text": "Shares of Tesla ( NASDAQ:TSLA | TSLA Price Prediction ) are down 4% in Thursday morning trading, changing hands near $370 after the electric vehicle maker’s Q1 2026 report."
+                    },
+                    {
+                      "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+                      "text": "Tesla’s Q1 2026 capital expenditures reached $2.493 billion, a jump of 67% year over year, tied to AI compute, battery materials, semiconductor manufacturing, and production lines for Cyberca"
+                    }
+                  ],
+                  "ref": "h_capex_guidance_overhang",
+                  "statement": "TSLA fell ~3.6% because its Q1 2026 report, despite beating on earnings and revenue, carried two forward-looking negatives: a 67% year-over-year capex jump and a tempered near-term autonomous driving roadmap, which outweighed strong automotive margin expansion and record FSD subscriptions.",
+                  "supporting_evidence_ids": [
+                    "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166"
+                  ]
+                }
+              ],
+              "recommended_status": "PARTIAL",
+              "research_decision": "READY"
+            },
+            "verifier": {
+              "called": true,
+              "category": "COMPANY_NEWS",
+              "cause_type": "COMPANY_SPECIFIC_CATALYST",
+              "primary_proposal_state": "PROPOSED_QUOTES_KEPT",
+              "reason": "The quote reports same-session company news that Tesla fell 4% after its Q1 2026 report, directly linking the earnings release to the stock's move this session.",
+              "verdict": "SUPPORTED"
+            }
+          },
+          "round": 1
+        }
+      ],
+      "run_id": "19197473311449cbb25a4b0599981acc",
+      "schema_version": "decision_trace_v1",
+      "stages": [
+        {
+          "duration_ms": 6,
+          "stage": "research_and_context_pack",
+          "started_ms": 0
+        },
+        {
+          "duration_ms": 12038,
+          "round": 1,
+          "stage": "evidence_analyst",
+          "started_ms": 7
+        },
+        {
+          "duration_ms": 1225,
+          "round": 1,
+          "stage": "checks_and_verifier",
+          "started_ms": 12050
+        },
+        {
+          "duration_ms": 16,
+          "stage": "claims_and_render",
+          "started_ms": 13283
+        }
+      ],
+      "total_ms": 13299
+    }
+  },
+  "source": {
+    "kind": "real",
+    "run_id": "19197473311449cbb25a4b0599981acc",
+    "store": "data/m9/eval_runs/verify_source_smoke2/runtime.sqlite3"
+  },
+  "state": "WEB_SOURCE_SUPPORTED"
+}

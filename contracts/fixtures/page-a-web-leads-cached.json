@@ -1,0 +1,55 @@
+{
+  "request": {
+    "body": {},
+    "method": "POST",
+    "params": {
+      "session_date": "2026-04-23",
+      "ticker": "TSLA"
+    },
+    "route": "/api/sessions/{ticker}/{session_date}/web-leads"
+  },
+  "response": {
+    "cached": true,
+    "credits_used": 0,
+    "excluded": {
+      "off_subject": 0,
+      "post_close": 0,
+      "undated": 4,
+      "unfetched": 6
+    },
+    "label": "web leads — not verified causes",
+    "leads": [
+      {
+        "also_published_by": [
+          "Yahoo Finance"
+        ],
+        "image_url": "https://247wallst.com/wp-content/uploads/2025/01/GettyImages-2190848931-scaled.jpg",
+        "lead_id": "8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+        "mentions_in_title": true,
+        "mentions_subject": true,
+        "published_at": "2026-04-23T15:00:46Z",
+        "publisher": "24/7 Wall St.",
+        "snippet": "* Tesla (TSLA) posted Q1 2026 earnings and revenue beats but capital expenditures surged 67% year over year to $2.493B for AI compute and autonomous vehicle development. * Yet, Tesla’s aggressive spending on autonomous driving and AI infrastructure is rattling investors who focus on near-term free cash flow, especially as the company acknowledged that millions of vehicles with older hardware lack ",
+        "status": "PRE",
+        "time_source": "jsonld.datePublished",
+        "title": "Tesla Slides 4%: Investors Digest Capex Ramp, Tempered Self-Driving Outlook",
+        "url": "https://247wallst.com/investing/2026/04/23/tesla-slides-4-investors-digest-capex-ramp-tempered-self-driving-outlook/"
+      }
+    ],
+    "provider": "tavily",
+    "queries_used": [
+      "Tesla, Inc. analyst upgrade OR downgrade OR price target 2026-04-23",
+      "Tesla, Inc. contract OR government OR regulator OR lawsuit 2026-04-23",
+      "Tesla, Inc. announces 2026-04-23"
+    ],
+    "session_date": "2026-04-23",
+    "ticker": "TSLA"
+  },
+  "source": {
+    "cache_hit": true,
+    "kind": "real",
+    "network_fallback": "disabled",
+    "store": "data/m9/web_search_smoke.sqlite3"
+  },
+  "state": "Cached web leads (no new search)"
+}

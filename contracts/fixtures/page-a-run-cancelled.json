@@ -1,0 +1,441 @@
+{
+  "request": {
+    "method": "GET",
+    "params": {
+      "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16"
+    },
+    "route": "/api/live-runs/{run_id}/view"
+  },
+  "response": {
+    "answer": null,
+    "availability": {
+      "abstention_reason": "not_applicable",
+      "answer": "not_recorded",
+      "cost": "present",
+      "facts": "present",
+      "policy": "present",
+      "trace": "present"
+    },
+    "cost": {
+      "cost_method": "upper_bound_charged",
+      "cost_usd": 0.039253880000000005,
+      "model_calls": {
+        "analyst": 1,
+        "verifier": 1,
+        "writer": 0
+      },
+      "provider_attempts": 2
+    },
+    "facts": {
+      "commodity": null,
+      "comove_sentence": "Co-movement (computed from closing prices): against the sector; same direction as the peers but much larger. Timing: opening gap -1.00%, open to close -6.65%.",
+      "filings": [],
+      "gap_return_pct": -1.0021155773299206,
+      "market": {
+        "band": "UNKNOWN",
+        "relation": "REFERENCE_FLAT",
+        "residual_pct": -7.5164964836747625,
+        "return_pct": -0.06617805145495703,
+        "ticker": null
+      },
+      "peers": {
+        "band": "DIVERGENT",
+        "count": 4,
+        "items": [
+          {
+            "return_pct": -3.9677723605750725,
+            "ticker": "CRWD"
+          },
+          {
+            "return_pct": -2.612963678040814,
+            "ticker": "GEN"
+          },
+          {
+            "return_pct": -0.5897016645669662,
+            "ticker": "MSFT"
+          },
+          {
+            "return_pct": -6.742924363869152,
+            "ticker": "PANW"
+          }
+        ],
+        "median_return_pct": -3.290368019307943,
+        "relation": "SAME_DIRECTION",
+        "residual_pct": -4.292306515821776
+      },
+      "sector": {
+        "band": "DIVERGENT",
+        "relation": "OPPOSITE_DIRECTION",
+        "residual_pct": -7.969799026306535,
+        "return_pct": 0.3871244911768157,
+        "ticker": "XLK"
+      },
+      "target_return_pct": -7.582674535129719
+    },
+    "failure": null,
+    "legacy_text": null,
+    "run": {
+      "code_revision": {
+        "dirty": null,
+        "sha": "c79c703c824b20f98dc9e247cf50fcbcafedd8a0"
+      },
+      "created_at": "2026-10-09T16:14:54.675722Z",
+      "duration_ms": 16587,
+      "duration_source": "decision_trace",
+      "finished_at": "2026-10-09T16:15:11.453292Z",
+      "force_full": null,
+      "lifecycle": "CANCELLED",
+      "model": {
+        "analyst_model_id": "deepseek-flash",
+        "provider": "deepseek"
+      },
+      "policy": {
+        "corrective_enabled": false,
+        "quote_rules_version": "q1c_quote_rules_v4",
+        "verifier_enabled": true,
+        "verifier_prompt_sha256": "fdc2cf2c6d1574f5e3953d130e20e84dd70ded0045deaa7c30456c07dc4c5ecb",
+        "verifier_version": "primary_verifier_v6"
+      },
+      "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+      "session_date": "2026-04-10",
+      "ticker": "NOW"
+    },
+    "schema_version": "run_view_v1",
+    "trace": {
+      "final_status": "PARTIAL",
+      "model_calls": {
+        "analyst": 1,
+        "verifier": 1,
+        "writer": 0
+      },
+      "retrieval": {
+        "evidence_in_state": 8,
+        "excluded_from_pack": 0,
+        "facts_in_state": 0,
+        "included_by_content_state": {
+          "FULL_TEXT": 8
+        },
+        "included_in_pack": 8,
+        "inventory": 8,
+        "lead_only": 0,
+        "tasks": [
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 8,
+            "latency_ms": 1086,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:0:499bbbf506a0"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 8,
+            "latency_ms": 1165,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:1:3a493f7ca6ab"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 8,
+            "latency_ms": 746,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:2:66bba77dbb2e"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 8,
+            "latency_ms": 1363,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:lead:8773fc6ef39e"
+          }
+        ]
+      },
+      "rounds": [
+        {
+          "code_checks": {
+            "gates": [
+              {
+                "detail": null,
+                "gate": "comove",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "subject",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "timing",
+                "result": "no_change"
+              }
+            ],
+            "outcome": {
+              "attribution_type": "EVIDENCE_BACKED_CAUSAL",
+              "final_status": "PARTIAL",
+              "hypotheses": [
+                {
+                  "cause_type": "REPORTING_OR_ANALYST_CONTINUATION",
+                  "id": "hyp:8c2ba2d33e8d46f1b605fc7b48f22b16:1:f92f6d7d9215",
+                  "role": "PRIMARY"
+                },
+                {
+                  "cause_type": "SECTOR_MOVE",
+                  "id": "hyp:8c2ba2d33e8d46f1b605fc7b48f22b16:1:b49c502175b9",
+                  "role": "SECONDARY"
+                },
+                {
+                  "cause_type": "CONTINUATION",
+                  "id": "hyp:8c2ba2d33e8d46f1b605fc7b48f22b16:1:fd3c52348792",
+                  "role": "CONTEXT"
+                }
+              ],
+              "research_decision": "READY",
+              "status_ceiling": "PARTIAL"
+            },
+            "quotes": [
+              {
+                "evidence_id": "web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+                "hypothesis_ref": "h_analyst_downgrade",
+                "kept": true,
+                "rule": "OK",
+                "text": "ServiceNow Inc (NYSE: NOW ) shares are sliding Friday after UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and sharply reduced his price target from $170 to $100."
+              },
+              {
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                "hypothesis_ref": "h_analyst_downgrade",
+                "kept": true,
+                "rule": "OK",
+                "text": "A key additional blow on Friday came from the analyst community : UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and slashed the price target from $170 to $100."
+              },
+              {
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+                "hypothesis_ref": "h_analyst_downgrade",
+                "kept": true,
+                "rule": "OK",
+                "text": "Keirstead warned that the stock could face additional downside as companies shift more of their IT budgets toward AI‑related projects and away from traditional software categories, CNBC reported ."
+              },
+              {
+                "evidence_id": "web:ba201bb207a2dd648b9e921884188856:web_body:0001",
+                "hypothesis_ref": "h_ai_saas_derating",
+                "kept": false,
+                "rule": "R2_NOT_COMPLETE_SENTENCE",
+                "text": "Anthropic’s release of “Claude Code Security,” an AI-driven security product, has rattled investors across the enterprise software and cybersecurity space, sending shares of Cloudflare (NYSE:NET |…"
+              },
+              {
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                "hypothesis_ref": "h_ai_saas_derating",
+                "kept": true,
+                "rule": "OK",
+                "text": "The selloff has been driven by a sharp de‑rating of high‑multiple software companies amid worries that AI could compress pricing power across traditional SaaS."
+              },
+              {
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+                "hypothesis_ref": "h_continuation",
+                "kept": true,
+                "rule": "OK",
+                "text": "Technically, this week's move has smashed through key support levels and flushed out momentum traders, forcing long‑only funds to reassess position sizes after a multiyear run."
+              }
+            ]
+          },
+          "model_reported": {
+            "analyst": {
+              "evidence_decisions": [
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                  "note": "States the session's selloff drivers: AI-driven de-rating of high-multiple software plus the UBS downgrade and price-target cut.",
+                  "reason_code": "COMPANY_SPECIFIC_DRIVER",
+                  "supports": [
+                    "h_analyst_downgrade",
+                    "h_ai_saas_derating"
+                  ]
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+                  "note": "Names the UBS downgrade to Neutral and price-target cut from $170 to $100 as the reason NOW slid Friday.",
+                  "reason_code": "ANALYST_DOWNGRADE",
+                  "supports": [
+                    "h_analyst_downgrade"
+                  ]
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "web:ba201bb207a2dd648b9e921884188856:web_body:0001",
+                  "note": "Anthropic's Claude Code Security release rattled enterprise software and sent NOW sharply lower Friday morning.",
+                  "reason_code": "SECTOR_AI_DISRUPTION",
+                  "supports": [
+                    "h_ai_saas_derating"
+                  ]
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+                  "note": "Explains the downgrade rationale: IT budgets shifting to AI and away from traditional software.",
+                  "reason_code": "ANALYST_RATIONALE",
+                  "supports": [
+                    "h_analyst_downgrade",
+                    "h_continuation"
+                  ]
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "WEAK",
+                  "evidence_id": "web:9b33946e618bfcd3abd78d4ddab87d95:web_body:0001",
+                  "note": "Oversold/support technical commentary; not a causal driver of the decline.",
+                  "reason_code": "TECHNICAL_COMMENTARY",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "WEAK",
+                  "evidence_id": "web:9b33946e618bfcd3abd78d4ddab87d95:web_body:0002",
+                  "note": "Support-level technical commentary; no causal content.",
+                  "reason_code": "TECHNICAL_COMMENTARY",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "IRRELEVANT",
+                  "evidence_id": "web:a89d643653f7ecf36641a8b16d19e433:web_body:0001",
+                  "note": "Prior-session index recap; market was flat this session and does not explain the move.",
+                  "reason_code": "MARKET_RECAP_PRIOR_SESSION",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "IRRELEVANT",
+                  "evidence_id": "web:95a4e0a7b3778ee005a8ec42c3328d84:web_body:0001",
+                  "note": "Author bio and outlet boilerplate.",
+                  "reason_code": "BOILERPLATE",
+                  "supports": []
+                }
+              ],
+              "hypotheses": [
+                {
+                  "cause_type": "REPORTING_OR_ANALYST_CONTINUATION",
+                  "magnitude_fit": "STRONG",
+                  "proposed_role": "PRIMARY",
+                  "quotes": [
+                    {
+                      "evidence_id": "web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+                      "text": "ServiceNow Inc (NYSE: NOW ) shares are sliding Friday after UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and sharply reduced his price target from $170 to $100."
+                    },
+                    {
+                      "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                      "text": "A key additional blow on Friday came from the analyst community : UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and slashed the price target from $170 to $100."
+                    },
+                    {
+                      "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+                      "text": "Keirstead warned that the stock could face additional downside as companies shift more of their IT budgets toward AI‑related projects and away from traditional software categories, CNBC reported ."
+                    }
+                  ],
+                  "ref": "h_analyst_downgrade",
+                  "statement": "UBS downgraded NOW to Neutral and cut its price target from $170 to $100 on AI-budget-shift concerns, driving the session's decline.",
+                  "supporting_evidence_ids": [
+                    "web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+                    "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                    "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002"
+                  ]
+                },
+                {
+                  "cause_type": "SECTOR_MOVE",
+                  "magnitude_fit": "PLAUSIBLE",
+                  "proposed_role": "SECONDARY",
+                  "quotes": [
+                    {
+                      "evidence_id": "web:ba201bb207a2dd648b9e921884188856:web_body:0001",
+                      "text": "Anthropic’s release of “Claude Code Security,” an AI-driven security product, has rattled investors across the enterprise software and cybersecurity space, sending shares of Cloudflare (NYSE:NET |…"
+                    },
+                    {
+                      "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                      "text": "The selloff has been driven by a sharp de‑rating of high‑multiple software companies amid worries that AI could compress pricing power across traditional SaaS."
+                    }
+                  ],
+                  "ref": "h_ai_saas_derating",
+                  "statement": "Anthropic's Claude Code Security release reignited the 'SaaS-pocalypse' fear, de-rating high-multiple software names including NOW.",
+                  "supporting_evidence_ids": [
+                    "web:ba201bb207a2dd648b9e921884188856:web_body:0001",
+                    "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001"
+                  ]
+                },
+                {
+                  "cause_type": "CONTINUATION",
+                  "magnitude_fit": "PLAUSIBLE",
+                  "proposed_role": "CONTEXT",
+                  "quotes": [
+                    {
+                      "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+                      "text": "Technically, this week's move has smashed through key support levels and flushed out momentum traders, forcing long‑only funds to reassess position sizes after a multiyear run."
+                    }
+                  ],
+                  "ref": "h_continuation",
+                  "statement": "NOW extended a multi-session downtrend, with the prior session's decline and momentum-driven selling carrying into this session.",
+                  "supporting_evidence_ids": [
+                    "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002"
+                  ]
+                }
+              ],
+              "recommended_status": "SUFFICIENT",
+              "research_decision": "READY"
+            },
+            "verifier": {
+              "called": true,
+              "category": "COMPANY_NEWS",
+              "cause_type": "REPORTING_OR_ANALYST_CONTINUATION",
+              "primary_proposal_state": "PROPOSED_QUOTES_KEPT",
+              "reason": "The quotes report a same-session UBS analyst downgrade of NOW from Buy to Neutral with a sharply cut price target, which is company-specific rating-change news from this window.",
+              "verdict": "SUPPORTED"
+            }
+          },
+          "round": 1
+        }
+      ],
+      "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+      "schema_version": "decision_trace_v1",
+      "stages": [
+        {
+          "duration_ms": 4330,
+          "stage": "research_and_context_pack",
+          "started_ms": 0
+        },
+        {
+          "duration_ms": 10988,
+          "round": 1,
+          "stage": "evidence_analyst",
+          "started_ms": 4331
+        },
+        {
+          "duration_ms": 1250,
+          "round": 1,
+          "stage": "checks_and_verifier",
+          "started_ms": 15322
+        },
+        {
+          "duration_ms": 10,
+          "stage": "claims_and_render",
+          "started_ms": 16577
+        }
+      ],
+      "total_ms": 16587
+    }
+  },
+  "source": {
+    "based_on_run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+    "kind": "synthetic",
+    "store": "data/m9/eval_runs/b5_smoke/runtime.sqlite3"
+  },
+  "state": "Run cancelled"
+}

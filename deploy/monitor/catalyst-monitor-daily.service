@@ -1,0 +1,9 @@
+[Unit]
+Description=Catalyst monitor: daily
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=90min
+ExecStart=/usr/bin/python3 /opt/catalyst-monitor/monitor.py daily

@@ -1,0 +1,12 @@
+{
+  "cik": "0000320193",
+  "tickers": ["AAPL"],
+  "filings": {
+    "recent": {
+      "accessionNumber": ["0000320193-25-000001"],
+      "filingDate": ["2025-08-15"],
+      "form": ["8-K"],
+      "primaryDocument": ["aapl-20250801.htm"]
+    }
+  }
+}

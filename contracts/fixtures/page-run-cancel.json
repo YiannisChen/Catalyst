@@ -1,0 +1,16 @@
+{
+  "request": {
+    "method": "POST",
+    "route": "/api/live-runs/{run_id}/cancel",
+    "params": {
+      "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16"
+    }
+  },
+  "response": {
+    "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+    "status": "CANCELLED",
+    "acknowledged": true
+  },
+  "source": "synthetic",
+  "state": "Run cancelled"
+}

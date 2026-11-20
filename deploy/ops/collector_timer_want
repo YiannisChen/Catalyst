@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${1:-} == --stdin ]]; then
+  grep -v '^catalyst-daily$' | sed 's/$/.timer/' | grep -v '^catalyst-resilience-retry.timer$'
+else
+  python_bin=${1:-/opt/catalyst/venv/bin/python}
+  PYTHONPATH=packages/data "$python_bin" -m catalyst_data.ingestion.sources timers \
+    | grep -v '^catalyst-daily$' \
+    | sed 's/$/.timer/' \
+    | grep -v '^catalyst-resilience-retry.timer$'
+fi

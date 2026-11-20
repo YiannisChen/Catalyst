@@ -1,0 +1,8 @@
+[Unit]
+Description=Catalyst nightly store backup (sqlite3 .backup + zstd + MANIFEST)
+
+[Service]
+Type=oneshot
+TimeoutStartSec=2h
+Nice=10
+ExecStart=/opt/catalyst/bin/catalyst-backup

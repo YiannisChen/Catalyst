@@ -1,0 +1,138 @@
+/* UI polish (running): semantic classes for the 1440x900 redesign. */
+@layer components {
+  .run-status-badge .badge-dot {
+    animation: run-status-pulse 1.8s ease-out infinite;
+  }
+
+  @keyframes run-status-pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 color-mix(in srgb, var(--info) 0%, transparent);
+    }
+    50% {
+      box-shadow: 0 0 0 4px color-mix(in srgb, var(--info) 24%, transparent);
+    }
+  }
+
+  .run-progress {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: var(--space-1);
+    padding: var(--space-3) var(--space-5) 0;
+  }
+
+  .run-progress-step {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .run-progress-bar {
+    height: 4px;
+    border-radius: var(--radius-full);
+    background: var(--bg-300);
+  }
+
+  .run-progress-label {
+    color: var(--ink-300);
+    font-size: 12px;
+    line-height: 16px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .run-progress-step.is-done .run-progress-bar {
+    background: var(--up);
+  }
+
+  .run-progress-step.is-active .run-progress-bar {
+    background: var(--info);
+  }
+
+  .run-progress-step.is-failed .run-progress-bar {
+    background: var(--down);
+  }
+
+  .run-progress-step.is-pending .run-progress-bar {
+    background: var(--bg-300);
+  }
+
+  .run-progress-step.is-active .run-progress-label {
+    color: var(--ink-100);
+    font-weight: 600;
+  }
+
+  .run-known {
+    padding: var(--space-4) var(--space-5) 0;
+  }
+
+  .run-excess {
+    font-size: 22px;
+    line-height: 28px;
+    font-weight: 600;
+  }
+
+  .run-candidate-card {
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+
+  .run-reading {
+    display: flex;
+    flex-direction: column;
+    border-top: 1px solid var(--line-100);
+    padding-top: var(--space-4);
+  }
+
+  .run-reading-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+    padding-bottom: var(--space-1);
+  }
+
+  .run-reading-row > :first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .run-reading-row {
+    display: grid;
+    grid-template-columns: 8rem max-content minmax(0, 1fr);
+    align-items: baseline;
+    gap: var(--space-2);
+    border-top: 1px solid var(--line-100);
+    padding: var(--space-2) 0;
+    line-height: 19px;
+  }
+
+  .run-reading-publisher,
+  .run-reading-time,
+  .run-reading-state {
+    min-width: 0;
+  }
+
+  .run-reading-publisher {
+    overflow-wrap: anywhere;
+  }
+
+  .run-reading-time {
+    white-space: nowrap;
+  }
+
+  .run-reading-state {
+    font-weight: 400;
+  }
+
+  .run-reading-row:has(.text-accent) .run-reading-state {
+    font-weight: 600;
+  }
+
+  .run-answer-note {
+    border-top: 1px solid var(--line-100);
+    padding: var(--space-3) var(--space-5) var(--space-4);
+  }
+}

@@ -1,0 +1,5 @@
+# Verbatim EDGAR captures retained as test evidence. Their SHA-256 must equal
+# the response_sha256 recorded for the original fetch, so they are never
+# reformatted; exempt them from git's whitespace checks rather than editing
+# the bytes. See packages/data/tests/fixtures/sec/README.md.
+packages/data/tests/fixtures/sec/index_real_*.html -whitespace

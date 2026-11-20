@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_id": "2f5ac9f6df36283403209d792d5f9daa2fdf440777bb9c6ce53176f28fa300cc",
+  "edges": [
+    {
+      "edge_id": "edge-aapl-msft-peer",
+      "from_ticker": "AAPL",
+      "to_ticker": "MSFT",
+      "relationship_type": "peer",
+      "effective_from": "2020-01-01",
+      "effective_to": null,
+      "review_source": "fixture-review",
+      "reviewed_at": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

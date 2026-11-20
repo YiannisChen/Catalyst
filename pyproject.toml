@@ -1,0 +1,39 @@
+# Workspace test entry. Installable code lives in the packages below.
+
+[tool.pytest.ini_options]
+pythonpath = [
+    "packages/api",
+    "packages/agents",
+    "packages/data",
+]
+testpaths = [
+    "packages/agents/tests",
+    "packages/api/tests",
+    "packages/data/tests",
+    "deploy/monitor/tests",
+    "deploy/api/tests",
+    "scripts/tests",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"**/__init__.py" = ["F401"]
+"packages/agents/catalyst_agents/attribution/quotes.py" = ["F401"]
+"packages/data/catalyst_data/corpus/streaming_publication.py" = ["F401"]
+
+[tool.importlinter]
+root_packages = ["catalyst_data", "catalyst_agents", "catalyst_app"]
+
+[[tool.importlinter.contracts]]
+name = "Data stays below agents and API"
+type = "forbidden"
+source_modules = ["catalyst_data"]
+forbidden_modules = ["catalyst_agents", "catalyst_app"]
+
+[[tool.importlinter.contracts]]
+name = "Agents stay below API"
+type = "forbidden"
+source_modules = ["catalyst_agents"]
+forbidden_modules = ["catalyst_app"]

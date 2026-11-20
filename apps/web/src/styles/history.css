@@ -1,0 +1,50 @@
+/* history */
+@layer utilities {
+  .history-ticker-filter {
+    width: calc(var(--space-7) * 4 + var(--space-5));
+  }
+  .history-table {
+    width: 100%;
+    min-width: calc(var(--space-7) * 20);
+    border-collapse: separate;
+    border-spacing: 0;
+    text-align: left;
+    font-size: var(--text-body-sm);
+    line-height: var(--text-body-sm--line-height);
+  }
+  .history-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--bg-100);
+  }
+  .history-table th {
+    height: calc(var(--space-6) + var(--space-1));
+    padding: 0 var(--space-3);
+    border-bottom: 1px solid var(--line-100);
+    color: var(--ink-300);
+    font-size: var(--text-label);
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .history-table td {
+    height: calc(var(--space-6) + var(--space-2));
+    padding: 0 var(--space-3);
+    border-bottom: 1px solid var(--line-100);
+    white-space: nowrap;
+  }
+  .history-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+  .history-table tbody tr {
+    cursor: pointer;
+  }
+  .history-table tbody tr:hover {
+    background: var(--bg-200);
+  }
+  .history-headline {
+    max-width: calc(var(--space-7) * 7 + var(--space-5));
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}

@@ -1,0 +1,129 @@
+/* UI polish (process): semantic classes for the 1440x900 redesign. */
+@layer components {
+  .process-overview > p:first-child {
+    letter-spacing: 0.08em;
+  }
+
+  .process-funnel-box {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+    border: 1px solid var(--line-100);
+    border-radius: 0.5rem;
+    background: var(--bg-300);
+    padding: 0.75rem;
+  }
+
+  .process-funnel-box strong {
+    overflow-wrap: anywhere;
+  }
+
+  .process-funnel-focus {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .process-decisive-card {
+    border-left: 3px solid var(--accent);
+  }
+
+  .process-check-chip {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: 0.375rem;
+    background: var(--bg-300);
+    padding: 0.5rem 0.75rem;
+  }
+
+  .process-check-chip > span:last-child {
+    min-width: 0;
+  }
+
+  .process-read-row {
+    display: grid;
+    grid-template-columns: 7rem minmax(0, 1fr);
+    align-items: center;
+    gap: 0.75rem;
+    border-top: 1px solid var(--line-100);
+    padding: 0.5rem 0;
+  }
+
+  .process-read-heading {
+    color: var(--ink-300);
+    font-size: 0.6875rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+
+  .process-read-decisive {
+    background: var(--accent-soft);
+  }
+
+  .process-read-summary {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .process-more > summary,
+  .process-details > summary {
+    display: flex;
+    width: fit-content;
+    cursor: pointer;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.5rem 0;
+    list-style: none;
+  }
+
+  .process-more > summary::-webkit-details-marker,
+  .process-details > summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .process-more[open] > summary .process-chevron,
+  .process-details[open] > summary .process-chevron {
+    transform: rotate(180deg);
+  }
+
+  .process-detail-line {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 0.75rem;
+    border-top: 1px solid var(--line-100);
+    padding: 0.5rem 0;
+    font-size: 0.75rem;
+  }
+
+  .process-detail-line > * {
+    min-width: 0;
+  }
+
+  .process-check-detail {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: 0.5rem;
+    border-top: 1px solid var(--line-100);
+    padding: 0.5rem 0;
+  }
+
+  @media (max-width: 640px) {
+    .process-funnel-box {
+      padding: 0.5rem;
+    }
+
+    .process-read-row {
+      grid-template-columns: 6rem minmax(0, 1fr);
+      gap: 0.5rem;
+    }
+
+    .process-detail-line {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+  }
+}

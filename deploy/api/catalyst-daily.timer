@@ -1,0 +1,12 @@
+[Unit]
+Description=Catalyst daily update, 11:00 UTC the morning after each weekday session
+
+[Timer]
+# 22:30 UTC was too early: the session's bars were not yet served (2026-10-13 movers FAILED).
+# 11:00 UTC (07:00 New York) has full bars and overnight recaps, before the next open.
+OnCalendar=Tue..Sat *-*-* 11:00:00 UTC
+Persistent=true
+Unit=catalyst-daily.service
+
+[Install]
+WantedBy=timers.target

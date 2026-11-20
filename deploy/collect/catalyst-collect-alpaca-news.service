@@ -1,0 +1,14 @@
+[Unit]
+Description=Catalyst archive: Alpaca news (Benzinga wire, full text), the last 90 minutes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30min
+Nice=10
+WorkingDirectory=/opt/catalyst/collectors
+EnvironmentFile=/opt/catalyst/.env
+Environment=CATALYST_PREFER_IPV4=1
+Environment=PYTHONPATH=/opt/catalyst/collectors/packages/data
+ExecStart=/opt/catalyst/venv/bin/python -m catalyst_data.ingestion.collectors.alpaca news-poll --db /opt/catalyst/archive/alpaca_news.sqlite3 --minutes 90

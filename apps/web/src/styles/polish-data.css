@@ -1,0 +1,150 @@
+/* UI polish (data): semantic classes for the 1440x900 redesign. */
+@layer components {
+  .data-page-header {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+  .data-page-heading {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-5);
+  }
+  .polish-data-tile-stale {
+    border-color: var(--warn);
+  }
+  .polish-data-update-title {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+  .polish-data-update-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  }
+  .polish-data-update-right {
+    border-left: 1px solid var(--line-100);
+  }
+  .data-next-run {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+    white-space: nowrap;
+  }
+  .data-steps-table {
+    table-layout: fixed;
+  }
+  .data-steps-table th,
+  .data-steps-table td {
+    white-space: nowrap;
+  }
+  .data-steps-table th:nth-child(1) {
+    width: 15%;
+  }
+  .data-steps-table th:nth-child(2) {
+    width: 48%;
+  }
+  .data-steps-table th:nth-child(3) {
+    width: 17%;
+  }
+  .data-steps-table th:nth-child(4) {
+    width: 20%;
+  }
+  .polish-data-source-list {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+  }
+  .polish-data-source-row {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: 10px 140px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: var(--space-2);
+    border-top: 1px solid var(--line-100);
+    padding: 6px 0;
+  }
+  .polish-data-source-row > :nth-child(3) {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .polish-data-source-row > :last-child {
+    white-space: nowrap;
+  }
+  .polish-data-run-chart,
+  .polish-data-run-dates {
+    display: grid;
+    grid-template-columns: repeat(14, minmax(0, 1fr));
+    gap: var(--space-2);
+  }
+  .polish-data-run-chart {
+    height: 96px;
+    align-items: end;
+    overflow: hidden;
+  }
+  .polish-data-run-dates {
+    padding-top: var(--space-1);
+    text-align: center;
+    font-size: 11px;
+  }
+  .polish-data-running-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+    white-space: nowrap;
+  }
+  .polish-data-running-title {
+    display: flex;
+    min-width: 0;
+    align-items: baseline;
+    gap: var(--space-2);
+    white-space: nowrap;
+  }
+  .polish-data-step-source {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  @media (max-width: 900px) {
+    .data-page-heading,
+    .polish-data-update-title,
+    .data-next-run,
+    .polish-data-running-heading {
+      flex-wrap: wrap;
+      white-space: normal;
+    }
+    .polish-data-running-title {
+      flex-wrap: wrap;
+      white-space: normal;
+    }
+    .polish-data-update-columns {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .polish-data-update-right {
+      border-top: 1px solid var(--line-100);
+      border-left: 0;
+    }
+    .polish-data-source-row {
+      grid-template-columns: 10px 120px minmax(0, 1fr);
+    }
+    .polish-data-source-row > :last-child {
+      grid-column: 2 / -1;
+    }
+  }
+}
+
+/* cx-table lives in the utilities layer, so this override must too. */
+@layer utilities {
+  /* Step rows stay on one line at 1440; cx-table cells otherwise wrap. */
+  .data-steps-table.cx-table td {
+    white-space: nowrap;
+  }
+  .data-steps-table.cx-table td:nth-child(2) {
+    white-space: normal;
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Explicit legacy cohort manifest",
+  "description": "Identity and structural validation only; source-row reconciliation and rule approval are separate acceptance steps.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "cohort_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^\\S(?:[^\\x00-\\x1f]*\\S)?$"
+    },
+    "source_snapshot": {
+      "type": "object",
+      "properties": {
+        "store_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^\\S(?:[^\\x00-\\x1f]*\\S)?$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "captured_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "tables": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        }
+      },
+      "required": [
+        "store_id",
+        "sha256",
+        "captured_at",
+        "tables"
+      ],
+      "additionalProperties": false
+    },
+    "eligibility_rule": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^\\S(?:[^\\x00-\\x1f]*\\S)?$"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^\\S(?:[^\\x00-\\x1f]*\\S)?$"
+        }
+      },
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "correction_tables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "table_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^\\S(?:[^\\x00-\\x1f]*\\S)?$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "store_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512,
+            "pattern": "^\\S(?:[^\\x00-\\x1f]*\\S)?$"
+          }
+        },
+        "required": [
+          "table_id",
+          "sha256",
+          "store_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "membership": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "record_count"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "cohort_id",
+    "source_snapshot",
+    "eligibility_rule",
+    "correction_tables",
+    "membership"
+  ],
+  "additionalProperties": false
+}

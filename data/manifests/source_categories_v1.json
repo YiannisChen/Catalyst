@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "categories": [
+    "price_bars",
+    "sec_filings",
+    "target_news",
+    "peer_news",
+    "web_search",
+    "supplementary_news"
+  ],
+  "sources": {
+    "daily:price_bars": {
+      "category": "price_bars"
+    },
+    "daily:sec": {
+      "category": "sec_filings"
+    },
+    "daily:finnhub+polygon": {
+      "by_scope": {
+        "target": "target_news",
+        "peer": "peer_news",
+        "supplementary": "supplementary_news"
+      }
+    },
+    "daily:discovery_v2": {
+      "category": "web_search"
+    },
+    "daily:kitco": {
+      "category": "supplementary_news"
+    },
+    "daily:finnhub": {
+      "by_scope": {
+        "target": "target_news",
+        "peer": "peer_news",
+        "supplementary": "supplementary_news"
+      }
+    },
+    "daily:discovery": {
+      "category": "web_search"
+    },
+    "alpaca_news:news:poll": {
+      "by_scope": {
+        "target": "target_news",
+        "peer": "peer_news",
+        "supplementary": "supplementary_news"
+      }
+    },
+    "alpaca_news:backfill": {
+      "by_scope": {
+        "target": "target_news",
+        "peer": "peer_news",
+        "supplementary": "supplementary_news"
+      }
+    }
+  }
+}

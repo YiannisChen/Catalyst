@@ -1,0 +1,18 @@
+{
+  "request": {
+    "kind": "sse-events",
+    "method": "GET",
+    "params": {
+      "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16"
+    },
+    "route": "/api/live-runs/{run_id}/stream"
+  },
+  "response_file": "events-t3-now.jsonl",
+  "source": {
+    "endpoint": "GET /api/live-runs/{run_id}/stream",
+    "kind": "real",
+    "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+    "store": "data/m9/eval_runs/b5_smoke/runtime.sqlite3"
+  },
+  "state": "Persisted T3-NOW SSE event sequence"
+}

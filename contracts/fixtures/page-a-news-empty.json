@@ -1,0 +1,32 @@
+{
+  "presentation": {
+    "transformation": "empty items to exercise empty state"
+  },
+  "request": {
+    "method": "GET",
+    "params": {
+      "session_date": "2026-03-24",
+      "ticker": "AAPL"
+    },
+    "route": "/api/sessions/{ticker}/{session_date}/news"
+  },
+  "response": {
+    "counts_by_category": {},
+    "images_pending": 0,
+    "items": [],
+    "next_cursor": null,
+    "session_date": "2026-03-24",
+    "ticker": "AAPL",
+    "window": {
+      "cutoff_at": "2026-03-24T20:00:00Z",
+      "information_window_start_at": "2026-03-23T20:00:00Z",
+      "session_open_at": "2026-03-24T13:30:00Z"
+    }
+  },
+  "source": {
+    "based_on_news_request": "AAPL 2026-03-24",
+    "kind": "synthetic",
+    "store": "data/m9/news_bodies_v2.t4snap_20261008.sqlite3"
+  },
+  "state": "Session selected, no headlines"
+}

@@ -1,0 +1,9 @@
+[Unit]
+Description=Catalyst monitor: monthly restore drill (latest backup to a scratch dir, integrity check, row counts)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=90min
+ExecStart=/usr/bin/python3 /opt/catalyst-monitor/monitor.py restore-drill

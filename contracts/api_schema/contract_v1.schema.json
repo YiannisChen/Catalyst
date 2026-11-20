@@ -1,0 +1,1274 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://catalyst.local/api_contract_v1.schema.json",
+  "title": "Catalyst API contract v1 (JSON Schema)",
+  "description": "First-version schemas for the objects in docs/design/v3/api_contract.md. Samples under api_samples/ must validate against these; v2_deferred samples are excluded.",
+  "$defs": {
+    "IsoTime": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$"
+    },
+    "Quote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "publisher",
+        "published_at",
+        "url"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "publisher": {
+          "type": "string"
+        },
+        "publisher_family": {
+          "type": "string"
+        },
+        "published_at": {
+          "$ref": "#/$defs/IsoTime"
+        },
+        "published_precision": {
+          "enum": [
+            "second",
+            "minute",
+            "date"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "format": "uri"
+        },
+        "evidence_id": {
+          "type": "string"
+        }
+      }
+    },
+    "Cause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "event_type",
+        "scope",
+        "quotes"
+      ],
+      "properties": {
+        "event_type": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "string"
+        },
+        "event_date": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "quotes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/Quote"
+          }
+        }
+      }
+    },
+    "DataGap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "status",
+        "disables",
+        "note"
+      ],
+      "properties": {
+        "source": {
+          "enum": [
+            "price_bars",
+            "sec_filings",
+            "target_news",
+            "peer_news",
+            "supplementary_news",
+            "web_search"
+          ],
+          "description": "Public source category. The versioned provider-to-category mapping is owned by data; callers must not infer it from provider groups."
+        },
+        "status": {
+          "enum": [
+            "missing",
+            "partial"
+          ]
+        },
+        "disables": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "unique_company_event",
+              "earnings_fallback"
+            ]
+          },
+          "maxItems": 0,
+          "description": "B class: must stay empty until the preregistered validation is done"
+        },
+        "note": {
+          "type": "string"
+        }
+      }
+    },
+    "Abstention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason_code",
+        "reason_text",
+        "failed_stage",
+        "possible_explanation",
+        "leads"
+      ],
+      "properties": {
+        "reason_code": {
+          "enum": [
+            "NO_STOCK_NEWS",
+            "STALE_PRIMARY",
+            "NO_PRIMARY_PROPOSED",
+            "PRIMARY_QUOTES_FAILED",
+            "ALREADY_ABSTAIN",
+            "GATE_FAILED",
+            "VERIFIER_REJECTED",
+            "VERIFIER_NO_VERDICT",
+            "CEILING_ABSTAIN",
+            "DATA_INCOMPLETE"
+          ]
+        },
+        "reason_text": {
+          "type": "string"
+        },
+        "gate_reason_code": {
+          "enum": [
+            "PUBLISHED",
+            "NO_ELIGIBLE_CAUSE",
+            "COMPETING_CAUSES",
+            "STALE_PRIMARY"
+          ]
+        },
+        "failed_stage": {
+          "enum": [
+            1,
+            2,
+            4
+          ]
+        },
+        "possible_explanation": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "quotes",
+            "verdict_category",
+            "category_text",
+            "label"
+          ],
+          "properties": {
+            "quotes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Quote"
+              }
+            },
+            "verdict_category": {
+              "$ref": "#/$defs/VerifierRejectCategory"
+            },
+            "category_text": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          }
+        },
+        "leads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "title",
+              "publisher",
+              "published_at",
+              "url"
+            ],
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "publisher": {
+                "type": "string"
+              },
+              "published_at": {
+                "$ref": "#/$defs/IsoTime"
+              },
+              "url": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "details": {
+          "type": "object"
+        }
+      }
+    },
+    "VerifierRejectCategory": {
+      "enum": [
+        "RECAP",
+        "PREVIEW",
+        "EVERGREEN",
+        "OTHER_COMPANY",
+        "AGAINST_GROUP",
+        "UNLINKED",
+        "RECAP_WITHOUT_EVENT",
+        "HEDGED_LINK",
+        "NONE"
+      ]
+    },
+    "VerifierSupportCategory": {
+      "enum": [
+        "COMPANY_NEWS",
+        "GROUP_DRIVER"
+      ]
+    },
+    "EarningsFallback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fire"
+      ],
+      "properties": {
+        "fire": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "fact": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "company",
+            "form",
+            "item",
+            "accepted_at",
+            "accession",
+            "text"
+          ],
+          "properties": {
+            "company": {
+              "type": "string"
+            },
+            "form": {
+              "type": "string"
+            },
+            "item": {
+              "type": "string"
+            },
+            "accepted_at": {
+              "$ref": "#/$defs/IsoTime"
+            },
+            "accession": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string",
+              "pattern": "^【申报事实】"
+            }
+          }
+        },
+        "fact_checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "accession_in_issuer_index",
+            "company_named",
+            "exhibit_is_this_filing",
+            "item_2_02"
+          ],
+          "properties": {
+            "accession_in_issuer_index": {
+              "type": "boolean"
+            },
+            "company_named": {
+              "type": "boolean"
+            },
+            "exhibit_is_this_filing": {
+              "type": "boolean"
+            },
+            "item_2_02": {
+              "type": "boolean"
+            }
+          }
+        },
+        "headline": {
+          "type": "string"
+        }
+      }
+    },
+    "AnswerSnapshotV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "run_id",
+        "ticker",
+        "session_date",
+        "headline",
+        "outcome",
+        "status",
+        "tier",
+        "cascade_stage",
+        "data_gaps"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "answer_snapshot_v2"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "ticker": {
+          "type": "string"
+        },
+        "session_date": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+        },
+        "headline": {
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "ANSWERED",
+            "ABSTAINED"
+          ]
+        },
+        "status": {
+          "enum": [
+            "PARTIAL",
+            "ABSTAIN"
+          ],
+          "description": "internal; the UI must not display it"
+        },
+        "scope_note": {
+          "const": "结论只到事件层面：指出是哪件事，不说明这件事中哪一部分、在多大程度上推动了股价。"
+        },
+        "tier": {
+          "enum": [
+            "T0",
+            "T1",
+            "T2",
+            "T3"
+          ]
+        },
+        "tier_reason": {
+          "type": "string"
+        },
+        "cascade_stage": {
+          "enum": [
+            1,
+            2,
+            4
+          ]
+        },
+        "stage_label": {
+          "enum": [
+            "当日检索",
+            "扩展检索（前一日收盘至 D+3）",
+            "财报兜底（申报本身）"
+          ]
+        },
+        "basis": {
+          "enum": [
+            "REPORTED_ATTRIBUTION",
+            "GROUP_DRIVER",
+            "CONFIRMED_EVENT_INFERRED_LINK",
+            "EARNINGS_FILING"
+          ]
+        },
+        "basis_text": {
+          "type": "string"
+        },
+        "primary": {
+          "$ref": "#/$defs/Cause"
+        },
+        "secondary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cause"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "earnings_fallback": {
+          "$ref": "#/$defs/EarningsFallback"
+        },
+        "abstention": {
+          "$ref": "#/$defs/Abstention"
+        },
+        "facts": {
+          "type": "object"
+        },
+        "window": {
+          "type": "object"
+        },
+        "retrospective": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "is_retrospective",
+            "collected_at",
+            "note"
+          ],
+          "properties": {
+            "is_retrospective": {
+              "type": "boolean"
+            },
+            "collected_at": {
+              "$ref": "#/$defs/IsoTime"
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "data_gaps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DataGap"
+          }
+        },
+        "update_notice": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "required": [
+            "text",
+            "supersedes"
+          ],
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "supersedes": {
+              "type": "string"
+            }
+          }
+        },
+        "limitations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "ANSWERED"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "scope_note",
+              "stage_label",
+              "basis",
+              "basis_text",
+              "primary"
+            ],
+            "properties": {
+              "status": {
+                "const": "PARTIAL"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "ABSTAINED"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "abstention"
+            ],
+            "properties": {
+              "status": {
+                "const": "ABSTAIN"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "basis": {
+                "const": "EARNINGS_FILING"
+              }
+            },
+            "required": [
+              "basis"
+            ]
+          },
+          "then": {
+            "required": [
+              "earnings_fallback"
+            ],
+            "properties": {
+              "cascade_stage": {
+                "const": 4
+              }
+            }
+          }
+        }
+      ]
+    },
+    "RunEventType": {
+      "enum": [
+        "run.accepted",
+        "facts.ready",
+        "tier.decided",
+        "retrieval.done",
+        "analyst.done",
+        "analyst.decision",
+        "checks.done",
+        "gates.done",
+        "verifier.done",
+        "investigator.done",
+        "answer.ready",
+        "run.completed",
+        "run.failed",
+        "run.cancelled"
+      ]
+    },
+    "FailureCode": {
+      "enum": [
+        "TIMEOUT",
+        "SYSTEM_ERROR",
+        "PROCESS_RECOVERY",
+        "SUBMISSION_FAILURE",
+        "PROVIDER_UNAVAILABLE",
+        "BUDGET_EXCEEDED"
+      ]
+    },
+    "PublicRunEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "run_id",
+        "sequence",
+        "event_type",
+        "emitted_at",
+        "payload"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "v1"
+        },
+        "event_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "event_type": {
+          "$ref": "#/$defs/RunEventType"
+        },
+        "emitted_at": {
+          "$ref": "#/$defs/IsoTime"
+        },
+        "stage": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "payload": {
+          "type": "object"
+        },
+        "artifact_refs": {
+          "type": "array"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "const": "answer.ready"
+              }
+            },
+            "required": [
+              "event_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "required": [
+                  "provisional",
+                  "answer_snapshot"
+                ],
+                "properties": {
+                  "provisional": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "const": "run.failed"
+              }
+            },
+            "required": [
+              "event_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "failure_code",
+                  "stage",
+                  "retryable",
+                  "safe_message",
+                  "provisional_output_invalidated"
+                ],
+                "properties": {
+                  "failure_code": {
+                    "$ref": "#/$defs/FailureCode"
+                  },
+                  "stage": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "retryable": {
+                    "type": "boolean"
+                  },
+                  "safe_message": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "provisional_output_invalidated": {
+                    "type": "boolean"
+                  }
+                },
+                "not": {
+                  "required": [
+                    "failure"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "const": "run.cancelled"
+              }
+            },
+            "required": [
+              "event_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "type": "object",
+                "required": [
+                  "provisional_output_invalidated"
+                ],
+                "properties": {
+                  "provisional_output_invalidated": {
+                    "type": "boolean"
+                  }
+                },
+                "description": "Required on run.cancelled so clients always know whether a provisional answer must be withdrawn."
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "const": "verifier.done"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "not": {
+                  "required": [
+                    "reason"
+                  ]
+                },
+                "properties": {
+                  "category": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/$defs/VerifierRejectCategory"
+                      },
+                      {
+                        "$ref": "#/$defs/VerifierSupportCategory"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "event_type": {
+                "const": "run.completed"
+              }
+            },
+            "required": [
+              "event_type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "payload": {
+                "not": {
+                  "required": [
+                    "follow_up"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ],
+      "not": {
+        "properties": {
+          "payload": {
+            "anyOf": [
+              {
+                "required": [
+                  "follow_up"
+                ]
+              },
+              {
+                "required": [
+                  "supersession"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    },
+    "RunObjectV1": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "lifecycle_status",
+        "created_at"
+      ],
+      "description": "Contract projection of GET /api/live-runs/{run_id}; first-version shape for prepared-range runs.",
+      "properties": {
+        "run_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lifecycle_status": {
+          "enum": [
+            "ACCEPTED",
+            "RUNNING",
+            "CANCEL_REQUESTED",
+            "COMPLETED",
+            "FAILED",
+            "CANCELLED"
+          ]
+        },
+        "attribution_status": {
+          "enum": [
+            "SUFFICIENT",
+            "PARTIAL",
+            "ABSTAIN",
+            null
+          ]
+        },
+        "attribution_type": {
+          "enum": [
+            "EVIDENCE_BACKED_CAUSAL",
+            "NO_MATERIAL_PUBLIC_CATALYST",
+            null
+          ]
+        },
+        "created_at": {
+          "$ref": "#/$defs/IsoTime"
+        },
+        "duration_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code"
+              ],
+              "properties": {
+                "code": {
+                  "$ref": "#/$defs/FailureCode"
+                },
+                "message": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "manifest_summary": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "terminal_artifact_refs": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "outcome": {
+          "enum": [
+            "ANSWERED",
+            "ABSTAINED",
+            null
+          ]
+        }
+      }
+    },
+    "RunViewV2": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "run",
+        "answer",
+        "availability"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": "run_view_v2"
+        },
+        "run": {
+          "type": "object",
+          "required": [
+            "run_id",
+            "lifecycle"
+          ],
+          "properties": {
+            "run_id": {
+              "type": "string"
+            },
+            "lifecycle": {
+              "enum": [
+                "ACCEPTED",
+                "RUNNING",
+                "CANCEL_REQUESTED",
+                "COMPLETED",
+                "FAILED",
+                "CANCELLED"
+              ]
+            }
+          },
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "follow_up"
+                ]
+              },
+              {
+                "required": [
+                  "supersession"
+                ]
+              }
+            ]
+          }
+        },
+        "cost": {
+          "type": "object"
+        },
+        "facts": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "trace": {
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AnswerSnapshotV2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "failure": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "code"
+          ],
+          "properties": {
+            "code": {
+              "$ref": "#/$defs/FailureCode"
+            },
+            "message": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "availability": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "run": {
+                "properties": {
+                  "lifecycle": {
+                    "const": "COMPLETED"
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "answer": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "run": {
+                "properties": {
+                  "lifecycle": {
+                    "enum": [
+                      "FAILED",
+                      "CANCELLED",
+                      "ACCEPTED",
+                      "RUNNING",
+                      "CANCEL_REQUESTED"
+                    ]
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "answer": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "FeaturedItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "title",
+        "ticker",
+        "session_date",
+        "category",
+        "tags",
+        "outcome",
+        "summary",
+        "source_run_id"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "ticker": {
+          "type": "string"
+        },
+        "session_date": {
+          "type": "string"
+        },
+        "category": {
+          "$ref": "#/$defs/FeaturedCategory"
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "outcome": {
+          "enum": [
+            "ANSWERED",
+            "ABSTAINED"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "source_run_id": {
+          "type": "string"
+        },
+        "product_tier": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "FeaturedCategory": {
+      "enum": [
+        "ANSWERED_REPORTED_ATTRIBUTION",
+        "ANSWERED_GROUP_DRIVER",
+        "ANSWERED_UNIQUE_COMPANY_EVENT",
+        "ANSWERED_EARNINGS_FALLBACK",
+        "ABSTAINED_NO_CAUSE",
+        "ABSTAINED_VERIFIER_REJECTED",
+        "PLACEBO_DAY",
+        "REPORTED_REASON",
+        "MOVED_WITH_GROUP"
+      ]
+    },
+    "FeaturedReplay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "speed_hint",
+        "events"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string"
+        },
+        "speed_hint": {
+          "type": "number"
+        },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "offset_ms",
+              "event"
+            ],
+            "properties": {
+              "offset_ms": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "event": {
+                "$ref": "#/$defs/PublicRunEvent"
+              }
+            }
+          }
+        }
+      }
+    },
+    "Quota": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tier",
+        "as_of",
+        "per_caller",
+        "global",
+        "token"
+      ],
+      "properties": {
+        "tier": {
+          "enum": [
+            "anonymous",
+            "invite",
+            "admin"
+          ]
+        },
+        "as_of": {
+          "$ref": "#/$defs/IsoTime"
+        },
+        "per_caller": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "limit",
+            "used",
+            "remaining",
+            "resets_at"
+          ]
+        },
+        "global": {
+          "type": "object",
+          "required": [
+            "model_cost_usd",
+            "tavily_credits",
+            "exhausted"
+          ]
+        },
+        "token": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "label",
+            "expires_at"
+          ]
+        }
+      }
+    },
+    "RunAccepted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "status",
+        "stream_url",
+        "request_hash_prefix",
+        "model_capability_label",
+        "access"
+      ],
+      "properties": {
+        "run_id": {
+          "type": "string"
+        },
+        "status": {
+          "const": "ACCEPTED"
+        },
+        "stream_url": {
+          "type": "string"
+        },
+        "request_hash_prefix": {
+          "type": "string"
+        },
+        "model_capability_label": {
+          "type": "string"
+        },
+        "access": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tier",
+            "max_cost_usd"
+          ],
+          "properties": {
+            "tier": {
+              "enum": [
+                "anonymous",
+                "invite",
+                "admin"
+              ]
+            },
+            "max_cost_usd": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    }
+  }
+}

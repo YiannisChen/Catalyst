@@ -1,0 +1,412 @@
+{
+  "request": {
+    "method": "GET",
+    "params": {
+      "run_id": "a5547b14b1834e6a9608363ce07f58c5"
+    },
+    "route": "/api/live-runs/{run_id}/view"
+  },
+  "response": {
+    "answer": {
+      "abstention": {
+        "details": {
+          "ceiling_codes": []
+        },
+        "leads": [],
+        "possible_explanation": null,
+        "reason_code": "CEILING_ABSTAIN",
+        "reason_text": "The evidence and policy checks limited the attribution to an abstention."
+      },
+      "also_sentence": null,
+      "evidence_origin": "web_search",
+      "facts": {
+        "commodity": null,
+        "comove_sentence": "Co-movement (computed from closing prices): same direction as the market but much larger; same direction as the sector but much larger; in line with the peers. Timing: opening gap -3.16%, open to close -0.42%.",
+        "filings": [],
+        "gap_return_pct": -3.1560475858687598,
+        "market": {
+          "band": "DIVERGENT",
+          "relation": "SAME_DIRECTION",
+          "residual_pct": -3.1705454471376737,
+          "return_pct": -0.38807239498251933,
+          "ticker": null
+        },
+        "peers": {
+          "band": "ALIGNED",
+          "count": 4,
+          "items": [
+            {
+              "return_pct": -1.187648456057011,
+              "ticker": "F"
+            },
+            {
+              "return_pct": -0.6075949367088662,
+              "ticker": "GM"
+            },
+            {
+              "return_pct": -9.261939218523885,
+              "ticker": "LCID"
+            },
+            {
+              "return_pct": -4.453213077790297,
+              "ticker": "RIVN"
+            }
+          ],
+          "median_return_pct": -2.820430766923654,
+          "relation": "SAME_DIRECTION",
+          "residual_pct": -0.7381870751965391
+        },
+        "sector": {
+          "band": "DIVERGENT",
+          "relation": "SAME_DIRECTION",
+          "residual_pct": -2.558027210359759,
+          "return_pct": -1.000590631760434,
+          "ticker": "XLY"
+        },
+        "target_return_pct": -3.558617842120193
+      },
+      "governing_ref": {
+        "band": "ALIGNED",
+        "kind": "peers",
+        "residual_pct": -0.7381870751965391,
+        "return_pct": -2.820430766923654,
+        "ticker": "peer median"
+      },
+      "headline": "TSLA fell 3.56% as its sector fell (XLY -1.00%).",
+      "key_sentence": null,
+      "label": "user-selected web source",
+      "limitations": [
+        "Coverage gap: MISSING_PRIMARY_CONFIRMATION for COMPANY_PRIMARY.",
+        "Coverage gap: MISSING_INDEPENDENT_CORROBORATION for COMPANY_NEWS.",
+        "The selected web source did not meet the company-news title and quote requirements."
+      ],
+      "outcome": "ABSTAINED",
+      "run_id": "a5547b14b1834e6a9608363ce07f58c5",
+      "schema_version": "answer_snapshot_v1",
+      "session_date": "2026-04-23",
+      "sources": [],
+      "status": "PARTIAL",
+      "ticker": "TSLA",
+      "tier": "T3",
+      "tier_reason": "A session override applied, so the close alone does not establish an ordinary move.",
+      "window": {
+        "cutoff_at": "2026-04-23T20:00:00+00:00",
+        "information_window_start_at": "2026-04-22T20:00:00+00:00",
+        "session_open_at": "2026-04-23T13:30:00+00:00"
+      }
+    },
+    "availability": {
+      "abstention_reason": "derived",
+      "answer": "present",
+      "cost": "present",
+      "facts": "present",
+      "policy": "present",
+      "trace": "present"
+    },
+    "cost": {
+      "cost_method": "upper_bound_charged",
+      "cost_usd": 0.039213540000000005,
+      "model_calls": {
+        "analyst": 1,
+        "verifier": 1,
+        "writer": 0
+      },
+      "provider_attempts": 2
+    },
+    "facts": {
+      "commodity": null,
+      "comove_sentence": "Co-movement (computed from closing prices): same direction as the market but much larger; same direction as the sector but much larger; in line with the peers. Timing: opening gap -3.16%, open to close -0.42%.",
+      "filings": [],
+      "gap_return_pct": -3.1560475858687598,
+      "market": {
+        "band": "DIVERGENT",
+        "relation": "SAME_DIRECTION",
+        "residual_pct": -3.1705454471376737,
+        "return_pct": -0.38807239498251933,
+        "ticker": null
+      },
+      "peers": {
+        "band": "ALIGNED",
+        "count": 4,
+        "items": [
+          {
+            "return_pct": -1.187648456057011,
+            "ticker": "F"
+          },
+          {
+            "return_pct": -0.6075949367088662,
+            "ticker": "GM"
+          },
+          {
+            "return_pct": -9.261939218523885,
+            "ticker": "LCID"
+          },
+          {
+            "return_pct": -4.453213077790297,
+            "ticker": "RIVN"
+          }
+        ],
+        "median_return_pct": -2.820430766923654,
+        "relation": "SAME_DIRECTION",
+        "residual_pct": -0.7381870751965391
+      },
+      "sector": {
+        "band": "DIVERGENT",
+        "relation": "SAME_DIRECTION",
+        "residual_pct": -2.558027210359759,
+        "return_pct": -1.000590631760434,
+        "ticker": "XLY"
+      },
+      "target_return_pct": -3.558617842120193
+    },
+    "failure": null,
+    "legacy_text": null,
+    "run": {
+      "code_revision": {
+        "dirty": null,
+        "sha": "cd4f89f8136217340d93cefc3234a2de7f6291ca"
+      },
+      "created_at": "2026-10-09T19:44:00.119399Z",
+      "duration_ms": 8730,
+      "duration_source": "decision_trace",
+      "finished_at": "2026-10-09T19:44:09.055977Z",
+      "force_full": true,
+      "lifecycle": "COMPLETED",
+      "model": {
+        "analyst_model_id": "deepseek-flash",
+        "provider": "deepseek"
+      },
+      "policy": {
+        "corrective_enabled": false,
+        "force_full": true,
+        "quote_rules_version": "q1c_quote_rules_v4",
+        "verifier_enabled": true,
+        "verifier_prompt_sha256": "fdc2cf2c6d1574f5e3953d130e20e84dd70ded0045deaa7c30456c07dc4c5ecb",
+        "verifier_version": "primary_verifier_v6"
+      },
+      "run_id": "a5547b14b1834e6a9608363ce07f58c5",
+      "session_date": "2026-04-23",
+      "ticker": "TSLA"
+    },
+    "schema_version": "run_view_v1",
+    "trace": {
+      "final_status": "PARTIAL",
+      "model_calls": {
+        "analyst": 1,
+        "verifier": 1,
+        "writer": 0
+      },
+      "retrieval": {
+        "evidence_in_state": 1,
+        "excluded_from_pack": 0,
+        "facts_in_state": 0,
+        "included_by_content_state": {
+          "FULL_TEXT": 1
+        },
+        "included_in_pack": 1,
+        "inventory": 1,
+        "lead_only": 0,
+        "tasks": [
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 1,
+            "latency_ms": 0,
+            "mode_served": null,
+            "status": "SUCCEEDED",
+            "task_id": "research:1:0:1be6b246e6d0"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 1,
+            "latency_ms": 0,
+            "mode_served": null,
+            "status": "SUCCEEDED",
+            "task_id": "research:1:0:1be6b246e6d0:peer:F"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 1,
+            "latency_ms": 0,
+            "mode_served": null,
+            "status": "SUCCEEDED",
+            "task_id": "research:1:0:1be6b246e6d0:peer:GM"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 1,
+            "latency_ms": 0,
+            "mode_served": null,
+            "status": "SUCCEEDED",
+            "task_id": "research:1:0:1be6b246e6d0:peer:LCID"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 1,
+            "latency_ms": 0,
+            "mode_served": null,
+            "status": "SUCCEEDED",
+            "task_id": "research:1:0:1be6b246e6d0:peer:RIVN"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 1,
+            "latency_ms": 0,
+            "mode_served": null,
+            "status": "SUCCEEDED",
+            "task_id": "research:1:1:f7c55394d928"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 1,
+            "latency_ms": 0,
+            "mode_served": null,
+            "status": "SUCCEEDED",
+            "task_id": "research:1:2:f19d0b4061b0"
+          }
+        ]
+      },
+      "rounds": [
+        {
+          "code_checks": {
+            "gates": [
+              {
+                "detail": null,
+                "gate": "comove",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "subject",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "timing",
+                "result": "no_change"
+              }
+            ],
+            "outcome": {
+              "attribution_type": "EVIDENCE_BACKED_CAUSAL",
+              "final_status": "PARTIAL",
+              "hypotheses": [
+                {
+                  "cause_type": "COMPANY_SPECIFIC_CATALYST",
+                  "id": "hyp:a5547b14b1834e6a9608363ce07f58c5:1:755ebc72350c",
+                  "role": "PRIMARY"
+                }
+              ],
+              "research_decision": "READY",
+              "status_ceiling": "PARTIAL"
+            },
+            "quotes": [
+              {
+                "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+                "hypothesis_ref": "tsla_q1_capex_av_guidance",
+                "kept": true,
+                "rule": "OK",
+                "text": "Shares of Tesla ( NASDAQ:TSLA | TSLA Price Prediction ) are down 4% in Thursday morning trading, changing hands near $370 after the electric vehicle maker’s Q1 2026 report."
+              },
+              {
+                "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+                "hypothesis_ref": "tsla_q1_capex_av_guidance",
+                "kept": false,
+                "rule": "R2_NOT_COMPLETE_SENTENCE",
+                "text": "Tesla’s Q1 2026 capital expenditures reached $2.493 billion, a jump of 67% year over year, tied to AI compute, battery materials, semiconductor manufacturing, and production lines for Cyberca"
+              }
+            ]
+          },
+          "model_reported": {
+            "analyst": {
+              "evidence_decisions": [
+                {
+                  "contradicts": [],
+                  "disposition": "SUPPORT",
+                  "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+                  "note": "Independent report ties the session decline to Tesla's Q1 2026 report, specifically the capex ramp and tempered autonomous-driving roadmap, despite a headline earnings and revenue beat. Supports the company-specific catalyst hypothesis.",
+                  "reason_code": "COMPANY_EVENT_DRIVER",
+                  "supports": [
+                    "tsla_q1_capex_av_guidance",
+                    "ev_sector_peer_drag"
+                  ]
+                }
+              ],
+              "hypotheses": [
+                {
+                  "cause_type": "COMPANY_SPECIFIC_CATALYST",
+                  "magnitude_fit": "STRONG",
+                  "proposed_role": "PRIMARY",
+                  "quotes": [
+                    {
+                      "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+                      "text": "Shares of Tesla ( NASDAQ:TSLA | TSLA Price Prediction ) are down 4% in Thursday morning trading, changing hands near $370 after the electric vehicle maker’s Q1 2026 report."
+                    },
+                    {
+                      "evidence_id": "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166",
+                      "text": "Tesla’s Q1 2026 capital expenditures reached $2.493 billion, a jump of 67% year over year, tied to AI compute, battery materials, semiconductor manufacturing, and production lines for Cyberca"
+                    }
+                  ],
+                  "ref": "tsla_q1_capex_av_guidance",
+                  "statement": "Tesla fell ~3.6% as investors looked past a headline Q1 2026 earnings and revenue beat and reacted to a 67% year-over-year capital expenditure ramp and a tempered near-term autonomous driving roadmap.",
+                  "supporting_evidence_ids": [
+                    "websearch:8aa408e4d59f891a0e68f4a1c55af87fd988a7b55b5cdec765a2e6cd1c4b4166"
+                  ]
+                }
+              ],
+              "recommended_status": "PARTIAL",
+              "research_decision": "READY"
+            },
+            "verifier": {
+              "called": true,
+              "category": "COMPANY_NEWS",
+              "cause_type": "COMPANY_SPECIFIC_CATALYST",
+              "primary_proposal_state": "PROPOSED_QUOTES_KEPT",
+              "reason": "The quote reports company-specific news from this session—Tesla's Q1 2026 earnings report driving a 4% decline—which explains the stock's move this session.",
+              "verdict": "SUPPORTED"
+            }
+          },
+          "round": 1
+        }
+      ],
+      "run_id": "a5547b14b1834e6a9608363ce07f58c5",
+      "schema_version": "decision_trace_v1",
+      "stages": [
+        {
+          "duration_ms": 5,
+          "stage": "research_and_context_pack",
+          "started_ms": 0
+        },
+        {
+          "duration_ms": 7329,
+          "round": 1,
+          "stage": "evidence_analyst",
+          "started_ms": 6
+        },
+        {
+          "duration_ms": 1355,
+          "round": 1,
+          "stage": "checks_and_verifier",
+          "started_ms": 7350
+        },
+        {
+          "duration_ms": 16,
+          "stage": "claims_and_render",
+          "started_ms": 8714
+        }
+      ],
+      "total_ms": 8730
+    }
+  },
+  "source": {
+    "kind": "real",
+    "run_id": "a5547b14b1834e6a9608363ce07f58c5",
+    "store": "data/m9/eval_runs/verify_source_smoke/runtime.sqlite3"
+  },
+  "state": "ABSTAINED: CEILING_ABSTAIN"
+}

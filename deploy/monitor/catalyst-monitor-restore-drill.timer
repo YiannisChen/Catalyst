@@ -1,0 +1,10 @@
+[Unit]
+Description=Catalyst monitor: restore drill, monthly (the 2nd, after the backup pull)
+
+[Timer]
+OnCalendar=*-*-02 17:00:00 UTC
+Persistent=true
+Unit=catalyst-monitor-restore-drill.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,93 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Secrets & local config
+.env
+.cursor/
+.claude/
+.local/
+.pytest_cache/
+
+# Local coordination notes and held diffs stay on disk.
+/docs/coordination/
+
+# AI tool config
+CLAUDE.md
+
+# Databases
+*.db
+*.sqlite
+*.db-wal
+*.db-shm
+
+# Generated / local data under data/
+/data/m9/
+# Featured case bundles are built locally; only the manifest is tracked.
+/data/featured/
+/data/embeddings/
+/data/lancedb_gold/
+/data/e2e_strict/
+/data/case_studies/
+/data/eval_reports/
+/data/traces/
+/data/m8a/
+/data/.fuse_hidden*
+
+# Archive
+/archive.tar.gz
+
+# macOS
+.DS_Store
+
+# Package: data local artifacts
+/packages/data/scripts/debug_output/
+/packages/data/scripts/smoke_test_assets.db
+/packages/data/core_references
+
+# Run reports (generated per ingestion run)
+/data/run_reports/
+/packages/data/data/run_reports/
+
+# Generated data-snapshot artifacts and machine-local active pointer
+/data/manifests/active_data_snapshot.json
+/data/manifests/b2o_data_snapshot_*.json
+/data/manifests/sec_filing_inventory_*.json
+/data/source_bundles/
+
+# Python packaging
+*.egg-info/
+
+# Frontend build output
+dist/
+node_modules/
+
+# Step 3F coverage audit outputs (generated artifacts)
+data/provider_discovery/*.json
+/data/provider_discovery/
+/data/provider_probe/
+/data/*.db.damaged-*
+
+# Provider probe scripts (one-shot, not committed)
+scripts/provider_discovery.py
+packages/data/scripts/fmp_reprobe.py
+
+# M3 operational GPU staging + promotion manifests (never commit)
+/data/m3_prepare/
+/data/manifests/m3_promotion_*.json
+data/research/
+
+# Historical evaluation and research outputs are kept outside this repository.
+/data/baseline/
+/data/m9/eval_runs/
+/data/v2/fb_e2_cases.json
+
+# Prospective evaluation: commit the universe, ledger and daily outputs, never the store copies or caches.
+data/prospective/stores/
+data/prospective/gpt_cache/
+data/prospective/days/*/aprime*/
+
+# Demo videos stay local (large); GIFs and the recorder scripts are tracked.
+docs/demo/video/*.mp4

@@ -1,0 +1,71 @@
+{
+  "request": {
+    "method": "GET",
+    "params": {
+      "run_id": "581b48d9a9814e5bbee1375251b8f204"
+    },
+    "route": "/api/live-runs/{run_id}/view"
+  },
+  "response": {
+    "answer": null,
+    "availability": {
+      "abstention_reason": "not_applicable",
+      "answer": "not_recorded",
+      "cost": "present",
+      "facts": "not_recorded",
+      "policy": "present",
+      "trace": "not_recorded"
+    },
+    "cost": {
+      "cost_method": "upper_bound_charged",
+      "cost_usd": 0.19609443000000001,
+      "model_calls": {
+        "analyst": 5,
+        "verifier": 4,
+        "writer": 0
+      },
+      "provider_attempts": 9
+    },
+    "facts": null,
+    "failure": {
+      "code": "SYSTEM_ERROR",
+      "message": "ProviderBudgetExceeded: cost ceiling reached before dispatch: used=0.196094+outstanding=0.000000+bound=0.038960 > max=0.200000 role='evidence_analyst'"
+    },
+    "legacy_text": null,
+    "run": {
+      "code_revision": {
+        "dirty": null,
+        "sha": "43b2c14c64215e3a1c97b9cb1829429c8dfd8efa"
+      },
+      "created_at": "2026-10-09T17:34:22.511061Z",
+      "duration_ms": 9299,
+      "duration_source": "terminal_event",
+      "finished_at": "2026-10-09T17:34:31.810379Z",
+      "force_full": false,
+      "lifecycle": "FAILED",
+      "model": {
+        "analyst_model_id": "deepseek-flash",
+        "provider": "deepseek"
+      },
+      "policy": {
+        "corrective_enabled": false,
+        "force_full": false,
+        "quote_rules_version": "q1c_quote_rules_v4",
+        "verifier_enabled": true,
+        "verifier_prompt_sha256": "fdc2cf2c6d1574f5e3953d130e20e84dd70ded0045deaa7c30456c07dc4c5ecb",
+        "verifier_version": "primary_verifier_v6"
+      },
+      "run_id": "581b48d9a9814e5bbee1375251b8f204",
+      "session_date": "2026-03-31",
+      "ticker": "ORCL"
+    },
+    "schema_version": "run_view_v1",
+    "trace": null
+  },
+  "source": {
+    "kind": "real",
+    "run_id": "581b48d9a9814e5bbee1375251b8f204",
+    "store": "data/m9/eval_runs/b3_smoke/runtime.sqlite3"
+  },
+  "state": "Run failed"
+}

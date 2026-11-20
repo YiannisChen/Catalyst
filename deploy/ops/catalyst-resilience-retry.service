@@ -1,0 +1,13 @@
+[Unit]
+Description=Catalyst: retry queued fetches (resilient queue: 15 min, 1 h, 6 h)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+TimeoutStartSec=30min
+WorkingDirectory=/opt/catalyst/collectors
+EnvironmentFile=/opt/catalyst/.env
+Environment=CATALYST_PREFER_IPV4=1
+Environment=PYTHONPATH=/opt/catalyst/collectors/packages/data
+ExecStart=/opt/catalyst/venv/bin/python -m catalyst_data.ingestion.resilient retry

@@ -1,0 +1,17 @@
+{
+  "request": {
+    "method": "POST",
+    "route": "/api/models/validate",
+    "params": {},
+    "body": {
+      "provider": "deepseek",
+      "model_id": "deepseek-v4-flash"
+    }
+  },
+  "response": {
+    "ok": false,
+    "error_code": "auth_failed"
+  },
+  "source": "synthetic, auth_failed is an existing provider validation error",
+  "state": "Provider key rejected"
+}

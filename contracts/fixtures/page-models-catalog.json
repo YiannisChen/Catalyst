@@ -1,0 +1,486 @@
+{
+  "request": {
+    "method": "GET",
+    "route": "/api/models/catalog"
+  },
+  "response": {
+    "providers": [
+      {
+        "default_model_id": "gpt-4o-mini",
+        "env_key_configured": false,
+        "executable": true,
+        "id": "openai",
+        "label": "OpenAI",
+        "models": [
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "gpt-4o-mini",
+            "json_mode": true,
+            "label": "GPT-4o Mini",
+            "model_id": "gpt-4o-mini",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "openai",
+            "recommended": true,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "gpt-4o",
+            "json_mode": true,
+            "label": "GPT-4o",
+            "model_id": "gpt-4o",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "openai",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "quality",
+            "tool_calling": true
+          }
+        ]
+      },
+      {
+        "default_model_id": null,
+        "env_key_configured": false,
+        "executable": false,
+        "id": "anthropic",
+        "label": "Anthropic",
+        "models": [
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "claude-sonnet-4-5",
+            "json_mode": true,
+            "label": "Claude Sonnet 4.5",
+            "model_id": "claude-sonnet-4-5",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "anthropic",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": "Native Anthropic Messages adapter is not implemented.",
+            "supported": false,
+            "tier": null,
+            "tool_calling": true
+          }
+        ]
+      },
+      {
+        "default_model_id": "grok-3-mini",
+        "env_key_configured": false,
+        "executable": true,
+        "id": "xai",
+        "label": "xAI",
+        "models": [
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "grok-3-mini",
+            "json_mode": true,
+            "label": "Grok 3 Mini",
+            "model_id": "grok-3-mini",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "xai",
+            "recommended": true,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "grok-3",
+            "json_mode": true,
+            "label": "Grok 3",
+            "model_id": "grok-3",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "xai",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "quality",
+            "tool_calling": true
+          }
+        ]
+      },
+      {
+        "default_model_id": "deepseek-v4-flash",
+        "env_key_configured": false,
+        "executable": true,
+        "id": "deepseek",
+        "label": "DeepSeek",
+        "models": [
+          {
+            "eval_ref": "/api/quality",
+            "evaluated": true,
+            "id": "deepseek-flash",
+            "json_mode": true,
+            "label": "DeepSeek Flash",
+            "model_id": "deepseek-flash",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "deepseek",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "deepseek-v4-pro",
+            "json_mode": true,
+            "label": "DeepSeek V4 Pro",
+            "model_id": "deepseek-v4-pro",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "deepseek",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "quality",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "deepseek-v4-flash",
+            "json_mode": true,
+            "label": "DeepSeek V4 Flash",
+            "model_id": "deepseek-v4-flash",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "deepseek",
+            "recommended": true,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "deepseek-chat",
+            "json_mode": true,
+            "label": "DeepSeek Chat",
+            "model_id": "deepseek-chat",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "deepseek",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          }
+        ]
+      },
+      {
+        "default_model_id": "qwen-turbo",
+        "env_key_configured": false,
+        "executable": true,
+        "id": "qwen",
+        "label": "Qwen",
+        "models": [
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "qwen-plus",
+            "json_mode": true,
+            "label": "Qwen Plus",
+            "model_id": "qwen-plus",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "qwen",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "quality",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "qwen-turbo",
+            "json_mode": true,
+            "label": "Qwen Turbo",
+            "model_id": "qwen-turbo",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "qwen",
+            "recommended": true,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          }
+        ]
+      },
+      {
+        "default_model_id": "gemini-2.5-flash",
+        "env_key_configured": false,
+        "executable": true,
+        "id": "gemini",
+        "label": "Gemini (OpenAI shim, beta)",
+        "models": [
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "gemini-2.5-flash",
+            "json_mode": true,
+            "label": "Gemini 2.5 Flash",
+            "model_id": "gemini-2.5-flash",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "gemini",
+            "recommended": true,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "gemini-2.5-pro",
+            "json_mode": true,
+            "label": "Gemini 2.5 Pro",
+            "model_id": "gemini-2.5-pro",
+            "native_web_search": "undated",
+            "notes": null,
+            "provider": "gemini",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "quality",
+            "tool_calling": true
+          }
+        ]
+      },
+      {
+        "default_model_id": "gemini-2.5-flash-nothink",
+        "env_key_configured": false,
+        "executable": true,
+        "id": "aihubmix",
+        "label": "AIHubMix",
+        "models": [
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "gemini-2.5-flash-nothink",
+            "json_mode": true,
+            "label": "Gemini 2.5 Flash",
+            "model_id": "gemini-2.5-flash-nothink",
+            "native_web_search": "none",
+            "notes": null,
+            "provider": "aihubmix",
+            "recommended": true,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "deepseek-v4-flash",
+            "json_mode": true,
+            "label": "DeepSeek V4 Flash",
+            "model_id": "deepseek-v4-flash",
+            "native_web_search": "none",
+            "notes": null,
+            "provider": "aihubmix",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "claude-opus-4-6",
+            "json_mode": true,
+            "label": "Claude Opus 4.6",
+            "model_id": "claude-opus-4-6",
+            "native_web_search": "none",
+            "notes": null,
+            "provider": "aihubmix",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "quality",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "qwen3.6-flash",
+            "json_mode": true,
+            "label": "Qwen3.6 Flash",
+            "model_id": "qwen3.6-flash",
+            "native_web_search": "none",
+            "notes": null,
+            "provider": "aihubmix",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          }
+        ]
+      },
+      {
+        "default_model_id": "deepseek-v4-flash",
+        "env_key_configured": false,
+        "executable": true,
+        "id": "siliconflow",
+        "label": "SiliconFlow",
+        "models": [
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "deepseek-v4-flash",
+            "json_mode": true,
+            "label": "DeepSeek V4 Flash",
+            "model_id": "deepseek-v4-flash",
+            "native_web_search": "none",
+            "notes": null,
+            "provider": "siliconflow",
+            "recommended": true,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "Qwen/Qwen3.6",
+            "json_mode": true,
+            "label": "Qwen3.6",
+            "model_id": "Qwen/Qwen3.6",
+            "native_web_search": "none",
+            "notes": null,
+            "provider": "siliconflow",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "Pro/deepseek-ai/DeepSeek-V3",
+            "json_mode": true,
+            "label": "DeepSeek V3",
+            "model_id": "Pro/deepseek-ai/DeepSeek-V3",
+            "native_web_search": "none",
+            "notes": null,
+            "provider": "siliconflow",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "quality",
+            "tool_calling": true
+          }
+        ]
+      },
+      {
+        "default_model_id": "GLM-4.7-FlashX",
+        "env_key_configured": false,
+        "executable": true,
+        "id": "glm",
+        "label": "Z.AI / GLM",
+        "models": [
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "GLM-4.7-FlashX",
+            "json_mode": true,
+            "label": "GLM-4.7 FlashX",
+            "model_id": "GLM-4.7-FlashX",
+            "native_web_search": "none",
+            "notes": null,
+            "provider": "glm",
+            "recommended": true,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "value",
+            "tool_calling": true
+          },
+          {
+            "eval_ref": null,
+            "evaluated": false,
+            "id": "GLM-5.2",
+            "json_mode": true,
+            "label": "GLM-5.2",
+            "model_id": "GLM-5.2",
+            "native_web_search": "none",
+            "notes": null,
+            "provider": "glm",
+            "recommended": false,
+            "streaming_tool_args": true,
+            "support_reason": null,
+            "supported": true,
+            "tier": "quality",
+            "tool_calling": true
+          }
+        ]
+      },
+      {
+        "default_model_id": null,
+        "env_key_configured": false,
+        "executable": true,
+        "id": "custom_openai_compatible",
+        "label": "Custom (OpenAI-compatible)",
+        "models": []
+      }
+    ],
+    "search_providers": [
+      {
+        "date_filter": true,
+        "evaluated_for_attribution": false,
+        "id": "tavily",
+        "role": "leads"
+      }
+    ]
+  },
+  "source": {
+    "kind": "real",
+    "source": "application model catalog"
+  },
+  "state": "Models catalog"
+}

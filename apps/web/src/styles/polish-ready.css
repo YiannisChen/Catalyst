@@ -1,0 +1,105 @@
+/* UI polish (attribution before a run): semantic classes. */
+@layer components {
+  .ready-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+  }
+  .ready-move {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .ready-move-value {
+    font-size: 28px;
+    line-height: 34px;
+    font-weight: 500;
+  }
+  .ready-move-bar {
+    display: flex;
+    height: 6px;
+    overflow: hidden;
+    margin-top: 6px;
+    border-radius: 3px;
+    background: var(--bg-300);
+  }
+  .ready-bar-down {
+    background: var(--down);
+  }
+  .ready-bar-up {
+    background: var(--up);
+  }
+  .ready-split,
+  .ready-row,
+  .ready-meta {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .ready-action {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ready-meta {
+    align-items: center;
+  }
+  .ready-meta > span {
+    min-width: 0;
+  }
+  .ready-meta > button {
+    flex-shrink: 0;
+    align-self: flex-start;
+  }
+  .ready-bar-gap {
+    opacity: 0.5;
+  }
+  .ready-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line-100);
+  }
+  .ready-steps {
+    gap: 8px;
+  }
+  .ready-steps > div {
+    display: grid;
+    grid-template-columns: 20px 1fr;
+    gap: 8px;
+    color: var(--ink-200);
+    font-size: 13px;
+    line-height: 19px;
+  }
+  .ready-steps b {
+    color: var(--ink-300);
+    font-family: var(--font-mono);
+    font-weight: 500;
+  }
+  .ready-visitor-box {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--line-100);
+    border-radius: 8px;
+    background: var(--bg-200);
+  }
+  .ready-visitor-box > span {
+    color: var(--ink-200);
+    font-size: 12px;
+    line-height: 17px;
+  }
+  .ready-feature-link {
+    display: inline-flex;
+    min-height: 36px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--line-200);
+    border-radius: 6px;
+    color: var(--ink-100);
+    font-size: 14px;
+    text-decoration: none;
+  }
+}

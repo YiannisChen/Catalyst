@@ -1,0 +1,250 @@
+EX-99.1
+2
+EX-99.1
+
+Document
+
+Exhibit 99.1
+
+Apple reports second quarter results
+
+March quarter records for total company revenue, iPhone revenue, and EPS
+
+Services revenue reaches new all-time high
+
+CUPERTINO, CALIFORNIA — Apple® today announced financial results for its fiscal 2026 second quarter ended March 28, 2026. The Company posted quarterly revenue of $111.2 billion, up 17 percent year over year. Diluted earnings per share was $2.01, up 22 percent year over year.
+
+“Today Apple is proud to report our best March quarter ever, with revenue of $111.2 billion and double-digit growth across every geographic segment,” said Tim Cook, Apple’s CEO. “iPhone achieved a March quarter revenue record, fueled by such extraordinary demand for the iPhone 17 lineup. During the quarter, Services achieved yet another all-time record, and we were excited to introduce remarkable new products to our strongest lineup ever. That included the addition of the iPhone 17e and the M4-powered iPad Air, along with the launch of MacBook Neo, which is captivating customers all around the world.”
+
+“Our strong business performance during the March quarter generated over $28 billion in operating cash flow and drove new March quarter records for both operating cash flow and EPS,” said Kevan Parekh, Apple’s CFO. “Continued strong customer demand for our products and services once again helped us achieve a new all-time high for our installed base of active devices across all major product categories and geographic segments.”
+
+Apple’s board of directors has declared a cash dividend of $0.27 per share of the Company’s common stock, an increase of 4 percent. The dividend is payable on May 14, 2026, to shareholders of record as of the close of business on May 11, 2026. The board of directors has also authorized an additional program to repurchase up to $100 billion of the Company’s common stock.
+
+Apple will provide live streaming of its Q2 2026 financial results conference call beginning at 2:00 p.m. PT on April 30, 2026, at apple.com/investor/earnings-call. The webcast will be available for replay for approximately two weeks thereafter.
+
+Apple periodically provides information for investors on its corporate website, apple.com, and its investor relations website, investor.apple.com. This includes press releases and other information about financial performance, reports filed or furnished with the SEC, information on corporate governance, and details related to its annual meeting of shareholders.
+
+This press release contains forward-looking statements, within the meaning of the Private Securities Litigation Reform Act of 1995. These forward-looking statements include without limitation those about the Company’s plan for return of capital, payment of the Company’s quarterly dividend and future business plans. These statements involve risks and uncertainties, and actual results may differ materially from any future results expressed or implied by the forward-looking statements. Risks and uncertainties include without limitation: effects of global and regional economic conditions, including as a result of government policies, trade and other international disputes, geopolitical tensions, conflict, terrorism, natural disasters, and public health issues; risks relating to the design, manufacture, introduction, and transition of products and services in highly competitive and rapidly changing markets, including from reliance on third parties for components, technology, manufacturing, applications, services, support, and content; risks relating to information technology system failures, network disruptions, and failure to protect, loss of, or unauthorized access to, or release of, data; and effects of unfavorable legal proceedings, government investigations, and complex and changing laws and regulations. More information on these risks and other potential factors that could affect the Company’s business, reputation, results of operations, financial condition, and stock price is included in the Company’s filings with the SEC, including in the “Risk Factors” and “Management’s Discussion and Analysis of Financial Condition and Results of Operations” sections of the Company’s most recently filed periodic reports on Form 10-K and Form 10-Q and subsequent filings. The Company assumes no obligation to update any forward-looking statements, which speak only as of the date they are made. 
+
+Apple revolutionized personal technology with the introduction of the Macintosh in 1984. Today, Apple leads the world in innovation with iPhone, iPad, Mac, AirPods, Apple Watch, and Apple Vision Pro. Apple’s six software platforms — iOS, iPadOS, macOS, watchOS, visionOS, and tvOS — provide seamless experiences across all Apple devices and empower people with breakthrough services including the App Store, Apple Music, Apple Pay, iCloud, and Apple TV. Apple’s more than 150,000 employees are dedicated to making the best products on earth and to leaving the world better than we found it.
+
+Press Contact:
+Josh Rosenstock
+Apple
+jrosenstock@apple.com
+(408) 862-1142
+
+Investor Relations Contact:
+Suhasini Chandramouli
+Apple
+suhasini@apple.com
+(408) 974-3123
+
+NOTE TO EDITORS: For additional information visit Apple Newsroom (www.apple.com/newsroom), or email Apple’s Media Helpline at media.help@apple.com.
+
+© 2026 Apple Inc. All rights reserved. Apple and the Apple logo are trademarks of Apple. Other company and product names may be trademarks of their respective owners.
+
+Apple Inc.
+CONDENSED CONSOLIDATED STATEMENTS OF OPERATIONS (Unaudited)
+(In millions, except number of shares, which are reflected in thousands, and per-share amounts)
+
+Three Months EndedSix Months Ended
+March 28,2026March 29,2025March 28,2026March 29,2025
+Net sales:
+   Products$80,208 $68,714 $193,951 $166,674 
+   Services30,976 26,645 60,989 52,985 
+Total net sales (1)
+111,184 95,359 254,940 219,659 
+Cost of sales:
+   Products49,179 44,030 116,657 103,477 
+   Services7,224 6,462 14,271 13,040 
+Total cost of sales56,403 50,492 130,928 116,517 
+Gross margin54,781 44,867 124,012 103,142 
+
+Operating expenses:
+
+Research and development
+11,419 8,550 22,306 16,818 
+Selling, general and administrative
+7,477 6,728 14,969 13,903 
+Total operating expenses
+18,896 15,278 37,275 30,721 
+
+Operating income
+35,885 29,589 86,737 72,421 
+Other income/(expense), net
+(52)(279)98 (527)
+Income before provision for income taxes
+35,833 29,310 86,835 71,894 
+Provision for income taxes
+6,255 4,530 15,160 10,784 
+Net income
+$29,578 $24,780 $71,675 $61,110 
+
+Earnings per share:
+
+Basic
+$2.02 $1.65 $4.87 $4.06 
+Diluted
+$2.01 $1.65 $4.85 $4.05 
+Shares used in computing earnings per share:
+
+Basic
+14,673,278 14,994,082 14,710,718 15,037,903 
+Diluted
+14,725,873 15,056,133 14,768,115 15,103,499 
+
+(1) Net sales by reportable segment:
+
+Americas
+$45,093 $40,315 $103,622 $92,963 
+Europe
+28,055 24,454 66,201 58,315 
+Greater China
+20,497 16,002 46,023 34,515 
+Japan
+8,401 7,298 17,814 16,285 
+Rest of Asia Pacific
+9,138 7,290 21,280 17,581 
+Total net sales
+$111,184 $95,359 $254,940 $219,659 
+
+(1) Net sales by category:
+
+iPhone
+$56,994 $46,841 $142,263 $115,979 
+Mac
+8,399 7,949 16,785 16,936 
+iPad
+6,914 6,402 15,509 14,490 
+Wearables, Home and Accessories
+7,901 7,522 19,394 19,269 
+Services
+30,976 26,645 60,989 52,985 
+Total net sales
+$111,184 $95,359 $254,940 $219,659 
+
+Apple Inc.
+CONDENSED CONSOLIDATED BALANCE SHEETS (Unaudited)
+(In millions, except number of shares, which are reflected in thousands, and par value)
+
+March 28,2026September 27,2025
+ASSETS:
+Current assets:
+
+Cash and cash equivalents
+$45,572 $35,934 
+Marketable securities
+22,935 18,763 
+Accounts receivable, net
+30,339 39,777 
+Vendor non-trade receivables
+23,172 33,180 
+Inventories
+6,747 5,718 
+Other current assets
+15,349 14,585 
+Total current assets
+144,114 147,957 
+
+Non-current assets:
+
+Marketable securities
+78,088 77,723 
+Property, plant and equipment, net
+50,116 49,834 
+Intangible assets, net21,334 11,093 
+Other non-current assets
+77,430 72,634 
+Total non-current assets
+226,968 211,284 
+Total assets
+$371,082 $359,241 
+
+LIABILITIES AND SHAREHOLDERS’ EQUITY:
+Current liabilities:
+
+Accounts payable
+$57,349 $69,860 
+Other current liabilities
+57,654 66,387 
+Deferred revenue
+9,331 9,055 
+Commercial paper
+1,997 7,979 
+Term debt
+8,310 12,350 
+Total current liabilities
+134,641 165,631 
+
+Non-current liabilities:
+
+Term debt
+74,404 78,328 
+Other non-current liabilities
+55,546 41,549 
+Total non-current liabilities
+129,950 119,877 
+Total liabilities
+264,591 285,508 
+
+Commitments and contingencies
+
+Shareholders’ equity:
+
+Common stock and additional paid-in capital, $0.00001 par value: 50,400,000 shares authorized; 14,667,688 and 14,773,260 shares issued and outstanding, respectively
+99,507 93,568 
+Retained earnings/(Accumulated deficit)12,359 (14,264)
+Accumulated other comprehensive loss(5,375)(5,571)
+Total shareholders’ equity
+106,491 73,733 
+Total liabilities and shareholders’ equity
+$371,082 $359,241 
+
+Apple Inc.
+CONDENSED CONSOLIDATED STATEMENTS OF CASH FLOWS (Unaudited)
+(In millions)
+
+Six Months Ended
+March 28,2026March 29,2025
+Cash, cash equivalents, and restricted cash and cash equivalents, beginning balances$35,934 $29,943 
+
+Operating activities:
+Net income71,675 61,110 
+Adjustments to reconcile net income to cash generated by operating activities:
+Depreciation and amortization6,653 5,741 
+Share-based compensation expense7,122 6,512 
+Other(1,717)(2,217)
+Changes in operating assets and liabilities:
+Accounts receivable, net9,295 7,266 
+Vendor non-trade receivables10,008 9,171 
+Inventories(1,084)858 
+Other current and non-current assets(14,329)(4,371)
+Accounts payable(12,297)(14,604)
+Other current and non-current liabilities7,301 (15,579)
+Cash generated by operating activities82,627 53,887 
+
+Investing activities:
+Purchases of marketable securities(32,432)(12,442)
+Proceeds from maturities of marketable securities18,691 26,587 
+Proceeds from sales of marketable securities8,615 5,210 
+Payments for acquisition of property, plant and equipment(4,344)(6,011)
+
+Other(1,584)(635)
+Cash generated by/(used in) investing activities(11,054)12,709 
+
+Financing activities:
+Payments for taxes related to net share settlement of equity awards(3,252)(3,205)
+Payments for dividends and dividend equivalents(7,743)(7,614)
+Repurchases of common stock(36,989)(49,504)
+
+Repayments of term debt(7,914)(4,009)
+Repayments of commercial paper, net(5,911)(3,968)
+Other(126)(77)
+Cash used in financing activities(61,935)(68,377)
+
+Increase/(Decrease) in cash, cash equivalents, and restricted cash and cash equivalents9,638 (1,781)
+Cash, cash equivalents, and restricted cash and cash equivalents, ending balances$45,572 $28,162 
+
+Supplemental cash flow disclosure:
+Cash paid for income taxes, net$20,397 $31,683

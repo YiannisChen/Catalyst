@@ -1,0 +1,36 @@
+[Unit]
+Description=Catalyst API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/catalyst/api
+EnvironmentFile=/opt/catalyst/.env
+Environment=PYTHONPATH=/opt/catalyst/api/packages/data:/opt/catalyst/api/packages/agents:/opt/catalyst/api/packages/api
+Environment=CATALYST_SQLITE_LIVE_READ=1
+Environment=CATALYST_SQLITE_READ_TIMEOUT_S=10
+Environment=CATALYST_SQLITE_READ_RETRIES=4
+Environment=CATALYST_FEATURED_BUNDLE=/var/lib/catalyst-api/featured/featured_cases_v1.sqlite3
+Environment=CATALYST_FEATURED_MANIFEST=/opt/catalyst/repo/data/manifests/featured_cases_v1.json
+Environment=CATALYST_ANONYMOUS_BYOK_DAILY_RUN_LIMIT=20
+Environment=CATALYST_DB_PATH=/opt/catalyst/repo/data/m9/catalyst_corpus.sqlite3
+Environment=CATALYST_RUNTIME_DB_PATH=/var/lib/catalyst-api/live_runtime.sqlite3
+ExecStartPre=/opt/catalyst/api/venv/bin/python -c 'from catalyst_data.ingestion.ops.health import sec_exhibit_units; r=sec_exhibit_units(); raise SystemExit(0 if r.get("status")=="ok" and r.get("rows",0)>0 else 1)'
+# EnvironmentFile= overrides Environment=. The public pins are repeated on
+# the command line so a hostile env file cannot change them.
+ExecStart=/usr/bin/env CATALYST_ANONYMOUS_DAILY_RUN_LIMIT=0 CATALYST_DB_PATH=/opt/catalyst/repo/data/m9/catalyst_corpus.sqlite3 CATALYST_RUNTIME_DB_PATH=/var/lib/catalyst-api/live_runtime.sqlite3 CATALYST_V2_RULES=all CATALYST_EVIDENCE_WINDOW_POLICY=desk_cascade_v1 CATALYST_RETRIEVAL_PROFILE=lexical_display_v1 CATALYST_ALLOW_NON_LOOPBACK=1 CATALYST_TRUSTED_PROXY_CIDRS=127.0.0.1/32 CATALYST_DATA_REFRESH=0 CATALYST_WEB_EVIDENCE=discovery_v2 CATALYST_PUBLIC_TAVILY_ENABLED=0 CATALYST_SQLITE_LIVE_READ=1 CATALYST_FILING_UNITS= /opt/catalyst/api/venv/bin/uvicorn catalyst_app.main:app --host 127.0.0.1 --port 8000 --workers 1
+Restart=on-failure
+RestartSec=5
+MemoryMax=2G
+CPUQuota=100%
+TasksMax=256
+IOWeight=10
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,78 @@
+{
+  "description": "邀请链接运行：仅能选择已准备的股票和日期；含额度响应头、今日剩余额度和用量。令牌值为占位。",
+  "request": {
+    "method": "POST",
+    "path": "/api/live-runs",
+    "headers": {
+      "X-Invite-Token": "inv_EXAMPLE.signature",
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "ticker": "ACME",
+      "trade_date": "2026-10-16",
+      "query": null,
+      "model": {
+        "provider": "openai",
+        "model_id": "deepseek-chat",
+        "credential_source": "server_env"
+      },
+      "config": "v1.1"
+    }
+  },
+  "accepted_response": {
+    "status": 202,
+    "headers": {
+      "X-Quota-Tier": "invite",
+      "X-Quota-Remaining": "49"
+    },
+    "body": {
+      "run_id": "b1000000000000000000000000000001",
+      "status": "ACCEPTED",
+      "stream_url": "/api/live-runs/b1000000000000000000000000000001/stream",
+      "request_hash_prefix": "c3d4e5f6",
+      "model_capability_label": "streaming-v1",
+      "access": {
+        "tier": "invite",
+        "max_cost_usd": 0.05
+      }
+    }
+  },
+  "quota_response": {
+    "path": "GET /api/quota",
+    "body": {
+      "tier": "invite",
+      "as_of": "2026-10-22T15:00:00Z",
+      "per_caller": {
+        "limit": 50,
+        "used": 1,
+        "remaining": 49,
+        "resets_at": "2026-10-23T00:00:00Z"
+      },
+      "global": {
+        "model_cost_usd": {
+          "limit": 2.0,
+          "used": 0.12
+        },
+        "tavily_credits": {
+          "limit": 50,
+          "used": 6
+        },
+        "exhausted": false
+      },
+      "token": {
+        "label": "申请材料-示例",
+        "expires_at": "2026-11-30T00:00:00Z"
+      }
+    }
+  },
+  "usage_event": {
+    "description": "管理员用量查询里的一行",
+    "token_id": "tok_0007",
+    "label": "申请材料-示例",
+    "run_id": "b1000000000000000000000000000001",
+    "at": "2026-10-22T15:00:03Z",
+    "cost_usd": 0.0081,
+    "tavily_credits": 0,
+    "outcome": "ANSWERED"
+  }
+}

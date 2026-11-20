@@ -1,0 +1,20 @@
+{
+  "request": {
+    "method": "POST",
+    "route": "/api/live-runs",
+    "params": {},
+    "body": {
+      "ticker": "NOW",
+      "trade_date": "2026-04-10"
+    }
+  },
+  "response": {
+    "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+    "stream_url": "/api/live-runs/8c2ba2d33e8d46f1b605fc7b48f22b16/stream",
+    "request_hash_prefix": "b8a9bd19660872ca",
+    "model_capability_label": "Structured output · streaming",
+    "status": "ACCEPTED"
+  },
+  "source": "synthetic, run id from events-t3-now",
+  "state": "Run accepted for NOW on 2026-04-10"
+}

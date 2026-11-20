@@ -1,0 +1,17 @@
+{
+  "request": {
+    "method": "POST",
+    "route": "/api/models/validate",
+    "params": {},
+    "body": {
+      "provider": "deepseek",
+      "model_id": "deepseek-v4-flash"
+    }
+  },
+  "response": {
+    "ok": true,
+    "error_code": null
+  },
+  "source": "synthetic",
+  "state": "Provider key validated"
+}

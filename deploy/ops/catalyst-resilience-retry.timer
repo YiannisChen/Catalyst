@@ -1,0 +1,10 @@
+[Unit]
+Description=Catalyst: retry queued fetches every 15 minutes
+
+[Timer]
+OnCalendar=*:07/15
+Persistent=false
+Unit=catalyst-resilience-retry.service
+
+[Install]
+WantedBy=timers.target

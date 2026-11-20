@@ -1,0 +1,10 @@
+[Unit]
+Description=Catalyst backup at 15:00 UTC (after the daily job, before the monitor pulls at 16:00 UTC)
+
+[Timer]
+OnCalendar=*-*-* 15:00:00 UTC
+Persistent=true
+Unit=catalyst-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,349 @@
+{
+  "presentation": {
+    "leads": false,
+    "possible_explanation": false
+  },
+  "request": {
+    "method": "GET",
+    "params": {
+      "run_id": "2b050725848d4396a2aac28721963457"
+    },
+    "route": "/api/live-runs/{run_id}/view"
+  },
+  "response": {
+    "answer": {
+      "abstention": {
+        "details": {},
+        "leads": [],
+        "possible_explanation": null,
+        "reason_code": "NO_PRIMARY_PROPOSED",
+        "reason_text": "No primary cause was proposed for publication."
+      },
+      "also_sentence": null,
+      "facts": {
+        "commodity": null,
+        "comove_sentence": "Timing: opening gap -0.45%, open to close +0.52%.",
+        "filings": [],
+        "gap_return_pct": -0.45329834188239104,
+        "market": {
+          "band": "UNKNOWN",
+          "relation": "TARGET_FLAT",
+          "residual_pct": 0.39532949389537997,
+          "return_pct": -0.33568497522664664,
+          "ticker": null
+        },
+        "peers": {
+          "band": "UNKNOWN",
+          "count": 2,
+          "items": [
+            {
+              "return_pct": 7.485266419588066,
+              "ticker": "DELL"
+            },
+            {
+              "return_pct": 1.9427954668105762,
+              "ticker": "HPQ"
+            }
+          ],
+          "median_return_pct": 4.714030943199321,
+          "relation": "TARGET_FLAT",
+          "residual_pct": -4.654386424530587
+        },
+        "sector": {
+          "band": "UNKNOWN",
+          "relation": "TARGET_FLAT",
+          "residual_pct": 0.6438015610819248,
+          "return_pct": -0.5841570424131914,
+          "ticker": "XLK"
+        },
+        "target_return_pct": 0.059644518668733326
+      },
+      "governing_ref": null,
+      "headline": "AAPL rose 0.06% while its sector fell (XLK -0.58%).",
+      "key_sentence": null,
+      "limitations": [
+        "No cause was published for this move: no source sentence within the evidence window was accepted as its cause.",
+        "Coverage gap: MISSING_SECTOR_CONTEXT for SECTOR_NEWS.",
+        "Coverage gap: MISSING_MACRO_CONTEXT for MACRO_EVENT."
+      ],
+      "outcome": "ABSTAINED",
+      "run_id": "2b050725848d4396a2aac28721963457",
+      "schema_version": "answer_snapshot_v1",
+      "session_date": "2026-03-24",
+      "sources": [],
+      "status": "ABSTAIN",
+      "ticker": "AAPL",
+      "tier": "T3",
+      "tier_reason": "No available reference met the governing-reference rules for this move.",
+      "window": {
+        "cutoff_at": "2026-03-24T20:00:00+00:00",
+        "information_window_start_at": "2026-03-23T20:00:00+00:00",
+        "session_open_at": "2026-03-24T13:30:00+00:00"
+      }
+    },
+    "availability": {
+      "abstention_reason": "derived",
+      "answer": "present",
+      "cost": "present",
+      "facts": "present",
+      "policy": "present",
+      "trace": "present"
+    },
+    "cost": {
+      "cost_method": "upper_bound_charged",
+      "cost_usd": 0.03896,
+      "model_calls": {
+        "analyst": 1,
+        "verifier": 0,
+        "writer": 0
+      },
+      "provider_attempts": 1
+    },
+    "facts": {
+      "commodity": null,
+      "comove_sentence": "Timing: opening gap -0.45%, open to close +0.52%.",
+      "filings": [],
+      "gap_return_pct": -0.45329834188239104,
+      "market": {
+        "band": "UNKNOWN",
+        "relation": "TARGET_FLAT",
+        "residual_pct": 0.39532949389537997,
+        "return_pct": -0.33568497522664664,
+        "ticker": null
+      },
+      "peers": {
+        "band": "UNKNOWN",
+        "count": 2,
+        "items": [
+          {
+            "return_pct": 7.485266419588066,
+            "ticker": "DELL"
+          },
+          {
+            "return_pct": 1.9427954668105762,
+            "ticker": "HPQ"
+          }
+        ],
+        "median_return_pct": 4.714030943199321,
+        "relation": "TARGET_FLAT",
+        "residual_pct": -4.654386424530587
+      },
+      "sector": {
+        "band": "UNKNOWN",
+        "relation": "TARGET_FLAT",
+        "residual_pct": 0.6438015610819248,
+        "return_pct": -0.5841570424131914,
+        "ticker": "XLK"
+      },
+      "target_return_pct": 0.059644518668733326
+    },
+    "failure": null,
+    "legacy_text": null,
+    "run": {
+      "code_revision": {
+        "dirty": null,
+        "sha": "43b2c14c64215e3a1c97b9cb1829429c8dfd8efa"
+      },
+      "created_at": "2026-10-09T17:32:38.200348Z",
+      "duration_ms": 12856,
+      "duration_source": "decision_trace",
+      "finished_at": "2026-10-09T17:32:51.263884Z",
+      "force_full": false,
+      "lifecycle": "COMPLETED",
+      "model": {
+        "analyst_model_id": "deepseek-flash",
+        "provider": "deepseek"
+      },
+      "policy": {
+        "corrective_enabled": false,
+        "force_full": false,
+        "quote_rules_version": "q1c_quote_rules_v4",
+        "verifier_enabled": true,
+        "verifier_prompt_sha256": "fdc2cf2c6d1574f5e3953d130e20e84dd70ded0045deaa7c30456c07dc4c5ecb",
+        "verifier_version": "primary_verifier_v6"
+      },
+      "run_id": "2b050725848d4396a2aac28721963457",
+      "session_date": "2026-03-24",
+      "ticker": "AAPL"
+    },
+    "schema_version": "run_view_v1",
+    "trace": {
+      "final_status": "ABSTAIN",
+      "model_calls": {
+        "analyst": 1,
+        "verifier": 0,
+        "writer": 0
+      },
+      "retrieval": {
+        "evidence_in_state": 3,
+        "excluded_from_pack": 0,
+        "facts_in_state": 0,
+        "included_by_content_state": {
+          "FULL_TEXT": 3
+        },
+        "included_in_pack": 3,
+        "inventory": 3,
+        "lead_only": 0,
+        "tasks": [
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 0,
+            "latency_ms": 958,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:0:187056047681"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 0,
+            "latency_ms": 1311,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:1:5f2707f49c18"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 0,
+            "latency_ms": 483,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:3:e49a5f28bdd0"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 0,
+            "latency_ms": 464,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:3:e49a5f28bdd0:peer:DELL"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 0,
+            "latency_ms": 450,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:3:e49a5f28bdd0:peer:HPQ"
+          },
+          {
+            "degradation_reasons": [],
+            "facts": 0,
+            "items": 3,
+            "latency_ms": 1286,
+            "mode_served": "fts5",
+            "status": "SUCCEEDED",
+            "task_id": "research:1:lead:1a90a0006f59"
+          }
+        ]
+      },
+      "rounds": [
+        {
+          "code_checks": {
+            "gates": [
+              {
+                "detail": null,
+                "gate": "comove",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "subject",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "timing",
+                "result": "no_change"
+              }
+            ],
+            "outcome": {
+              "attribution_type": "EVIDENCE_BACKED_CAUSAL",
+              "final_status": "ABSTAIN",
+              "hypotheses": [],
+              "research_decision": "ABSTAIN",
+              "status_ceiling": "ABSTAIN"
+            },
+            "quotes": []
+          },
+          "model_reported": {
+            "analyst": {
+              "evidence_decisions": [
+                {
+                  "contradicts": [],
+                  "disposition": "IRRELEVANT",
+                  "evidence_id": "bbe18bfd7e0b723ae8d7fbf8c971fac7a9aa656aa6cbd429ec0772ebef6334e1:filing_v3:unknown_000:0004",
+                  "note": "Annual meeting director-election vote tally; routine governance content with no bearing on the session's price move.",
+                  "reason_code": "ROUTINE_GOVERNANCE_FILING",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "IRRELEVANT",
+                  "evidence_id": "bbe18bfd7e0b723ae8d7fbf8c971fac7a9aa656aa6cbd429ec0772ebef6334e1:filing_v3:unknown_000:0005",
+                  "note": "Continuation of director vote tallies; no causal content for the observed move.",
+                  "reason_code": "ROUTINE_GOVERNANCE_FILING",
+                  "supports": []
+                },
+                {
+                  "contradicts": [],
+                  "disposition": "IRRELEVANT",
+                  "evidence_id": "bbe18bfd7e0b723ae8d7fbf8c971fac7a9aa656aa6cbd429ec0772ebef6334e1:filing_v3:unknown_000:0006",
+                  "note": "Auditor ratification, say-on-pay and director stock plan approvals; routine annual-meeting items, not a driver of the session.",
+                  "reason_code": "ROUTINE_GOVERNANCE_FILING",
+                  "supports": []
+                }
+              ],
+              "hypotheses": [],
+              "recommended_status": "ABSTAIN",
+              "research_decision": "ABSTAIN"
+            },
+            "verifier": {
+              "called": false,
+              "primary_proposal_state": "NO_PRIMARY_PROPOSED",
+              "skipped_because": "no_primary"
+            }
+          },
+          "round": 1
+        }
+      ],
+      "run_id": "2b050725848d4396a2aac28721963457",
+      "schema_version": "decision_trace_v1",
+      "stages": [
+        {
+          "duration_ms": 6583,
+          "stage": "research_and_context_pack",
+          "started_ms": 0
+        },
+        {
+          "duration_ms": 6242,
+          "round": 1,
+          "stage": "evidence_analyst",
+          "started_ms": 6584
+        },
+        {
+          "duration_ms": 1,
+          "round": 1,
+          "stage": "checks_and_verifier",
+          "started_ms": 12834
+        },
+        {
+          "duration_ms": 15,
+          "stage": "claims_and_render",
+          "started_ms": 12841
+        }
+      ],
+      "total_ms": 12856
+    }
+  },
+  "source": {
+    "kind": "real",
+    "run_id": "2b050725848d4396a2aac28721963457",
+    "store": "data/m9/eval_runs/b3_smoke/runtime.sqlite3"
+  },
+  "state": "Abstain with nothing"
+}

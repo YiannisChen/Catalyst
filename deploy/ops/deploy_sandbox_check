@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -lt 2 || $# -gt 4 ]]; then
+  echo "usage: deploy_sandbox_check <target_sha> <jobdir> [--rollback-sha SHA]" >&2
+  exit 2
+fi
+target_sha=$1
+jobdir=$2
+shift 2
+rollback_sha=
+if [[ $# -ne 0 ]]; then
+  if [[ $# -ne 2 || $1 != --rollback-sha ]]; then
+    echo "usage: deploy_sandbox_check <target_sha> <jobdir> [--rollback-sha SHA]" >&2
+    exit 2
+  fi
+  rollback_sha=$2
+fi
+mkdir -p "$jobdir"
+jobdir=$(cd "$jobdir" && pwd)
+report="$jobdir/report.md"
+code="$jobdir/code-target"
+repo=/opt/catalyst/catalyst.git
+python=${CATALYST_SANDBOX_PYTHON:-/opt/catalyst/venv/bin/python}
+failed=0
+printf '# Deploy sandbox check: %s\n\n' "$target_sha" > "$report"
+if [[ -n "$rollback_sha" ]]; then printf 'Rollback reference: `%s`\n\n' "$rollback_sha" >> "$report"; fi
+
+record() { printf '\n## %s\n\n%s\n' "$1" "$2" >> "$report"; }
+step() {
+  local title=$1 logfile=$2
+  shift 2
+  if "$@" > "$jobdir/$logfile" 2>&1; then
+    record "$title" "PASS. Output: [$logfile]($logfile)"
+  else
+    local status=$?
+    failed=1
+    record "$title" "FAIL (exit $status). Output: [$logfile]($logfile)"
+  fi
+}
+run_py() { (cd "$code" && PYTHONPATH="$code/packages/data" "$python" "$@"); }
+
+prepare_target() {
+  local resolved
+  resolved=$(git --git-dir="$repo" rev-parse --verify "$target_sha^{commit}") || return $?
+  [[ "$resolved" == "$target_sha" ]] || return 1
+  git clone -q --no-checkout "$repo" "$code" || return $?
+  git -C "$code" checkout -q --detach "$target_sha" || return $?
+  [[ "$(git -C "$code" rev-parse HEAD)" == "$target_sha" ]] || return 1
+}
+step 'Target checkout and SHA verification' target-checkout.log prepare_target
+
+record '1. Retired archive stores' 'P10 retired the archive-store migration utility; this sandbox no longer copies, migrates, or writes archive databases.'
+
+check_timers() {
+  (cd "$code" && PYTHONPATH="$code/packages/data" "$python" -m catalyst_data.ingestion.sources timers) > "$jobdir/sources-timers.stdout" || return $?
+  want=$(cd "$code" && deploy/ops/collector_timer_want --stdin < "$jobdir/sources-timers.stdout") || return $?
+  printf '%s\n' "$want" > "$jobdir/want-timers.txt"
+  if grep -Eq '^(catalyst-daily|catalyst-resilience-retry)(\.timer)?$' "$jobdir/want-timers.txt"; then
+    echo 'want contains a forbidden timer' >&2
+    return 1
+  fi
+  systemctl list-unit-files 'catalyst-*.timer' --no-legend \
+    | awk '$2 == "enabled" {print $1}' \
+    | grep -Ev '^(catalyst-daily|catalyst-shadow-collectors|catalyst-resilience-retry)\.timer$' \
+    | sort -u > "$jobdir/enabled-timers.txt" || return $?
+  sort -u "$jobdir/want-timers.txt" -o "$jobdir/want-timers.txt"
+  diff -u "$jobdir/want-timers.txt" "$jobdir/enabled-timers.txt" || return $?
+  if systemctl is-enabled catalyst-resilience-retry.timer >/dev/null 2>&1 || systemctl is-active catalyst-resilience-retry.timer >/dev/null 2>&1; then
+    echo 'catalyst-resilience-retry.timer is enabled or active' >&2
+    return 1
+  fi
+  printf 'Want and enabled collector timer sets match.\n'
+}
+step '3. Target sources timers vs enabled systemd timers' step-3.log check_timers
+
+unit_diff() {
+  shopt -s nullglob
+  local ops_units="$code/deploy/ops"
+  # The target may predate the move of the operations units into deploy/ops.
+  if [[ ! -f "$ops_units/catalyst-health.service" && -f "$code/deploy/catalyst-health.service" ]]; then
+    ops_units="$code/deploy"
+  fi
+  local units=("$code"/deploy/collect/catalyst-collect-*.service "$code"/deploy/collect/catalyst-collect-*.timer \
+    "$ops_units"/catalyst-health.service "$ops_units"/catalyst-health.timer \
+    "$ops_units"/catalyst-backup.service "$ops_units"/catalyst-backup.timer)
+  for source in "${units[@]}"; do
+    [[ -f "$source" ]] || { echo "Missing target unit: $source" >&2; return 1; }
+    local name=${source##*/}
+    printf '\n### %s\n' "$name"
+    if [[ -f "/etc/systemd/system/$name" ]]; then
+      diff -u "/etc/systemd/system/$name" "$source" || true
+    else
+      printf 'Not installed: /etc/systemd/system/%s is absent.\n' "$name"
+    fi
+  done
+}
+unit_diff > "$jobdir/unit-diff.txt" 2>&1 || true
+record '4. Installed unit diff (informational)' 'Not a gate. Read-only comparison saved in [unit-diff.txt](unit-diff.txt).'
+
+record '5. Daily scheduler' 'O1 backfill scheduling is retired. Verify the normal daily job stages and lease cleanup using the approved local test suite.'
+record '6. Offline health and monitor rules (人工)' '建议手工命令：`/opt/catalyst/bin/monitor-gate --help`，再按已批准的离线健康检查参数运行，并将输出保存到本次作业目录。'
+record '7. In-flight attempts query (人工)' '建议手工命令：对 sandbox 的 jobs 数据库执行只读查询：`sqlite3 <sandbox-jobs.sqlite3> "SELECT job_id, stage, status, attempts FROM job_items WHERE status=\x27RUNNING\x27"`；确认运行中条目与恢复策略。'
+
+if (( failed )); then
+  printf '\nFinal status: FAIL\n' >> "$report"
+  exit 1
+fi
+printf '\nFinal status: PASS\n' >> "$report"
+exit 0

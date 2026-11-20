@@ -1,0 +1,10 @@
+[Unit]
+Description=Catalyst monitor: check (*:0/15)
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=false
+Unit=catalyst-monitor-check.service
+
+[Install]
+WantedBy=timers.target

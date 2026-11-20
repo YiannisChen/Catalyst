@@ -1,0 +1,51 @@
+{
+  "description": "作答：财报兜底。fact 是代码核对过的申报事实（模板句），fact_checks 是四项核对",
+  "answer_snapshot": {
+    "schema_version": "answer_snapshot_v2",
+    "run_id": "a1000000000000000000000000000003",
+    "ticker": "ACME",
+    "session_date": "2026-10-16",
+    "headline": "ACME 上涨 4.8%，大盘上涨 0.2%。",
+    "outcome": "ANSWERED",
+    "status": "PARTIAL",
+    "scope_note": "结论只到事件层面：指出是哪件事，不说明这件事中哪一部分、在多大程度上推动了股价。",
+    "tier": "T3",
+    "cascade_stage": 4,
+    "stage_label": "财报兜底（申报本身）",
+    "basis": "EARNINGS_FILING",
+    "basis_text": "财报兜底：只说明当天发布了财报，没有说明是财报的哪部分内容驱动了股价。",
+    "earnings_fallback": {
+      "fire": true,
+      "fact": {
+        "company": "ACME Corp.",
+        "form": "8-K",
+        "item": "2.02",
+        "accepted_at": "2026-10-15T20:31:12Z",
+        "accession": "0000000-26-000001",
+        "text": "【申报事实】ACME Corp. (ACME) filed a Form 8-K with the SEC, accepted 2026-10-15 16:31 ET (accession 0000000-26-000001), reporting Item 2.02 Results of Operations and Financial Condition; Item 9.01 Financial Statements and Exhibits."
+      },
+      "fact_checks": {
+        "accession_in_issuer_index": true,
+        "company_named": true,
+        "exhibit_is_this_filing": true,
+        "item_2_02": true
+      },
+      "headline": "ACME Corp. Reports Third Quarter Results"
+    },
+    "primary": {
+      "event_type": "EARNINGS",
+      "scope": "ISSUER",
+      "event_date": "2026-10-15",
+      "quotes": [
+        {
+          "text": "ACME Corp. Reports Third Quarter Results",
+          "publisher": "SEC EDGAR 8-K Exhibit 99.1",
+          "published_at": "2026-10-15T20:31:12Z",
+          "url": "https://www.sec.gov/Archives/edgar/data/0000000/example-ex99.htm"
+        }
+      ]
+    },
+    "data_gaps": [],
+    "limitations": []
+  }
+}

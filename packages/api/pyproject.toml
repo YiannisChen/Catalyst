@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "catalyst-app"
+version = "0.1.0"
+description = "Catalyst runtime application package"
+requires-python = ">=3.11"
+dependencies = [
+  "catalyst-agents>=0.1.0",
+  "catalyst-data>=0.1.0",
+  "fastapi",
+  "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "fastapi==0.140.0",
+  "httpx>=0.27",
+  "jsonschema>=4.20",
+  "pydantic==2.13.4",
+  "pytest>=8.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["catalyst_app*"]
+
+[tool.setuptools.package-data]
+catalyst_app = ["runtime/*.json"]

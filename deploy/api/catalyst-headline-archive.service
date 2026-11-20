@@ -1,0 +1,19 @@
+[Unit]
+Description=Catalyst Finnhub company headline archive
+After=network-online.target
+Before=catalyst-daily.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/catalyst/repo
+EnvironmentFile=/opt/catalyst/.env
+Environment=PYTHONPATH=/opt/catalyst/repo/packages/data:/opt/catalyst/repo/packages/agents
+TimeoutStartSec=2h
+Nice=10
+MemoryMax=2G
+CPUQuota=100%
+TasksMax=256
+IOWeight=10
+ExecStart=/opt/catalyst/repo/deploy/api/run-headline-archive.sh

@@ -1,0 +1,60 @@
+{
+  "request": {
+    "method": "GET",
+    "params": {},
+    "route": "/api/featured"
+  },
+  "response": {
+    "categories": [
+      "ANSWERED_REPORTED_ATTRIBUTION",
+      "PLACEBO_DAY",
+      "ABSTAINED_NO_CAUSE"
+    ],
+    "items": [
+      {
+        "case_id": "now-2026-04-10",
+        "category": "ANSWERED_REPORTED_ATTRIBUTION",
+        "outcome": "ANSWERED",
+        "session_date": "2026-04-10",
+        "source_run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+        "summary": "NOW fell 7.58% while the software sector rose. The answer cites reporting that high-multiple software shares were repriced amid concerns about AI and SaaS pricing.",
+        "tags": [
+          "Reported attribution",
+          "Software"
+        ],
+        "ticker": "NOW",
+        "title": "Software repricing weighs on ServiceNow"
+      },
+      {
+        "case_id": "aapl-tier-2026-03-24",
+        "category": "PLACEBO_DAY",
+        "outcome": "TIER_ONLY",
+        "session_date": "2026-03-24",
+        "source_run_id": "76f91456158d4c3fa1646261ebb65ead",
+        "summary": "AAPL rose 0.06% while its sector fell. The move stayed below the material threshold, so the run did not search for a stock-specific cause.",
+        "tags": [
+          "Tier only",
+          "Small move"
+        ],
+        "ticker": "AAPL",
+        "title": "A quiet AAPL session stays unexplained"
+      },
+      {
+        "case_id": "aapl-no-clear-cause-2026-03-24",
+        "category": "ABSTAINED_NO_CAUSE",
+        "outcome": "ABSTAINED",
+        "session_date": "2026-03-24",
+        "source_run_id": "2b050725848d4396a2aac28721963457",
+        "summary": "AAPL rose 0.06% against a falling sector. No primary cause was proposed for publication.",
+        "tags": [
+          "No clear cause",
+          "No primary cause"
+        ],
+        "ticker": "AAPL",
+        "title": "No clear cause for AAPL’s small move"
+      }
+    ]
+  },
+  "source": "synthetic, from events-t3-now / page-a-answered-now-b5",
+  "state": "Featured case list"
+}

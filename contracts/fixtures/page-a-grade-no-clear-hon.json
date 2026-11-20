@@ -1,0 +1,80 @@
+{
+  "source": "real event_time_v1 DeepSeek smoke: grade_smoke2 x60/HON, regenerated after Step 2 subject and abstention filters",
+  "request": {
+    "method": "GET",
+    "params": {
+      "run_id": "7f0b375004d7468c8c6d7128026652a3"
+    },
+    "route": "/api/live-runs/{run_id}/view"
+  },
+  "response": {
+    "run": {
+      "run_id": "0c2bd28c1abe44359832698b710f7ce0",
+      "ticker": "HON",
+      "session_date": "2026-08-06",
+      "lifecycle": "COMPLETED",
+      "created_at": "2026-10-10T10:38:22.883909+00:00",
+      "duration_source": "not_recorded",
+      "model": {},
+      "code_revision": {}
+    },
+    "cost": {},
+    "answer": {
+      "grade": "NO_CLEAR_CAUSE",
+      "grade_label": "No clear cause was established.",
+      "outcome": "ABSTAINED",
+      "headline": "HON fell 2.97%.",
+      "ticker": "HON",
+      "session_date": "2026-08-06",
+      "key_sentence": null,
+      "event_sentence": null,
+      "sources": [],
+      "abstention": {
+        "details": {
+          "failed_quote_rule_codes": [
+            "R4b_EVENT_TIME_UNVERIFIED",
+            "R8_HEDGED_LINK"
+          ]
+        },
+        "leads": [
+          {
+            "published_at": "2026-08-05 20:05 UTC",
+            "publisher": "Yahoo Finance",
+            "title": "Honeywell Aerospace reports second quarter results; updates 2026 outlook",
+            "url": "https://finance.yahoo.com/markets/stocks/articles/honeywell-aerospace-reports-second-quarter-200500878.html"
+          },
+          {
+            "published_at": "2026-08-05 22:07 UTC",
+            "publisher": "Benzinga",
+            "title": "Honeywell Aerospace Stock Sinks on Softer 2026 Outlook - Honeywell Aerospace (NASDAQ:HONA)",
+            "url": "https://www.benzinga.com/trading-ideas/movers/26/08/60978931/honeywell-aerospace-stock-sinks-on-softer-2026-outlook"
+          },
+          {
+            "published_at": "2026-08-06 14:44 UTC",
+            "publisher": "The Motley Fool",
+            "title": "Why Honeywell Aerospace Stock Crashed After Earnings",
+            "url": "https://www.fool.com/investing/2026/08/06/why-honeywell-aerospace-stock-just-crashed/"
+          },
+          {
+            "published_at": "2026-08-06 16:03 UTC",
+            "publisher": "Benzinga",
+            "title": "Why Is Honeywell Aerospace Stock Falling on Thursday? - Honeywell Aerospace (NASDAQ:HONA)",
+            "url": "https://www.benzinga.com/trading-ideas/movers/26/08/61005876/why-is-honeywell-aerospace-stock-falling-on-thursday"
+          },
+          {
+            "published_at": "2026-08-06 19:12 UTC",
+            "publisher": "Yahoo Finance",
+            "title": "Honeywell (HON) Completes Aerospace Spin Off As Standalone Guidance Takes Shape",
+            "url": "https://finance.yahoo.com/markets/stocks/articles/honeywell-hon-completes-aerospace-spin-191215452.html"
+          }
+        ],
+        "possible_explanation": null,
+        "reason_code": "PRIMARY_QUOTES_FAILED",
+        "reason_text": "The proposed primary cause had no quote that passed the quote checks."
+      }
+    },
+    "availability": {
+      "answer": "present"
+    }
+  }
+}

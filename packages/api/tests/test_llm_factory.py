@@ -1,0 +1,48 @@
+from __future__ import annotations
+
+import os
+from unittest.mock import patch
+
+import pytest
+from catalyst_app.llm_factory import DEFAULT_MODEL, SUPPORTED_MODELS, build_llm
+
+
+def test_build_llm_returns_chat_client_instance():
+    """build_llm returns the thin chat client configured for aihubmix."""
+    from catalyst_agents.llm import ChatClient
+    with patch.dict(os.environ, {"AIHUBMIX_API_KEY": "sk-test-key-123"}):
+        llm = build_llm("gemini-2.5-flash-nothink", provider="aihubmix")
+        assert isinstance(llm, ChatClient)
+        assert llm.model_name == "gemini-2.5-flash-nothink"
+        assert "aihubmix.com" in str(llm._base_url)
+
+
+def test_build_llm_raises_without_api_key():
+    """build_llm raises ValueError when AIHUBMIX_API_KEY is missing."""
+    with patch.dict(os.environ, {}, clear=True):
+        with pytest.raises(ValueError, match="AIHUBMIX_API_KEY"):
+            build_llm("gemini-2.5-flash-nothink")
+
+
+def test_supported_models_returns_list():
+    """SUPPORTED_MODELS contains the 8 expected model identifiers."""
+    assert len(SUPPORTED_MODELS) == 8
+    assert "gemini-2.5-flash-nothink" in SUPPORTED_MODELS
+    assert "claude-opus-4-6" in SUPPORTED_MODELS
+
+
+def test_default_model_is_gemini_flash():
+    """DEFAULT_MODEL is gemini-2.5-flash-nothink for cost efficiency."""
+    assert DEFAULT_MODEL == "gemini-2.5-flash-nothink"
+
+
+def test_build_llm_allows_provider_specific_model_ids():
+    with patch("catalyst_app.llm_factory.ChatClient") as chat_openai:
+        build_llm(
+            "provider-specific-model",
+            provider="custom_openai_compatible",
+            api_key="test-key",
+            base_url="https://example.invalid/v1",
+        )
+
+    assert chat_openai.call_args.kwargs["model"] == "provider-specific-model"

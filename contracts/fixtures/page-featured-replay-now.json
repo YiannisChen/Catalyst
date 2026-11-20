@@ -1,0 +1,913 @@
+{
+  "request": {
+    "method": "GET",
+    "params": {
+      "case_id": "now-2026-04-10"
+    },
+    "route": "/api/featured/{case_id}/replay"
+  },
+  "response": {
+    "case_id": "now-2026-04-10",
+    "speed_hint": 1,
+    "events": [
+      {
+        "event": {
+          "artifact_refs": [
+            {
+              "artifact_id": "manifest:8c2ba2d33e8d46f1b605fc7b48f22b16",
+              "artifact_type": "run_manifest",
+              "content_sha256": "67b78c6ea66f6e149f259af86ffd845a4d7678fe4f80e886ccf64143a166e911",
+              "schema_version": "v1"
+            }
+          ],
+          "emitted_at": "2026-10-09T16:14:54.676839Z",
+          "event_id": null,
+          "event_type": "run.accepted",
+          "payload": {
+            "model_provider_label": "deepseek/deepseek-flash",
+            "request_identity_digest": "b8a9bd19660872ca6e168f16e9d753965804b18af47a40546c0f5e2fefe57542",
+            "stream_url": "/api/live-runs/8c2ba2d33e8d46f1b605fc7b48f22b16/stream",
+            "ticker": "NOW",
+            "trade_date": "2026-04-10",
+            "workflow_version": "v1.1"
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 1,
+          "stage": "ADMISSION"
+        },
+        "offset_ms": 0
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:14:54.684152Z",
+          "event_id": null,
+          "event_type": "stage.started",
+          "payload": {
+            "deadline": null,
+            "input_artifact_refs": [],
+            "round": 1,
+            "stage": "research",
+            "task_id": null
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 2,
+          "stage": "RESEARCH"
+        },
+        "offset_ms": 7
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:14:54.985643Z",
+          "event_id": null,
+          "event_type": "facts.ready",
+          "payload": {
+            "facts": {
+              "commodity": null,
+              "comove_sentence": "NOW -7.58% on 2026-04-10; market -0.07%, sector ETF XLK +0.39%, peer median -3.29% across 4 peers",
+              "filings": [],
+              "gap_return_pct": -1.0021155773299206,
+              "market": {
+                "band": "UNKNOWN",
+                "relation": "REFERENCE_FLAT",
+                "residual_pct": -7.5164964836747625,
+                "return_pct": -0.06617805145495703,
+                "ticker": null
+              },
+              "peers": {
+                "band": "DIVERGENT",
+                "count": 4,
+                "items": [
+                  {
+                    "return_pct": -3.9677723605750725,
+                    "ticker": "CRWD"
+                  },
+                  {
+                    "return_pct": -2.612963678040814,
+                    "ticker": "GEN"
+                  },
+                  {
+                    "return_pct": -0.5897016645669662,
+                    "ticker": "MSFT"
+                  },
+                  {
+                    "return_pct": -6.742924363869152,
+                    "ticker": "PANW"
+                  }
+                ],
+                "median_return_pct": -3.290368019307943,
+                "relation": "SAME_DIRECTION",
+                "residual_pct": -4.292306515821776
+              },
+              "sector": {
+                "band": "DIVERGENT",
+                "relation": "OPPOSITE_DIRECTION",
+                "residual_pct": -7.969799026306535,
+                "return_pct": 0.3871244911768157,
+                "ticker": "XLK"
+              },
+              "target_return_pct": -7.582674535129719
+            },
+            "headline": "NOW fell 7.58% while its sector rose (XLK +0.39%).",
+            "truncated": false,
+            "window": {
+              "cutoff_at": "2026-04-10T20:00:00+00:00",
+              "information_window_start_at": "2026-04-09T20:00:00+00:00",
+              "session_open_at": "2026-04-10T13:30:00+00:00"
+            }
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 3,
+          "stage": "FACTS"
+        },
+        "offset_ms": 309
+      },
+      {
+        "event": {
+          "artifact_refs": [
+            {
+              "artifact_id": "pack:8c2ba2d33e8d46f1b605fc7b48f22b16:1",
+              "artifact_type": "context_pack",
+              "content_sha256": "9a34f94ec4d74df35fd4d4bcda8bc563a1190317d050ac206111612ad9ace67d",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "render:8c2ba2d33e8d46f1b605fc7b48f22b16:1",
+              "artifact_type": "rendered_messages",
+              "content_sha256": "96e0f1b0f2a363d1602a0eff21e9ab6575583efd746b180099556905e3670901",
+              "schema_version": "v1"
+            }
+          ],
+          "emitted_at": "2026-10-09T16:14:59.186752Z",
+          "event_id": null,
+          "event_type": "stage.started",
+          "payload": {
+            "deadline": null,
+            "input_artifact_refs": [],
+            "round": 1,
+            "stage": "context_pack_build",
+            "task_id": null
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 4,
+          "stage": "CONTEXT_PACK_BUILD"
+        },
+        "offset_ms": 4510
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:14:59.189464Z",
+          "event_id": null,
+          "event_type": "retrieval.done",
+          "payload": {
+            "duration_ms": 4330,
+            "included_in_pack": 8,
+            "inventory_count": 8,
+            "items": [
+              {
+                "content_state": "FULL_TEXT",
+                "evidence_id": "web:9b33946e618bfcd3abd78d4ddab87d95:web_body:0001",
+                "phase": "SESSION",
+                "published_at": "2026-04-10T17:58:35+00:00",
+                "publisher": "Benzinga",
+                "title": null,
+                "url": "https://www.benzinga.com/analyst-stock-ratings/analyst-color/26/04/51761338/stock-of-the-day-is-this-the-bottom-for-servicenow"
+              },
+              {
+                "content_state": "FULL_TEXT",
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                "phase": "SESSION",
+                "published_at": "2026-04-10T17:50:50+00:00",
+                "publisher": "Benzinga",
+                "title": null,
+                "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500-showing"
+              },
+              {
+                "content_state": "FULL_TEXT",
+                "evidence_id": "web:ba201bb207a2dd648b9e921884188856:web_body:0001",
+                "phase": "SESSION",
+                "published_at": "2026-04-10T15:35:07+00:00",
+                "publisher": "24/7 Wall St.",
+                "title": null,
+                "url": "https://247wallst.com/investing/2026/04/10/the-saas-pocalypse-continues-cloudflare-servicenow-crowdstrike-under-fire-as-anthropic-rewrites-the-rules/"
+              },
+              {
+                "content_state": "FULL_TEXT",
+                "evidence_id": "web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+                "phase": "SESSION",
+                "published_at": "2026-04-10T14:56:43+00:00",
+                "publisher": "Benzinga",
+                "title": null,
+                "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51755149/servicenow-stock-is-taking-a-tumble-whats-happening"
+              },
+              {
+                "content_state": "FULL_TEXT",
+                "evidence_id": "web:95a4e0a7b3778ee005a8ec42c3328d84:web_body:0001",
+                "phase": "PRE_OPEN",
+                "published_at": "2026-04-10T12:59:00+00:00",
+                "publisher": "Proactive Investors",
+                "title": null,
+                "url": "https://www.proactiveinvestors.com/companies/news/1090369/servicenow-faces-more-cautious-outlook-as-ubs-cites-ai-driven-budget-pressures-1090369.html"
+              },
+              {
+                "content_state": "FULL_TEXT",
+                "evidence_id": "web:a89d643653f7ecf36641a8b16d19e433:web_body:0001",
+                "phase": "PRE_OPEN",
+                "published_at": "2026-04-10T11:51:29+00:00",
+                "publisher": "24/7 Wall St.",
+                "title": null,
+                "url": "https://247wallst.com/investing/2026/04/10/here-are-fridays-top-wall-street-analyst-research-calls-autodesk-delek-us-holdings-insmed-nike-nutanix-servicenow-shake-shack-southern-copper-veeva-systems-and-more/"
+              },
+              {
+                "content_state": "FULL_TEXT",
+                "evidence_id": "web:9b33946e618bfcd3abd78d4ddab87d95:web_body:0002",
+                "phase": "SESSION",
+                "published_at": "2026-04-10T17:58:35+00:00",
+                "publisher": "Benzinga",
+                "title": null,
+                "url": "https://www.benzinga.com/analyst-stock-ratings/analyst-color/26/04/51761338/stock-of-the-day-is-this-the-bottom-for-servicenow"
+              },
+              {
+                "content_state": "FULL_TEXT",
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+                "phase": "SESSION",
+                "published_at": "2026-04-10T17:50:50+00:00",
+                "publisher": "Benzinga",
+                "title": null,
+                "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500-showing"
+              }
+            ],
+            "lead_only": 0,
+            "truncated": false
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 5,
+          "stage": "RETRIEVAL"
+        },
+        "offset_ms": 4513
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:15:10.179733Z",
+          "event_id": null,
+          "event_type": "analyst.done",
+          "payload": {
+            "duration_ms": 10988,
+            "evidence_decisions": [
+              {
+                "disposition": "SUPPORT",
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                "note": "States the session's selloff drivers: AI-driven de-rating of high-multiple software plus the UBS downgrade and price-target cut.",
+                "reason_code": "COMPANY_SPECIFIC_DRIVER"
+              },
+              {
+                "disposition": "SUPPORT",
+                "evidence_id": "web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+                "note": "Names the UBS downgrade to Neutral and price-target cut from $170 to $100 as the reason NOW slid Friday.",
+                "reason_code": "ANALYST_DOWNGRADE"
+              },
+              {
+                "disposition": "SUPPORT",
+                "evidence_id": "web:ba201bb207a2dd648b9e921884188856:web_body:0001",
+                "note": "Anthropic's Claude Code Security release rattled enterprise software and sent NOW sharply lower Friday morning.",
+                "reason_code": "SECTOR_AI_DISRUPTION"
+              },
+              {
+                "disposition": "SUPPORT",
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+                "note": "Explains the downgrade rationale: IT budgets shifting to AI and away from traditional software.",
+                "reason_code": "ANALYST_RATIONALE"
+              },
+              {
+                "disposition": "WEAK",
+                "evidence_id": "web:9b33946e618bfcd3abd78d4ddab87d95:web_body:0001",
+                "note": "Oversold/support technical commentary; not a causal driver of the decline.",
+                "reason_code": "TECHNICAL_COMMENTARY"
+              },
+              {
+                "disposition": "WEAK",
+                "evidence_id": "web:9b33946e618bfcd3abd78d4ddab87d95:web_body:0002",
+                "note": "Support-level technical commentary; no causal content.",
+                "reason_code": "TECHNICAL_COMMENTARY"
+              },
+              {
+                "disposition": "IRRELEVANT",
+                "evidence_id": "web:a89d643653f7ecf36641a8b16d19e433:web_body:0001",
+                "note": "Prior-session index recap; market was flat this session and does not explain the move.",
+                "reason_code": "MARKET_RECAP_PRIOR_SESSION"
+              },
+              {
+                "disposition": "IRRELEVANT",
+                "evidence_id": "web:95a4e0a7b3778ee005a8ec42c3328d84:web_body:0001",
+                "note": "Author bio and outlet boilerplate.",
+                "reason_code": "BOILERPLATE"
+              }
+            ],
+            "hypotheses": [
+              {
+                "cause_type": "REPORTING_OR_ANALYST_CONTINUATION",
+                "proposed_role": "PRIMARY",
+                "ref": "h_analyst_downgrade"
+              },
+              {
+                "cause_type": "SECTOR_MOVE",
+                "proposed_role": "SECONDARY",
+                "ref": "h_ai_saas_derating"
+              },
+              {
+                "cause_type": "CONTINUATION",
+                "proposed_role": "CONTEXT",
+                "ref": "h_continuation"
+              }
+            ],
+            "research_decision": "READY",
+            "truncated": false
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 6,
+          "stage": "ANALYST"
+        },
+        "offset_ms": 15503
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:15:11.432407Z",
+          "event_id": null,
+          "event_type": "checks.done",
+          "payload": {
+            "duration_ms": 1250,
+            "gates": [
+              {
+                "detail": null,
+                "gate": "comove",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "subject",
+                "result": "no_change"
+              },
+              {
+                "detail": null,
+                "gate": "timing",
+                "result": "no_change"
+              }
+            ],
+            "quotes": [
+              {
+                "evidence_id": "web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+                "hypothesis_ref": "h_analyst_downgrade",
+                "kept": true,
+                "rule": "OK"
+              },
+              {
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                "hypothesis_ref": "h_analyst_downgrade",
+                "kept": true,
+                "rule": "OK"
+              },
+              {
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+                "hypothesis_ref": "h_analyst_downgrade",
+                "kept": true,
+                "rule": "OK"
+              },
+              {
+                "evidence_id": "web:ba201bb207a2dd648b9e921884188856:web_body:0001",
+                "hypothesis_ref": "h_ai_saas_derating",
+                "kept": false,
+                "rule": "R2_NOT_COMPLETE_SENTENCE"
+              },
+              {
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                "hypothesis_ref": "h_ai_saas_derating",
+                "kept": true,
+                "rule": "OK"
+              },
+              {
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+                "hypothesis_ref": "h_continuation",
+                "kept": true,
+                "rule": "OK"
+              }
+            ],
+            "truncated": false
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 7,
+          "stage": "CHECKS"
+        },
+        "offset_ms": 16756
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:15:11.434057Z",
+          "event_id": null,
+          "event_type": "verifier.done",
+          "payload": {
+            "called": true,
+            "category": "COMPANY_NEWS",
+            "reason": "The quotes report a same-session UBS analyst downgrade of NOW from Buy to Neutral with a sharply cut price target, which is company-specific rating-change news from this window.",
+            "skipped_because": null,
+            "truncated": false,
+            "verdict": "SUPPORTED"
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 8,
+          "stage": "VERIFIER"
+        },
+        "offset_ms": 16757
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:15:11.439546Z",
+          "event_id": null,
+          "event_type": "answer.delta",
+          "payload": {
+            "cumulative_character_count": 11,
+            "delta_ordinal": 1,
+            "delta_text": "## SUMMARY\n",
+            "origin": "writer_assembly",
+            "provisional": true,
+            "writer_stream_id": "stream:8c2ba2d33e8d46f1b605fc7b48f22b16"
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 9,
+          "stage": "STREAMING_ANSWER"
+        },
+        "offset_ms": 16763
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:15:11.441299Z",
+          "event_id": null,
+          "event_type": "answer.delta",
+          "payload": {
+            "cumulative_character_count": 471,
+            "delta_ordinal": 2,
+            "delta_text": "NOW -7.58% on 2026-04-10; market -0.07%, sector ETF XLK +0.39%, peer median -3.29% across 4 peers. Co-movement computed from closing prices: against the sector; same direction as the peers but much larger. Timing: opening gap -1.00%, open to close -6.65%.\nThe cause lines below quote source documents verbatim; each quote was checked against its cited evidence and the session window. Which sentences were selected, and the cause category, are model judgments.",
+            "provisional": true,
+            "writer_stream_id": "stream:8c2ba2d33e8d46f1b605fc7b48f22b16"
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 10,
+          "stage": "STREAMING_ANSWER"
+        },
+        "offset_ms": 16764
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:15:11.442573Z",
+          "event_id": null,
+          "event_type": "answer.delta",
+          "payload": {
+            "cumulative_character_count": 2519,
+            "delta_ordinal": 3,
+            "delta_text": "\n\n## CAUSAL_EXPLANATION\n[PRIMARY] (claim_id: claim:71f4219fc56ab6d3) “ServiceNow Inc NYSE: NOW shares are sliding Friday after UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and sharply reduced his price target from $170 to $100.” — Benzinga, 2026-04-10 14:56 UTC, https://www.benzinga.com/trading-ideas/movers/26/04/51755149/servicenow-stock-is-taking-a-tumble-whats-happening “A key additional blow on Friday came from the analyst community : UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and slashed the price target from $170 to $100.” — Benzinga, 2026-04-10 17:50 UTC, https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500-showing “Keirstead warned that the stock could face additional downside as companies shift more of their IT budgets toward AI‑related projects and away from traditional software categories, CNBC reported .” — Benzinga, 2026-04-10 17:50 UTC, https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500-showing [citations: web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001,web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002,web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001]\n[SECONDARY] (claim_id: claim:450e57279d1d2eb9) “The selloff has been driven by a sharp de‑rating of high‑multiple software companies amid worries that AI could compress pricing power across traditional SaaS.” — Benzinga, 2026-04-10 17:50 UTC, https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500-showing [citations: web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001]\n[CONTEXT] (claim_id: claim:0d827b8b85b81205) “Technically, this week's move has smashed through key support levels and flushed out momentum traders, forcing long‑only funds to reassess position sizes after a multiyear run.” — Benzinga, 2026-04-10 17:50 UTC, https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500",
+            "origin": "writer_assembly",
+            "provisional": true,
+            "writer_stream_id": "stream:8c2ba2d33e8d46f1b605fc7b48f22b16"
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 11,
+          "stage": "STREAMING_ANSWER"
+        },
+        "offset_ms": 16766
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:15:11.443588Z",
+          "event_id": null,
+          "event_type": "answer.delta",
+          "payload": {
+            "cumulative_character_count": 2797,
+            "delta_ordinal": 4,
+            "delta_text": "-showing [citations: web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002]\n\n## LIMITATIONS\n- Coverage gap: MISSING_PRIMARY_CONFIRMATION for COMPANY_PRIMARY.\n- Coverage gap: MISSING_INDEPENDENT_CORROBORATION for COMPANY_NEWS.\n- Coverage gap: MISSING_MACRO_CONTEXT for MACRO_EVENT.\n",
+            "origin": "writer_assembly",
+            "provisional": true,
+            "writer_stream_id": "stream:8c2ba2d33e8d46f1b605fc7b48f22b16"
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 12,
+          "stage": "STREAMING_ANSWER"
+        },
+        "offset_ms": 16767
+      },
+      {
+        "event": {
+          "artifact_refs": [
+            {
+              "artifact_id": "answer:stream:8c2ba2d33e8d46f1b605fc7b48f22b16",
+              "artifact_type": "answer",
+              "content_sha256": "93d5ebcb80df1529d05f9ead357b2e13dc8253617677323b627d681528d9614d",
+              "schema_version": "v1"
+            }
+          ],
+          "emitted_at": "2026-10-09T16:15:11.444646Z",
+          "event_id": null,
+          "event_type": "answer.completed",
+          "payload": {
+            "citation_ids": [],
+            "final_text_hash": "d6743aa2653f2d6d92bf6ee0e1c5eaccd2bfe864ea6e97e0aa76370ea8692438",
+            "provisional": true,
+            "usage_tokens_in": null,
+            "usage_tokens_out": null,
+            "writer_stream_id": "stream:8c2ba2d33e8d46f1b605fc7b48f22b16"
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 13,
+          "stage": "STREAMING_ANSWER"
+        },
+        "offset_ms": 16768
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:15:11.447223Z",
+          "event_id": null,
+          "event_type": "answer.ready",
+          "payload": {
+            "answer_snapshot": {
+              "also_sentence": {
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                "published_at": "2026-04-10 17:50 UTC",
+                "publisher": "Benzinga",
+                "text": "The selloff has been driven by a sharp de‑rating of high‑multiple software companies amid worries that AI could compress pricing power across traditional SaaS.",
+                "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500-showing"
+              },
+              "facts": {
+                "commodity": null,
+                "comove_sentence": "Co-movement (computed from closing prices): against the sector; same direction as the peers but much larger. Timing: opening gap -1.00%, open to close -6.65%.",
+                "filings": [],
+                "gap_return_pct": -1.0021155773299206,
+                "market": {
+                  "band": "UNKNOWN",
+                  "relation": "REFERENCE_FLAT",
+                  "residual_pct": -7.5164964836747625,
+                  "return_pct": -0.06617805145495703,
+                  "ticker": null
+                },
+                "peers": {
+                  "band": "DIVERGENT",
+                  "count": 4,
+                  "items": [
+                    {
+                      "return_pct": -3.9677723605750725,
+                      "ticker": "CRWD"
+                    },
+                    {
+                      "return_pct": -2.612963678040814,
+                      "ticker": "GEN"
+                    },
+                    {
+                      "return_pct": -0.5897016645669662,
+                      "ticker": "MSFT"
+                    },
+                    {
+                      "return_pct": -6.742924363869152,
+                      "ticker": "PANW"
+                    }
+                  ],
+                  "median_return_pct": -3.290368019307943,
+                  "relation": "SAME_DIRECTION",
+                  "residual_pct": -4.292306515821776
+                },
+                "sector": {
+                  "band": "DIVERGENT",
+                  "relation": "OPPOSITE_DIRECTION",
+                  "residual_pct": -7.969799026306535,
+                  "return_pct": 0.3871244911768157,
+                  "ticker": "XLK"
+                },
+                "target_return_pct": -7.582674535129719
+              },
+              "headline": "NOW fell 7.58% while its sector rose (XLK +0.39%).",
+              "key_sentence": {
+                "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                "published_at": "2026-04-10 17:50 UTC",
+                "publisher": "Benzinga",
+                "text": "A key additional blow on Friday came from the analyst community : UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and slashed the price target from $170 to $100.",
+                "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500-showing"
+              },
+              "limitations": [
+                "Coverage gap: MISSING_PRIMARY_CONFIRMATION for COMPANY_PRIMARY.",
+                "Coverage gap: MISSING_INDEPENDENT_CORROBORATION for COMPANY_NEWS.",
+                "Coverage gap: MISSING_MACRO_CONTEXT for MACRO_EVENT."
+              ],
+              "outcome": "ANSWERED",
+              "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+              "schema_version": "answer_snapshot_v1",
+              "session_date": "2026-04-10",
+              "sources": [
+                {
+                  "claim_id": "claim:71f4219fc56ab6d3",
+                  "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                  "published_at": "2026-04-10 17:50 UTC",
+                  "publisher": "Benzinga",
+                  "role": "PRIMARY",
+                  "text": "A key additional blow on Friday came from the analyst community : UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and slashed the price target from $170 to $100.",
+                  "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500-showing"
+                },
+                {
+                  "claim_id": "claim:71f4219fc56ab6d3",
+                  "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+                  "published_at": "2026-04-10 17:50 UTC",
+                  "publisher": "Benzinga",
+                  "role": "PRIMARY",
+                  "text": "Keirstead warned that the stock could face additional downside as companies shift more of their IT budgets toward AI‑related projects and away from traditional software categories, CNBC reported .",
+                  "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500-showing"
+                },
+                {
+                  "claim_id": "claim:450e57279d1d2eb9",
+                  "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+                  "published_at": "2026-04-10 17:50 UTC",
+                  "publisher": "Benzinga",
+                  "role": "SECONDARY",
+                  "text": "The selloff has been driven by a sharp de‑rating of high‑multiple software companies amid worries that AI could compress pricing power across traditional SaaS.",
+                  "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500-showing"
+                },
+                {
+                  "claim_id": "claim:0d827b8b85b81205",
+                  "evidence_id": "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+                  "published_at": "2026-04-10 17:50 UTC",
+                  "publisher": "Benzinga",
+                  "role": "CONTEXT",
+                  "text": "Technically, this week's move has smashed through key support levels and flushed out momentum traders, forcing long‑only funds to reassess position sizes after a multiyear run.",
+                  "url": "https://www.benzinga.com/trading-ideas/movers/26/04/51761068/servicenow-stock-craters-19-in-weeks-worst-sp-500-showing"
+                }
+              ],
+              "status": "PARTIAL",
+              "ticker": "NOW",
+              "window": {
+                "cutoff_at": "2026-04-10T20:00:00+00:00",
+                "information_window_start_at": "2026-04-09T20:00:00+00:00",
+                "session_open_at": "2026-04-10T13:30:00+00:00"
+              }
+            },
+            "truncated": false
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 14,
+          "stage": "ANSWER"
+        },
+        "offset_ms": 16770
+      },
+      {
+        "event": {
+          "artifact_refs": [
+            {
+              "artifact_id": "evidence:8c2ba2d33e8d46f1b605fc7b48f22b16:web:9b33946e618bfcd3abd78d4ddab87d95:web_body:0001",
+              "artifact_type": "evidence_detail",
+              "content_sha256": "e7dbf5a89818c3612d8734ac093a76f21bf058d25cb51a0a325fac65ba77e17c",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "evidence:8c2ba2d33e8d46f1b605fc7b48f22b16:web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+              "artifact_type": "evidence_detail",
+              "content_sha256": "ad641d9f24012cc13d7e18077b54944a409cb713e22c6a69ca0c445288f2e558",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "evidence:8c2ba2d33e8d46f1b605fc7b48f22b16:web:ba201bb207a2dd648b9e921884188856:web_body:0001",
+              "artifact_type": "evidence_detail",
+              "content_sha256": "aad321f124648cf6641ca64d759333f64fa7e2c598453480de171c75dce9f170",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "evidence:8c2ba2d33e8d46f1b605fc7b48f22b16:web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+              "artifact_type": "evidence_detail",
+              "content_sha256": "f68ed996a0614e00c8491e3d31d9590e12d07f7cabc6a2e2304a78c0ffa5ad4d",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "evidence:8c2ba2d33e8d46f1b605fc7b48f22b16:web:95a4e0a7b3778ee005a8ec42c3328d84:web_body:0001",
+              "artifact_type": "evidence_detail",
+              "content_sha256": "90a4c483fe0d4f413727e8549c2c80af7144b79deded85a9d3cc0ae592e99ff7",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "evidence:8c2ba2d33e8d46f1b605fc7b48f22b16:web:a89d643653f7ecf36641a8b16d19e433:web_body:0001",
+              "artifact_type": "evidence_detail",
+              "content_sha256": "5a25f643119eb4ddf11adf7b08fd390eadb765294cf4a59bc320a8f95331790a",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "evidence:8c2ba2d33e8d46f1b605fc7b48f22b16:web:9b33946e618bfcd3abd78d4ddab87d95:web_body:0002",
+              "artifact_type": "evidence_detail",
+              "content_sha256": "6786e2ebd58605afc32652c1db01fb49cab296cd8ad4865dfbdaef3c298779eb",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "evidence:8c2ba2d33e8d46f1b605fc7b48f22b16:web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002",
+              "artifact_type": "evidence_detail",
+              "content_sha256": "1d67a0c60dc5ba0ad9501346b0fb316ba4e4004939e2068b0016a72dd9f03d97",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "decision_trace:8c2ba2d33e8d46f1b605fc7b48f22b16",
+              "artifact_type": "decision_trace",
+              "content_sha256": "2756b9b5130ab5b1c5efabe31de680189441b846cf7d61ae519a5fb3e6028a1a",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "answer_snapshot:8c2ba2d33e8d46f1b605fc7b48f22b16",
+              "artifact_type": "answer_snapshot",
+              "content_sha256": "6172f7e63e1d7395b1c9a6be72b6be14b601e632f39c78e495c78bc794325cda",
+              "schema_version": "v1"
+            }
+          ],
+          "emitted_at": "2026-10-09T16:15:11.448768Z",
+          "event_id": null,
+          "event_type": "evidence.assessed",
+          "payload": {
+            "accepted_evidence_ids": [
+              "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0001",
+              "web:e6fe3cf84c35c0980e48a4d82276ac83:web_body:0001",
+              "web:ba201bb207a2dd648b9e921884188856:web_body:0001",
+              "web:b1a973deb4cc9fea8207f2c6b6b9a170:web_body:0002"
+            ],
+            "decision": "READY",
+            "gap_ids": [
+              "gap:8c2ba2d33e8d46f1b605fc7b48f22b16:1:b32a8418fffc",
+              "gap:8c2ba2d33e8d46f1b605fc7b48f22b16:1:dc148c9228f4",
+              "gap:8c2ba2d33e8d46f1b605fc7b48f22b16:1:07cf2f7bb760"
+            ],
+            "lead_only_evidence_ids": [],
+            "normalization_diagnostics": [
+              "QUOTE_OK:h_analyst_downgrade:48a4d82276ac83:web_body:0001:ServiceNow Inc (NYSE: NOW ) shares are sliding Friday after UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and sharply reduced his price target from $170 to $100.",
+              "QUOTE_OK:h_analyst_downgrade:07f2c6b6b9a170:web_body:0001:A key additional blow on Friday came from the analyst community : UBS analyst Karl Keirstead downgraded the stock from Buy to Neutral and slashed the price target from $170 to $100.",
+              "QUOTE_OK:h_analyst_downgrade:07f2c6b6b9a170:web_body:0002:Keirstead warned that the stock could face additional downside as companies shift more of their IT budgets toward AI‑related projects and away from traditional software categories, CNBC reported .",
+              "QUOTE_R2_NOT_COMPLETE_SENTENCE:h_ai_saas_derating:9e921884188856:web_body:0001:Anthropic’s release of “Claude Code Security,” an AI-driven security product, has rattled investors across the enterprise software and cybersecurity space, sending shares of Clo",
+              "QUOTE_OK:h_ai_saas_derating:07f2c6b6b9a170:web_body:0001:The selloff has been driven by a sharp de‑rating of high‑multiple software companies amid worries that AI could compress pricing power across traditional SaaS.",
+              "QUOTE_OK:h_continuation:07f2c6b6b9a170:web_body:0002:Technically, this week's move has smashed through key support levels and flushed out momentum traders, forcing long‑only funds to reassess position sizes after a multiyear run.",
+              "primary_verifier_supported:REPORTING_OR_ANALYST_CONTINUATION:COMPANY_NEWS:The quotes report a same-session UBS analyst downgrade of NOW from Buy to Neutral with a sharply cut price target, which is company-specific rating-change news from this window."
+            ],
+            "reason_codes": [
+              "COMPANY_SPECIFIC_DRIVER",
+              "ANALYST_DOWNGRADE",
+              "SECTOR_AI_DISRUPTION",
+              "ANALYST_RATIONALE",
+              "TECHNICAL_COMMENTARY",
+              "TECHNICAL_COMMENTARY",
+              "MARKET_RECAP_PRIOR_SESSION",
+              "BOILERPLATE"
+            ],
+            "rejected_evidence_ids": [
+              "web:9b33946e618bfcd3abd78d4ddab87d95:web_body:0001",
+              "web:9b33946e618bfcd3abd78d4ddab87d95:web_body:0002",
+              "web:a89d643653f7ecf36641a8b16d19e433:web_body:0001",
+              "web:95a4e0a7b3778ee005a8ec42c3328d84:web_body:0001"
+            ],
+            "status_ceiling": "PARTIAL"
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 15,
+          "stage": "EVIDENCE_ANALYST"
+        },
+        "offset_ms": 16772
+      },
+      {
+        "event": {
+          "artifact_refs": [
+            {
+              "artifact_id": "claim:8c2ba2d33e8d46f1b605fc7b48f22b16:claim:71f4219fc56ab6d3",
+              "artifact_type": "claim_detail",
+              "content_sha256": "a30fb14238fa4367a75e1750791dcde5adb4ff36b4d1efeb33f0b31d73e256f8",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "claim:8c2ba2d33e8d46f1b605fc7b48f22b16:claim:450e57279d1d2eb9",
+              "artifact_type": "claim_detail",
+              "content_sha256": "e5b5202bc54eb12ba7938b8da3e80941e31d2c4209909139ab64963b461d9dc9",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "claim:8c2ba2d33e8d46f1b605fc7b48f22b16:claim:0d827b8b85b81205",
+              "artifact_type": "claim_detail",
+              "content_sha256": "627470b333a5d63edb211beb2218c0c3abe82364c9f76c9c5c8b0cd909d2fe67",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "claim:8c2ba2d33e8d46f1b605fc7b48f22b16:claim:e1a7c60311bc39e4",
+              "artifact_type": "claim_detail",
+              "content_sha256": "16742294ffa48567cf91966b5e687fd601f15f5557cfe9375f803197d3b0dd16",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "claim:8c2ba2d33e8d46f1b605fc7b48f22b16:claim:54c61bd6f3490c30",
+              "artifact_type": "claim_detail",
+              "content_sha256": "c77e508fdbb7fc00979914db8de0a06cb001f67d770be22d0c2c7fc6b65b1804",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "claim:8c2ba2d33e8d46f1b605fc7b48f22b16:claim:76df8541ca0b913e",
+              "artifact_type": "claim_detail",
+              "content_sha256": "064a7a82e0050f3d599f980a4460034689b13f9399e44b192df901f63870a12e",
+              "schema_version": "v1"
+            }
+          ],
+          "emitted_at": "2026-10-09T16:15:11.450566Z",
+          "event_id": null,
+          "event_type": "stage.started",
+          "payload": {
+            "deadline": null,
+            "input_artifact_refs": [],
+            "round": 1,
+            "stage": "claim_validation",
+            "task_id": null
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 16,
+          "stage": "CLAIM_VALIDATION"
+        },
+        "offset_ms": 16774
+      },
+      {
+        "event": {
+          "artifact_refs": [],
+          "emitted_at": "2026-10-09T16:15:11.453292Z",
+          "event_id": null,
+          "event_type": "assurance.completed",
+          "payload": {
+            "final_result_status": "PARTIAL",
+            "provisional_invalidated": false,
+            "valid": true,
+            "violations": []
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 17,
+          "stage": "ASSURANCE"
+        },
+        "offset_ms": 16776
+      },
+      {
+        "event": {
+          "artifact_refs": [
+            {
+              "artifact_id": "attribution:8c2ba2d33e8d46f1b605fc7b48f22b16",
+              "artifact_type": "attribution_result",
+              "content_sha256": "8923e5ec757790fe48b5a5117180b4af04bba599b4d16dd8d95f081bffbea6b4",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "assurance:8c2ba2d33e8d46f1b605fc7b48f22b16",
+              "artifact_type": "assurance",
+              "content_sha256": "8f8b8b51f76fefd5bc73f5f557140596a54fdedb2527748523da848fc4589866",
+              "schema_version": "v1"
+            },
+            {
+              "artifact_id": "diagnostics:8c2ba2d33e8d46f1b605fc7b48f22b16",
+              "artifact_type": "run_diagnostics",
+              "content_sha256": "08834654cc343857b11acc9cb8b509b145fdf6184629ab20574c0c0a1fdd4841",
+              "schema_version": "v1"
+            }
+          ],
+          "emitted_at": "2026-10-09T16:15:11.453292Z",
+          "event_id": null,
+          "event_type": "run.completed",
+          "payload": {
+            "cost": null,
+            "final_output_artifact_ref": "answer:stream:8c2ba2d33e8d46f1b605fc7b48f22b16",
+            "result_status": "PARTIAL",
+            "runtime_identity_ref": "4a022928b60ae530e55ac1cc3f064172c848754e810fa3e706bca2f5c8c98316",
+            "total_latency_ms": 16772,
+            "total_tokens": null
+          },
+          "run_id": "8c2ba2d33e8d46f1b605fc7b48f22b16",
+          "schema_version": "v1",
+          "sequence": 18,
+          "stage": "TERMINAL"
+        },
+        "offset_ms": 16776
+      }
+    ]
+  },
+  "source": "synthetic, from events-t3-now / page-a-answered-now-b5",
+  "state": "Featured NOW public replay"
+}

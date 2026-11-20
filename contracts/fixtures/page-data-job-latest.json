@@ -1,0 +1,118 @@
+{
+  "request": {
+    "method": "GET",
+    "route": "/api/data/jobs/latest"
+  },
+  "response": {
+    "created_at": "2026-10-08T06:38:50Z",
+    "deferred_by_host": {
+      "finance.yahoo.com": {
+        "PENDING": 2896
+      },
+      "sg.finance.yahoo.com": {
+        "PENDING": 1
+      },
+      "uk.finance.yahoo.com": {
+        "PENDING": 12
+      },
+      "www.benzinga.com": {
+        "PENDING": 393
+      }
+    },
+    "failures": [],
+    "finished_at": "2026-10-08T07:31:38Z",
+    "job_id": "upd-2025-11-04-f68b3d69b5",
+    "last_complete_session": "2025-11-04",
+    "plan": {
+      "end": "2025-11-04",
+      "eta_assumptions": {
+        "movers_per_unpriced_session": 22,
+        "seconds_per_item": {
+          "movers": [
+            0.1,
+            0.5
+          ],
+          "news": [
+            60.0,
+            180.0
+          ],
+          "prices": [
+            0.5,
+            2.0
+          ],
+          "sec": [
+            1.0,
+            6.0
+          ],
+          "verify": [
+            0.2,
+            1.0
+          ]
+        }
+      },
+      "eta_seconds": [
+        1723,
+        5475
+      ],
+      "first_session": "2025-11-04",
+      "items_to_do": {
+        "movers": 1,
+        "news": 27,
+        "prices": 4,
+        "sec": 101,
+        "verify": 1
+      },
+      "known_movers": 27,
+      "last_session": "2025-11-04",
+      "mover_threshold_pct": 2.0,
+      "plan_key": "f68b3d69b5b624acf93a499b756f740e1ec2605527e762e2d2a460701ff843fb",
+      "planned_at": "2026-10-08T06:38:50Z",
+      "policy": "m9_daily_v1",
+      "price_symbols": 491,
+      "sessions": 1,
+      "start": "2025-11-04",
+      "universe": "6fabc7851673187b",
+      "universe_size": 102
+    },
+    "stages": {
+      "movers": {
+        "OK": 1
+      },
+      "news": {
+        "OK": 27
+      },
+      "prices": {
+        "OK": 1,
+        "SKIPPED": 490
+      },
+      "sec": {
+        "EMPTY": 92,
+        "OK": 9,
+        "SKIPPED": 1
+      },
+      "verify": {
+        "EMPTY": 1
+      }
+    },
+    "started_at": "2026-10-08T06:38:50Z",
+    "status": "COMPLETED",
+    "running": false,
+    "current_stage": null,
+    "elapsed_seconds": null,
+    "expected_seconds": null,
+    "runs_on": "this_machine",
+    "plan_summary": null,
+    "items_done": 0,
+    "items_total": 0,
+    "active_seconds": 0,
+    "remaining_seconds": null,
+    "current_item": null,
+    "recent_items": []
+  },
+  "source": {
+    "bodies_store": "data/m9/news_bodies_v2.t4snap_20261008.sqlite3",
+    "kind": "real",
+    "store": "data/m9/update_jobs.sqlite3"
+  },
+  "state": "Data job latest"
+}

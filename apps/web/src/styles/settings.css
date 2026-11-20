@@ -1,0 +1,30 @@
+/* settings */
+@layer utilities {
+  .settings-cost-cap {
+    width: calc(var(--space-7) * 2 + var(--space-5));
+  }
+  .settings-control {
+    max-width: calc(var(--space-7) * 6);
+  }
+  .settings-key-row {
+    min-height: calc(var(--space-7) + var(--space-1));
+  }
+  .settings-keys-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  @media (min-width: 768px) {
+    .settings-keys-grid {
+      grid-template-columns:
+        minmax(0, 1fr) minmax(0, 1fr) calc(var(--space-7) * 3) calc(var(--space-7) * 2 + var(--space-5))
+        calc(var(--space-7) * 3 + var(--space-5));
+    }
+    .settings-field-row {
+      grid-template-columns: calc(var(--space-7) * 5) minmax(0, 1fr);
+    }
+  }
+  @media (min-width: 1024px) {
+    .settings-layout {
+      grid-template-columns: calc(var(--space-7) * 4) minmax(0, 1fr);
+    }
+  }
+}

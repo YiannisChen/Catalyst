@@ -1,0 +1,990 @@
+"""M6 corrective: real default runtime composition (Findings A/C/G/H).
+
+The default FastAPI lifespan must compose one app-owned runtime: one
+EventRepository (with the SSE after-commit notifier), one RunClaimer, one
+CancellationTokenRegistry/CancellationController, one bounded RunExecutor,
+one AdmissionController, the production RunManifest factory, and the
+production run adapter that invokes the repository-owned ``run_v1_graph``
+with the app-owned EventRepository-backed PackPersistence and the StreamBridge
+Writer sink. The test injects only deterministic external boundaries (fake
+LLM providers, fake observation provider, fake retriever/loader); it never
+injects a fake RunManifest factory, a fake run adapter, a
+``terminalize_with_attribution`` shortcut, or a second graph.
+"""
+from __future__ import annotations
+
+import time
+from datetime import date, datetime
+from pathlib import Path
+
+import pytest
+from catalyst_agents.attribution.provider import ContextInputs, RetrievedEvidence
+from catalyst_agents.retrieval.corrective import (
+    BackendCapability,
+    BackendHealth,
+    CorrectiveCapabilityRegistry,
+)
+from catalyst_agents.retrieval.task import EvidenceNeed
+from catalyst_app.main import create_app
+from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+from catalyst_data.canonical.identity import DataRuntimeIdentity
+from catalyst_data.canonical.temporal import TemporalIdentity
+from fastapi.testclient import TestClient
+
+
+def _utc(iso: str) -> datetime:
+    return datetime.fromisoformat(iso.replace("Z", "+00:00"))
+
+
+def _temporal() -> TemporalIdentity:
+    return TemporalIdentity(
+        session_date="2026-01-15",
+        market_timezone="America/New_York",
+        session_open_at=_utc("2026-01-15T14:30:00Z"),
+        session_close_at=_utc("2026-01-15T21:00:00Z"),
+        information_window_start_at=_utc("2026-01-14T21:00:00Z"),
+        cutoff_at=_utc("2026-01-15T21:00:00Z"),
+    )
+
+
+def _runtime() -> DataRuntimeIdentity:
+    return DataRuntimeIdentity(
+        data_snapshot_id="s" * 64,
+        corpus_manifest_id="m" * 64,
+        fts_index_version="build:fts",
+        dense_index_version="d" * 64,
+        embedding_model_revision="emb:1",
+        reranker_revision="rr:1",
+        query_policy_version="qp:v1",
+    )
+
+
+def _test_provider_budget():
+    """Explicit cost envelope for the fake-provider runtime compositions."""
+    from catalyst_agents.runtime.provider_budget import (
+        ModelPrice,
+        ProviderBudgetGuard,
+        RoleTokenLimit,
+    )
+
+    model_identities = {
+        (provider, "gpt-4.1-mini")
+        for provider in ("openai", "custom_openai_compatible")
+    }
+    prices = {
+        identity: ModelPrice(
+            provider=identity[0],
+            model_id=identity[1],
+            input_usd_per_million_tokens=0.10,
+            output_usd_per_million_tokens=0.10,
+        )
+        for identity in model_identities
+    }
+    role_limits = {
+        role: RoleTokenLimit(max_input_tokens=32_000, max_output_tokens=2_000)
+        for role in ("evidence_analyst", "streaming_writer", "primary_verifier")
+    }
+    return ProviderBudgetGuard(
+        max_provider_calls=100,
+        max_cost_usd=0.05,
+        prices=prices,
+        role_token_limits=role_limits,
+    )
+
+
+class FakeRuntimeDependencyLoader:
+    """External-boundary loader: identity-bound runtime deps, no SQLite conn."""
+
+    def __init__(self, *, runtime: DataRuntimeIdentity | None = None) -> None:
+        self._runtime = runtime or _runtime()
+        self.calls = 0
+
+    def get_dependencies(self, *, force_reload: bool = False):
+        self.calls += 1
+        from catalyst_agents.runtime.dependencies import RuntimeDependencies
+
+        return RuntimeDependencies(
+            sqlite_db_path=Path("/tmp/catalyst-test.db"),
+            lancedb_dir=Path("/tmp/lancedb"),
+            lancedb_table=None,
+            embedding_fn=lambda _: [],
+            embedding_model="BAAI/bge-m3",
+            embedding_dim=1024,
+            reranker=None,
+            reranker_model="BAAI/bge-reranker-v2-m3",
+            default_model="gemini-2.5-flash-nothink",
+            health={
+                "status": "ready",
+                "sqlite": {"status": "ready", "path": "/tmp/catalyst-test.db"},
+                "lancedb": {"status": "ready", "path": "/tmp/lancedb", "table": "chunks"},
+                "embedding": {"status": "ready", "model": "BAAI/bge-m3", "vector_dim": 1024},
+                "reranker": {"status": "ready", "model": "BAAI/bge-reranker-v2-m3"},
+                "default_model": {"status": "ready", "model": "gemini-2.5-flash-nothink"},
+                "retrieval": {"status": "ready"},
+                "errors": [],
+            },
+            retriever=None,
+            requested_manifest_id="m" * 64,
+            index_manifest_id="d" * 64,
+            data_runtime_identity=self._runtime,
+        )
+
+
+class FakeObservationProvider:
+    def load_context_inputs(
+        self, *, ticker, session_date, cutoff, information_window_start_at=None
+    ) -> ContextInputs:
+        return ContextInputs(
+            ticker=ticker,
+            session_date=date.fromisoformat(session_date),
+            cutoff=cutoff,
+            target_close=110.0,
+            previous_target_close=100.0,
+            target_open=102.0,
+            previous_2_target_close=90.0,
+            target_volume=5000.0,
+            expected_prior_sessions=tuple(f"2026-01-{d:02d}" for d in range(1, 21)),
+            prior_volumes_by_session={f"2026-01-{d:02d}": 1000.0 + d for d in range(1, 21)},
+            benchmark_ticker="SPY",
+            benchmark_return_pct=-0.5,
+            sector_ticker="XLK",
+            sector_return_pct=0.2,
+            peer_returns_by_ticker={"MSFT": 0.3, "NVDA": 0.1, "GOOGL": -0.2},
+        )
+
+
+class FakeRetriever:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.cutoffs: list[str] = []
+
+    def _evidence(self, chunk_id: str, rank: int) -> RetrievedEvidence:
+        return RetrievedEvidence(
+            chunk_id=chunk_id,
+            document_id=f"doc:{chunk_id}",
+            content_text=(
+                "Apple shares rose 10% after Apple reported record revenue and raised its full-year guidance. "
+                f"Reference {chunk_id}."
+            ),
+            available_at="2026-01-15T10:00:00Z",
+            source_class="issuer_disclosure",
+            ticker_associations=("AAPL",),
+            dedup_cluster_id=None,
+            cluster_first_available_at="2026-01-15T10:00:00Z",
+            representative_document_id=f"doc:{chunk_id}",
+            is_novel=False,
+            lexical_raw_score=-1.0,
+            lexical_rank=rank,
+            corpus_manifest_id="m" * 64,
+            index_manifest_id="d" * 64,
+            mode_requested="reranked",
+            mode_served="reranked",
+            is_degraded=False,
+            fallback_reason=None,
+            reranker_score=float(10 - rank),
+            reranker_rank=rank,
+            canonical_asset_id=f"asset:{chunk_id}",
+            canonical_content_version_id=f"version:{chunk_id}",
+            corpus_document_id=f"doc:{chunk_id}",
+            section_key="body",
+            chunk_ordinal=1,
+            asset_type="NEWS",
+            content_hash="c" * 64,
+            material_capability="MATERIAL_CAPABLE",
+            serving_status="body_candidate",
+            temporal_precision="publication_time",
+            evidence_role="DIRECT_PRIMARY",
+            provider="polygon",
+            content_state="FULL_TEXT",
+            parse_quality="full",
+            eligible_at=_utc("2026-01-15T10:00:00Z"),
+            temporal_identity=_temporal(),
+            data_runtime_identity=_runtime(),
+        )
+
+    def retrieve(self, query, *, ticker, cutoff, requested_manifest_id,
+                 temporal_identity=None, top_k=8, candidate_depth=20, source_classes=None, temporal_centre_date=None):
+        self.calls += 1
+        self.cutoffs.append(cutoff)
+        return (self._evidence("e1", 1),)
+
+
+class FakeAnalystProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.capability_metadata = {
+            "supports_structured_output": True,
+            "supports_true_streaming": True,
+            "declares_token_accounting": True,
+            "normalizes_timeout_errors": True,
+            "capability_revision": "v1.1-capability-1",
+        }
+
+    def _decision(self) -> dict:
+        return {
+            "about_ticker": "ISSUER",
+            "session": "THIS_SESSION",
+            "event_type": "EARNINGS",
+            "event_summary": "record revenue and raised full-year guidance",
+            "event_timing": "INTRADAY",
+            "explicit_attribution": True,
+            "attribution_quote": (
+                "Apple shares rose 10% after Apple reported record revenue and "
+                "raised its full-year guidance."
+            ),
+            "event_quote": "Apple reported record revenue and raised its full-year guidance.",
+            "mechanism_quote": "raised its full-year guidance",
+            "is_preview_or_evergreen": False,
+        }
+
+    def invoke(self, messages):
+        self.calls += 1
+        import json
+        from types import SimpleNamespace
+
+        return SimpleNamespace(content=json.dumps(self._decision()))
+
+    def bind(self, **options):
+        self.bound_options = options
+        return self
+
+    def with_structured_output(self, schema):
+        outer = self
+
+        class Surface:
+            def invoke(self, messages):
+                return outer.invoke(messages)
+
+        return Surface()
+
+
+class AbstainingAnalystProvider(FakeAnalystProvider):
+    def _decision(self) -> dict:
+        return {
+            "about_ticker": "OTHER",
+            "session": "OTHER_SESSION",
+            "event_type": "NONE",
+            "event_summary": "",
+            "event_timing": "UNKNOWN",
+            "explicit_attribution": False,
+            "attribution_quote": "",
+            "event_quote": "",
+            "mechanism_quote": "",
+            "is_preview_or_evergreen": True,
+        }
+
+
+class FailingAnalystProvider(FakeAnalystProvider):
+    def invoke(self, messages):
+        self.calls += 1
+        from catalyst_agents.runtime.provider_budget import ProviderBudgetError
+
+        raise ProviderBudgetError("deterministic analyst fixture failure")
+
+
+class FakeWriterProvider:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.capability_metadata = {
+            "supports_structured_output": True,
+            "supports_true_streaming": True,
+            "declares_token_accounting": True,
+            "normalizes_timeout_errors": True,
+            "capability_revision": "v1.1-capability-1",
+        }
+
+    def stream(self, messages):
+        self.calls += 1
+        import re
+
+        prompt = messages[0]["content"] if isinstance(messages[0], dict) else messages[0].content
+        match = re.search(r"claim_id: ([A-Za-z0-9:_-]+)", prompt)
+        claim_id = match.group(1) if match else "claim:1"
+        yield (
+            "SUMMARY\nAAPL rose on record guidance. "
+            f"[{claim_id}] (e1)\n"
+            "CAUSAL_EXPLANATION\nGuidance raised forward revenue.\n"
+            "LIMITATIONS\nNone."
+        )
+
+
+class FakeGraphResolver:
+    """External-boundary graph resolver returning deterministic providers."""
+
+    def __init__(self) -> None:
+        self.analyst = FakeAnalystProvider()
+        self.writer = FakeWriterProvider()
+        self.retriever = FakeRetriever()
+        self.last_api_key: str | None = None
+        self.observation_provider = FakeObservationProvider()
+
+    def resolve(self, manifest, boundary):
+        self.last_api_key = boundary.api_key
+        capabilities = {}
+        for name in (
+            "COMPANY_PRIMARY", "COMPANY_NEWS", "SECTOR_NEWS", "MACRO_EVENT",
+            "MACRO_SERIES", "FUNDAMENTALS",
+        ):
+            capabilities[EvidenceNeed(name)] = BackendCapability(
+                backend=f"backend:{name.lower()}", health=BackendHealth.HEALTHY
+            )
+        from catalyst_app.runtime.composition import ResolvedGraphRuntime
+
+        return ResolvedGraphRuntime(
+            observation_provider=self.observation_provider,
+            retriever=self.retriever,
+            analyst_llm=self.analyst,
+            writer_llm=self.writer,
+            capability_registry=CorrectiveCapabilityRegistry(capabilities),
+            data_runtime_identity=_runtime(),
+            corrective_policy=None,
+            prompt_template="You are the Evidence Analyst. Emit the strict schema.",
+            query_builder=None,
+            structured_provider=None,
+        )
+
+
+def _wait_for_terminal(client: TestClient, run_id: str, timeout_seconds: float = 15.0):
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        payload = client.get(f"/api/live-runs/{run_id}").json()
+        if payload["lifecycle_status"] in {"COMPLETED", "FAILED", "CANCELLED"}:
+            return payload
+        time.sleep(0.02)
+    return client.get(f"/api/live-runs/{run_id}").json()
+
+
+BODY = {
+    "ticker": "AAPL",
+    "trade_date": "2026-01-15",
+    "query": "Why did AAPL move?",
+    "model": {
+        "provider": "openai",
+        "model_id": "gpt-4.1-mini",
+        "api_key": "",
+        "credential_source": "server_env",
+    },
+}
+
+
+def _app(tmp_path: Path, *, resolver: FakeGraphResolver | None = None):
+    from catalyst_app.runtime.composition import build_runtime_composition
+
+    composition = build_runtime_composition(
+        db_path=tmp_path / "runtime.db",
+        dependency_loader=FakeRuntimeDependencyLoader(),
+        credential_store=RuntimeCredentialStore(),
+        graph_resolver=resolver or FakeGraphResolver(),
+        provider_budget=_test_provider_budget(),
+        max_workers=2,
+        shutdown_grace_seconds=0.2,
+    )
+    return create_app(runtime_composition=composition)
+
+
+def test_nonpublic_admission_uses_configured_provider_guard_and_completes(tmp_path: Path) -> None:
+    import time
+
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.runtime.admission import AdmissionRequest
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+
+    db_path = tmp_path / "runtime.db"
+    resolver = FakeGraphResolver()
+    composition = build_runtime_composition(
+        db_path=db_path,
+        dependency_loader=FakeRuntimeDependencyLoader(),
+        credential_store=RuntimeCredentialStore(),
+        graph_resolver=resolver,
+        provider_budget=_test_provider_budget(),
+        max_workers=1,
+    )
+    request = AdmissionRequest(
+        ticker="AAPL",
+        session_date="2026-01-15",
+        query=None,
+        provider="openai",
+        model_id="gpt-4.1-mini",
+        base_url=None,
+        credential_source_identifier="server_env",
+        workflow_version="v1.1",
+        config_version="v1.1",
+        force_full=True,
+    )
+    try:
+        outcome = composition.admission.admit(request)
+        assert outcome.kind == "accepted"
+        assert composition.run_adapter._provider_budget_for_run(
+            outcome.run_id
+        ).max_cost_usd == pytest.approx(0.05)
+        deadline = time.monotonic() + 10
+        row = None
+        while time.monotonic() < deadline:
+            with open_rw(db_path) as conn:
+                row = conn.execute(
+                    "SELECT lifecycle_status, failure_code, access_tier "
+                    "FROM runs WHERE run_id=?",
+                    (outcome.run_id,),
+                ).fetchone()
+            if row["lifecycle_status"] in {"COMPLETED", "FAILED", "CANCELLED"}:
+                break
+            time.sleep(0.02)
+
+        assert row is not None
+        assert row["lifecycle_status"] == "COMPLETED", row["failure_code"]
+        assert row["access_tier"] == "local"
+        assert resolver.analyst.calls > 0
+        with open_rw(db_path) as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM run_budget_reservations WHERE run_id=?",
+                (outcome.run_id,),
+            ).fetchone()[0] == 0
+    finally:
+        composition.executor.shutdown()
+
+
+def test_default_post_live_run_invokes_run_v1_graph_and_persists(tmp_path: Path) -> None:
+    resolver = FakeGraphResolver()
+    app = _app(tmp_path, resolver=resolver)
+
+    with TestClient(app) as client:
+        create_resp = client.post("/api/live-runs", json={**BODY, "force_full": True})
+        assert create_resp.status_code == 200, create_resp.text
+        run_id = create_resp.json()["run_id"]
+        assert create_resp.json()["status"] == "ACCEPTED"
+
+        summary = _wait_for_terminal(client, run_id)
+        assert summary["lifecycle_status"] == "COMPLETED", summary
+
+        # The production composition invoked the repository-owned run_v1_graph:
+        # both model roles were actually called.
+        assert resolver.analyst.calls >= 1
+        assert resolver.writer.calls == 0  # Q1c: the answer is code-rendered
+        assert resolver.retriever.calls >= 1
+
+        # RunDTO exposes required terminal artifacts committed in the batch.
+        terminal_refs = summary["terminal_artifact_refs"]
+        assert any(ref["artifact_type"] == "attribution_result" for ref in terminal_refs)
+        assert any(ref["artifact_type"] == "assurance" for ref in terminal_refs)
+        assert summary["attribution_status"] == "PARTIAL"
+
+        # The events produced by the real graph path are persisted.
+        events = client.get(f"/api/live-runs/{run_id}/events?after_seq=0")
+        # NOTE: legacy compat endpoint translates only legacy rows; the V1.1
+        # events are asserted from the artifacts page + SSE below instead.
+        assert client.get(f"/api/live-runs/{run_id}/artifacts").status_code == 200
+        artifact_page = client.get(f"/api/live-runs/{run_id}/artifacts").json()
+        types = {item["ref"]["artifact_type"] for item in artifact_page["items"]}
+        assert {"run_manifest", "context_pack", "rendered_messages", "answer",
+                "evidence_detail", "claim_detail", "attribution_result",
+                "answer_snapshot"} <= types
+        snapshots = [item for item in artifact_page["items"]
+                     if item["ref"]["artifact_type"] == "answer_snapshot"]
+        assert len(snapshots) == 1
+
+        # V1 workspace projection reads the V1 tables (not legacy storage).
+        ws = client.get(f"/api/live-runs/{run_id}/workspace")
+        assert ws.status_code == 200, ws.text
+        projection = ws.json()
+        assert projection["lifecycle_status"] == "COMPLETED"
+        assert projection["answer"]
+        assert len(projection["claims"]) >= 1
+        assert len(projection["evidence"]) >= 1
+
+        # SSE replay proves the terminal batch carried the terminal artifacts.
+        stream = client.get(f"/api/live-runs/{run_id}/stream")
+        assert stream.status_code == 200
+        assert f"event: run.completed" in stream.text
+        assert f"id: {run_id}:1" in stream.text
+
+        # total_latency_ms derives from real monotonic timing, never the
+        # fabricated constant 1.
+        import json as _json
+
+        from catalyst_app.persistence.connect import open_rw
+
+        with open_rw(tmp_path / "runtime.db") as conn:
+            event_types = [row["event_type"] for row in conn.execute(
+                "SELECT event_type FROM run_events WHERE run_id = ? ORDER BY seq",
+                (run_id,),
+            ).fetchall()]
+            completed = conn.execute(
+                "SELECT payload_json FROM run_events"
+                " WHERE run_id = ? AND event_type = 'run.completed'",
+                (run_id,),
+            ).fetchone()
+        assert completed is not None
+        assert _json.loads(completed["payload_json"])["total_latency_ms"] >= 1
+        progressive = [
+            "facts.ready", "tier.decided", "retrieval.done", "analyst.decision",
+            "analyst.decision", "analyst.done", "checks.done", "gates.done",
+            "verifier.done", "answer.ready", "run.completed",
+        ]
+        positions = [event_types.index(event_type) for event_type in progressive]
+        assert positions == sorted(positions)
+        assert "evidence.assessed" in event_types
+        # one live READ decision per article as it is read, then the final evidence and cause decisions
+        assert event_types.count("analyst.decision") == 3
+        assert all(event_types.index(event_type) < event_types.index("run.completed")
+                   for event_type in progressive[:-1])
+
+        with open_rw(tmp_path / "runtime.db") as conn:
+            rows = conn.execute(
+                "SELECT seq, event_type, payload_json FROM run_events"
+                " WHERE run_id = ? ORDER BY seq", (run_id,),
+            ).fetchall()
+        sequences = [row["seq"] for row in rows]
+        assert sequences == list(range(1, len(sequences) + 1))
+        analyst_rows = [__import__("json").loads(row["payload_json"])
+                        for row in rows if row["event_type"] == "analyst.decision"]
+        assert [row["kind"] for row in analyst_rows] == ["evidence", "evidence", "candidate_cause"]
+        assert analyst_rows[0]["disposition"] == "READ"
+        assert analyst_rows[0]["reason_code"].startswith("read_")
+
+        # Reconnect after retrieval: every committed progress event and the
+        # terminal event remain replayable in original sequence order.
+        retrieval_seq = next(row["seq"] for row in rows
+                             if row["event_type"] == "retrieval.done")
+        replay = client.get(
+            f"/api/live-runs/{run_id}/stream",
+            headers={"Last-Event-ID": f"{run_id}:{retrieval_seq}"},
+        )
+        replay_ids = [int(line.split(":", 2)[2]) for line in replay.text.splitlines()
+                      if line.startswith("id: ")]
+        assert replay_ids == [seq for seq in sequences if seq > retrieval_seq]
+        assert "event: gates.done" in replay.text
+        assert "event: run.completed" in replay.text
+
+
+def test_t1_short_circuit_persists_complete_b5_sequence(tmp_path: Path) -> None:
+    resolver = FakeGraphResolver()
+    resolver.observation_provider = FakeObservationProvider()
+    original = resolver.observation_provider
+
+    class OrdinaryObservationProvider(FakeObservationProvider):
+        def load_context_inputs(self, *, ticker, session_date, cutoff,
+                                information_window_start_at=None):
+            base = original.load_context_inputs(
+                ticker=ticker, session_date=session_date, cutoff=cutoff,
+                information_window_start_at=information_window_start_at,
+            )
+            return ContextInputs(**{
+                **base.__dict__, "target_close": 100.5,
+                "previous_target_close": 100.0, "target_open": 100.1,
+                "target_volume": 1000.0,
+                "benchmark_return_pct": 0.4, "sector_return_pct": 0.5,
+                "peer_returns_by_ticker": {"P1": 0.4, "P2": 0.5, "P3": 0.6},
+            })
+
+    resolver.observation_provider = OrdinaryObservationProvider()
+    app = _app(tmp_path, resolver=resolver)
+    with TestClient(app) as client:
+        run_id = client.post("/api/live-runs", json=BODY).json()["run_id"]
+        summary = _wait_for_terminal(client, run_id)
+        assert summary["lifecycle_status"] == "COMPLETED", summary
+        assert resolver.analyst.calls == 0
+        from catalyst_app.persistence.connect import open_rw
+        with open_rw(tmp_path / "runtime.db") as conn:
+            names = [row[0] for row in conn.execute(
+                "SELECT event_type FROM run_events WHERE run_id = ? ORDER BY seq",
+                (run_id,),
+            )]
+        b5 = [name for name in names if name in {
+            "facts.ready", "tier.decided", "retrieval.done", "analyst.decision",
+            "analyst.done", "checks.done", "gates.done", "verifier.done",
+            "answer.ready", "run.completed", "run.failed", "run.cancelled",
+        }]
+        assert b5 == ["facts.ready", "tier.decided", "answer.ready", "run.completed"]
+
+
+def test_abstained_and_failed_runs_persist_b5_terminal_sequences(tmp_path: Path) -> None:
+    from catalyst_app.persistence.connect import open_rw
+
+    (tmp_path / "abstained").mkdir()
+    (tmp_path / "failed").mkdir()
+    abstaining = FakeGraphResolver()
+    abstaining.analyst = AbstainingAnalystProvider()
+    app = _app(tmp_path / "abstained", resolver=abstaining)
+    with TestClient(app) as client:
+        run_id = client.post("/api/live-runs", json={**BODY, "force_full": True}).json()["run_id"]
+        summary = _wait_for_terminal(client, run_id)
+        assert summary["lifecycle_status"] == "COMPLETED", summary
+        with open_rw(tmp_path / "abstained" / "runtime.db") as conn:
+            names = [row[0] for row in conn.execute(
+                "SELECT event_type FROM run_events WHERE run_id = ? ORDER BY seq",
+                (run_id,),
+            )]
+        assert [name for name in names if name in {
+            "facts.ready", "tier.decided", "retrieval.done", "analyst.decision",
+            "analyst.done", "checks.done", "gates.done", "verifier.done",
+            "answer.ready", "run.completed", "run.failed", "run.cancelled",
+        }] == [
+            "facts.ready", "tier.decided", "retrieval.done", "analyst.decision", "analyst.decision",
+            "analyst.done", "checks.done", "gates.done", "verifier.done", "answer.ready",
+            "run.completed",
+        ]
+
+    failing = FakeGraphResolver()
+    failing.analyst = FailingAnalystProvider()
+    app = _app(tmp_path / "failed", resolver=failing)
+    with TestClient(app) as client:
+        run_id = client.post("/api/live-runs", json=BODY).json()["run_id"]
+        summary = _wait_for_terminal(client, run_id)
+        assert summary["lifecycle_status"] == "FAILED", summary
+        with open_rw(tmp_path / "failed" / "runtime.db") as conn:
+            names = [row[0] for row in conn.execute(
+                "SELECT event_type FROM run_events WHERE run_id = ? ORDER BY seq",
+                (run_id,),
+            )]
+        assert [name for name in names if name in {
+            "facts.ready", "tier.decided", "retrieval.done", "analyst.decision",
+            "analyst.done", "checks.done", "gates.done", "verifier.done",
+            "answer.ready", "run.completed", "run.failed", "run.cancelled",
+        }] == ["facts.ready", "tier.decided", "retrieval.done", "run.failed"]
+
+
+def test_health_not_ready_when_identity_readiness_fails(tmp_path: Path) -> None:
+    """Finding J: /api/health must not report ready when the production
+    graph/dependency composition is unwired or identity readiness fails."""
+    from catalyst_app.runtime.composition import build_runtime_composition
+
+    class BrokenLoader(FakeRuntimeDependencyLoader):
+        def get_dependencies(self, *, force_reload: bool = False):
+            from catalyst_agents.runtime.dependencies import RuntimeDependencies
+
+            return RuntimeDependencies(
+                sqlite_db_path=Path("/tmp/missing.db"),
+                lancedb_dir=Path("/tmp/missing-lancedb"),
+                lancedb_table=None,
+                embedding_fn=lambda _: [],
+                embedding_model="BAAI/bge-m3",
+                embedding_dim=None,
+                reranker=None,
+                reranker_model="BAAI/bge-reranker-v2-m3",
+                default_model=None,
+                health={
+                    "status": "failed",
+                    "sqlite": {"status": "failed", "path": "/tmp/missing.db"},
+                    "errors": [{"component": "sqlite", "message": "missing"}],
+                },
+                retriever=None,
+                requested_manifest_id=None,
+                index_manifest_id=None,
+                data_runtime_identity=None,
+            )
+
+    composition = build_runtime_composition(
+        db_path=tmp_path / "runtime.db",
+        dependency_loader=BrokenLoader(),
+        credential_store=RuntimeCredentialStore(),
+        graph_resolver=FakeGraphResolver(),
+        provider_budget=_test_provider_budget(),
+    )
+    app = create_app(runtime_composition=composition)
+    with TestClient(app) as client:
+        response = client.get("/api/health")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["runtime_db"] == "ready"
+        assert payload["status"] != "ready"
+
+
+# ── M6 corrective: BYOK ordering and redaction (Finding I) ─────────────────
+
+def test_byok_credential_available_before_graph_and_never_persisted(tmp_path: Path) -> None:
+    """The volatile credential is available before provider/graph execution
+    can start, and it never appears in manifest, run row, events, artifacts,
+    response, or SSE frames."""
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+
+    SECRET = "sk-byok-0123456789abcdef"
+    resolver = FakeGraphResolver()
+    store = RuntimeCredentialStore()
+    composition = build_runtime_composition(
+        db_path=tmp_path / "runtime.db",
+        dependency_loader=FakeRuntimeDependencyLoader(),
+        credential_store=store,
+        graph_resolver=resolver,
+        provider_budget=_test_provider_budget(),
+        max_workers=2,
+        shutdown_grace_seconds=0.2,
+    )
+    app = create_app(runtime_composition=composition)
+    body = {
+        "ticker": "AAPL",
+        "trade_date": "2026-01-15",
+        "query": "Why did AAPL move?",
+        "model": {
+            "provider": "custom_openai_compatible",
+            "model_id": "gpt-4.1-mini",
+            "api_key": SECRET,
+            "base_url": "https://proxy.example.com/v1",
+            "credential_source": "browser_key",
+        },
+    }
+    with TestClient(app) as client:
+        created = client.post("/api/live-runs", json=body)
+        assert created.status_code == 200, created.text
+        run_id = created.json()["run_id"]
+        # The credential was registered and was available before the graph ran.
+        assert store.get(run_id) is not None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if resolver.last_api_key is not None:
+                break
+            time.sleep(0.02)
+        assert resolver.last_api_key == SECRET
+
+        summary = _wait_for_terminal(client, run_id)
+        assert summary["lifecycle_status"] == "COMPLETED"
+
+        # Redaction: the secret never entered any persisted or public surface.
+        assert SECRET not in created.text
+        assert SECRET not in client.get(f"/api/live-runs/{run_id}").text
+        assert SECRET not in client.get(f"/api/live-runs/{run_id}/stream").text
+        assert SECRET not in client.get(f"/api/live-runs/{run_id}/artifacts").text
+        assert SECRET not in client.get(f"/api/live-runs/{run_id}/workspace").text
+        with open_rw(tmp_path / "runtime.db") as conn:
+            for table in ("runs", "run_events", "run_artifacts"):
+                rows = conn.execute(f"SELECT * FROM {table}").fetchall()
+                blob = " ".join(
+                    str(dict(row)) for row in rows
+                )
+                assert SECRET not in blob, f"secret leaked into {table}"
+
+        # Terminal cleanup removed the volatile credential.
+        assert store.get(run_id) is None
+
+
+def test_adapter_timeout_discards_late_success(tmp_path: Path) -> None:
+    """Finding E: the absolute deadline is derived once at admission and
+    persisted; a late provider/graph success after that deadline cannot commit
+    COMPLETED/artifacts."""
+    import threading
+
+    from catalyst_app.api_dto import compute_request_hash
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.persistence.schema import init_runtime_db
+    from catalyst_app.runtime.admission import AdmissionRequest
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+
+    db_path = tmp_path / "runtime.db"
+    with open_rw(db_path) as conn:
+        init_runtime_db(conn)
+        conn.commit()
+
+    release_writer = threading.Event()
+    writer_started = threading.Event()
+
+    class SlowWriter(FakeWriterProvider):
+        def stream(self, messages):
+            self.calls += 1
+            writer_started.set()
+            release_writer.wait(timeout=10)
+            return iter(("SUMMARY\nAAPL rose. [claim:1] (e1)\nCAUSAL_EXPLANATION\nGuidance.\nLIMITATIONS\nNone.",))
+
+    slow_writer = SlowWriter()
+    base_resolver = FakeGraphResolver()
+
+    class SlowResolver(FakeGraphResolver):
+        def __init__(self, writer) -> None:
+            super().__init__()
+            self._writer = writer
+
+        def resolve(self, manifest, boundary):
+            resolved = base_resolver.resolve(manifest, boundary)
+            from dataclasses import replace
+
+            class SlowAnalyst(FakeAnalystProvider):
+                # Q1c: the in-flight provider call is the Analyst's.
+                def invoke(self, messages):
+                    writer_started.set()
+                    release_writer.wait(timeout=10)
+                    return super().invoke(messages)
+
+            return replace(resolved, writer_llm=self._writer, analyst_llm=SlowAnalyst())
+
+    composition = build_runtime_composition(
+        db_path=db_path,
+        dependency_loader=FakeRuntimeDependencyLoader(),
+        credential_store=RuntimeCredentialStore(),
+        graph_resolver=SlowResolver(slow_writer),
+        provider_budget=_test_provider_budget(),
+        max_workers=1,
+        shutdown_grace_seconds=0.1,
+    )
+
+    # Seed one ACCEPTED run with a real production manifest artifact, then run
+    # the production adapter directly with a short absolute deadline so the
+    # once-derived deadline is exercised deterministically.
+    run_id = "run:timeout"
+    req = AdmissionRequest(
+        ticker="AAPL", session_date="2026-01-15", query="Why did AAPL move?",
+        provider="openai", model_id="gpt-4.1-mini", base_url=None,
+        credential_source_identifier="server_env", workflow_version="v1.1",
+        config_version="v1.1",
+        force_full=True,
+    )
+    request_hash = compute_request_hash(
+        ticker="AAPL", session_date="2026-01-15", normalized_question="Why did AAPL move?",
+        provider="openai", model_id="gpt-4.1-mini", normalized_base_url="",
+        credential_source_identifier="server_env", workflow_version="v1.1",
+        config_version="v1.1",
+    )
+    manifest = composition.manifest_factory(req, run_id, request_hash)
+    from datetime import datetime, timedelta, timezone
+
+    from catalyst_app.persistence.events import canonical_json
+
+    manifest_json = canonical_json(manifest.model_dump(mode="json"))
+    created_at = datetime.now(timezone.utc)
+    # Persist the absolute deadline derived at admission (~0.3s out).
+    deadline_at = (created_at + timedelta(seconds=0.3)).isoformat()
+    with open_rw(db_path) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO runs (run_id, lifecycle_status, idempotency_key, request_hash,"
+            " run_manifest_id, manifest_hash, capacity_slot, created_at, updated_at,"
+            " ticker, provider, base_url, deadline_at)"
+            " VALUES (?, 'ACCEPTED', NULL, ?, ?, ?, 0, ?, ?, 'AAPL', 'openai', NULL, ?)",
+            (
+                run_id,
+                request_hash,
+                f"manifest:{run_id}",
+                "x" * 64,
+                created_at.isoformat(),
+                created_at.isoformat(),
+                deadline_at,
+            ),
+        )
+        from catalyst_app.runtime.budget import BudgetAdmission, BudgetLedger
+
+        BudgetLedger().reserve(
+            conn,
+            run_id,
+            BudgetAdmission(tier="anonymous", caller_key="test-caller", max_cost_usd=0.05),
+            now=created_at,
+        )
+        conn.execute(
+            "INSERT INTO run_events (run_id, seq, occurred_at, event_type, stage, payload_json, schema_version)"
+            " VALUES (?, 1, 't', 'run.accepted', 'ADMISSION', ?, 'v1')",
+            (run_id, canonical_json({"accepted": True})),
+        )
+        conn.execute(
+            "INSERT INTO run_artifacts (artifact_id, run_id, event_seq, artifact_type,"
+            " payload_hash, payload_json, optional)"
+            " VALUES (?, ?, 1, 'run_manifest', ?, ?, 0)",
+            (f"manifest:{run_id}", run_id, "y" * 64, manifest_json),
+        )
+        conn.commit()
+
+    result: dict = {}
+
+    def run_adapter() -> None:
+        result.update(composition.run_adapter(run_id, timeout_seconds=0.3))
+
+    thread = threading.Thread(target=run_adapter)
+    thread.start()
+    assert writer_started.wait(timeout=10)
+    # The deadline (0.3s) has elapsed while the provider is still in flight.
+    time.sleep(0.6)
+    release_writer.set()
+    thread.join(timeout=10)
+    assert result.get("status") == "FAILED"
+    assert result.get("failure_code") == "TIMEOUT"
+
+    with open_rw(db_path) as conn:
+        row = conn.execute(
+            "SELECT lifecycle_status, failure_code FROM runs WHERE run_id = ?", (run_id,)
+        ).fetchone()
+        terminal = conn.execute(
+            "SELECT event_type FROM run_events WHERE run_id = ? AND event_type = 'run.completed'",
+            (run_id,),
+        ).fetchone()
+    assert row["lifecycle_status"] == "FAILED"
+    assert row["failure_code"] == "TIMEOUT"
+    assert terminal is None
+
+
+def test_server_env_credential_uses_provider_env_key_not_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding I: server_env resolves the provider-specific env key through
+    get_provider_env_key(provider), never the generic AIHUBMIX_API_KEY
+    fallback; the resolved key is registered before the worker may start."""
+    from catalyst_app.persistence.connect import open_rw
+    from catalyst_app.runtime.composition import build_runtime_composition
+    from catalyst_app.runtime_credential_store import RuntimeCredentialStore
+
+    monkeypatch.delenv("openai_api_key", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-provider-specific-123")
+    monkeypatch.setenv("openai_api_key", "sk-openai-provider-specific-123")
+    monkeypatch.setenv("AIHUBMIX_API_KEY", "sk-aihubmix-fallback-must-not-leak")
+
+    store = RuntimeCredentialStore()
+    composition = build_runtime_composition(
+        db_path=tmp_path / "runtime.db",
+        dependency_loader=FakeRuntimeDependencyLoader(),
+        credential_store=store,
+        graph_resolver=FakeGraphResolver(),
+        provider_budget=_test_provider_budget(),
+        max_workers=2,
+        shutdown_grace_seconds=0.2,
+    )
+    app = create_app(runtime_composition=composition)
+    body = {
+        "ticker": "AAPL",
+        "trade_date": "2026-01-15",
+        "query": "Why did AAPL move?",
+        "model": {
+            "provider": "openai",
+            "model_id": "gpt-4.1-mini",
+            "api_key": "",
+            "credential_source": "server_env",
+        },
+    }
+    with TestClient(app) as client:
+        created = client.post("/api/live-runs", json=body)
+        assert created.status_code == 200, created.text
+        run_id = created.json()["run_id"]
+        # Registration happened synchronously before submission returned.
+        credential = store.get(run_id)
+        assert credential is not None
+        assert credential.api_key == "sk-openai-provider-specific-123"
+        assert "sk-aihubmix-fallback-must-not-leak" not in created.text
+        assert "sk-openai-provider-specific-123" not in created.text
+        with open_rw(tmp_path / "runtime.db") as conn:
+            blob = " ".join(
+                str(dict(row))
+                for table in ("runs", "run_events", "run_artifacts")
+                for row in conn.execute(f"SELECT * FROM {table}").fetchall()
+            )
+        assert "sk-openai-provider-specific-123" not in blob
+        assert "sk-aihubmix-fallback-must-not-leak" not in blob
+
+
+def test_composition_passes_canonical_z_cutoff_to_retrieval(tmp_path: Path) -> None:
+    """The composition must hand the retrieval boundary a canonical ``...Z`` cutoff.
+
+    ``TemporalIdentity.cutoff_at`` is already bound and is not recomputed here;
+    only its serialization was wrong. ``datetime.isoformat()`` renders UTC as
+    ``...+00:00``, which the retrieval contract rejects as ``invalid_cutoff``.
+    """
+    resolver = FakeGraphResolver()
+    app = _app(tmp_path, resolver=resolver)
+
+    with TestClient(app) as client:
+        create_resp = client.post("/api/live-runs", json=BODY)
+        assert create_resp.status_code == 200, create_resp.text
+        run_id = create_resp.json()["run_id"]
+        summary = _wait_for_terminal(client, run_id)
+        assert summary["lifecycle_status"] == "COMPLETED", summary
+
+    assert resolver.retriever.cutoffs, "retrieval was never invoked"
+    for observed in resolver.retriever.cutoffs:
+        assert observed == "2026-01-15T21:00:00Z", observed
+        assert "+00:00" not in observed

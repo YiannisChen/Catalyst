@@ -1,0 +1,66 @@
+{
+  "models": {
+    "deepseek/deepseek-flash": {
+      "input_usd_per_million_tokens": 0.3,
+      "output_usd_per_million_tokens": 1.2
+    },
+    "deepseek/deepseek-v4-flash": {
+      "input_usd_per_million_tokens": 0.3,
+      "output_usd_per_million_tokens": 1.2
+    },
+    "deepseek/deepseek-v4-pro": {
+      "input_usd_per_million_tokens": 1.32,
+      "output_usd_per_million_tokens": 3.96
+    },
+    "openai/gpt-4o-mini": {
+      "input_usd_per_million_tokens": 0.15,
+      "output_usd_per_million_tokens": 0.6
+    },
+    "openai/gpt-4o": {
+      "input_usd_per_million_tokens": 2.5,
+      "output_usd_per_million_tokens": 10.0
+    },
+    "gemini/gemini-2.5-flash": {
+      "input_usd_per_million_tokens": 0.3,
+      "output_usd_per_million_tokens": 2.5
+    },
+    "gemini/gemini-2.5-pro": {
+      "input_usd_per_million_tokens": 1.25,
+      "output_usd_per_million_tokens": 10.0
+    },
+    "xai/grok-3-mini": {
+      "input_usd_per_million_tokens": 0.3,
+      "output_usd_per_million_tokens": 0.5
+    },
+    "xai/grok-3": {
+      "input_usd_per_million_tokens": 3.0,
+      "output_usd_per_million_tokens": 15.0
+    }
+  },
+  "role_token_limits": {
+    "evidence_analyst": {
+      "max_input_tokens": 128000,
+      "max_output_tokens": 4000
+    },
+    "streaming_writer": {
+      "max_input_tokens": 128000,
+      "max_output_tokens": 8000
+    },
+    "primary_verifier": {
+      "max_input_tokens": 6000,
+      "max_output_tokens": 8000
+    },
+    "reported_reason": {
+      "max_input_tokens": 24000,
+      "max_output_tokens": 3000
+    },
+    "desk_extractor": {
+      "max_input_tokens": 4000,
+      "max_output_tokens": 600
+    },
+    "event_dater": {
+      "max_input_tokens": 4000,
+      "max_output_tokens": 200
+    }
+  }
+}

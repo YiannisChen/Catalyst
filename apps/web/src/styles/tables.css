@@ -1,0 +1,47 @@
+/* tables: compact data tables (Data center) */
+@layer utilities {
+  .cx-table {
+    border-collapse: separate;
+    border-spacing: 0;
+    text-align: left;
+    font-size: var(--text-body-sm);
+    line-height: var(--text-body-sm--line-height);
+  }
+  .cx-table th {
+    height: calc(var(--space-6) + var(--space-1));
+    padding: 0 var(--space-4);
+    border-bottom: 1px solid var(--line-100);
+    color: var(--ink-300);
+    font-size: var(--text-label);
+    font-weight: 600;
+    text-align: left;
+    white-space: nowrap;
+  }
+  .cx-table td {
+    height: calc(var(--space-6) + var(--space-2));
+    padding: 0 var(--space-4);
+    border-bottom: 1px solid var(--line-100);
+    white-space: nowrap;
+  }
+  .cx-table tbody tr:last-child td {
+    border-bottom: 0;
+  }
+  /* Narrow tables inside a split panel: tighter cells, and cells may wrap. */
+  .cx-table-compact th,
+  .cx-table-compact td {
+    padding: 0 var(--space-2);
+  }
+  .cx-table-compact td {
+    height: auto;
+    padding-block: var(--space-2);
+    white-space: normal;
+  }
+  .cx-table-compact th:first-child,
+  .cx-table-compact td:first-child {
+    padding-left: 0;
+  }
+  .cx-table-compact th:last-child,
+  .cx-table-compact td:last-child {
+    padding-right: 0;
+  }
+}

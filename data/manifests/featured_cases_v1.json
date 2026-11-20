@@ -1,0 +1,128 @@
+{
+  "builder_commit": "e8cfaff67adf40da2f80a3916f5ea34cbb11e69c",
+  "built_at": "2026-11-18T06:15:48Z",
+  "bundle_content_sha256": "b894da107a779720318ce9f703517eb2618a0d3cb7392f173e2286bb629cc5b6",
+  "cases": [
+    {
+      "builder_commit": "e8cfaff67adf40da2f80a3916f5ea34cbb11e69c",
+      "built_at": "2026-11-18T06:15:48Z",
+      "bundle_content_sha256": "9c6fb2d86de427ad85ad661d7ab80b423bd53f46a8a5a48b4cc984d16539e6c4",
+      "case_id": "orcl-2025-12-19",
+      "category": "ANSWERED_REPORTED_ATTRIBUTION",
+      "run_id": "8690a7ba17604cd6a5024a21f0ae616c",
+      "source_db_sha256": "4c80ff9442bb7899c8738121f352f602c6a975a7f3a91447a36b99ad06c977ff",
+      "summary": "Oracle rose 6.6% after reports that TikTok signed binding agreements for a new U.S. joint venture led by Oracle.",
+      "tags": [
+        "software",
+        "deal"
+      ],
+      "title": "Oracle jumps on the TikTok joint venture"
+    },
+    {
+      "builder_commit": "e8cfaff67adf40da2f80a3916f5ea34cbb11e69c",
+      "built_at": "2026-11-18T06:15:48Z",
+      "bundle_content_sha256": "e08c790e44a1ec4c9fe391e6a58a1c7c39d7caff9084621d86287d4d2e196fb9",
+      "case_id": "aapl-2026-06-25",
+      "category": "ANSWERED_REPORTED_ATTRIBUTION",
+      "run_id": "6ee6c38af2fb48ee81a5a176c18b418b",
+      "source_db_sha256": "4c80ff9442bb7899c8738121f352f602c6a975a7f3a91447a36b99ad06c977ff",
+      "summary": "Apple fell 6.1% after raising prices on most of its products as memory chip shortages pushed costs higher.",
+      "tags": [
+        "hardware",
+        "pricing"
+      ],
+      "title": "Apple falls after raising prices"
+    },
+    {
+      "builder_commit": "e8cfaff67adf40da2f80a3916f5ea34cbb11e69c",
+      "built_at": "2026-11-18T06:15:48Z",
+      "bundle_content_sha256": "1c0c87a2bff533f8bbe7214d55b92d11c2a07f0c77b7f182899eb5a5d9ae8ca5",
+      "case_id": "amd-2026-01-13",
+      "category": "ANSWERED_REPORTED_ATTRIBUTION",
+      "run_id": "4f117c17ef10433784ba1c5ebe93574b",
+      "source_db_sha256": "4c80ff9442bb7899c8738121f352f602c6a975a7f3a91447a36b99ad06c977ff",
+      "summary": "AMD rose 6.4%; same-day coverage tied the gain in AMD and Intel to an analyst note.",
+      "tags": [
+        "semiconductors",
+        "analyst"
+      ],
+      "title": "AMD rises after an analyst note"
+    },
+    {
+      "builder_commit": "e8cfaff67adf40da2f80a3916f5ea34cbb11e69c",
+      "built_at": "2026-11-18T06:15:48Z",
+      "bundle_content_sha256": "8c95472b9b165091c83fb2786ad0aa05eff440d8eda11a16dd391e900259999a",
+      "case_id": "unh-2026-06-04",
+      "category": "ANSWERED_REPORTED_ATTRIBUTION",
+      "run_id": "fd56282a0a47418cad3f87d99d4684dd",
+      "source_db_sha256": "4c80ff9442bb7899c8738121f352f602c6a975a7f3a91447a36b99ad06c977ff",
+      "summary": "UnitedHealth rose 5.2% after several Wall Street firms raised their outlooks, citing improving medical cost trends.",
+      "tags": [
+        "healthcare",
+        "analyst"
+      ],
+      "title": "UnitedHealth jumps after analysts raise targets"
+    },
+    {
+      "builder_commit": "e8cfaff67adf40da2f80a3916f5ea34cbb11e69c",
+      "built_at": "2026-11-18T06:15:48Z",
+      "bundle_content_sha256": "57c8249e969e348d69a225d5f3a149bfae7e090e4be4b559b56c8770b97562f4",
+      "case_id": "gs-2026-05-20",
+      "category": "REPORTED_REASON",
+      "run_id": "4b5bf773c62e495a8e98fdc2e334eba0",
+      "source_db_sha256": "4c80ff9442bb7899c8738121f352f602c6a975a7f3a91447a36b99ad06c977ff",
+      "summary": "Goldman Sachs rose 5.8% after reports that SpaceX chose it to lead its planned IPO.",
+      "tags": [
+        "banks",
+        "deal"
+      ],
+      "title": "Goldman Sachs rises on the SpaceX IPO role"
+    },
+    {
+      "builder_commit": "e8cfaff67adf40da2f80a3916f5ea34cbb11e69c",
+      "built_at": "2026-11-18T06:15:48Z",
+      "bundle_content_sha256": "35568116d70d7964a356628744cd7e9d4f38f77054c9776c849b69557b4e5f83",
+      "case_id": "nvda-2025-12-04",
+      "category": "REPORTED_REASON",
+      "run_id": "46bcf33cf83f41ef9a79a839c3f3a3b5",
+      "source_db_sha256": "4c80ff9442bb7899c8738121f352f602c6a975a7f3a91447a36b99ad06c977ff",
+      "summary": "Nvidia rose 2.1% after Congress left a proposal that would have slowed its overseas AI chip sales out of the defense bill.",
+      "tags": [
+        "semiconductors",
+        "policy"
+      ],
+      "title": "Nvidia gains as Congress drops a chip export curb"
+    },
+    {
+      "builder_commit": "e8cfaff67adf40da2f80a3916f5ea34cbb11e69c",
+      "built_at": "2026-11-18T06:15:48Z",
+      "bundle_content_sha256": "0be1e6964245f98ef2f6a96a4b097ae9d58be117f342a64eea17485e0b72b113",
+      "case_id": "crm-2026-06-03",
+      "category": "MOVED_WITH_GROUP",
+      "run_id": "cac1ae05c720417da94381039e0efaf5",
+      "source_db_sha256": "4c80ff9442bb7899c8738121f352f602c6a975a7f3a91447a36b99ad06c977ff",
+      "summary": "Salesforce fell 5.1% while its software peers fell a median 4.5%, so the drop came with its group rather than from company news.",
+      "tags": [
+        "software",
+        "group move"
+      ],
+      "title": "Salesforce falls with software stocks"
+    },
+    {
+      "builder_commit": "e8cfaff67adf40da2f80a3916f5ea34cbb11e69c",
+      "built_at": "2026-11-18T06:15:48Z",
+      "bundle_content_sha256": "7e4176e91539e9a06b6f908dc974e2e79a166761387d6463c73b7fade3063cf5",
+      "case_id": "intc-2026-01-26",
+      "category": "ABSTAINED_NO_CAUSE",
+      "run_id": "4c3e6d52ee544546ab25b642dc3e1735",
+      "source_db_sha256": "4c80ff9442bb7899c8738121f352f602c6a975a7f3a91447a36b99ad06c977ff",
+      "summary": "Intel fell 5.7%, but none of the news before the cutoff explained the move, so Catalyst answered No clear cause.",
+      "tags": [
+        "semiconductors",
+        "no clear cause"
+      ],
+      "title": "Intel falls with no clear cause"
+    }
+  ],
+  "schema_version": "featured_manifest_v1"
+}

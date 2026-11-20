@@ -1,0 +1,63 @@
+import subprocess
+import sys
+from pathlib import Path
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_agents_does_not_import_or_depend_on_eval():
+    source_hits = []
+    for path in (PACKAGE_ROOT / "catalyst_agents").rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "catalyst_eval" in text or "from eval" in text or "import eval" in text:
+            source_hits.append(path.relative_to(PACKAGE_ROOT).as_posix())
+
+    pyproject = (PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert source_hits == []
+    assert "catalyst-eval" not in pyproject
+    assert "catalyst_eval" not in pyproject
+
+
+def test_agents_public_imports_do_not_touch_eval_with_import_hook():
+    code = r'''
+import builtins
+real_import = builtins.__import__
+def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if name == "catalyst_eval" or name.startswith("catalyst_eval."):
+        raise RuntimeError("catalyst_eval import forbidden")
+    return real_import(name, globals, locals, fromlist, level)
+builtins.__import__ = guarded_import
+import catalyst_agents.graphs.graph
+import catalyst_agents.attribution
+import catalyst_agents.attribution.analyst
+import catalyst_agents.attribution.assessment
+import catalyst_agents.attribution.claim_validation
+import catalyst_agents.attribution.claims
+import catalyst_agents.attribution.context_pack
+import catalyst_agents.attribution.coverage
+import catalyst_agents.attribution.evidence_state
+import catalyst_agents.attribution.move_profile
+import catalyst_agents.runtime.assurance
+import catalyst_agents.runtime.manifest
+import catalyst_agents.retrieval.corrective
+import catalyst_agents.retrieval.policy
+import catalyst_agents.retrieval.task
+import catalyst_agents.trace.schema
+import catalyst_agents.trace.version
+'''
+    # Absolute package paths: the caller's PYTHONPATH may be relative to another
+    # directory, which would make the subprocess import an installed copy instead.
+    import os
+
+    packages = PACKAGE_ROOT.parent
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(
+        str(packages / name) for name in ("agents", "data", "api"))}
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=PACKAGE_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr

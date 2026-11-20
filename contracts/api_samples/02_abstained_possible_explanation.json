@@ -1,0 +1,50 @@
+{
+  "description": "拒答：复核未通过，含 RQ-14 方案④的可能解释（原文引文 + 类别 + 固定文案；复核模型原话不在此处）",
+  "answer_snapshot": {
+    "schema_version": "answer_snapshot_v2",
+    "run_id": "a1000000000000000000000000000002",
+    "ticker": "ACME",
+    "session_date": "2026-10-16",
+    "headline": "ACME 上涨 2.33%，大盘下跌 1.11%。",
+    "outcome": "ABSTAINED",
+    "status": "ABSTAIN",
+    "tier": "T3",
+    "cascade_stage": 2,
+    "stage_label": "扩展检索（前一日收盘至 D+3）",
+    "abstention": {
+      "reason_code": "VERIFIER_REJECTED",
+      "reason_text": "复核未通过：这句话没有说明它与本日股价变动的关系。",
+      "failed_stage": 2,
+      "possible_explanation": {
+        "quotes": [
+          {
+            "text": "ACME announced a new distribution agreement with a regional partner.",
+            "publisher": "Example News",
+            "published_at": "2026-10-16T14:02:10Z",
+            "url": "https://news.example.com/acme-distribution"
+          }
+        ],
+        "verdict_category": "UNLINKED",
+        "category_text": "这句话没有说明它与本日股价变动的关系",
+        "label": "未成立的可能解释，不是结论"
+      },
+      "leads": [
+        {
+          "title": "ACME stock: what moved shares today?",
+          "publisher": "Example Finance",
+          "published_at": "2026-10-16T21:30:00Z",
+          "url": "https://finance.example.com/acme-today"
+        }
+      ],
+      "details": {},
+      "gate_reason_code": "PUBLISHED"
+    },
+    "facts": {
+      "target_return_pct": 2.33
+    },
+    "data_gaps": [],
+    "limitations": [
+      "没有找到在前一日收盘至 D+3 之间发布、且逐字说明原因的来源句。"
+    ]
+  }
+}
