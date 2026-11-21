@@ -14,6 +14,7 @@ import os
 import re
 import unicodedata
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable, Literal
 
@@ -263,6 +264,37 @@ def _load_bundle(path: Path) -> _Bundle:
     return _assemble_bundle(meta, case_rows, event_rows)
 
 
+@lru_cache(maxsize=8)
+def _load_bundle_cached(path: str, mtime_ns: int, size: int) -> _Bundle:
+    del mtime_ns, size
+    return _load_bundle(Path(path))
+
+
+_FEATURED_CACHE_KEYS: set[tuple[str, int, int]] = set()
+_FEATURED_CACHE_ERRORS: set[tuple[str, int, int]] = set()
+
+
+def _cached_bundle(path: Path) -> _Bundle | None:
+    try:
+        resolved = path.expanduser().resolve()
+        stat = resolved.stat()
+    except OSError as exc:
+        raise FeaturedUnavailable("featured bundle is missing") from exc
+    key = (str(resolved), stat.st_mtime_ns, stat.st_size)
+    try:
+        bundle = _load_bundle_cached(*key)
+    except FeaturedUnavailable:
+        _FEATURED_CACHE_KEYS.add(key)
+        _FEATURED_CACHE_ERRORS.add(key)
+        raise
+    _FEATURED_CACHE_KEYS.add(key)
+    _FEATURED_CACHE_ERRORS.discard(key)
+    if len(_FEATURED_CACHE_KEYS) > 8:
+        stale = _FEATURED_CACHE_KEYS.pop()
+        _FEATURED_CACHE_ERRORS.discard(stale)
+    return bundle
+
+
 def _assemble_bundle(meta: dict[str, str], case_rows: list[Any], event_rows: list[Any]) -> _Bundle:
     try:
         return _assemble_bundle_unchecked(meta, case_rows, event_rows)
@@ -465,12 +497,22 @@ def _assemble_bundle_unchecked(
     return _Bundle(meta=meta, cases=cases, events=events, categories=categories)
 
 
-def featured_health_status() -> FeaturedHealth:
+def featured_health_status(*, cached_only: bool = False) -> FeaturedHealth:
     path = featured_bundle_path()
     if path is None or not path.is_file():
         return "not_configured"
+    if cached_only:
+        try:
+            resolved = path.expanduser().resolve()
+            stat = resolved.stat()
+        except OSError:
+            return "corrupt"
+        key = (str(resolved), stat.st_mtime_ns, stat.st_size)
+        if key not in _FEATURED_CACHE_KEYS:
+            return "not_configured"
+        return "corrupt" if key in _FEATURED_CACHE_ERRORS else "ready"
     try:
-        _load_bundle(path)
+        _cached_bundle(path)
     except Exception:
         return "corrupt"
     return "ready"
@@ -484,7 +526,7 @@ def _load_configured_bundle() -> _Bundle | None:
     path = featured_bundle_path()
     if path is None or not path.is_file():
         return None
-    return _load_bundle(path)
+    return _cached_bundle(path)
 
 
 def load_featured_list() -> FeaturedListDTO:

@@ -12,6 +12,7 @@ dependencies = [
   "catalyst-data>=0.1.0",
   "fastapi",
   "pydantic>=2.0",
+  "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]

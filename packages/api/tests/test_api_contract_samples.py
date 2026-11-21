@@ -71,7 +71,7 @@ def test_no_sample_carries_full_text_prompts_or_secrets():
 def test_schema_rejects_known_contract_violations():
     base = sample("01_answered_reported_attribution.json")["answer_snapshot"]
 
-    wrong_scope = copy.deepcopy(base); wrong_scope["scope_note"] = "结论只到事件层面，不判定该事件的影响大小。"
+    wrong_scope = copy.deepcopy(base); wrong_scope["scope_note"] = "The conclusion does not assess the size of the event's impact."
     no_basis = copy.deepcopy(base); del no_basis["basis_text"]
     disables = copy.deepcopy(base)
     disables["data_gaps"] = [{"source": "target_news", "status": "missing", "disables": ["unique_company_event"], "note": "x"}]
@@ -167,13 +167,13 @@ def test_run_view_keeps_query_failure_code_shape():
 
 def test_data_gap_accepts_supplementary_news_category():
     gap = {"source": "supplementary_news", "status": "missing", "disables": [],
-           "note": "补充新闻没有取到"}
+           "note": "Supplementary news was not retrieved"}
     check("DataGap", gap)
 
 
 def test_data_gap_rejects_provider_group_as_public_source():
     bad = {"source": "benzinga_kitco", "status": "missing", "disables": [],
-           "note": "补充新闻没有取到"}
+           "note": "Supplementary news was not retrieved"}
     assert list(validator("DataGap").iter_errors(bad)), \
         "DataGap accepted provider group instead of public source category"
 

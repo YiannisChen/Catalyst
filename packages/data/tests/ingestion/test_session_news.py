@@ -258,6 +258,37 @@ def test_session_news_merges_cached_headline_media_and_counts_uncached_images(tm
     assert result["images_pending"] == 1
 
 
+def test_news_prefilters_polygon_and_reads_media_by_candidate_key(tmp_path, monkeypatch):
+    from catalyst_data.ingestion import session_news as news
+
+    bodies, archive = _stores(tmp_path)
+    cache = tmp_path / "media.sqlite3"
+    with sqlite3.connect(cache) as conn:
+        conn.execute("CREATE TABLE headline_media (article_key TEXT PRIMARY KEY, image_url TEXT, image_source TEXT, status TEXT, attempts INTEGER)")
+        conn.execute("INSERT INTO headline_media VALUES (?,?,?,?,?)", ("https://unrelated.example/", "x", "og", "ok", 1))
+
+    statements = []
+    original = news._read_only
+
+    def traced(path):
+        conn = original(path)
+        conn.set_trace_callback(statements.append)
+        return conn
+
+    monkeypatch.setattr(news, "_read_only", traced)
+    monkeypatch.setattr(news, "_shared_for", lambda *_: frozenset())
+    result = news.session_news(
+        "ACME", "2026-01-06", bodies_db=bodies, archive_db=archive,
+        media_db=cache, shared_images_path=tmp_path / "missing.json",
+    )
+
+    assert len(result["items"]) == 5
+    assert any("instr(tickers_json" in sql for sql in statements)
+    media_queries = [sql for sql in statements if "FROM headline_media WHERE article_key IN" in sql]
+    assert len(media_queries) == 1
+    assert "unrelated.example" not in media_queries[0]
+
+
 def test_session_news_paginates_and_marks_evidence(tmp_path):
     bodies, archive = _stores(tmp_path)
     first = session_news(

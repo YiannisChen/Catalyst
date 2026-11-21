@@ -103,7 +103,7 @@ def test_filing_fact_is_metadata_only():
     fact = E.filing_fact("ANALOG DEVICES INC", "ADI", {
         "accession": "0000006281-26-000050", "accepted_at": datetime(2026, 5, 20, 11, 1, tzinfo=UTC),
         "items": ["2.02", "9.01"], "form": "8-K"})
-    assert fact == ("【申报事实】ANALOG DEVICES INC (ADI) filed a Form 8-K with the SEC, accepted 2026-05-20 07:01 ET "
+    assert fact == ("Filing fact: ANALOG DEVICES INC (ADI) filed a Form 8-K with the SEC, accepted 2026-05-20 07:01 ET "
                     "(accession 0000006281-26-000050), reporting Item 2.02 Results of Operations and Financial "
                     "Condition; Item 9.01 Financial Statements and Exhibits.")
 

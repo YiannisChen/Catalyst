@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate nginx allow directives from the checked-in Cloudflare CIDR list."""
+"""Generate nginx real-IP trust and peer-classification directives."""
 import argparse
 import ipaddress
 import os
@@ -18,9 +18,16 @@ def render(ranges: list[str]) -> str:
         raise ValueError(f"Cloudflare v4 list has {len(ipv4)} ranges; expected at least {MIN_IPV4_RANGES}")
     if len(ipv6) < MIN_IPV6_RANGES:
         raise ValueError(f"Cloudflare v6 list has {len(ipv6)} ranges; expected at least {MIN_IPV6_RANGES}")
-    return ("# Generated from deploy/nginx/cloudflare_ips.txt\n" +
-            "".join(f"set_real_ip_from {network};\nallow {network};\n" for network in networks) +
-            "deny all;\n")
+    trusted = "".join(f"set_real_ip_from {network};\n" for network in networks)
+    peers = "".join(f"    {network} 1;\n" for network in networks)
+    return (
+        "# Generated from deploy/nginx/cloudflare_ips.txt; include in nginx http context.\n"
+        f"{trusted}"
+        "geo $realip_remote_addr $catalyst_cloudflare_peer {\n"
+        "    default 0;\n"
+        f"{peers}"
+        "}\n"
+    )
 
 
 def _atomic_write(output: Path, content: str) -> None:

@@ -172,7 +172,7 @@ def test_units_yes_does_not_install_resilience_retry(tmp_path):
 
     assert result.returncode == 0, result.stderr
     remote = capture.read_text()
-    assert 'echo "=== $name (未安装) ==="' in remote
+    assert 'echo "=== $name (not installed) ==="' in remote
     assert 'for unit in deploy/collect/catalyst-collect-*.service deploy/collect/catalyst-collect-*.timer deploy/ops/catalyst-health.service deploy/ops/catalyst-health.timer deploy/ops/catalyst-backup.service deploy/ops/catalyst-backup.timer; do' in remote
     assert "cp \"$unit\" /etc/systemd/system/" in remote
     assert 'deploy/ops/catalyst-resilience-retry.service deploy/ops/catalyst-resilience-retry.timer; do cp' not in remote

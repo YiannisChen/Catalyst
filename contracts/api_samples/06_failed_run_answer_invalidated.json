@@ -1,5 +1,5 @@
 {
-  "description": "运行失败，已推送的回答被作废：answer.ready(provisional) → run.failed(顶层 failure_code) → view 无回答；查询 DTO 仍用 failure.code",
+  "description": "Run failed and the streamed answer was invalidated: answer.ready(provisional) → run.failed (top-level failure_code) → view has no answer; the query DTO still uses failure.code.",
   "events": [
     {
       "schema_version": "v1",
@@ -14,16 +14,16 @@
           "run_id": "a1000000000000000000000000000006",
           "ticker": "ACME",
           "session_date": "2026-10-16",
-          "headline": "ACME 上涨 2.33%，大盘下跌 1.11%。",
+          "headline": "ACME rose 2.33%; the broad market fell 1.11%.",
           "outcome": "ANSWERED",
           "status": "PARTIAL",
-          "scope_note": "结论只到事件层面：指出是哪件事，不说明这件事中哪一部分、在多大程度上推动了股价。",
+          "scope_note": "The conclusion identifies the event only; it does not say which part, or to what extent, drove the stock price.",
           "tier": "T3",
-          "tier_reason": "涨幅 2.33% 与大盘反向（大盘 −1.11%），不是跟随大盘的普通波动。",
+          "tier_reason": "The 2.33% gain moved against the broad market (down 1.11%), so it was not an ordinary move with the market.",
           "cascade_stage": 1,
           "stage_label": "当日检索",
           "basis": "REPORTED_ATTRIBUTION",
-          "basis_text": "有来源明确归因：来源报道把它作为这次变动的原因。",
+          "basis_text": "A source explicitly attributes the move: the report gives this as the reason for the move.",
           "primary": {
             "event_type": "ANALYST_ACTION",
             "scope": "ISSUER",
@@ -84,7 +84,7 @@
         "failure_code": "TIMEOUT",
         "stage": "EXECUTION",
         "retryable": false,
-        "safe_message": "运行超过时间上限",
+        "safe_message": "Run exceeded its time limit",
         "provisional_output_invalidated": true
       }
     }
@@ -98,7 +98,7 @@
     "answer": null,
     "failure": {
       "code": "TIMEOUT",
-      "message": "运行超过时间上限"
+      "message": "Run exceeded its time limit"
     },
     "availability": {
       "answer": "not_applicable",

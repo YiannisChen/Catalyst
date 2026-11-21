@@ -17,7 +17,7 @@ except (OSError, json.JSONDecodeError):
     raise SystemExit(0)
 
 corpus = status.get("corpus_fts_attempt", {}) if isinstance(status, dict) else {}
-if (isinstance(status, dict) and status.get("daily_status") == "COMPLETED"
+if (isinstance(status, dict) and status.get("daily_status") in {"COMPLETED", "PARTIAL"}
         and isinstance(corpus, dict) and corpus.get("status") == "ok"
         and corpus.get("build_id") and corpus.get("build_id") != corpus.get("previous_build_id")):
     print(corpus["build_id"])

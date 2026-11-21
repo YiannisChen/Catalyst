@@ -447,7 +447,7 @@ def test_quota_exhausted_miss_returns_message(
     assert response.status_code == 429, response.text
     assert response.json() == {
         "detail": expected_detail,
-        "message": "今天的额度已用完",
+        "message": "Today's run quota is exhausted",
     }
     with open_rw(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1

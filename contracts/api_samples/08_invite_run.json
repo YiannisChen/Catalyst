@@ -1,5 +1,5 @@
 {
-  "description": "邀请链接运行：仅能选择已准备的股票和日期；含额度响应头、今日剩余额度和用量。令牌值为占位。",
+  "description": "Invite-link run: only prepared stocks and dates can be selected; includes quota headers, remaining daily quota, and usage. Token values are placeholders.",
   "request": {
     "method": "POST",
     "path": "/api/live-runs",
@@ -60,15 +60,15 @@
         "exhausted": false
       },
       "token": {
-        "label": "申请材料-示例",
+        "label": "Application materials - example",
         "expires_at": "2026-11-30T00:00:00Z"
       }
     }
   },
   "usage_event": {
-    "description": "管理员用量查询里的一行",
+    "description": "A row in the administrator usage query",
     "token_id": "tok_0007",
-    "label": "申请材料-示例",
+    "label": "Application materials - example",
     "run_id": "b1000000000000000000000000000001",
     "at": "2026-10-22T15:00:03Z",
     "cost_usd": 0.0081,

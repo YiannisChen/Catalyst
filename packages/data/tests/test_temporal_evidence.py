@@ -307,7 +307,7 @@ def test_published_returns_only_verified_versioned_evidence_and_separates_leads(
     assert {row["version_id"] for row in result["leads"]} == {late_update, unknown_update}
     assert all(row["temporal_status"] == "point_in_time_unverified" for row in result["leads"])
     assert late_published not in {row["version_id"] for row in result["evidence"] + result["leads"]}
-    assert result["audit"]["label"] == "回溯查询"
+    assert result["audit"]["label"] == "Historical query"
     assert result["audit"]["provenance_counts"] == {"versioned": 3}
 
 

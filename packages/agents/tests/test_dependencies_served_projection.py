@@ -126,7 +126,7 @@ def test_projection_failure_means_no_retriever(served_db, tmp_path, monkeypatch)
 
     from catalyst_data.retrieval import runtime_binding
 
-    monkeypatch.setattr(runtime_binding, "build_served_projection", boom)
+    monkeypatch.setattr(runtime_binding, "open_or_build_served_projection", boom)
     deps = _loader(served_db, projection_dir=tmp_path / "proj").get_dependencies()
     assert deps.retriever is None
     assert deps.served_projection is None

@@ -1224,7 +1224,12 @@ def test_incomplete_daily_summary_preserves_previous_corpus_fts_failure(paths, t
     paths = daily.Paths(**(paths.__dict__ | {"pipeline_status_path": status_path}))
     monkeypatch.setattr(daily, "_build_ready_snapshot_best_effort", lambda *_: {"status": "ok"})
     monkeypatch.setattr(daily, "_build_corpus_fts_best_effort", lambda *_: pytest.fail("must not rebuild"))
-    summary = {"job_id": "partial-1", "status": "PARTIAL"}
+    job_id = daily.start(paths, _plan())
+    conn = daily.open_jobs(paths.jobs_db)
+    conn.execute("UPDATE jobs SET status='PARTIAL' WHERE job_id=?", (job_id,))
+    conn.commit()
+    conn.close()
+    summary = {"job_id": job_id, "status": "PARTIAL"}
 
     result = daily._finalize_daily_summary(paths, summary, lambda _: None)
 
@@ -1234,6 +1239,67 @@ def test_incomplete_daily_summary_preserves_previous_corpus_fts_failure(paths, t
     assert persisted["ready_snapshot"]["status"] == "ok"
     assert result["corpus_fts_attempt"]["reason_code"] == "daily_not_completed"
     assert persisted["corpus_fts_attempt"]["reason_code"] == "daily_not_completed"
+
+
+def test_terminal_partial_job_rebuilds_corpus_without_changing_job_status(
+    paths, tmp_path, monkeypatch,
+):
+    paths = daily.Paths(**(paths.__dict__ | {"pipeline_status_path": tmp_path / "pipeline.json"}))
+    monkeypatch.setattr(daily, "_build_ready_snapshot_best_effort", lambda *_: {"status": "ok"})
+    attempts = []
+    monkeypatch.setattr(daily, "_build_corpus_fts_best_effort", lambda *_: (
+        attempts.append(True) or {"status": "ok", "build_id": "build-new"}
+    ))
+    job_id = daily.start(paths, _plan())
+    conn = daily.open_jobs(paths.jobs_db)
+    conn.execute("UPDATE job_items SET status='FAILED' WHERE job_id=?", (job_id,))
+    conn.execute("UPDATE jobs SET status='PARTIAL' WHERE job_id=?", (job_id,))
+    conn.commit()
+    conn.close()
+
+    result = daily._finalize_daily_summary(
+        paths, {"job_id": job_id, "status": "PARTIAL"}, lambda _: None,
+    )
+
+    assert attempts == [True]
+    assert result["status"] == "PARTIAL"
+    assert result["corpus_fts_attempt"] == {
+        "status": "ok", "build_id": "build-new", "daily_status": "PARTIAL",
+    }
+    assert daily.progress(paths, job_id)["status"] == "PARTIAL"
+
+
+def test_partial_job_with_pending_items_does_not_rebuild_corpus(paths, monkeypatch):
+    monkeypatch.setattr(daily, "_build_ready_snapshot_best_effort", lambda *_: {"status": "ok"})
+    monkeypatch.setattr(daily, "_build_corpus_fts_best_effort", lambda *_: pytest.fail("must not rebuild"))
+    job_id = daily.start(paths, _plan())
+    conn = daily.open_jobs(paths.jobs_db)
+    conn.execute("UPDATE jobs SET status='PARTIAL' WHERE job_id=?", (job_id,))
+    conn.commit()
+    conn.close()
+
+    result = daily._finalize_daily_summary(
+        paths, {"job_id": job_id, "status": "PARTIAL"}, lambda _: None,
+    )
+
+    assert result["corpus_fts_attempt"]["status"] == "skipped"
+    assert result["corpus_fts_attempt"]["reason_code"] == "daily_not_completed"
+
+
+def test_price_symbols_excludes_retired_symbols(tmp_path, monkeypatch):
+    market_db = tmp_path / "market.sqlite3"
+    with sqlite3.connect(market_db) as conn:
+        conn.execute("CREATE TABLE ohlcv (symbol TEXT)")
+        conn.executemany("INSERT INTO ohlcv(symbol) VALUES (?)", [("KVUE",), ("TRACKED",)])
+    monkeypatch.setattr(daily, "universe", lambda: ["KVUE", "TARGET"])
+    monkeypatch.setattr(daily.headline_archive, "subjects", lambda: ["KVUE", "HEADLINE"])
+    monkeypatch.setattr(daily.market, "ETFS", {"SPY"})
+    paths = daily.Paths(
+        market_db=market_db, bodies_db=tmp_path / "bodies.sqlite3", peer_map={},
+        snapshot_db=None, jobs_db=tmp_path / "jobs.sqlite3", archive_db=tmp_path / "archive.sqlite3",
+    )
+
+    assert daily.price_symbols(paths) == ["HEADLINE", "SPY", "TARGET", "TRACKED"]
 
 
 def test_daily_run_keeps_job_lease_until_postprocessing_finishes(paths, monkeypatch):

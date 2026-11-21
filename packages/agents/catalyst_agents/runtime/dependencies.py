@@ -138,12 +138,44 @@ class RuntimeDependencyLoader:
 
         self._lock = threading.Lock()
         self._cached: RuntimeDependencies | None = None
+        self._load_error: Exception | None = None
+
+    @property
+    def cached_dependencies(self) -> RuntimeDependencies | None:
+        """Return the completed load, if available, without waiting for it."""
+        return self._cached
+
+    @property
+    def cached_health(self) -> dict[str, Any] | None:
+        if self._cached is not None:
+            return self._cached.health
+        if self._load_error is not None:
+            exc = self._load_error
+            message = str(exc)[:500]
+            return {
+                "status": "failed",
+                "sqlite": {"status": "ready", "path": str(self.sqlite_db_path)},
+                "lancedb": {"status": NOT_SERVED, "message": "V1.1 has no dense arm"},
+                "embedding": {"status": NOT_SERVED, "message": "V1.1 has no dense arm"},
+                "reranker": {"status": NOT_SERVED, "message": "V1.1 has no reranker"},
+                "default_model": {"status": "ready", "model": self.default_model},
+                "retrieval": {"status": "failed", "message": "runtime store readiness failed"},
+                "sec_exhibit_units": {"status": "failed", "message": message},
+                "errors": [{"component": "sec_exhibit_units", "message": message}],
+            }
+        return None
 
     def get_dependencies(self, *, force_reload: bool = False) -> RuntimeDependencies:
         with self._lock:
             if self._cached is not None and not force_reload:
                 return self._cached
-            self._cached = self._load_once()
+            try:
+                self._cached = self._load_once()
+                self._load_error = None
+            except Exception as exc:
+                # Any failed load is reported by /api/health instead of "warming up" forever.
+                self._load_error = exc
+                raise
             return self._cached
 
     def health(self) -> dict[str, Any]:

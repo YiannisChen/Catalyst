@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -44,6 +45,9 @@ from catalyst_app.routers.stream import router as stream_router
 from catalyst_app.routers.workbench import router as workbench_router
 
 logger = logging.getLogger(__name__)
+# uvicorn configures "uvicorn.error" at INFO with a handler; the app logger has none, so INFO
+# lines from it would be dropped under systemd.
+_request_logger = logging.getLogger("uvicorn.error.http")
 
 
 def _start_runtime_warmup() -> None:
@@ -240,6 +244,7 @@ def _install_host_origin_guard(app: FastAPI) -> None:
 
     @app.middleware("http")
     async def _guard(request: Any, call_next: Any) -> Any:
+        started = time.perf_counter()
         path = request.url.path
         # Every API route: runs, SSE, health, capabilities, models, data
         # refresh and workbench reads.
@@ -250,17 +255,45 @@ def _install_host_origin_guard(app: FastAPI) -> None:
             if allow_non_loopback:
                 # Non-loopback requires the explicit override AND the allowlist.
                 if host not in allowed_hosts:
-                    return JSONResponse(status_code=403, content={"detail": "host_forbidden"})
+                    response = JSONResponse(status_code=403, content={"detail": "host_forbidden"})
+                    _log_request(request, response.status_code, started)
+                    return response
                 if origin is not None and origin not in allowed_origins:
-                    return JSONResponse(status_code=403, content={"detail": "origin_forbidden"})
+                    response = JSONResponse(status_code=403, content={"detail": "origin_forbidden"})
+                    _log_request(request, response.status_code, started)
+                    return response
             else:
                 # Loopback mode: a populated allowlist alone must never enable
                 # a non-loopback Host/Origin (Finding J; Frozen §9.3).
                 if host not in loopback_hosts:
-                    return JSONResponse(status_code=403, content={"detail": "host_forbidden"})
+                    response = JSONResponse(status_code=403, content={"detail": "host_forbidden"})
+                    _log_request(request, response.status_code, started)
+                    return response
                 if origin is not None and origin not in loopback_origins:
-                    return JSONResponse(status_code=403, content={"detail": "origin_forbidden"})
-        return await call_next(request)
+                    response = JSONResponse(status_code=403, content={"detail": "origin_forbidden"})
+                    _log_request(request, response.status_code, started)
+                    return response
+        try:
+            response = await call_next(request)
+        except Exception:
+            _log_request(request, 500, started)
+            raise
+        _log_request(request, response.status_code, started)
+        return response
+
+
+def _log_request(request: Any, status_code: int, started: float) -> None:
+    route = request.scope.get("route")
+    template = getattr(route, "path", "<unmatched>")
+    streaming = " stream=true" if template == "/api/live-runs/{run_id}/stream" else ""
+    _request_logger.info(
+        "http_request method=%s route=%s status=%s duration_ms=%.1f%s",
+        request.method,
+        template,
+        status_code,
+        (time.perf_counter() - started) * 1000,
+        streaming,
+    )
 
 
 app = create_app()

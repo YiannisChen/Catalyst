@@ -232,8 +232,8 @@ def dry_run(source, host, db, env_file, quick, wait_s):
     print("DRY-RUN " + ("run" if quick else "optional") + " PRAGMA quick_check; check free >= "
           "CATALYST_CORPUS_MIN_FREE_GB + 1.2x database size.")
     print("DRY-RUN sidecar recheck; mv --no-clobber; chown root:root; chmod 0644; leave timer stopped.")
-    print("代码切换和健康检查完成后，由操作者执行 systemctl start catalyst-daily.timer；"
-          "Persistent=true 会立即补跑错过的日更。")
+    print("After the code switch and health checks, the operator starts systemctl start catalyst-daily.timer; "
+          "Persistent=true may immediately run missed daily work.")
     print(f"DRY-RUN env-file argument (remote read only with --execute): {env_file}")
     print(f"DRY-RUN on later failure, leave timer stopped; retain temp copy under {source.parent}.")
     print("DRY-RUN: no source, timer, server, or network access performed.")

@@ -52,7 +52,7 @@ def test_provider_account_error_fails_run_and_refunds_caller(tmp_path, caplog, s
     claimer = RunClaimer(db_path=db_path, events=events)
     code = _failure_code_for_exception("SYSTEM_ERROR", error)
     assert code == "PROVIDER_UNAVAILABLE"
-    assert _sanitized_failure_message(error) == "服务暂时不可用"
+    assert _sanitized_failure_message(error) == "Service is temporarily unavailable"
     caplog.set_level(logging.ERROR, logger="catalyst_app.runtime.composition")
     before = provider_account_error_count()
     _default_failure_handler(events, claimer)("provider-failure", code, error)
@@ -128,7 +128,7 @@ def test_store_read_failure_fails_run_refunds_caller_and_emits_alert(
     failure("store-failure", code, error)
 
     assert code == expected_code
-    assert _sanitized_failure_message(error) == "数据暂时不可用"
+    assert _sanitized_failure_message(error) == "Data is temporarily unavailable"
     assert store_read_failure_count() == before + 1
     alert = next(
         record for record in caplog.records
@@ -157,7 +157,7 @@ def test_store_read_failure_fails_run_refunds_caller_and_emits_alert(
             "SELECT payload_json FROM run_artifacts "
             "WHERE run_id='store-failure' AND artifact_type='run_failure_diagnostics'"
         ).fetchone()
-    assert tuple(row) == ("FAILED", "DATA_UNAVAILABLE", "数据暂时不可用")
+    assert tuple(row) == ("FAILED", "DATA_UNAVAILABLE", "Data is temporarily unavailable")
     assert tuple(reservation) == (expected_cost_micros, 0)
     assert run_has_answer_ready(db_path, "store-failure") is False
     assert diagnostics is not None

@@ -66,7 +66,11 @@ def test_api_unit_pins_v21_policy_and_public_tavily_off() -> None:
     assert policy.web_evidence == expected_web_evidence
     assert policy.web_on_demand is False
 
-    assert forced == {**PUBLIC_DEPLOYMENT_PINNED_ENV, **PUBLIC_DEPLOYMENT_COMMAND_LINE_ONLY}
+    assert forced == {
+        **PUBLIC_DEPLOYMENT_PINNED_ENV,
+        **PUBLIC_DEPLOYMENT_COMMAND_LINE_ONLY,
+        "CATALYST_SERVED_PROJECTION_DIR": "/var/lib/catalyst-api/projection",
+    }
 
 
 def test_api_unit_uses_one_worker() -> None:
@@ -87,6 +91,7 @@ def test_api_unit_uses_one_worker() -> None:
     environment, forced = _unit_environment()
     assert forced["CATALYST_DB_PATH"] == "/opt/catalyst/repo/data/m9/catalyst_corpus.sqlite3"
     assert forced["CATALYST_RUNTIME_DB_PATH"] == "/var/lib/catalyst-api/live_runtime.sqlite3"
+    assert forced["CATALYST_SERVED_PROJECTION_DIR"] == "/var/lib/catalyst-api/projection"
     assert environment["CATALYST_DB_PATH"].endswith("catalyst_corpus.sqlite3")
     assert environment["CATALYST_RUNTIME_DB_PATH"].startswith("/var/lib/catalyst-api/")
 
@@ -112,7 +117,11 @@ def test_api_unit_pins_every_public_value_after_hostile_environment_file() -> No
     assert {
         key: environment[key] for key in PUBLIC_DEPLOYMENT_PINNED_ENV
     } == PUBLIC_DEPLOYMENT_PINNED_ENV
-    assert forced == {**PUBLIC_DEPLOYMENT_PINNED_ENV, **PUBLIC_DEPLOYMENT_COMMAND_LINE_ONLY}
+    assert forced == {
+        **PUBLIC_DEPLOYMENT_PINNED_ENV,
+        **PUBLIC_DEPLOYMENT_COMMAND_LINE_ONLY,
+        "CATALYST_SERVED_PROJECTION_DIR": "/var/lib/catalyst-api/projection",
+    }
     assert environment["CATALYST_FILING_UNITS"] == ""
     validate_public_deployment_environment(environment)
 

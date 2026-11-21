@@ -74,7 +74,7 @@ from catalyst_app.env_loader import get_provider_env_key
 from catalyst_app.featured import featured_health_status, featured_is_ready
 from catalyst_app.llm_factory import DEFAULT_MODEL, PUBLIC_RUN_MODEL, SUPPORTED_MODELS
 from catalyst_app.model_catalog import build_catalog, catalog_provider_base_url
-from catalyst_app.persistence.connect import open_readonly, open_rw
+from catalyst_app.persistence.connect import open_readonly
 from catalyst_app.provider_validator import validate_provider
 from catalyst_app.public_projection import project_public_run_view
 from catalyst_app.runtime.admission import (
@@ -110,7 +110,7 @@ from catalyst_app.workspace_projection import project_workspace, project_workspa
 
 router = APIRouter(prefix="/api", tags=["live-runs"])
 
-QUOTA_EXHAUSTED_MESSAGE = "今天的额度已用完"
+QUOTA_EXHAUSTED_MESSAGE = "Today's run quota is exhausted"
 PUBLIC_MODEL_FIXED_DETAIL = "invalid_request: public_model_fixed"
 PUBLIC_BYOK_BASE_URL_DETAIL = "invalid_request: public_byok_base_url_not_allowed"
 
@@ -1025,10 +1025,7 @@ def health(req: Request) -> HealthDTO:
     event_store = "failed"
     if db_path.is_file():
         try:
-            with open_rw(db_path) as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                user_version = conn.execute("PRAGMA user_version").fetchone()[0]
-                conn.execute(f"PRAGMA user_version={int(user_version)}")
+            with open_readonly(db_path) as conn:
                 run_table = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='runs'"
                 ).fetchone()
@@ -1039,7 +1036,6 @@ def health(req: Request) -> HealthDTO:
                 ).fetchone()
                 if event_table is not None:
                     event_store = "ready"
-                conn.rollback()
         except Exception:
             runtime_db = "failed"
             event_store = "failed"
@@ -1063,15 +1059,23 @@ def health(req: Request) -> HealthDTO:
     # dependency loader is not ready must never report the runtime ready.
     runtime_ready = True
     runtime_reason: str | None = None
+    runtime_warming = False
     composition = getattr(req.app.state, "runtime_composition", None)
     if composition is not None:
         try:
-            runtime_health = getattr(
-                composition.dependency_loader, "health", lambda: {"status": "failed"}
-            )()
+            loader = composition.dependency_loader
+            runtime_health = getattr(loader, "cached_health", None)
+            if runtime_health is None:
+                cached = getattr(loader, "cached_dependencies", None)
+                runtime_health = cached.health if cached is not None else None
+            if runtime_health is None:
+                runtime_health = {"status": "degraded"}
+                runtime_ready = False
+                runtime_warming = True
+                runtime_reason = "runtime warming up"
             runtime_ready = runtime_health.get("status") == "ready"
             errors = runtime_health.get("errors") or []
-            if errors:
+            if errors and not runtime_warming:
                 runtime_reason = str(errors[0].get("message") or "runtime dependency readiness failed")
         except Exception:
             runtime_ready = False
@@ -1094,6 +1098,8 @@ def health(req: Request) -> HealthDTO:
     status = "ready"
     if "failed" in (served_db, runtime_db, event_store):
         status = "failed"
+    elif runtime_warming:
+        status = "degraded"
     elif not runtime_ready or not pricing_ready:
         status = "failed"
     elif "degraded" in (executor_status,):
@@ -1114,7 +1120,7 @@ def health(req: Request) -> HealthDTO:
         provider_account_errors=provider_account_error_count(),
         reason=runtime_reason,
         press_release_archive={"status": "disabled", "reason": "retired"},
-        featured=featured_health_status(),
+        featured=featured_health_status(cached_only=True),
     )
 
 

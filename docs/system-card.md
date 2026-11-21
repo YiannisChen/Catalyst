@@ -14,6 +14,8 @@ Given a large-cap U.S. stock and a trading day D, the system determines whether 
 - **Yes**: The conclusion is assembled from verbatim quotations from source text, with the publisher, time, and link;
 - **No**: The system abstains, explains why, and provides market facts.
 
+The public interface names its five results **Confirmed**, **Reported**, **With its group**, **No clear cause**, and **Ordinary move**. The second model check is the fact checker; the editor applies fixed code rules to publish results. The current daily universe contains 102 large-cap U.S. stocks.
+
 The system uses only DeepSeek and free data. Model cost is about 0.8 cents per case (first run on the test set) 〔R: test.cost.publisher〕.
 
 ## 2. Intended uses
@@ -78,7 +80,7 @@ The system uses only DeepSeek and free data. Model cost is about 0.8 cents per c
 8. **The second version rarely publishes its earnings passthrough** 〔R: v2.t6.fallback_published〕: Flattened attachment excerpts do not look like complete sentences, so the quote rules reject them. The second-version extension instead cites attachment units.
 9. **Heuristic for attachment units** (second-version extension): Multiline headings are not recognized; attachments with unusual layouts may produce incorrect units.
 10. **Run-to-run uncertainty**: Common random numbers cover only recorded requests. Retrieval cutoff time is based on the wall clock, so rerunning some cases can switch between answering and abstaining.
-11. **Run behavior**: Handling of missing data, external service failures, and run failures, including failure direction, is described in the run behavior handling specification. Relevant details: When the model service is entirely unavailable, the system displays an ordinary abstention instead of a run failure (RQ-07); an abstention's “possible explanation” includes one reason written by a verifier model (RQ-14); the publisher's only actual conclusion status is PARTIAL (RQ-12); the production HTTP service does not refresh data before a run, and abstentions do not distinguish “no news” from “data not ingested” (RG-02).
+11. **Run behavior**: Handling of missing data, external service failures, and run failures, including failure direction, is described in the run behavior handling specification. Relevant details: When the model service is entirely unavailable, the system displays an ordinary abstention instead of a run failure (RQ-07); an abstention's “possible explanation” includes one reason from the fact checker (RQ-14); the publisher's only actual conclusion status is PARTIAL (RQ-12); the production HTTP service does not refresh data before a run, and abstentions do not distinguish “no news” from “data not ingested” (RG-02).
 
 ## 7. Cost and latency
 

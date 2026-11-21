@@ -212,7 +212,8 @@ def test_served_http_readiness_reports_failed_when_filing_units_are_missing(tmp_
     runtime_health = client.get("/api/health/runtime")
 
     assert health.status_code == 200
-    assert health.json()["status"] == "failed"
+    assert health.json()["status"] == "degraded"
+    assert health.json()["reason"] == "runtime warming up"
     assert runtime_health.status_code == 200
     assert runtime_health.json()["status"] == "failed"
     assert runtime_health.json()["sec_exhibit_units"]["status"] == "failed"
@@ -231,6 +232,64 @@ def test_api_health_reports_disabled_press_release_archive(tmp_path, monkeypatch
     assert response.json()["press_release_archive"] == {
         "status": "disabled", "reason": "retired",
     }
+
+
+def test_health_does_not_wait_for_runtime_dependency_load(tmp_path):
+    from types import SimpleNamespace
+
+    from catalyst_app.main import create_app
+    from fastapi.testclient import TestClient
+
+    class WarmingLoader:
+        cached_dependencies = None
+
+        def health(self):
+            raise AssertionError("liveness health must not wait for the runtime loader")
+
+    db = tmp_path / "health-runtime-warming.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript("CREATE TABLE runs (run_id TEXT); CREATE TABLE run_events (run_id TEXT);")
+    composition = SimpleNamespace(dependency_loader=WarmingLoader())
+    payload = TestClient(create_app(db_path=db, runtime_composition=composition)).get("/api/health").json()
+    assert payload["status"] == "degraded"
+    assert payload["reason"] == "runtime warming up"
+
+
+def test_request_middleware_logs_route_status_and_duration(caplog):
+    from catalyst_app.main import create_app
+    from fastapi.testclient import TestClient
+
+    with caplog.at_level("INFO", logger="uvicorn.error.http"):
+        response = TestClient(create_app()).get("/api/models/catalog")
+
+    assert response.status_code == 200
+    record = next(record for record in caplog.records if "http_request" in record.getMessage())
+    assert "method=GET" in record.getMessage()
+    assert "route=/api/models/catalog" in record.getMessage()
+    assert "status=200" in record.getMessage()
+    assert "duration_ms=" in record.getMessage()
+
+
+def test_ready_snapshot_cache_invalidates_on_file_change(tmp_path, monkeypatch):
+    from catalyst_app.runtime import ready_range
+    from catalyst_data import read_api
+
+    source = tmp_path / "ready.json"
+    source.write_text("one", encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(read_api, "ready_snapshot", lambda path: calls.append(path) or {"snapshot": len(calls)})
+
+    def read():
+        stat = source.stat()
+        return ready_range._read_snapshot(str(source), stat.st_mtime_ns, stat.st_size)
+
+    first = read()
+    assert read() is first
+    source.write_text("changed", encoding="utf-8")
+    second = read()
+
+    assert second != first
+    assert len(calls) == 2
 
 
 def test_filing_rule_health_is_ready_with_nonempty_unit_table(tmp_path, monkeypatch):

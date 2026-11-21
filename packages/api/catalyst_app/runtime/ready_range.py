@@ -4,12 +4,21 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 
 class ReadyRangeUnavailable(RuntimeError):
     """The ready snapshot could not be imported, read, or trusted."""
+
+
+@lru_cache(maxsize=8)
+def _read_snapshot(path: str, mtime_ns: int, size: int) -> dict[str, Any]:
+    del mtime_ns, size
+    read_api = importlib.import_module("catalyst_data.read_api")
+    return read_api.ready_snapshot(path)
 
 
 @dataclass(frozen=True)
@@ -51,7 +60,19 @@ def load_ready_range(*, now: datetime | None = None, path: str | None = None) ->
     """Load a validated data-core snapshot, retaining pairs when its range is stale."""
     try:
         read_api = importlib.import_module("catalyst_data.read_api")
-        snapshot: Any = read_api.ready_snapshot(path)
+        store = getattr(read_api, "ready_snapshot_store", None)
+        source = Path(path) if path is not None else (store.default_path() if store is not None else None)
+        stat = None
+        if source is not None:
+            try:
+                stat = source.stat()
+            except OSError:
+                stat = None
+        if source is None or stat is None:
+            snapshot: Any = read_api.ready_snapshot(path)
+        else:
+            # Cached by file identity: /api/options is hit on every page load.
+            snapshot = _read_snapshot(str(source), stat.st_mtime_ns, stat.st_size)
         if not isinstance(snapshot, dict):
             raise ValueError("snapshot is not an object")
         generated_at = snapshot["generated_at"]

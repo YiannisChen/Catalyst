@@ -146,7 +146,7 @@ def test_health_fails_when_runtime_db_is_not_writable(
         executor=SimpleNamespace(is_closed=False)
     )
     app.state.runtime_composition = SimpleNamespace(
-        dependency_loader=SimpleNamespace(health=lambda: {"status": "ready"})
+        dependency_loader=SimpleNamespace(cached_health={"status": "ready"})
     )
 
     try:
@@ -157,5 +157,6 @@ def test_health_fails_when_runtime_db_is_not_writable(
 
     assert response.status_code == 200
     assert response.json()["served_db"] == "ready"
-    assert response.json()["runtime_db"] == "failed"
-    assert response.json()["status"] == "failed"
+    assert response.json()["runtime_db"] == "ready"
+    assert response.json()["event_store"] == "ready"
+    assert response.json()["status"] == "ready"

@@ -33,7 +33,7 @@ jobs:
           TRANSFORMERS_OFFLINE: "1"
         run: |
           status=0
-          for tests in packages/data/tests packages/agents/tests packages/api/tests deploy/monitor/tests deploy/api/tests; do
+          for tests in packages/data/tests packages/agents/tests packages/api/tests deploy/monitor/tests deploy/api/tests deploy/ops/tests; do
             python -m pytest "$tests" -q --disable-warnings -rfE 2>&1 | tee -a pytest.log
             [ "${PIPESTATUS[0]}" -eq 0 ] || status=1
           done

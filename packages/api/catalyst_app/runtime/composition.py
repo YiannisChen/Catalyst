@@ -655,9 +655,9 @@ def _sanitized_failure_message(exc: BaseException | None) -> str | None:
     from catalyst_data.storage.errors import StoreReadError
 
     if isinstance(exc, (StoreReadError, SQLiteReadTimeoutError)):
-        return "数据暂时不可用"
+        return "Data is temporarily unavailable"
     if provider_account_error_status(exc) is not None:
-        return "服务暂时不可用"
+        return "Service is temporarily unavailable"
     type_name = type(exc).__name__ or "Exception"
     first_line = " ".join((str(exc).splitlines() or [""])[0].split())
     candidates = []

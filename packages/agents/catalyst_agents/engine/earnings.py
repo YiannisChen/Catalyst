@@ -53,7 +53,7 @@ ITEM_CAPTIONS = {
     "5.07": "Submission of Matters to a Vote of Security Holders", "7.01": "Regulation FD Disclosure",
     "8.01": "Other Events", "9.01": "Financial Statements and Exhibits",
 }
-FACT_LABEL = "【申报事实】"
+FACT_LABEL = "Filing fact: "
 
 
 def filing_fact(company: str, ticker: str, filing: dict) -> str:

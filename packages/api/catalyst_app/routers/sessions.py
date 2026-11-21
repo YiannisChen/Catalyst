@@ -14,10 +14,11 @@ from catalyst_app.access_control import resolve_access_context
 from catalyst_app.db_paths import runtime_db_path
 from catalyst_app.public_projection import must_hide_source_text
 from catalyst_data.ingestion import session_news as session_news_service
+
 from catalyst_data.ingestion import tavily_ledger
 from catalyst_data.ingestion.collectors import web_search
 from catalyst_data.retrieval.web_bodies import tickers_json_list
-from catalyst_data.storage.runtime_paths import runtime_store_path
+from catalyst_data.storage.runtime_paths import runtime_data_dir, runtime_store_path
 from catalyst_data.trading_calendar import is_trading_day
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -135,7 +136,10 @@ def _ticker_known(ticker: str, bodies_path: Path, archive_path: Path) -> bool:
         ).fetchone():
             return True
         if "polygon_feed" in archive_tables:
-            for row in archive.execute("SELECT tickers_json FROM polygon_feed"):
+            for row in archive.execute(
+                "SELECT tickers_json FROM polygon_feed "
+                "WHERE instr(tickers_json, '\"' || ? || '\"') > 0", (ticker,)
+            ):
                 if ticker in tickers_json_list(row[0]):
                     return True
         return False
@@ -181,8 +185,10 @@ def _fill_session_images(key: tuple[str, str, str], bodies: Path, archive: Path)
     try:
         from catalyst_data.ingestion import media
 
+        # Read the daily shared-image file; without it the fill would rescan the whole archive.
         media.headlines(key[1], date=key[2], bodies_db=bodies, archive_db=archive,
-                        limit=_MEDIA_FILL_LIMIT)
+                        limit=_MEDIA_FILL_LIMIT,
+                        shared_images_path=runtime_data_dir() / "shared_images.json")
     except Exception:
         # Image enrichment is best effort and must not alter the news response or job status.
         pass
@@ -224,6 +230,7 @@ def get_session_news(
             cursor=cursor,
             limit=limit,
             evidence_ids=_run_evidence_ids(request, run_id),
+            shared_images_path=runtime_data_dir() / "shared_images.json",
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

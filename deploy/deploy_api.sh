@@ -8,7 +8,7 @@ REPO=$(cd "$(dirname "$0")/.." && pwd)
 BACKUPS="$ROOT/opt/catalyst/api-deploy-backups"
 UNIT="$ROOT/etc/systemd/system/catalyst-api.service"
 NGINX="$ROOT/etc/nginx/conf.d/catalyst-api.conf"
-ALLOW="$ROOT/etc/nginx/catalyst-cloudflare-allow.conf"
+ALLOW="$ROOT/etc/nginx/conf.d/catalyst-cloudflare-allow.conf"
 API_ROOT="$ROOT/opt/catalyst/api"
 run() { if ((DRY_RUN)); then printf 'DRY-RUN:'; printf ' %q' "$@"; printf '\n'; else "$@"; fi; }
 restore_backup() {
@@ -31,7 +31,7 @@ if [[ "$MODE" == rollback ]]; then
   [[ -n "$latest" ]] || { echo "no API backup found at $BACKUPS" >&2; exit 1; }
   backup=$latest
   restore_backup
-  ((DRY_RUN)) || { systemctl daemon-reload; nginx -t && systemctl restart catalyst-api; }
+  ((DRY_RUN)) || { systemctl daemon-reload; nginx -t && systemctl reload nginx && systemctl restart catalyst-api; }
   exit 0
 fi
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -49,7 +49,7 @@ if ((DRY_RUN)); then
   run install -D "$REPO/deploy/api/catalyst-api.service" "$UNIT"
   run install -D "$REPO/deploy/nginx/catalyst-api.conf" "$NGINX"
   echo "DRY-RUN: python3 $REPO/deploy/ops/generate_cloudflare_include.py $REPO/deploy/nginx/cloudflare_ips.txt $ALLOW"
-  echo "DRY-RUN: nginx -t; systemctl daemon-reload; systemctl enable catalyst-api; systemctl restart catalyst-api"
+  echo "DRY-RUN: nginx -t; systemctl daemon-reload; systemctl reload nginx; systemctl enable catalyst-api; systemctl restart catalyst-api"
   exit 0
 fi
 rollback_on_error() {
@@ -59,6 +59,7 @@ rollback_on_error() {
   restore_backup
   systemctl daemon-reload
   nginx -t
+  systemctl reload nginx
   systemctl restart catalyst-api
   exit "$status"
 }
@@ -68,6 +69,7 @@ install -D "$REPO/deploy/nginx/catalyst-api.conf" "$NGINX"
 python3 "$REPO/deploy/ops/generate_cloudflare_include.py" "$REPO/deploy/nginx/cloudflare_ips.txt" "$ALLOW"
 nginx -t
 systemctl daemon-reload
+systemctl reload nginx
 systemctl enable -q catalyst-api
 systemctl restart catalyst-api
 if ! systemctl is-active --quiet catalyst-api; then false; fi

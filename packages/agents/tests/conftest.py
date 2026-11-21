@@ -97,7 +97,11 @@ def stub_served_projection(monkeypatch):
         built.append(handle)
         return handle
 
-    monkeypatch.setattr(_runtime_binding, "build_served_projection", _stub)
+    monkeypatch.setattr(
+        _runtime_binding,
+        "open_or_build_served_projection",
+        lambda factory, **kwargs: (_stub(factory, **kwargs), False),
+    )
     return built
 
 

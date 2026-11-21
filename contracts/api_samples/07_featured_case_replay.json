@@ -1,17 +1,17 @@
 {
-  "description": "精选案例：列表项、详情和回放用的事件序列（只读已存的运行，零成本；只含原文引文与元数据）。事件按记录时的相对时间 offset_ms 回放。",
+  "description": "Featured case: event sequence for the list item, detail, and replay (reads a stored run at no cost; contains only source quotes and metadata). Events replay using their recorded relative offset_ms.",
   "list_item": {
     "case_id": "featured-001",
-    "title": "本公司事件作答：分析师上调目标价",
+    "title": "Company-specific event: analyst raises price target",
     "ticker": "ACME",
     "session_date": "2026-10-16",
     "category": "ANSWERED_REPORTED_ATTRIBUTION",
     "tags": [
-      "本公司事件",
-      "有来源明确归因"
+      "Company-specific event",
+      "Source-attributed"
     ],
     "outcome": "ANSWERED",
-    "summary": "ACME 上涨 2.33%，来源明确把分析师上调目标价作为原因。",
+    "summary": "ACME rose 2.33%; a source explicitly cited an analyst price-target increase as the reason.",
     "source_run_id": "f1000000000000000000000000000001"
   },
   "categories": [
@@ -38,16 +38,16 @@
         "run_id": "f1000000000000000000000000000001",
         "ticker": "ACME",
         "session_date": "2026-10-16",
-        "headline": "ACME 上涨 2.33%，大盘下跌 1.11%。",
+        "headline": "ACME rose 2.33%; the broad market fell 1.11%.",
         "outcome": "ANSWERED",
         "status": "PARTIAL",
-        "scope_note": "结论只到事件层面：指出是哪件事，不说明这件事中哪一部分、在多大程度上推动了股价。",
+        "scope_note": "The conclusion identifies the event only; it does not say which part, or to what extent, drove the stock price.",
         "tier": "T3",
-        "tier_reason": "涨幅 2.33% 与大盘反向（大盘 −1.11%），不是跟随大盘的普通波动。",
+        "tier_reason": "The 2.33% gain moved against the broad market (down 1.11%), so it was not an ordinary move with the market.",
         "cascade_stage": 1,
         "stage_label": "当日检索",
         "basis": "REPORTED_ATTRIBUTION",
-        "basis_text": "有来源明确归因：来源报道把它作为这次变动的原因。",
+        "basis_text": "A source explicitly attributes the move: the report gives this as the reason for the move.",
         "primary": {
           "event_type": "ANALYST_ACTION",
           "scope": "ISSUER",
@@ -102,7 +102,7 @@
         "cost": "present"
       }
     },
-    "notes": "view 为已存运行的结果页（只含原文引文与元数据，不含全文、提示词和模型录制）"
+    "notes": "view is the result page for a stored run (source quotes and metadata only; no full text, model instructions, or model recordings)"
   },
   "replay": {
     "case_id": "featured-001",
@@ -131,7 +131,7 @@
           "event_type": "facts.ready",
           "emitted_at": "2026-10-17T13:10:02Z",
           "payload": {
-            "headline": "ACME 上涨 2.33%，大盘下跌 1.11%。"
+            "headline": "ACME rose 2.33%; the broad market fell 1.11%."
           }
         }
       },
@@ -145,7 +145,7 @@
           "emitted_at": "2026-10-17T13:10:03Z",
           "payload": {
             "tier": "T3",
-            "reason_text": "涨幅 2.33% 与大盘反向（大盘 −1.11%），不是跟随大盘的普通波动。"
+            "reason_text": "The 2.33% gain moved against the broad market (down 1.11%), so it was not an ordinary move with the market."
           }
         }
       },
@@ -223,16 +223,16 @@
               "run_id": "f1000000000000000000000000000001",
               "ticker": "ACME",
               "session_date": "2026-10-16",
-              "headline": "ACME 上涨 2.33%，大盘下跌 1.11%。",
+              "headline": "ACME rose 2.33%; the broad market fell 1.11%.",
               "outcome": "ANSWERED",
               "status": "PARTIAL",
-              "scope_note": "结论只到事件层面：指出是哪件事，不说明这件事中哪一部分、在多大程度上推动了股价。",
+              "scope_note": "The conclusion identifies the event only; it does not say which part, or to what extent, drove the stock price.",
               "tier": "T3",
-              "tier_reason": "涨幅 2.33% 与大盘反向（大盘 −1.11%），不是跟随大盘的普通波动。",
+              "tier_reason": "The 2.33% gain moved against the broad market (down 1.11%), so it was not an ordinary move with the market.",
               "cascade_stage": 1,
               "stage_label": "当日检索",
               "basis": "REPORTED_ATTRIBUTION",
-              "basis_text": "有来源明确归因：来源报道把它作为这次变动的原因。",
+              "basis_text": "A source explicitly attributes the move: the report gives this as the reason for the move.",
               "primary": {
                 "event_type": "ANALYST_ACTION",
                 "scope": "ISSUER",

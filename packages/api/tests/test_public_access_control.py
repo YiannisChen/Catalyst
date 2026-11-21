@@ -631,3 +631,23 @@ def test_live_run_rejects_malformed_ticker_and_date_before_admission(
     assert response.status_code == 400
     assert response.json() == {"detail": expected_detail}
     assert calls == []
+
+
+def test_options_and_live_run_list_cache_headers(monkeypatch):
+    from catalyst_app.main import create_app
+    from catalyst_app.routers import public_access
+    from catalyst_app.runtime.ready_range import ReadyRangeUnavailable
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(public_access, "_tier", lambda request: "anonymous")
+    monkeypatch.setattr(
+        public_access,
+        "load_ready_range",
+        lambda **_: (_ for _ in ()).throw(ReadyRangeUnavailable("missing")),
+    )
+    with TestClient(create_app()) as client:
+        options = client.get("/api/options")
+        runs = client.get("/api/live-runs")
+
+    assert options.headers["cache-control"] == "public, max-age=60"
+    assert runs.headers["cache-control"] == "private, no-store"

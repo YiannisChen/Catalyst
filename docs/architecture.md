@@ -2,6 +2,8 @@
 
 Catalyst explains a US large-cap stock's move from point-in-time market, news, and filing evidence. The service publishes a cause only when the evidence passes its rules; otherwise it reports an abstention.
 
+The public results are **Confirmed**, **Reported**, **With its group**, **No clear cause**, and **Ordinary move**. A second model acts as the fact checker (the code calls it the verifier); the editor applies fixed code rules to decide what can be published. The daily universe contains 102 large-cap U.S. stocks.
+
 ```mermaid
 flowchart LR
   Browser[React browser] --> CF[Cloudflare]
@@ -29,7 +31,7 @@ flowchart LR
 1. The browser submits a symbol, session date, and provider choice to FastAPI. Public requests pass admission and quota checks; Turnstile is verified when configured.
 2. The API creates a run record and executor, then streams lifecycle and progress events to the browser.
 3. The agents graph reads market context and retrieves evidence from the served corpus for the requested session.
-4. The evidence analyst proposes evidence-backed candidates. Deterministic checks enforce quote fidelity, source/session timing, subject relevance, and market/peer context. A verifier can only reduce confidence or cause abstention.
+4. The evidence analyst proposes evidence-backed candidates. The fact checker checks whether a cited sentence explains the move. The editor applies fixed code rules for quote fidelity, source/session timing, subject relevance, and market/peer context; failed checks can only reduce confidence or cause abstention.
 5. The API persists the trace and final run view. The UI renders the answer, citations, and event history.
 
 ## Data pipeline

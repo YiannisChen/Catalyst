@@ -125,7 +125,7 @@ def test_published_modified_after_cutoff_is_not_searchable_evidence(conn):
     result = search(conn, mode="published")
     assert [r["version_id"] for r in result["results"]] == [visible]
     assert result["audit"]["mode"] == "published"
-    assert result["audit"]["label"] == "回溯查询"
+    assert result["audit"]["label"] == "Historical query"
 
 
 def test_explicit_lead_cannot_be_promoted_by_projection(conn):

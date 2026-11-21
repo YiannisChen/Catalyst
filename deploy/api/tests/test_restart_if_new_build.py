@@ -40,6 +40,24 @@ def test_restarts_api_only_after_new_corpus_build(tmp_path: Path) -> None:
     assert calls == ["--no-block try-restart catalyst-api.service"]
 
 
+def test_restarts_api_after_new_corpus_build_from_partial_daily_job(tmp_path: Path) -> None:
+    result, calls = _run(
+        {
+            "daily_status": "PARTIAL",
+            "corpus_fts_attempt": {
+                "status": "ok",
+                "build_id": "new",
+                "previous_build_id": "old",
+                "daily_status": "PARTIAL",
+            },
+        },
+        tmp_path,
+    )
+
+    assert result.returncode == 0
+    assert calls == ["--no-block try-restart catalyst-api.service"]
+
+
 def test_does_not_restart_when_corpus_build_was_not_published(tmp_path: Path) -> None:
     result, calls = _run(
         {

@@ -270,3 +270,72 @@ def test_frozen_shared_images_build_the_set_once_while_the_files_keep_changing(t
     session_news._shared_for(tmp_path / "a.sqlite3", tmp_path / "m.sqlite3")
     session_news._shared_for(tmp_path / "a.sqlite3", tmp_path / "m.sqlite3")
     assert len(built) == 4 and session_news._FROZEN_SHARED is None
+
+
+
+def test_shared_images_file_round_trip_and_missing_fallback(tmp_path, monkeypatch):
+    import json
+    import time
+
+    from catalyst_data.ingestion import session_news
+
+    target = tmp_path / "shared_images.json"
+    monkeypatch.setattr(session_news, "_shared_for_current", lambda *_: frozenset({"https://x/a.jpg"}))
+    payload = session_news.write_shared_images_file(tmp_path / "archive.db", None, target)
+    assert payload["count"] == 1
+    assert session_news._shared_images_from_file(target) == {"https://x/a.jpg"}
+    assert session_news._shared_images_from_file(tmp_path / "missing.json") == frozenset()
+
+    time.sleep(0.002)
+    target.write_text(json.dumps({
+        "schema_version": "shared_images:v1",
+        "generated_at": "2026-11-20T00:00:00Z",
+        "count": 1,
+        "urls": ["changed"],
+    }), encoding="utf-8")
+    assert session_news._shared_images_from_file(target) == {"changed"}
+
+
+def test_headline_fill_reads_the_shared_image_file_it_is_given(tmp_path, monkeypatch):
+    from catalyst_data.ingestion import session_news
+
+    seen = []
+
+    def fake_session_news(*args, **kwargs):
+        seen.append(kwargs.get("shared_images_path"))
+        return {"items": [], "next_cursor": None}
+
+    monkeypatch.setattr(session_news, "session_news", fake_session_news)
+    monkeypatch.setattr(media, "fill_headlines", lambda *a, **k: dict.fromkeys(
+        ("checked", "stored", "no_image", "deferred", "skipped"), 0))
+    shared = tmp_path / "shared_images.json"
+    media.headlines("ORCL", date="2025-12-19", bodies_db=tmp_path / "b.sqlite3",
+                    archive_db=tmp_path / "a.sqlite3", shared_images_path=shared)
+    assert seen == [shared]
+
+
+def test_fill_with_shared_set_marks_generic_images_without_scanning_the_archive(tmp_path, monkeypatch):
+    from catalyst_data.ingestion import session_news
+
+    def no_scan(*args, **kwargs):
+        raise AssertionError("the archive must not be scanned when a shared set is given")
+
+    monkeypatch.setattr(media, "image_use_pairs", no_scan)
+    generic = "https://cdn.example.com/stock/generic.jpg"
+    specific = "https://cdn.example.com/news/story.jpg"
+
+    class Pages:
+        def fetch_page_detailed(self, url):
+            image = generic if url.endswith("1") else specific
+            return url, _meta(f'<meta property="og:image" content="{image}">')
+
+    db = tmp_path / "media.sqlite3"
+    articles = [{"url": "https://example.com/a/1", "has_body": False},
+                {"url": "https://example.com/a/2", "has_body": False}]
+    shared = frozenset({session_news._image_key(generic)})
+    result = media.fill_headlines(articles, db, fetcher=Pages(), shared_images=shared)
+    assert result["stored"] == 1
+    conn = media.open_cache(db)
+    rows = dict(conn.execute("SELECT article_key, COALESCE(reason, status) FROM headline_media"))
+    conn.close()
+    assert sorted(rows.values()) == ["generic_image", "ok"]

@@ -461,7 +461,7 @@ def identify_impact_target_claims(
     """Claims that are the impacted object of an impact/attribution verb.
 
     Impact relationships always fail open for *foreign* symbols (the task
-    policy: "影响关系都 fail-open"); this frame only confirms the structured
+    policy: "impact relationships always fail open"); this frame only confirms the structured
     ticker as the analysis target when it is explicitly the impacted entity.
     """
     if not query or not claims:

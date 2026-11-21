@@ -50,6 +50,12 @@ Fixtures capture API responses through TestClient unless marked synthetic. Story
 | `page-run-cancel.json` | Run cancelled | `synthetic` | POST `/api/live-runs/{run_id}/cancel` |
 | `page-quota-demo.json` | Five runs available | `synthetic` | GET `/api/quota` |
 | `page-runs-history.json` | Six representative run history outcomes | `synthetic from page-a-* view fixtures` | GET `/api/live-runs` with `limit=10` |
+| `page-workbench-options.json` | Workbench ticker and session options | `server /api/options 2026-11-21, subset AAPL MSFT NOW ORCL` | GET `/api/options` |
+| `page-workbench-range-local.json` | Workbench price range | `server /api/range-local 2026-11-21` | GET `/api/range-local` |
+| `page-workbench-ohlcv-aapl.json` | Workbench AAPL daily bars | `server /api/ohlcv/AAPL 2026-11-21` | GET `/api/ohlcv/{ticker}` (AAPL) |
+| `page-workbench-ohlcv-msft.json` | Workbench MSFT daily bars | `server /api/ohlcv/MSFT 2026-11-21` | GET `/api/ohlcv/{ticker}` (MSFT) |
+| `page-workbench-ohlcv-now.json` | Workbench NOW daily bars | `server /api/ohlcv/NOW 2026-11-21` | GET `/api/ohlcv/{ticker}` (NOW) |
+| `page-workbench-ohlcv-orcl.json` | Workbench ORCL daily bars | `server /api/ohlcv/ORCL 2026-11-21` | GET `/api/ohlcv/{ticker}` (ORCL) |
 
 ## v5 abstention provenance
 

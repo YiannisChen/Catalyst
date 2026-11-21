@@ -11,6 +11,8 @@
 - **Hashes**: sha256 values show only the first 12 characters and were calculated locally on 2026-10-16. SQLite snapshots must be opened read-only (`mode=ro&immutable=1`); otherwise their hashes will change.
 - **Licensing**: Follow the terms set by each data provider. The summaries below are not legal advice.
 
+The current daily service covers 102 large-cap U.S. stocks. The historical prospective evaluation used an S&P 100 constituent file with 101 tickers; these are separate universes.
+
 ## 1. Data sources
 
 ### 1.1 Daily price data (OHLCV)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import runpy
 import sqlite3
@@ -57,9 +58,20 @@ def test_cloudflare_checker_write_updates_list_and_nginx_include_from_fixtures(t
     )
 
     assert result.returncode == 0, result.stderr
-    assert "10.9.0.0/16" in source.read_text()
-    assert "2001:db8:4::/48" in source.read_text()
-    assert "allow 10.9.0.0/16;" in include.read_text()
+    configured_ranges = [str(ipaddress.ip_network(line.strip(), strict=False))
+                         for line in source.read_text().splitlines()
+                         if line.strip() and not line.lstrip().startswith("#")]
+    generated = include.read_text()
+    assert "geo $realip_remote_addr $catalyst_cloudflare_peer {" in generated
+    geo_block = generated.split(
+        "geo $realip_remote_addr $catalyst_cloudflare_peer {", 1
+    )[1].split("}", 1)[0]
+    assert "default 0;" in geo_block
+    for network in configured_ranges:
+        assert f"set_real_ip_from {network};" in generated
+        assert f"{network} 1;" in geo_block
+    assert "allow " not in generated
+    assert "deny all;" not in generated
     source_backups = list(tmp_path.glob("cloudflare_ips.txt.bak.*"))
     include_backups = list(tmp_path.glob("allow.conf.bak.*"))
     assert len(source_backups) == len(include_backups) == 1
@@ -120,7 +132,7 @@ def test_seed_corpus_dry_run_lists_integrity_checks_without_executing(tmp_path):
     assert ".catalyst-corpus-seed-" in rsync_line
     assert "catalyst_corpus.sqlite3" in rsync_line
     assert str(source) not in rsync_line
-    assert "代码切换和健康检查完成后" in result.stdout
+    assert "After the code switch and health checks" in result.stdout
     assert source.read_bytes() == source_before
     assert source_wal.read_bytes() == wal_before
     assert not list(tmp_path.glob(".catalyst-corpus-seed.*"))

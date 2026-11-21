@@ -23,7 +23,7 @@ ALLOWLIST=(
   contracts
   deploy
   docs/architecture.md docs/data/data-card.md docs/data/contract.md docs/data/input_manifests.md docs/data/schedule.md docs/data/legacy_cohort_manifest.schema.json
-  docs/system-card.md docs/demo/screenshots docs/demo/tools docs/demo/promo docs/demo/video
+  docs/system-card.md docs/diagrams docs/demo/screenshots docs/demo/tools docs/demo/promo docs/demo/video
   data/manifests/peer_map_v1.json data/manifests/sources_v1.json data/manifests/source_categories_v1.json data/manifests/heldout_universe_v1.json data/manifests/featured_cases_v1.json data/manifests/featured_cases_v1.sqlite3.sha256
   data/corrections/README.md data/corrections/README_sec.md data/corrections/sec_acceptance_v1.csv
   scripts/check.sh scripts/check_ruff.py scripts/ruff_baseline.json scripts/export_api_contract.py scripts/sign_invite_token.py scripts/export_public.sh scripts/fixtures scripts/featured/build_bundle.py scripts/featured/list_candidates.py
@@ -54,6 +54,9 @@ def allowed(rel: Path) -> bool:
     if any(part in excluded_dirs for part in parts) or rel.name == ".DS_Store":
         return False
     if rel.suffix == ".pyc":
+        return False
+    # Host-specific first-deploy runbook (ports of other services on the server); kept private.
+    if rel.as_posix() == "deploy/DEPLOY_STEPS.md":
         return False
     if rel.suffix.lower() in {".db", ".sqlite3"}:
         return len(parts) >= 5 and parts[0] == "packages" and parts[2:4] == ("tests", "fixtures")

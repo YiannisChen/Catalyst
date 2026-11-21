@@ -72,8 +72,8 @@ from catalyst_data.read.daily_universe import (
     universe,
 )
 from catalyst_data.retrieval.web_bodies import COMMODITY_TERMS
-from catalyst_data.storage.connect import connect_readonly
-from catalyst_data.storage.runtime_paths import runtime_data_dir
+from catalyst_data.storage.connect import connect_readonly, make_readonly_factory
+from catalyst_data.storage.runtime_paths import runtime_data_dir, runtime_store_path
 
 # Persisted in plan_key; changing this identifier would orphan unfinished jobs.
 POLICY_VERSION = "m9_daily_v1"
@@ -84,6 +84,9 @@ LEASE_SECONDS = daily_jobs.LEASE_SECONDS
 BARS_LOOKBACK_DAYS = 120
 PRICE_ATTEMPTS = 4
 PRICE_RETRY_SLEEP_S = 2.0
+# KVUE was acquired and has no price bars after 2026-10-24; avoid requesting it
+# from the daily price collector while leaving target and peer manifests intact.
+RETIRED_PRICE_SYMBOLS = frozenset({"KVUE"})
 # ETA assumptions (seconds per item, low/high), reported with every plan.
 SECONDS_PER_ITEM = {"prices": (0.5, 2.0), "sec": (1.0, 6.0), "movers": (0.1, 0.5),
                     "news": (60.0, 180.0), "verify": (0.2, 1.0)}
@@ -134,7 +137,8 @@ def price_symbols(paths: Paths) -> list[str]:
     """Every symbol the market store already tracks, plus the universe, ETFs and peers."""
     with connect_readonly(paths.market_db, immutable=False, timeout_ms=10_000) as conn:
         tracked = {row[0] for row in conn.execute("SELECT DISTINCT symbol FROM ohlcv")}
-    return sorted(tracked | set(universe()) | set(market.ETFS) | set(headline_archive.subjects()))
+    symbols = tracked | set(universe()) | set(market.ETFS) | set(headline_archive.subjects())
+    return sorted(symbols - RETIRED_PRICE_SYMBOLS)
 
 
 def sessions_between(start: str, end: str) -> list[str]:
@@ -1053,6 +1057,22 @@ def _write_daily_pipeline_status(paths: Paths, payload: dict) -> Path:
     return target
 
 
+def _partial_job_has_no_pending_or_running_items(paths: Paths, job_id: str | None) -> bool:
+    """Confirm a PARTIAL job is terminal before rebuilding its corpus."""
+    if not job_id:
+        return False
+    conn = open_jobs(paths.jobs_db)
+    try:
+        row = conn.execute(
+            "SELECT j.status, count(CASE WHEN i.status IN ('PENDING','RUNNING') THEN 1 END) "
+            "FROM jobs AS j LEFT JOIN job_items AS i ON i.job_id=j.job_id "
+            "WHERE j.job_id=? GROUP BY j.job_id", (job_id,)
+        ).fetchone()
+        return row is not None and row[0] == "PARTIAL" and row[1] == 0
+    finally:
+        conn.close()
+
+
 def _finalize_daily_summary(paths: Paths, summary: dict, log: Callable[[str], None]) -> dict:
     try:
         ready = _build_ready_snapshot_best_effort(paths, log)
@@ -1066,12 +1086,18 @@ def _finalize_daily_summary(paths: Paths, summary: dict, log: Callable[[str], No
             previous_pipeline = {}
     except (OSError, json.JSONDecodeError):
         previous_pipeline = {}
-    if summary.get("status") == "COMPLETED":
+    daily_status = summary.get("status")
+    rebuild_after_partial = (
+        daily_status == "PARTIAL"
+        and _partial_job_has_no_pending_or_running_items(paths, summary.get("job_id"))
+    )
+    if daily_status == "COMPLETED" or rebuild_after_partial:
         try:
             corpus_fts_attempt = _build_corpus_fts_best_effort(paths, log)
         except Exception as exc:
             corpus_fts_attempt = {"status": "failed", "reason_code": "build_failed",
                                   "reason": f"{type(exc).__name__}: {str(exc)[:300]}"}
+        corpus_fts_attempt["daily_status"] = daily_status
         if corpus_fts_attempt.get("status") == "skipped":
             corpus_fts = previous_pipeline.get("corpus_fts")
         else:
@@ -1079,13 +1105,44 @@ def _finalize_daily_summary(paths: Paths, summary: dict, log: Callable[[str], No
     else:
         corpus_fts = previous_pipeline.get("corpus_fts")
         corpus_fts_attempt = {"status": "skipped", "reason_code": "daily_not_completed"}
+    served_projection = {"status": "skipped", "reason_code": "not_configured"}
+    projection_dir = os.getenv("CATALYST_SERVED_PROJECTION_DIR", "").strip()
+    if corpus_fts_attempt.get("status") == "ok" and projection_dir and paths.corpus_db is not None:
+        try:
+            from catalyst_data.retrieval.served_projection import (
+                open_or_build_served_projection,
+            )
+
+            Path(projection_dir).mkdir(parents=True, exist_ok=True)
+            handle, reused = open_or_build_served_projection(
+                make_readonly_factory(paths.corpus_db), projection_dir=projection_dir
+            )
+            served_projection = {
+                "status": "ok", "build_id": handle.build_id,
+                "path": str(handle.path), "reused": reused,
+            }
+        except Exception as exc:
+            served_projection = {"status": "failed", "reason": f"{type(exc).__name__}: {str(exc)[:200]}"}
+    shared_images = {"status": "skipped", "reason_code": "not_attempted"}
+    try:
+        shared_path = runtime_data_dir() / "shared_images.json"
+        session_news.write_shared_images_file(
+            paths.archive_db, runtime_store_path("media_db"), shared_path
+        )
+        shared_images = {"status": "ok", "path": str(shared_path)}
+    except Exception as exc:
+        shared_images = {"status": "failed", "reason": f"{type(exc).__name__}: {str(exc)[:200]}"}
     summary["ready_snapshot"] = ready
     if corpus_fts is not None:
         summary["corpus_fts"] = corpus_fts
     summary["corpus_fts_attempt"] = corpus_fts_attempt
+    summary["shared_images"] = shared_images
+    summary["served_projection"] = served_projection
     payload = {"updated_at": _now(), "job_id": summary.get("job_id"),
                "daily_status": summary.get("status"), "ready_snapshot": ready,
                "corpus_fts_attempt": corpus_fts_attempt}
+    payload["shared_images"] = shared_images
+    payload["served_projection"] = served_projection
     if corpus_fts is not None:
         payload["corpus_fts"] = corpus_fts
     try:

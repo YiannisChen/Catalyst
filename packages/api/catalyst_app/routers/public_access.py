@@ -184,7 +184,8 @@ def _file_mtime_ns(path: Path) -> int:
 
 
 @router.get("/options", response_model=OptionsResponse)
-def get_options(request: Request) -> dict[str, Any]:
+def get_options(request: Request, response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "public, max-age=60"
     tier = _tier(request)
     try:
         ready = load_ready_range(now=utc_now())
@@ -283,7 +284,8 @@ def _invite_expiry(request: Request) -> str | None:
 
 
 @router.get("/quota", response_model=QuotaResponse)
-def get_quota(request: Request) -> dict[str, Any]:
+def get_quota(request: Request, response: Response) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "private, no-store"
     access = resolve_access_context(request)
     now = utc_now()
     utc_day = now.date().isoformat()
@@ -409,6 +411,7 @@ def _decode_cursor(value: str | None) -> tuple[str, str] | None:
 @router.get("/live-runs", response_model=RunHistoryResponse)
 def list_live_runs(
     request: Request,
+    response: Response,
     ticker: str | None = None,
     session_date: str | None = None,
     limit: int = Query(default=20, ge=1, le=100),
@@ -417,6 +420,7 @@ def list_live_runs(
         default=None, pattern="^(ANSWERED|ABSTAINED|FAILED|CANCELLED|TIER_ONLY|REPORTED|NO_CAUSE)$"
     ),
 ) -> dict[str, Any]:
+    response.headers["Cache-Control"] = "private, no-store"
     access = resolve_access_context(request)
     path = _db_path(request)
     where = []

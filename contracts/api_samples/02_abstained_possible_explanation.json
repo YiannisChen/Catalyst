@@ -1,11 +1,11 @@
 {
-  "description": "拒答：复核未通过，含 RQ-14 方案④的可能解释（原文引文 + 类别 + 固定文案；复核模型原话不在此处）",
+  "description": "Abstained: the fact check did not pass. Includes the possible explanation from RQ-14 option 4 (source quote, category, and fixed text; not the fact checker’s own wording).",
   "answer_snapshot": {
     "schema_version": "answer_snapshot_v2",
     "run_id": "a1000000000000000000000000000002",
     "ticker": "ACME",
     "session_date": "2026-10-16",
-    "headline": "ACME 上涨 2.33%，大盘下跌 1.11%。",
+    "headline": "ACME rose 2.33%; the broad market fell 1.11%.",
     "outcome": "ABSTAINED",
     "status": "ABSTAIN",
     "tier": "T3",
@@ -13,7 +13,7 @@
     "stage_label": "扩展检索（前一日收盘至 D+3）",
     "abstention": {
       "reason_code": "VERIFIER_REJECTED",
-      "reason_text": "复核未通过：这句话没有说明它与本日股价变动的关系。",
+      "reason_text": "The fact check did not pass: this sentence does not explain the stock’s move today.",
       "failed_stage": 2,
       "possible_explanation": {
         "quotes": [
@@ -25,8 +25,8 @@
           }
         ],
         "verdict_category": "UNLINKED",
-        "category_text": "这句话没有说明它与本日股价变动的关系",
-        "label": "未成立的可能解释，不是结论"
+        "category_text": "This sentence does not explain the stock’s move today",
+        "label": "Possible explanation, not a conclusion"
       },
       "leads": [
         {
@@ -44,7 +44,7 @@
     },
     "data_gaps": [],
     "limitations": [
-      "没有找到在前一日收盘至 D+3 之间发布、且逐字说明原因的来源句。"
+      "No source sentence was found that explicitly states the reason and was published between the prior close and D+3."
     ]
   }
 }

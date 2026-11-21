@@ -613,7 +613,7 @@ def as_of(
         "leads": leads,
         "audit": {
             "mode": mode,
-            "label": "回溯查询" if mode == "published" else "实时/前瞻查询",
+            "label": "Historical query" if mode == "published" else "Current/forward-looking query",
             "cutoff": cutoff,
             "ticker": ticker,
             "window_start": start,

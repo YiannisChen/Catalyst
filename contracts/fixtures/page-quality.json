@@ -97,7 +97,7 @@
               "kappa_linear_weighted": 0.841,
               "labelled": 20
             },
-            "key": "data/m9/calibration/v1/calibration_key.codex.v2.json",
+            "key": "data/m9/calibration/v1/calibration_key.v2.json",
             "n": 20,
             "sheet": "data/m9/calibration/v1/calibration_sheet_labelled.csv"
           },
@@ -123,7 +123,7 @@
               "kappa_linear_weighted": 0.892,
               "labelled": 19
             },
-            "key": "data/m9/calibration/v2/calibration_key.codex.v2.json",
+            "key": "data/m9/calibration/v2/calibration_key.v2.json",
             "n": 19,
             "sheet": "data/m9/calibration/v2/calibration_sheet_labelled.csv"
           }
@@ -423,7 +423,7 @@
         "sha256": "e38a0411cbbad9642b3106a1dbacf69f25bb0be8a174d2b9c610043ca0320e71"
       },
       {
-        "path": "data/m9/calibration/v1/calibration_key.codex.v2.json",
+        "path": "data/m9/calibration/v1/calibration_key.v2.json",
         "role": "calibration.development.1.key",
         "sha256": "19fd440dd85048ce8fc3ce87316ffb10bc1bab4a91761bd6f475f6c9229d40f5"
       },
@@ -433,7 +433,7 @@
         "sha256": "d538369d1841cbfb1bda642de27777e7be25940e6f49b36626f7d1bb430441a8"
       },
       {
-        "path": "data/m9/calibration/v2/calibration_key.codex.v2.json",
+        "path": "data/m9/calibration/v2/calibration_key.v2.json",
         "role": "calibration.development.2.key",
         "sha256": "d069fa776b4ad05c6ebc45461fdf1a4440999af757d124621304405dffa89d0e"
       },
@@ -555,8 +555,8 @@
         "id": "v3",
         "judge": {
           "effort": "medium",
-          "model": "gpt-6.1-sol",
-          "provider": "codex"
+          "model": "example-model",
+          "provider": "openai"
         },
         "links": [
           "docs/plans/2026-10-03-attribution-quality-analysis.md#section-20",
@@ -645,8 +645,8 @@
         "id": "v4",
         "judge": {
           "effort": "medium",
-          "model": "gpt-6.1-sol",
-          "provider": "codex"
+          "model": "example-model",
+          "provider": "openai"
         },
         "links": [
           "docs/plans/2026-10-03-attribution-quality-analysis.md#section-20",
@@ -800,8 +800,8 @@
         "id": "v5",
         "judge": {
           "effort": "medium",
-          "model": "gpt-6.1-sol",
-          "provider": "codex"
+          "model": "example-model",
+          "provider": "openai"
         },
         "links": [
           "docs/plans/2026-10-08-t4-acceptance-set-v5.md#final-result-2026-10-09",

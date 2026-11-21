@@ -518,6 +518,87 @@ def build_served_projection(
     return handle
 
 
+def _open_matching_projection(
+    path: Path, *, build_id: str, manifest_id: str, fts_index_version: str
+) -> ServedProjectionHandle | None:
+    try:
+        conn = connect_sidecar(path)
+        try:
+            row = conn.execute(f"SELECT meta_json FROM {META_TABLE} WHERE singleton_id=1").fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            return None
+        meta = json.loads(row[0])
+        if not isinstance(meta, dict):
+            return None
+        digest = meta.get("projection_sha256")
+        if (
+            meta.get("build_id") != build_id
+            or meta.get("manifest_id") != manifest_id
+            or meta.get("schema_version") != SCHEMA_VERSION
+            or meta.get("fts_index_version") != fts_index_version
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)
+            or path.name != f"served_projection_{digest[:16]}.db"
+        ):
+            return None
+        return ServedProjectionHandle(path=path, meta=MappingProxyType(meta))
+    except (OSError, sqlite3.Error, ValueError, TypeError, KeyError):
+        return None
+
+
+def _prune_projections(directory: Path, keep: Path) -> None:
+    candidates = sorted(
+        directory.glob("served_projection_*.db"),
+        key=lambda path: (path.stat().st_mtime_ns, path.name),
+        reverse=True,
+    )
+    retained = {keep.resolve()}
+    for path in candidates:
+        if len(retained) >= 2:
+            break
+        retained.add(path.resolve())
+    for path in candidates:
+        if path.resolve() not in retained:
+            path.unlink(missing_ok=True)
+
+
+def open_or_build_served_projection(
+    served_conn_factory: Callable[[], sqlite3.Connection],
+    *,
+    projection_dir: str | Path,
+    expected_manifest_id: str | None = None,
+) -> tuple[ServedProjectionHandle, bool]:
+    """Reuse a sidecar only when its complete served-build identity matches."""
+    out_dir = Path(projection_dir)
+    if not out_dir.is_dir():
+        raise _fail("dir_missing", f"projection_dir {out_dir} is not a directory")
+    served = served_conn_factory()
+    try:
+        resolution = resolve_served_build(served, expected_manifest_id=expected_manifest_id)
+    finally:
+        served.close()
+    for path in out_dir.glob("served_projection_*.db"):
+        handle = _open_matching_projection(
+            path,
+            build_id=resolution.build_id,
+            manifest_id=resolution.corpus_manifest_id,
+            fts_index_version=resolution.lexical_digest,
+        )
+        if handle is not None:
+            _prune_projections(out_dir, handle.path)
+            return handle, True
+    handle = build_served_projection(
+        served_conn_factory,
+        expected_manifest_id=resolution.corpus_manifest_id,
+        projection_dir=out_dir,
+    )
+    _prune_projections(out_dir, handle.path)
+    return handle, False
+
+
 __all__ = [
     "FTS_MAP_TABLE",
     "META_TABLE",
@@ -526,6 +607,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "ServedProjectionHandle",
     "build_served_projection",
+    "open_or_build_served_projection",
     "canonical_row_bytes",
     "connect_sidecar",
 ]

@@ -1,4 +1,5 @@
 import importlib.util
+import ipaddress
 import subprocess
 from pathlib import Path
 
@@ -21,21 +22,50 @@ def test_cloudflare_include_generator_uses_all_configured_ranges(tmp_path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     output = tmp_path / "allow.conf"
-    module.generate(REPO / "deploy/nginx/cloudflare_ips.txt", output)
+    source = REPO / "deploy/nginx/cloudflare_ips.txt"
+    ranges = [str(ipaddress.ip_network(line.strip(), strict=False))
+              for line in source.read_text().splitlines()
+              if line.strip() and not line.lstrip().startswith("#")]
+    module.generate(source, output)
     rendered = output.read_text()
-    assert "set_real_ip_from 173.245.48.0/20;" in rendered
-    assert "allow 2400:cb00::/32;" in rendered
-    assert rendered.rstrip().endswith("deny all;")
+    assert "geo $realip_remote_addr $catalyst_cloudflare_peer {" in rendered
+    geo_block = rendered.split("geo $realip_remote_addr $catalyst_cloudflare_peer {", 1)[1].split("}", 1)[0]
+    assert "default 0;" in geo_block
+    for network in ranges:
+        assert f"set_real_ip_from {network};" in rendered
+        assert f"{network} 1;" in geo_block
+    assert "allow " not in rendered
+    assert "deny all;" not in rendered
 
 
 def test_nginx_strict_limits_cover_live_and_data_write_routes():
     config = (REPO / "deploy/nginx/catalyst-api.conf").read_text()
-    assert "location ^~ /api/live-runs" in config
-    assert "location = /api/data/update" in config
-    assert "location = /api/data/refresh" in config
-    assert "TasksMax=256" in (REPO / "deploy/api/catalyst-api.service").read_text()
+    assert "if ($catalyst_cloudflare_peer = 0) { return 444; }" in config
+    assert "limit_req_zone $catalyst_run_rate_key zone=catalyst_run:10m rate=2r/m;" in config
+    assert 'map "$request_method:$uri" $catalyst_run_rate_key {' in config
+    assert "    default \"\";" in config
+    assert "    ~^POST:/api/live-runs(?:/[^/]+/cancel)?$ $binary_remote_addr;" in config
+    assert "    ~^POST:/api/data/refresh$ $binary_remote_addr;" in config
+
+    create_location = config.split("location = /api/live-runs {", 1)[1].split("\n    }", 1)[0]
+    cancel_location = config.split("location ~ ^/api/live-runs/[^/]+/cancel$ {", 1)[1].split("\n    }", 1)[0]
+    assert "limit_req zone=catalyst_run burst=3 nodelay;" in create_location
+    refresh_location = config.split("location = /api/data/refresh {", 1)[1].split("\n    }", 1)[0]
+    assert "limit_req zone=catalyst_run burst=3 nodelay;" in cancel_location
+    assert "limit_req zone=catalyst_run burst=3 nodelay;" in refresh_location
     assert config.count("limit_req zone=catalyst_run") == 3
-    assert "location /api/run" not in config
+
+    # The map's empty default leaves GET history, view, and stream requests out
+    # of the strict zone, including GET /api/live-runs's exact-match location.
+    import re
+
+    strict_key = re.compile(r"^POST:/api/live-runs(?:/[^/]+/cancel)?$")
+    read_routes = (
+        "GET:/api/live-runs",
+        "GET:/api/live-runs/run-123/view",
+        "GET:/api/live-runs/run-123/stream",
+    )
+    assert all(strict_key.match(route) is None for route in read_routes)
 
 
 def test_generator_failure_restores_api_deploy_backup(tmp_path):

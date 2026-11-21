@@ -59,7 +59,7 @@ cat /opt/catalyst/COLLECTORS_DEPLOYED
 cd /opt/catalyst/collectors
 for unit in deploy/collect/catalyst-collect-*.service deploy/collect/catalyst-collect-*.timer deploy/ops/catalyst-health.service deploy/ops/catalyst-health.timer deploy/ops/catalyst-backup.service deploy/ops/catalyst-backup.timer deploy/ops/catalyst-resilience-retry.service deploy/ops/catalyst-resilience-retry.timer; do
   name=\${unit##*/}
-  if [[ \$name == catalyst-resilience-retry.* ]]; then echo \"=== \$name (未安装) ===\"; else echo \"=== \$name ===\"; fi
+  if [[ \$name == catalyst-resilience-retry.* ]]; then echo \"=== \$name (not installed) ===\"; else echo \"=== \$name ===\"; fi
   diff -u \"/etc/systemd/system/\$name\" \"\$unit\" || true
 done
 "

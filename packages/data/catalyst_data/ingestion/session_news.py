@@ -4,10 +4,13 @@ from __future__ import annotations
 import base64
 import html
 import json
+import os
 import re
 import sqlite3
+import tempfile
 from collections import Counter
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
@@ -112,8 +115,9 @@ def _query_polygon_articles(archive: sqlite3.Connection, tables: set[str], *, ti
     if "polygon_feed" not in tables:
         return
     for row in archive.execute(
-            "SELECT * FROM polygon_feed WHERE session_date BETWEEN date(?, '-4 days') AND date(?, '+1 day')",
-            (session_date, session_date)):
+            "SELECT * FROM polygon_feed WHERE session_date BETWEEN date(?, '-4 days') AND date(?, '+1 day') "
+            "AND instr(tickers_json, '\"' || ? || '\"') > 0",
+            (session_date, session_date, ticker)):
         if ticker not in tickers_json_list(row["tickers_json"]):
             continue
         title = row["title"] or ""
@@ -249,8 +253,64 @@ def _shared_for_current(path: str | Path, media_db: str | Path | None = None) ->
         media_mtime = max(media_stat.st_mtime_ns, wal_stat.st_mtime_ns if wal_stat else 0)
     else:
         media_path, media_size, media_mtime = Path(""), 0, 0
-    return _shared_image_urls(str(resolved), stat.st_size, stat.st_mtime_ns,
-                              str(media_path) if media_size else "", media_size, media_mtime)
+    signature = (str(resolved), stat.st_size, stat.st_mtime_ns,
+                 str(media_path) if media_size else "", media_size, media_mtime)
+    return _shared_image_urls(*signature)
+
+
+def write_shared_images_file(
+    archive_db: str | Path, media_db: str | Path | None, out_path: str | Path
+) -> dict[str, Any]:
+    urls = sorted(_shared_for_current(archive_db, media_db))
+    target = Path(out_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"schema_version": "shared_images:v1",
+               "generated_at": utc_iso_z(datetime.now(timezone.utc)),
+               "count": len(urls), "urls": urls}
+    fd, temp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, sort_keys=True, ensure_ascii=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_name, target)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+    return payload
+
+
+@lru_cache(maxsize=8)
+def _read_shared_images(path: str, mtime_ns: int, size: int) -> frozenset[str]:
+    del mtime_ns, size
+    try:
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return frozenset()
+    urls = payload.get("urls") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "generated_at", "count", "urls"}
+        or payload.get("schema_version") != "shared_images:v1"
+        or not isinstance(payload.get("generated_at"), str)
+        or not payload["generated_at"].endswith("Z")
+        or not isinstance(payload.get("count"), int)
+        or not isinstance(urls, list)
+        or payload["count"] != len(urls)
+        or any(not isinstance(url, str) for url in urls)
+    ):
+        return frozenset()
+    return frozenset(urls)
+
+
+def _shared_images_from_file(path: str | Path) -> frozenset[str]:
+    try:
+        target = Path(path).expanduser().resolve()
+        stat = target.stat()
+    except OSError:
+        return frozenset()
+    return _read_shared_images(str(target), stat.st_mtime_ns, stat.st_size)
 
 
 def _usable_image(url: str | None, shared: frozenset[str]) -> bool:
@@ -361,6 +421,7 @@ def session_news(
     evidence_ids: Iterable[str] | None = None,
     categories_db: str | Path | None = None,
     media_db: str | Path | None = None,
+    shared_images_path: str | Path | None = None,
     _normalize_display: bool = True,
 ) -> dict[str, Any]:
     """Aggregate a ticker's in-window body and feed items using read-only DBs."""
@@ -374,17 +435,11 @@ def session_news(
     bodies = _read_only(bodies_db)
     archive = _read_only(archive_db)
     cache_path = Path(media_db) if media_db is not None else media.cache_path()
-    cached_media: dict[str, sqlite3.Row] = {}
-    if cache_path.is_file():
-        cache_conn = _read_only(cache_path)
-        try:
-            if "headline_media" in _tables(cache_conn):
-                cached_media = {row["article_key"]: row for row in cache_conn.execute(
-                    "SELECT article_key,image_url,image_source,status,attempts FROM headline_media"
-                )}
-        finally:
-            cache_conn.close()
-    shared = _shared_for(archive_db, cache_path)
+    shared = (
+        _shared_images_from_file(shared_images_path)
+        if shared_images_path is not None
+        else _shared_for(archive_db, cache_path)
+    )
     candidates: dict[str, dict[str, Any]] = {}
 
     def same_headline_story(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -454,6 +509,25 @@ def session_news(
 
     rows = list(candidates.values())
     rows.sort(key=lambda row: (row["published_at"], row["id"]))
+    cached_media: dict[str, sqlite3.Row] = {}
+    if cache_path.is_file() and rows:
+        cache_conn = _read_only(cache_path)
+        try:
+            if "headline_media" in _tables(cache_conn):
+                keys = list(dict.fromkeys(row["_key"] for row in rows))
+                for offset in range(0, len(keys), 500):
+                    batch = keys[offset:offset + 500]
+                    placeholders = ",".join("?" for _ in batch)
+                    cached_media.update({
+                        row["article_key"]: row
+                        for row in cache_conn.execute(
+                            "SELECT article_key,image_url,image_source,status,attempts "
+                            f"FROM headline_media WHERE article_key IN ({placeholders})",
+                            batch,
+                        )
+                    })
+        finally:
+            cache_conn.close()
     labels = categorize_llm.cached(categories_db or categorize_llm.default_db(), [row["_key"] for row in rows])
     all_items: list[dict[str, Any]] = []
     evidence = set(evidence_ids or ())

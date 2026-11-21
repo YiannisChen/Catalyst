@@ -13,6 +13,7 @@ from catalyst_data.retrieval.served_projection import (
     PROJECTION_TABLE,
     SCHEMA_VERSION,
     build_served_projection,
+    open_or_build_served_projection,
 )
 from catalyst_data.storage.connect import make_readonly_factory
 from served_projection_fixtures import (
@@ -80,6 +81,44 @@ def test_build_is_deterministic(db, tmp_path):
     first = _build(db, tmp_path / "a")
     second = _build(db, tmp_path / "b")
     assert first.projection_sha256 == second.projection_sha256
+
+
+def test_open_or_build_reuses_matching_sidecar(db, tmp_path):
+    out = tmp_path / "projection"
+    out.mkdir()
+    first, reused = open_or_build_served_projection(
+        make_readonly_factory(db), expected_manifest_id=MANIFEST, projection_dir=out
+    )
+    second, reused_again = open_or_build_served_projection(
+        make_readonly_factory(db), expected_manifest_id=MANIFEST, projection_dir=out
+    )
+    assert reused is False
+    assert reused_again is True
+    assert second.path == first.path
+    assert len(list(out.glob("served_projection_*.db"))) == 1
+
+
+def test_open_or_build_rebuilds_mismatched_identity_and_prunes(db, tmp_path):
+    out = tmp_path / "projection"
+    out.mkdir()
+    first = _build(db, out)
+    conn = sqlite3.connect(first.path)
+    meta = json.loads(conn.execute("SELECT meta_json FROM served_projection_meta").fetchone()[0])
+    meta["fts_index_version"] = "wrong"
+    conn.execute("UPDATE served_projection_meta SET meta_json=?", (json.dumps(meta),))
+    conn.commit()
+    conn.close()
+    (out / "served_projection_old1.db").write_bytes(b"old")
+    (out / "served_projection_old2.db").write_bytes(b"old")
+
+    rebuilt, reused = open_or_build_served_projection(
+        make_readonly_factory(db), expected_manifest_id=MANIFEST, projection_dir=out
+    )
+    assert reused is False
+    assert rebuilt.meta["fts_index_version"] != "wrong"
+    sidecars = list(out.glob("served_projection_*.db"))
+    assert len(sidecars) == 2
+    assert rebuilt.path in sidecars
 
 
 def test_sidecar_main_schema_is_read_only_but_temp_is_writable(db, tmp_path):

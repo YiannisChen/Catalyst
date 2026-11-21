@@ -1,19 +1,19 @@
 {
-  "description": "作答：财报兜底。fact 是代码核对过的申报事实（模板句），fact_checks 是四项核对",
+  "description": "Answered with the earnings fallback. fact is a code-verified filing fact (template sentence); fact_checks contains four checks.",
   "answer_snapshot": {
     "schema_version": "answer_snapshot_v2",
     "run_id": "a1000000000000000000000000000003",
     "ticker": "ACME",
     "session_date": "2026-10-16",
-    "headline": "ACME 上涨 4.8%，大盘上涨 0.2%。",
+    "headline": "ACME rose 4.8%; the broad market rose 0.2%.",
     "outcome": "ANSWERED",
     "status": "PARTIAL",
-    "scope_note": "结论只到事件层面：指出是哪件事，不说明这件事中哪一部分、在多大程度上推动了股价。",
+    "scope_note": "The conclusion identifies the event only; it does not say which part, or to what extent, drove the stock price.",
     "tier": "T3",
     "cascade_stage": 4,
     "stage_label": "财报兜底（申报本身）",
     "basis": "EARNINGS_FILING",
-    "basis_text": "财报兜底：只说明当天发布了财报，没有说明是财报的哪部分内容驱动了股价。",
+    "basis_text": "Earnings fallback: confirms that the company reported earnings that day, but not which part of the report drove the stock price.",
     "earnings_fallback": {
       "fire": true,
       "fact": {
@@ -22,7 +22,7 @@
         "item": "2.02",
         "accepted_at": "2026-10-15T20:31:12Z",
         "accession": "0000000-26-000001",
-        "text": "【申报事实】ACME Corp. (ACME) filed a Form 8-K with the SEC, accepted 2026-10-15 16:31 ET (accession 0000000-26-000001), reporting Item 2.02 Results of Operations and Financial Condition; Item 9.01 Financial Statements and Exhibits."
+        "text": "Filing fact: ACME Corp. (ACME) filed a Form 8-K with the SEC, accepted 2026-10-15 16:31 ET (accession 0000000-26-000001), reporting Item 2.02 Results of Operations and Financial Condition; Item 9.01 Financial Statements and Exhibits."
       },
       "fact_checks": {
         "accession_in_issuer_index": true,

@@ -99,8 +99,8 @@ unit_diff > "$jobdir/unit-diff.txt" 2>&1 || true
 record '4. Installed unit diff (informational)' 'Not a gate. Read-only comparison saved in [unit-diff.txt](unit-diff.txt).'
 
 record '5. Daily scheduler' 'O1 backfill scheduling is retired. Verify the normal daily job stages and lease cleanup using the approved local test suite.'
-record '6. Offline health and monitor rules (人工)' '建议手工命令：`/opt/catalyst/bin/monitor-gate --help`，再按已批准的离线健康检查参数运行，并将输出保存到本次作业目录。'
-record '7. In-flight attempts query (人工)' '建议手工命令：对 sandbox 的 jobs 数据库执行只读查询：`sqlite3 <sandbox-jobs.sqlite3> "SELECT job_id, stage, status, attempts FROM job_items WHERE status=\x27RUNNING\x27"`；确认运行中条目与恢复策略。'
+record '6. Offline health and monitor rules (manual)' 'Suggested command: `/opt/catalyst/bin/monitor-gate --help`; then run the approved offline health-check options and save the output in this job directory.'
+record '7. In-flight attempts query (manual)' 'Suggested command: run a read-only query against the sandbox jobs database: `sqlite3 <sandbox-jobs.sqlite3> "SELECT job_id, stage, status, attempts FROM job_items WHERE status=\x27RUNNING\x27"`; confirm running items and the recovery policy.'
 
 if (( failed )); then
   printf '\nFinal status: FAIL\n' >> "$report"

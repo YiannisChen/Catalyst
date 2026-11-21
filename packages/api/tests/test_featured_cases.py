@@ -294,7 +294,7 @@ def _selection(tmp_path: Path, db_path: Path, **overrides: object) -> Path:
         "source_runtime_db": str(db_path),
         "category": "ANSWERED_REPORTED_ATTRIBUTION",
         "title": "Example featured case",
-        "tags": ["示例", "reported"],
+        "tags": ["Example", "reported"],
         "summary": "A public summary written by the reviewer.",
         "notes": "Reviewer notes.",
     }
@@ -496,7 +496,7 @@ def test_featured_endpoints_shapes_headers_404_and_no_private_text(
         "ticker": "AAPL",
         "session_date": "2026-01-06",
         "category": "ANSWERED_REPORTED_ATTRIBUTION",
-        "tags": ["示例", "reported"],
+        "tags": ["Example", "reported"],
         "outcome": "ANSWERED",
         "summary": "A public summary written by the reviewer.",
         "source_run_id": "run:featured",
@@ -1235,3 +1235,19 @@ def test_placebo_db_is_added_to_the_inputs(tmp_path: Path) -> None:
     by_run = {row["run_id"]: row for row in rows}
     assert "run:placebo" in by_run
     assert by_run["run:placebo"]["proposed_category"] == "PLACEBO_DAY"
+def test_featured_bundle_cache_invalidates_on_mtime_and_size(tmp_path, monkeypatch):
+    from catalyst_app import featured
+
+    bundle_file = tmp_path / "featured.sqlite3"
+    bundle_file.write_bytes(b"one")
+    calls = []
+    monkeypatch.setattr(featured, "_load_bundle", lambda path: calls.append(path) or object())
+
+    first = featured._cached_bundle(bundle_file)
+    same = featured._cached_bundle(bundle_file)
+    bundle_file.write_bytes(b"two-two")
+    second = featured._cached_bundle(bundle_file)
+
+    assert first is same
+    assert second is not first
+    assert calls == [bundle_file.resolve(), bundle_file.resolve()]

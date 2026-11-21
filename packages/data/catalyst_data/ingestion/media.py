@@ -171,8 +171,12 @@ def image_use_counts(cache_db: str | Path | None = None,
 
 def fill_headlines(items: Iterable[dict], cache_db: str | Path | None = None, *,
                    fetcher=None, limit: int | None = None, now: datetime | None = None,
-                   force: bool = False, archive_db: str | Path | None = None) -> dict[str, int]:
-    """Fill uncached headline-only articles; transient outcomes remain resumable."""
+                   force: bool = False, archive_db: str | Path | None = None,
+                   shared_images: frozenset[str] | None = None) -> dict[str, int]:
+    """Fill uncached headline-only articles; transient outcomes remain resumable.
+
+    With ``shared_images`` (the daily shared-image set, keyed like session_news) an image is generic
+    when its key is in that set, and the archive is not scanned; the API passes it."""
     fetcher = fetcher or fetch.Fetcher()
     now = now or datetime.now(timezone.utc)
     now_text = _iso(now)
@@ -188,8 +192,11 @@ def fill_headlines(items: Iterable[dict], cache_db: str | Path | None = None, *,
         key = _headline_key(url)
         if key:
             candidates.append((key, url))
-    used_pairs = image_use_pairs(path, archive_db)
-    counters = Counter(image for _, image in used_pairs)
+    if shared_images is None:
+        used_pairs = image_use_pairs(path, archive_db)
+        counters = Counter(image for _, image in used_pairs)
+    else:
+        used_pairs, counters = set(), Counter()
     try:
         for key, url in dict(candidates).items():
             row = conn.execute(
@@ -221,7 +228,8 @@ def fill_headlines(items: Iterable[dict], cache_db: str | Path | None = None, *,
                 identity = image_identity(image_url)
                 pair = (key, identity)
                 if is_placeholder(image_url) or (
-                    pair not in used_pairs and counters[identity] >= 20
+                    _headline_key(identity) in shared_images if shared_images is not None
+                    else pair not in used_pairs and counters[identity] >= 20
                 ):
                     raise fetch.PermanentPageError("generic_image")
                 conn.execute(
@@ -278,7 +286,7 @@ def fill_headlines(items: Iterable[dict], cache_db: str | Path | None = None, *,
 def headlines(ticker: str, *, date: str | None = None, since: str | None = None,
               limit: int | None = None, bodies_db: str | Path | None = None,
               archive_db: str | Path | None = None, cache_db: str | Path | None = None,
-              fetcher=None) -> dict[str, int]:
+              fetcher=None, shared_images_path: str | Path | None = None) -> dict[str, int]:
     """Fill headline images for one session or every trading session since a date."""
     from catalyst_data import trading_calendar
     from catalyst_data.ingestion import session_news
@@ -294,6 +302,8 @@ def headlines(ticker: str, *, date: str | None = None, since: str | None = None,
     sessions = [date] if date else trading_calendar.calendar_trading_days(since, end)
     result = {"sessions": len(sessions), "checked": 0, "stored": 0, "no_image": 0, "deferred": 0, "skipped": 0}
     fetcher = fetcher or fetch.Fetcher()
+    shared = (session_news._shared_images_from_file(shared_images_path)
+              if shared_images_path is not None else None)
     remaining = limit
     for session_date in sessions:
         cursor = None
@@ -301,12 +311,13 @@ def headlines(ticker: str, *, date: str | None = None, since: str | None = None,
         while True:
             page = session_news.session_news(ticker.upper(), session_date, bodies_db=bodies,
                                              archive_db=archive, cursor=cursor, limit=100,
-                                             media_db=cache_db)
+                                             media_db=cache_db, shared_images_path=shared_images_path)
             items.extend(item for item in page["items"] if not item["has_body"] and not item.get("image_url"))
             cursor = page["next_cursor"]
             if not cursor:
                 break
-        fill = fill_headlines(items, cache_db, fetcher=fetcher, limit=remaining, archive_db=archive)
+        fill = fill_headlines(items, cache_db, fetcher=fetcher, limit=remaining, archive_db=archive,
+                              shared_images=shared)
         for key in ("checked", "stored", "no_image", "deferred", "skipped"):
             result[key] += fill[key]
         if remaining is not None:

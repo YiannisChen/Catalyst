@@ -74,7 +74,7 @@ def test_earnings_timing_store_failure_fails_run_refunds_quota_and_alerts(tmp_pa
             "SELECT payload_json FROM run_artifacts WHERE run_id='d-e-failure' "
             "AND artifact_type='run_failure_diagnostics'"
         ).fetchone()
-    assert tuple(run) == ("FAILED", "DATA_UNAVAILABLE", "数据暂时不可用")
+    assert tuple(run) == ("FAILED", "DATA_UNAVAILABLE", "Data is temporarily unavailable")
     assert tuple(reservation) == (0, 0)
     assert artifact is not None
     diagnostic = json.loads(artifact[0])

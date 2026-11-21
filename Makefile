@@ -6,8 +6,14 @@ PIP ?= $(PYTHON) -m pip
 install:
 	$(PIP) install -r requirements-dev.txt
 
+TEST_DIRS = packages/data/tests packages/agents/tests packages/api/tests deploy/monitor/tests deploy/api/tests deploy/ops/tests
+
+# Each package has its own conftest, so each suite runs in its own pytest process (as in CI).
 test:
-	HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH=packages/data:packages/agents:packages/api:scripts $(PYTHON) -m pytest packages/data/tests packages/agents/tests packages/api/tests deploy/monitor/tests deploy/api/tests -q --disable-warnings
+	@status=0; for tests in $(TEST_DIRS); do \
+		HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONPATH=packages/data:packages/agents:packages/api:scripts \
+		$(PYTHON) -m pytest "$$tests" -q --disable-warnings || status=1; \
+	done; exit $$status
 
 lint:
 	$(PYTHON) scripts/check_ruff.py

@@ -16,7 +16,7 @@ from .lexical_retriever import (
     resolve_served_build,
 )
 from .result import RetrievalContractError
-from .served_projection import ServedProjectionHandle, build_served_projection
+from .served_projection import ServedProjectionHandle, open_or_build_served_projection
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ def bind_lexical_runtime(
 
     try:
         projection_dir = projection_dir_factory()
-        projection = build_served_projection(
+        projection, _reused = open_or_build_served_projection(
             readonly_factory,
             expected_manifest_id=resolution.corpus_manifest_id,
             projection_dir=projection_dir,

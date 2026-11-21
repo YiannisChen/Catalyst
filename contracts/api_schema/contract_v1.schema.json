@@ -291,7 +291,7 @@
             },
             "text": {
               "type": "string",
-              "pattern": "^【申报事实】"
+              "pattern": "^Filing fact: "
             }
           }
         },
@@ -370,7 +370,7 @@
           "description": "internal; the UI must not display it"
         },
         "scope_note": {
-          "const": "结论只到事件层面：指出是哪件事，不说明这件事中哪一部分、在多大程度上推动了股价。"
+          "const": "The conclusion identifies the event only; it does not say which part, or to what extent, drove the stock price."
         },
         "tier": {
           "enum": [

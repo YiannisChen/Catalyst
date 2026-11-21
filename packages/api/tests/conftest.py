@@ -81,9 +81,9 @@ def stub_served_projection(monkeypatch):
             ),
         )
         built.append(handle)
-        return handle
+        return handle, False
 
-    monkeypatch.setattr(_runtime_binding, "build_served_projection", _stub)
+    monkeypatch.setattr(_runtime_binding, "open_or_build_served_projection", _stub)
     return built
 
 
