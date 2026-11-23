@@ -9,6 +9,7 @@ venv/
 .cursor/
 .claude/
 .local/
+.worktrees/
 .pytest_cache/
 
 # Local coordination notes and held diffs stay on disk.

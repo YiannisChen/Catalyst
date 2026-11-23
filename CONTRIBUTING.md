@@ -1,6 +1,6 @@
 # Contributing
 
-This is a personal graduation project and is not actively seeking contributions. However, issues and questions are welcome.
+Catalyst is in maintenance status. Issues are welcome; feature work has stopped; bug, security and documentation fixes may be reviewed slowly.
 
 ## Reporting Issues
 
@@ -14,7 +14,7 @@ Please open a GitHub issue with:
 ## Development Setup
 
 ```bash
-git clone https://github.com/YianniChen/Catalyst.git
+git clone https://github.com/YiannisChen/Catalyst.git
 cd Catalyst
 
 python -m venv .venv && source .venv/bin/activate

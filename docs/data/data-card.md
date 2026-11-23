@@ -61,43 +61,43 @@ The current daily service covers 102 large-cap U.S. stocks. The historical prosp
 | Known limitations | Multiline titles are not recognized, such as CoStar splitting a title across three lines; unusual block layouts may produce incorrect units. Title detection is heuristic and was tuned twice on T6 (backend design §5.3, v2.1), so T6 counts only as development data |
 | Snapshots (with units) | Development-set database copy `news_bodies_v2.v6snap_20261013u.sqlite3`: `6c34df7fbf4e…` (1,206 exhibits have units); T6 database copy `news_bodies_v2.t6u.sqlite3`: `50cbe263a9e7…` (1,440); new earnings-date sample database `news_bodies_v2.e100.sqlite3`: `05756a485d49…` (1,317; based on the development-set database, with 131 8-K exhibits from 100 sessions added by `scripts/v2/sec_intake.py`). All three are under `data/m9/` in the v2.1 branch working directory |
 
-### 1.3b Archived: earnings calendar and press-release RSS (collection only since 2026-10-20; not read by the attribution pipeline)
+### 1.3b Archived: earnings calendar and press-release RSS (collection stopped 2026-11-12; stores frozen on the server and not read by attribution)
 
 | Item | Details |
 |---|---|
-| Code | `data/collectors` branch: `catalyst_data/m9/earnings_calendar.py`, `catalyst_data/m9/press_rss.py`; separate server checkout directory `/opt/catalyst/collectors` and timer (`deploy/deploy_collectors.sh`), which does not affect the daily-update task |
-| Earnings calendar | Finnhub `/calendar/earnings`, queried daily at 12:15 and 22:15 UTC for “today −7 to +28 days.” Every fetch is appended with `fetched_at`, allowing queries such as “what did the calendar say at a given time” (`as_of`). A single request returns at most 1,500 records, so requests are split into 3-day ranges and subdivided in half when a range reaches the limit |
+| Code | `data/collectors` branch: `catalyst_data/m9/earnings_calendar.py`, `catalyst_data/m9/press_rss.py`; separate server checkout directory `/opt/catalyst/collectors`. Collection stopped 2026-11-12; the SQLite stores remain frozen under `/opt/catalyst/archive/` and are not read by attribution |
+| Earnings calendar | While collection was active, Finnhub `/calendar/earnings` was queried daily at 12:15 and 22:15 UTC for “today −7 to +28 days.” Every fetch is appended with `fetched_at`, allowing queries such as “what did the calendar say at a given time” (`as_of`). A single request returns at most 1,500 records, so requests are split into 3-day ranges and subdivided in half when a range reaches the limit |
 | Earnings calendar limitations | The free tier has **no history**: all dates before 2026-07 are empty, and only the schedule for about the most recent month and a half and the future is available. Archiving started on 2026-10-20, so T6 and the new earnings-date sample cannot be checked against it. The `hour` field (bmo pre-market / amc after-hours / dmh during market hours) was populated for 69 of 85 S&P 100 earnings events (81%) |
-| Press-release RSS | PR Newswire (all press releases and earnings, two feeds) and Business Wire (all news), polled every 5 minutes. Only feed metadata is stored: title, link, publication time, summary, and any stock tickers identified from it, along with the time first seen (`first_seen_at`); **press-release body pages are never fetched**. The PR Newswire all-press-releases feed returns only 20 items at a time, covering about 20 minutes, so it must be polled every 5 minutes |
-| Press-release terms | Access is limited to personal, non-commercial research use. PR Newswire's terms restrict automated access and storing its content in a database; Business Wire permits reading RSS but not storing or summarizing its information. Therefore, only metadata is stored, feeds are polled infrequently, and data is **not distributed**; archived data is excluded from open source releases. Possible consequences include an IP block or a cease-and-desist notice. GlobeNewswire's robots.txt disallows automated access, so it is **not included** |
+| Press-release RSS | PR Newswire (all press releases and earnings, two feeds) and Business Wire (all news) were polled every 5 minutes while collection was active. Only feed metadata was stored: title, link, publication time, summary, and any stock tickers identified from it, along with the time first seen (`first_seen_at`); **press-release body pages were never fetched**. The PR Newswire all-press-releases feed returns only 20 items at a time, covering about 20 minutes, so it had to be polled every 5 minutes |
+| Press-release terms | Access is limited to personal, non-commercial research use. PR Newswire's terms restrict automated access and storing its content in a database; Business Wire permits reading RSS but not storing or summarizing its information. Therefore, only metadata was stored, feeds were polled infrequently, and data was **not distributed**; archived data is excluded from open source releases. Possible consequences include an IP block or a cease-and-desist notice. GlobeNewswire's robots.txt disallows automated access, so it is **not included** |
 | Time semantics | Press releases: `published_at` is the newswire publication time (used to assign a trading day); `first_seen_at` is when we saw it (used to determine “what was available at the time”). RSS lists only recent items, so it **cannot be backfilled**; the archive starts on the first polling day |
 | Logging | One `intake_log` row per request (OK / EMPTY / ERROR / DISABLED); gaps in the archive can be identified |
 
-### 1.3c Archived: free news sources (collection only since 2026-10-21; not read by the attribution pipeline)
+### 1.3c Archived: free news sources (collection stopped 2026-11-12; stores frozen on the server and not read by attribution)
 
 | Item | Details |
 |---|---|
-| Code | `data/collectors` branch `catalyst_data/m9/news_archive.py`; server database `/opt/catalyst/archive/news_archive.sqlite3`, four timer jobs (`deploy/collect/catalyst-collect-news-*`) |
-| Principle | Include sources without historical data and accumulate data daily from the first polling day. Store only metadata for each item (title, link, time, provider summary, stock ticker) and record when it was first seen (`first_seen_at`); log one row per request (OK / EMPTY / ERROR / DISABLED) |
-| Every 15 minutes | Finnhub market news (general, merger); 4 Investing.com RSS feeds (stocks, companies, economy, earnings) |
-| Every hour | GDELT (one query per company, most recent 2 hours, one request every 10 seconds; assign a ticker only when the headline mentions the company); Seeking Alpha ticker RSS; Alpha Vantage news and sentiment (requires `ALPHAVANTAGE_API_KEY`, free tier allows 25 requests per day); NewsAPI (requires `NEWSAPI_KEY`) |
-| Every 2 hours | Marketaux (requires `MARKETAUX_API_KEY`, 20 stocks per request) |
-| 4 times daily | Finnhub company news, all 101 stocks in the universe (00:30, 06:30, 18:30, 22:30 UTC, avoiding daily-update and evaluation periods) |
+| Code | `data/collectors` branch `catalyst_data/m9/news_archive.py`; server database `/opt/catalyst/archive/news_archive.sqlite3`. Collection stopped 2026-11-12; the store remains frozen on the server and is not read by attribution |
+| Principle | While active, this collector included sources without historical data and accumulated records daily from the first polling day. It stored metadata for each item (title, link, time, provider summary, stock ticker) and recorded when it was first seen (`first_seen_at`); it logged one row per request (OK / EMPTY / ERROR / DISABLED) |
+| Before 2026-11-12, every 15 minutes | Finnhub market news (general, merger); 4 Investing.com RSS feeds (stocks, companies, economy, earnings) |
+| Before 2026-11-12, every hour | GDELT (one query per company, most recent 2 hours, one request every 10 seconds; assign a ticker only when the headline mentions the company); Seeking Alpha ticker RSS; Alpha Vantage news and sentiment (requires `ALPHAVANTAGE_API_KEY`, free tier allows 25 requests per day); NewsAPI (requires `NEWSAPI_KEY`) |
+| Before 2026-11-12, every 2 hours | Marketaux (requires `MARKETAUX_API_KEY`, 20 stocks per request) |
+| Before 2026-11-12, 4 times daily | Finnhub company news, all 101 stocks in the universe (00:30, 06:30, 18:30, 22:30 UTC, avoiding daily-update and evaluation periods) |
 | Checked but excluded | Yahoo Finance, Google News, CNBC RSS (robots.txt disallows access); MarketWatch feeds and SEC full-text search (robots.txt returns 403); Nasdaq (denies automated access); GlobeNewswire (robots.txt disallows access) |
 | Terms | Personal, non-commercial research use; Seeking Alpha and Investing.com robots.txt allow reading these feeds. Store metadata only and do not distribute |
 | Time note | Investing.com RSS publication times have no timezone and are stored as UTC; verification is needed |
 
-### 1.3d Archived: market data and event calendar (collection only since 2026-10-21; not read by the attribution pipeline)
+### 1.3d Archived: market data and event calendar (collection stopped 2026-11-12; stores frozen on the server and not read by attribution)
 
-- Database `/opt/catalyst/archive/market_archive.sqlite3`, code `catalyst_data/m9/market_archive.py`.
+- Database `/opt/catalyst/archive/market_archive.sqlite3`, code `catalyst_data/m9/market_archive.py`. Collection stopped 2026-11-12; `market_archive.sqlite3` and the `minute/` stores remain frozen on the server and are not read by attribution.
 - Four tables: `minute_bars` (1-minute bars, including pre-market and after-hours), `option_snapshots` (options chains before earnings), `rating_changes` (rating and price-target changes), `events` (FOMC, BLS, BEA, S&P constituent changes, options expiration dates).
 - Every row includes its fetch time; ratings and events also have `first_seen_at`. When reading, filter to items seen before the cutoff time.
 - Use only as [data] facts or candidate context, not as causes; adding them to attribution is Category B. See `provider_survey.md` for sources, quotas, and terms.
-- Minute bars (same-day revisions): Alpaca SIP is primary; yfinance and Polygon fill gaps. One file per month, stored at `/opt/catalyst/archive/minute/minute_YYYY-MM.sqlite3`; keep 90 days locally, back up monthly files once, and fetch once from Hong Kong (runbook §6). Logging remains in `market_archive.sqlite3`.
+- Minute bars (same-day revisions): while collection was active, Alpaca SIP was primary; yfinance and Polygon filled gaps. Monthly files were stored at `/opt/catalyst/archive/minute/minute_YYYY-MM.sqlite3`; collection and its 90-day local retention/backup procedure stopped 2026-11-12. Logging was recorded in `market_archive.sqlite3`.
 
-### 1.3e Archived: Alpaca news (Benzinga; collection only since 2026-10-21; not read by the attribution pipeline)
+### 1.3e Alpaca news (Benzinga; hourly collection continues and is read by attribution)
 
-- Database `/opt/catalyst/archive/alpaca_news.sqlite3`, code `catalyst_data/m9/alpaca.py`; fetches the most recent 90 minutes every hour.
+- Database `/opt/catalyst/archive/alpaca_news.sqlite3`, code `catalyst_data/m9/alpaca.py`; collection continues hourly, fetching the most recent 90 minutes. Since 2026-11-03 (commit `2b1d108a`), Benzinga items are indexed into the served search corpus by the daily rebuild reading this database through `ALPACA_NEWS_DB`.
 - Backfill: `alpaca news-backfill --dates …`, fetching full New York calendar days; history is available back to 2015.
 - For each article, record `created_at` (publication time, to the second, UTC), `first_seen_at`, and every observed `updated_at` (`news_versions`, RG-17 step one; record changes without excluding articles).
 - The body comes from the API's `content`. Compared with Benzinga bodies already in the database, median similarity is 0.95 (`provider_survey.md` §15.1).
@@ -158,8 +158,8 @@ The current daily service covers 102 large-cap U.S. stocks. The historical prosp
 | Research 8-K calendar | `scripts/research/build_earnings_calendar.py` |
 | Macroeconomic factors | `scripts/research/fetch_factor_data.py` |
 | Web evidence | `python -m catalyst_data.ingestion.collectors.web_discovery_v2 run …` |
-| Prospective evaluation | `scripts/research/prospective.py day D`: copies active databases to `data/prospective/stores/` and also copies `sec_company_tickers.json` |
+| First prospective evaluation (ended 2026-11-13) | Run data: `.local/eval/runs/round1-prospective/` |
 | Exhibit-unit backfill | `scripts/v2/sec_units_backfill.py <database>` (v2.1 branch) |
 | Ingest 8-Ks and index cache for the new sample | `scripts/v2/sec_intake.py <cases.json> <base-db> <new-db> <index-dir>…` (v2.1 branch) |
-| Second prospective evaluation round | `scripts/research/prospective2.py day D` (`~/Catalyst-round2/runner`): data directory `data/prospective2/`; before running the supplement arm, add units to this round's body database |
-| Prospective evaluation gold labels | `scripts/v2/prospective_gold.py run` (`~/Catalyst-eval`, launchd `com.catalyst.gold`): reads only the two rounds' `candidates.json` files and writes `data/gold/<round>/gold.jsonl` and the hash ledger |
+| Second prospective evaluation round (ended 2026-11-13) | Run data: `.local/eval/runs/round2-prospective/` |
+| Prospective evaluation gold labels | `.local/eval/catalyst-eval-data/` (evaluation ended 2026-11-13) |

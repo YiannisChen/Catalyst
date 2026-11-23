@@ -22,10 +22,10 @@ ALLOWLIST=(
   packages/api packages/agents packages/data
   contracts
   deploy
-  docs/architecture.md docs/data/data-card.md docs/data/contract.md docs/data/input_manifests.md docs/data/schedule.md docs/data/legacy_cohort_manifest.schema.json
+  docs/architecture.md docs/project-retrospective.md docs/data/data-card.md docs/data/contract.md docs/data/input_manifests.md docs/data/schedule.md docs/data/legacy_cohort_manifest.schema.json
   docs/system-card.md docs/diagrams docs/demo/screenshots docs/demo/tools docs/demo/promo docs/demo/video
   data/manifests/peer_map_v1.json data/manifests/sources_v1.json data/manifests/source_categories_v1.json data/manifests/heldout_universe_v1.json data/manifests/featured_cases_v1.json data/manifests/featured_cases_v1.sqlite3.sha256
-  data/corrections/README.md data/corrections/README_sec.md data/corrections/sec_acceptance_v1.csv
+  data/corrections/README.md data/corrections/README_sec.md data/corrections/sec_acceptance_v1.csv data/corrections/time_corrections_v1.csv
   scripts/check.sh scripts/check_ruff.py scripts/ruff_baseline.json scripts/export_api_contract.py scripts/sign_invite_token.py scripts/export_public.sh scripts/fixtures scripts/featured/build_bundle.py scripts/featured/list_candidates.py
 )
 

@@ -16,7 +16,7 @@
   <a href="#quickstart">Quickstart</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#evaluation">Evaluation</a> ·
-  <a href="#roadmap">Roadmap</a>
+  <a href="#explored-directions">Explored directions</a>
 </p>
 
 Catalyst is an agent that explains large stock moves. Pick a ticker and a trading
@@ -33,6 +33,13 @@ cause with its source sentence highlighted.</sub>
 **Try it:** open the [live demo](https://catalyst.yiannischen.dev) and replay a
 featured case such as *Oracle, 2025-12-19*, or bring your own model key to analyse
 any covered day.
+
+## Project status
+
+Catalyst v1.0 is complete and public. Issues are welcome; feature work has stopped;
+bug, security and documentation fixes may be reviewed slowly. The code, demo cases
+and research results remain available as a reference. See the
+[project retrospective](docs/project-retrospective.md) for the engineering history.
 
 ## What you get
 
@@ -147,9 +154,10 @@ the pipeline against hand-labelled sessions.
 - **The fact checker.** Over 216 runs on 36 sessions, the second model check cut
   the wrong-event rate from 37.6% to 22.5% (−15.1 points, 95% CI −27.5 to −4.5).
 - **Retrieval.** On a recall@8 benchmark, FTS5 (0.294) matched dense retrieval
-  (0.298) and beat reranked (0.272) and hybrid (0.183) setups, so Catalyst ships
-  the simpler index. Every method sat well below the 0.839 reachable ceiling, which
-  puts the next gains in candidate generation rather than the retriever.
+  (0.298) and beat hybrid (0.183) and a rerank probe (0.272); the best arm, dense
+  with a time window, reached 0.372. Catalyst ships the simpler index. Every method
+  sat well below the 0.839 reachable ceiling, which puts the next gains in candidate
+  generation rather than the retriever.
 
 ## Limitations
 
@@ -160,23 +168,16 @@ see can end as "No clear cause". Moves with several drivers at once, such as a
 macro shift on top of company news, are the hardest cases. Catalyst explains past
 moves; it does not make trading recommendations.
 
-## Roadmap
+## Explored directions
 
-- **Multi-day moves.** Explain a slide or rally across days or weeks: find the key
-  events, split the move into phases, and show how news and price lined up.
-- **Richer market signals.** Bring intraday bars (already collected) into
-  attribution to time a move against a headline, then explore options activity,
-  short interest and positioning.
-- **Deeper evidence.** Broader and more complete news coverage, structured
-  earnings expectations and analyst revisions, and macro and rates calendars.
-- **Multi-factor reasoning.** Weigh several drivers in one answer, reconcile
-  conflicting explanations, and reduce both wrong causes and unnecessary "no clear
-  cause" results.
-- **Evaluation harness.** A reproducible harness with larger test sets, failure
-  analysis, regression checks, and quality, cost and latency comparisons across
-  models and graph designs.
-- **Wider coverage.** More tickers and sessions, with the daily pipeline building
-  the corpus and search index for each new name.
+- **Multi-day moves.** Planned, but reliable phase attribution would require evidence and expectations data the project does not hold.
+- **Richer market signals.** Minute bars, option snapshots and analyst rating changes were collected briefly as a trial and retired on November 12, 2026, without being wired into attribution.
+- **Deeper evidence.** Better news coverage and point-in-time expectations remain data acquisition problems.
+- **Multi-factor reasoning.** Several simultaneous drivers remain hard to rank from the available evidence.
+- **Evaluation harness.** The research metrics improved, but a reproducible current-version corpus and prospective baseline remain prerequisites for further quality claims.
+- **Wider coverage.** More symbols would require corresponding news and filing coverage, not only price data.
+
+See the [project retrospective](docs/project-retrospective.md) for the evidence behind these decisions.
 
 ## Repository layout
 
