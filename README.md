@@ -67,9 +67,9 @@ One analysis runs like a small newsroom:
    relevant commodity, the opening gap, and how unusual the volume was.
 2. **Retrieval.** Full-text search (SQLite FTS5) over news and SEC filings
    published before the move, kept to items about the company or its group.
-3. **News researcher (model).** One call reads the evidence and proposes causes,
+3. **News researcher (model).** The model reads the evidence and proposes causes,
    each tied to sentences it selects from a source.
-4. **Fact checker (model).** A second, short call checks that those sentences
+4. **Fact checker (model).** A separate check confirms that those sentences
    explain *this* stock's move in *this* session.
 5. **Editor (code).** Fixed rules publish a cause only when the quote is verbatim
    in its source, the source predates the move, it is about this company, and the

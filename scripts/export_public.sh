@@ -47,6 +47,7 @@ root, target = Path(sys.argv[1]), Path(sys.argv[2])
 excluded_dirs = {
     ".local", "__pycache__", ".pytest_cache", ".ruff_cache", "node_modules",
     "dist", ".mypy_cache", ".tox", ".git", "boards", "design-reference",
+    ".venv", "venv",
 }
 
 def allowed(rel: Path) -> bool:
@@ -86,7 +87,7 @@ for item in sys.argv[3:]:
 PY
 
 # Remove local/build caches, private design references, research artifacts, and retired collector deployment files.
-find "$target" -type d \( -name .git -o -name .local -o -name .pytest_cache -o -name .ruff_cache -o -name __pycache__ -o -name node_modules -o -name dist -o -name .mypy_cache -o -name .tox -o -name boards -o -name design-reference \) -prune -exec rm -rf {} +
+find "$target" -type d \( -name .git -o -name .local -o -name .pytest_cache -o -name .ruff_cache -o -name __pycache__ -o -name node_modules -o -name dist -o -name .mypy_cache -o -name .tox -o -name boards -o -name design-reference -o -name .venv -o -name venv \) -prune -exec rm -rf {} +
 rm -rf "$target/apps/web/design"
 find "$target" -type f \( -name '.env' -o -name '.env.*' -o -name '*.pyc' -o -name '*.pyo' -o -name '*.mp4' -o -name '.DS_Store' \) ! -path "$target/.env.example" -delete
 find "$target" -type f -name '.env.example' ! -path "$target/.env.example" -delete
