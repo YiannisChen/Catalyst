@@ -29,6 +29,7 @@ export function useRunStream(runId: string | null | undefined) {
         setStatus('streaming');
       },
       controller.signal,
+      () => setStatus('connecting'),
     ).catch((cause: unknown) => {
       if (controller.signal.aborted) return;
       setError(cause instanceof Error ? cause : new Error('The run stream stopped unexpectedly.'));

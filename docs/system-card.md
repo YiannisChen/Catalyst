@@ -1,5 +1,7 @@
 # Catalyst System Card
 
+This card describes the system as frozen and evaluated in October 2026. Plans and pending decisions below are historical; the prospective rounds ended on 2026-11-13, and current status is in [README.md](../README.md) and [docs/project-retrospective.md](project-retrospective.md).
+
 - **Version**: v2.0.1, 2026-10-18 (failure mode 11 added; web retrieval rewritten to match the code); v1.0: 2026-10-16
 - **Systems covered**:
   - Frozen backend `backend-freeze-v1` (default configuration, evidence-constrained publisher);
