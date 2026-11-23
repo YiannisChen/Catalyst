@@ -122,6 +122,7 @@ supported provider), and a populated corpus and stores.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 make install
+(cd apps/web && npm ci)     # skip if already done for mock mode
 cp .env.example .env        # set store paths and your model key
 PYTHONPATH=packages/data:packages/agents:packages/api \
   uvicorn catalyst_app.main:app --app-dir packages/api --host 127.0.0.1 --port 8000

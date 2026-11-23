@@ -18,10 +18,11 @@ git clone https://github.com/YiannisChen/Catalyst.git
 cd Catalyst
 
 python -m venv .venv && source .venv/bin/activate
-pip install -e "packages/data[dev]" -e packages/eval -e packages/agents -e "packages/api[dev]"
+make install
+(cd apps/web && npm ci)
 
-cp packages/data/.env.template .env
-# Edit .env with your API keys
+cp .env.example .env
+# Edit .env with your store paths and model key
 ```
 
 Keep local credentials only in the repository-root `.env` (ignored by Git).
@@ -32,11 +33,11 @@ services use `/opt/catalyst/.env` through systemd.
 ## Running Tests
 
 ```bash
-# All packages
-python -m pytest packages/ -q --ignore=packages/data/.venv
+# All suites (one pytest process per package, as in CI)
+make test
 
 # Single package
-python -m pytest packages/agents/tests/ -q
+PYTHONPATH=packages/data:packages/agents:packages/api python -m pytest packages/agents/tests -q
 ```
 
 The API contract exporter uses the FastAPI and Pydantic versions pinned by the
