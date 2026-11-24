@@ -21,6 +21,9 @@ mkdir -p "$D"
 rm -f "$D/ROWCOUNTS.tmp"
 for db in "$RUNTIME_DATA_DIR"/*.sqlite3 /opt/catalyst/archive/*.sqlite3; do
   n=$(basename "$db")
+  # The served corpus (~2.5 GB compressed) is a derived artifact rebuilt from the stores below; leaving it out keeps
+  # the nightly copy small enough for the monitor host to pull (it was OOM-killed pulling it).
+  [[ "$n" == catalyst_corpus.sqlite3 ]] && continue
   sqlite3 "$db" ".timeout 60000" ".backup '$D/$n'"
   # row count per table of the copy, for the restore drill (monitor.py restore-drill compares them)
   sqlite3 "$D/$n" "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'" | while read -r t; do
